@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+.astro/
+.output/
+
+# Secrets and per-host state
+.env
+.env.*
+!.env.example
+
+# Tenant runtime data — customer databases, uploads, rendered bundles
+data/
+content/media/
+content/public/
+content/protected/
+
+# Local scratch
+.DS_Store
+*.log
