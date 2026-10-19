@@ -1,13 +1,17 @@
 # Skunkworks — verification entry points.
 #
-# `make verify` is the canonical command: if a check exists, it runs here.
-# Each target prints PASS/FAIL and exits non-zero on failure.
+# `make test` is the canonical command tooling looks for; `make verify` is the
+# same thing spelled the way a human thinks about it. Both run every check and
+# exit non-zero on failure.
 
-.PHONY: help verify verify-gitignore
+.PHONY: help test verify verify-gitignore
 
 help:
-	@echo "make verify            run every verification check"
+	@echo "make test              run every verification check (canonical)"
+	@echo "make verify            alias of make test"
 	@echo "make verify-gitignore  assert .gitignore verdicts against git"
+
+test: verify
 
 verify: verify-gitignore
 
