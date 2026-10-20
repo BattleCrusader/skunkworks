@@ -6,12 +6,14 @@
  * leave the process, `/__protected/` stays `internal` (a direct request is nginx's own
  * 404), and a `Range` is served from the file rather than from the app.
  *
- * The harness is S3b's (`test/nginx-media-e2e.test.ts`), with the same two substitutions
- * and no others:
- *   `listen 443 ssl;`             -> removed            (TLS is not under test)
- *   `proxy_pass http://app:3000;` -> the host app       (the app is not in a container)
- * Both are asserted to have hit at least one line, so a generator change cannot make this
- * test silently stop testing the edge it claims to test.
+ * The harness is S3b's (`test/helpers/nginx.ts`), with the same substitutions and no
+ * others:
+ *   `listen … 443 …`               -> removed            (TLS is not under test)
+ *   every `ssl_*` directive        -> removed            (S4d's certificates would be read
+ *                                                        from an unmounted /etc/nginx/certs)
+ *   `proxy_pass http://app:3000;`  -> the host app       (the app is not in a container)
+ * All three are asserted to have hit, so a generator change cannot make this test silently
+ * stop testing the edge it claims to test.
  *
  *   G1  a redeemed cookie downloads the buyer's **stamped render** through the edge, and
  *       the stored blob (which every buyer shares) is not what is served;
@@ -38,6 +40,7 @@ import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, header, type Res } from './helpers/http.ts';
 import { removeContainer, trackContainer } from './helpers/docker.ts';
+import { DEFAULT_SERVER, hostGatewayIPv4, nginxConf, prepareAppConf } from './helpers/nginx.ts';
 import { pdfDrawnText } from './helpers/pdftext.ts';
 
 const SKIP = process.env.SKW_SKIP_DOCKER === '1';
@@ -61,21 +64,6 @@ function freePort(): Promise<number> {
 
 function dockerAvailable(): boolean {
   return spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], { encoding: 'utf8' }).status === 0;
-}
-
-function hostGatewayIPv4(): string {
-  const r = spawnSync(
-    'docker',
-    [
-      'run', '--rm', '--add-host', 'host.docker.internal:host-gateway',
-      '--entrypoint', 'sh', 'nginx:1.31-alpine',
-      '-c', "grep host.docker.internal /etc/hosts | awk '{print $1}' | grep '\\.' | head -1",
-    ],
-    { encoding: 'utf8' },
-  );
-  const ip = r.stdout.trim();
-  assert.match(ip, /^\d{1,3}(\.\d{1,3}){3}$/, `could not read the host gateway IPv4: ${r.stdout}${r.stderr}`);
-  return ip;
 }
 
 let fixture: Fixture;
@@ -204,41 +192,24 @@ before(async () => {
     readFileSync(join(REPO, 'snippets', 'skunk-proxy.conf'), 'utf8').replaceAll('__SKW_EDGE_TOKEN__', EDGE_TOKEN),
   );
   writeFileSync(join(snippets, 'skunk-csp.conf'), readFileSync(join(REPO, 'snippets', 'skunk-csp.conf')));
-  writeFileSync(join(conf, '00-default.conf'), 'server { listen 80 default_server; server_name _; location / { return 404; } }\n');
+  writeFileSync(join(conf, '00-default.conf'), DEFAULT_SERVER);
 
   const gateway = hostGatewayIPv4();
-  let generated = generateAppConf(readHosts(fixture.controlDb), {
+  const generated = generateAppConf(readHosts(fixture.controlDb), {
     adminHost: 'admin.skw.test',
     demosHost: 'demos.skw.test',
     boxRps: 192,
   });
-  const tls = generated.match(/listen 443 ssl;/g)?.length ?? 0;
-  const upstream = generated.match(/proxy_pass http:\/\/app:3000;/g)?.length ?? 0;
-  assert.ok(tls >= 1 && upstream >= 1, `generated conf has ${tls} tls listens and ${upstream} upstreams`);
-  generated = generated
-    .replace(/listen 443 ssl;/g, '')
-    .replace(/proxy_pass http:\/\/app:3000;/g, `proxy_pass http://${gateway}:${appPort};`);
-  // The protected location must be the generated one: internal, aliased at the media tree.
-  assert.match(generated, /location \/__protected\/ \{[\s\S]*?internal;[\s\S]*?alias \/srv\/content\/media\/;/);
-  writeFileSync(join(conf, '10-app.conf'), generated);
-
-  writeFileSync(
-    join(tmp, 'nginx.conf'),
-    [
-      'worker_processes 1;',
-      'error_log /dev/stderr warn;',
-      'pid /tmp/nginx.pid;',
-      'events { worker_connections 64; }',
-      'http {',
-      '  include /etc/nginx/mime.types;',
-      '  default_type application/octet-stream;',
-      '  client_max_body_size 16m;',
-      '  access_log off;',
-      '  include /etc/nginx/conf.d/*.conf;',
-      '}',
-      '',
-    ].join('\n'),
+  const prepared = prepareAppConf(generated, { gateway, appPort });
+  assert.ok(
+    prepared.tlsListens >= 1 && prepared.sslDirectives >= 2 && prepared.upstreams >= 1,
+    `generated conf has ${prepared.tlsListens} TLS listens, ${prepared.sslDirectives} ssl directives and ${prepared.upstreams} upstreams`,
   );
+  // The protected location must be the generated one: internal, aliased at the media tree.
+  assert.match(prepared.text, /location \/__protected\/ \{[\s\S]*?internal;[\s\S]*?alias \/srv\/content\/media\/;/);
+  writeFileSync(join(conf, '10-app.conf'), prepared.text);
+
+  writeFileSync(join(tmp, 'nginx.conf'), nginxConf());
 
   edgePort = await freePort();
   container = trackContainer(`skw-nginx-gated-${process.pid}`);

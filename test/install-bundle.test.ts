@@ -19,8 +19,9 @@
  *       instead of seeding a database it does not describe.
  *   I4  a tampered bundle exits 12 **before** `control.db` exists: the verdict is honoured,
  *       not merely reached.
- *   I5  a bundle carrying `cms_plugin_installed` rows and no package is refused, naming
- *       the plugin and the row — the gap S4b §9.2 named.
+ *   I5  two-sided (S4d supersedes S4b §9.2): a bundle carrying `cms_plugin_installed` rows
+ *       **and** their packages installs, and the same bundle with only the package removed
+ *       is refused, naming the plugin and the row.
  *   I6  an existing enrolment file is not overwritten (`O_EXCL`), and the install refuses.
  */
 import assert from 'node:assert/strict';
@@ -32,7 +33,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { REPO } from './helpers/fixture.ts';
+import { openAdminWrite } from '../app/db/classes.ts';
+import { REPO, makeFixture } from './helpers/fixture.ts';
 import { makeBundle, type BundleOptions } from './helpers/bundle.ts';
 
 interface Run {
@@ -108,6 +110,24 @@ function reseal(dir: string, rel: string): void {
   const bytes = readFileSync(join(dir, rel));
   entry.sha256 = createHash('sha256').update(bytes).digest('hex');
   entry.bytes = bytes.byteLength;
+  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+/**
+ * Remove a plugin package from an exported bundle **as a buggy producer would**: the bytes
+ * go, the manifest's `files[]`/`plugins[]` entries go with them, and the install row plus
+ * its `source_counts` entry stay. Without this the verifier would refuse on a missing
+ * sha256 first, and I5's plugin refusal would never be the thing under test.
+ */
+function stripPluginPackage(dir: string, id: string): void {
+  rmSync(join(dir, 'data', 'plugins', id), { recursive: true, force: true });
+  const path = join(dir, 'BUNDLE.json');
+  const manifest = JSON.parse(readFileSync(path, 'utf8')) as {
+    files: { path: string }[];
+    plugins?: { id: string }[];
+  };
+  manifest.files = manifest.files.filter((f) => !f.path.startsWith(`data/plugins/${id}/`));
+  if (Array.isArray(manifest.plugins)) manifest.plugins = manifest.plugins.filter((p) => p.id !== id);
   writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
@@ -222,69 +242,118 @@ test('I4 — a tampered bundle is refused with exit 12 before control.db exists'
   }
 });
 
-test('I5 — a bundle with cms_plugin_installed rows and no package is refused, naming plugin and row', () => {
-  const b = make();
-  try {
-    // The row is inserted **after** the export and the manifest resealed: this is a bundle
-    // written by an exporter that shipped the row and no code, which is exactly what S4b's
-    // `planCms()` did (`plugins: []` unconditionally).
-    const site = join(b.host, 'data', 'site.db');
-    const db = new Database(site);
-    try {
-      db.prepare(
-        `INSERT INTO cms_plugin_installed
-           (plugin_id, version, manifest_json, root_hash, publisher, signature_state, enabled, test_report_sha)
-         VALUES ('contact', '1.4.0', ?, ?, 'acme-publisher', 'unsigned', 1, ?)`,
-      ).run(JSON.stringify({ id: 'contact', version: '1.4.0', capabilities: ['util.now'] }), 'a'.repeat(64), 'b'.repeat(64));
-    } finally {
-      db.close();
-    }
-    reseal(b.host, 'data/site.db');
+test('I5 — a bundle ships the plugin package it claims and installs it; without the package the same bundle is refused, naming plugin and row', () => {
+  // **The supersession (S4d).** S4b refused *any* bundle with `cms_plugin_installed` rows
+  // because `planCms()` had nothing to ship. S4d ships `<data>/plugins/<id>/`, so the
+  // contract is two-sided: row + code installs; row without code is refused by name.
+  // The positive half is not decoration — without it a verifier that refused every plugin
+  // bundle would pass the old test and still be wrong.
 
-    const run = install(b.host);
-    assert.equal(run.status, 12, `${run.stderr}\n${run.stdout}`);
-    assert.match(run.stderr, /bundle_verify: REFUSAL: .*plugin contact \(cms_plugin_installed row 1\) has no package/);
-    assert.equal(existsSync(join(b.host, 'data', 'control.db')), false, 'nothing is installed from such a bundle');
+  // --- 1. the package ships, and the installer honours it ------------------------------
+  const shipped = make({ pluginPackage: { id: 'contact', version: '1.4.0' } });
+  try {
+    assert.equal(
+      existsSync(join(shipped.host, 'data', 'plugins', 'contact', 'plugin.json')),
+      true,
+      'the exporter must ship the package beside the row',
+    );
+    const ok = install(shipped.host);
+    assert.equal(ok.status, 0, `${ok.stderr}\n${ok.stdout}`);
+    assert.match(ok.stdout, /bundle_verify: \d+ file\(s\) verified/, 'bundle_verify accepted the package');
+    // The installed tree carries the row *and* the bytes the row's root_hash names.
+    assert.equal(read(join(shipped.host, 'data', 'tenants', 'acme', 'site.db'), 'SELECT count(*) FROM cms_plugin_installed'), 1);
+    assert.equal(existsSync(join(shipped.host, 'data', 'plugins', 'contact', 'index.mjs')), true);
   } finally {
-    b.cleanup();
+    shipped.cleanup();
+  }
+
+  // --- 2. the negative control: the same bundle, only the package bytes removed --------
+  // This is the shape a buggy producer writes (S4b's `plugins: []`): the row, its
+  // `source_counts` entry and every other hash agree, and the code is simply absent. The
+  // manifest is stripped of the package's entries so the refusal under test is the plugin
+  // check, not a sha256 mismatch on the missing files.
+  const stripped = make({ pluginPackage: { id: 'contact', version: '1.4.0' } });
+  try {
+    stripPluginPackage(stripped.host, 'contact');
+
+    const refused = install(stripped.host);
+    assert.equal(refused.status, 12, `${refused.stderr}\n${refused.stdout}`);
+    assert.match(refused.stderr, /bundle_verify: REFUSAL: .*plugin contact \(cms_plugin_installed row 1\) has no package/);
+    assert.equal(existsSync(join(stripped.host, 'data', 'control.db')), false, 'nothing is installed from such a bundle');
+  } finally {
+    stripped.cleanup();
   }
 });
 
-test('I5b — the exporter refuses to *produce* a bundle for a tenant with an installed plugin', () => {
-  const bundle = makeBundle();
+test('I5b — the exporter ships the package it claims, with its root_hash; a row without a package is refused, naming plugin and row', () => {
+  // --- 1. the shipping side ------------------------------------------------------------
+  const bundle = makeBundle({ pluginPackage: { id: 'contact', version: '1.4.0' } });
   try {
-    const db = new Database(bundle.fixture.sitePath('acme'));
+    const manifest = JSON.parse(readFileSync(join(bundle.dir, 'BUNDLE.json'), 'utf8')) as {
+      plugins: { id: string; version: string; root_hash: string; package: string; files: number }[];
+    };
+    const row = readRow(bundle.fixture.sitePath('acme'), 'SELECT id, plugin_id, root_hash FROM cms_plugin_installed');
+    assert.equal(row?.plugin_id, 'contact');
+    assert.deepEqual(
+      manifest.plugins,
+      [{ id: 'contact', version: '1.4.0', root_hash: String(row?.root_hash), package: 'data/plugins/contact', files: 2 }],
+      'BUNDLE.json must record the install row\'s own root_hash, not a recomputation',
+    );
+    assert.equal(existsSync(join(bundle.dir, 'data', 'plugins', 'contact', 'index.mjs')), true);
+
+    // The verifier the installer runs accepts the producer's own output.
+    const verified = spawnSync(process.execPath, ['tools/bundle_verify.mjs', '--bundle', bundle.dir], {
+      cwd: REPO,
+      encoding: 'utf8',
+    });
+    assert.equal(verified.status, 0, `${verified.stderr}\n${verified.stdout}`);
+    assert.match(verified.stdout, /file\(s\) verified/);
+  } finally {
+    bundle.cleanup();
+  }
+
+  // --- 2. the negative control: the row, no code ---------------------------------------
+  // Same tenant state as a bundle produced by S4b's `planCms()` (`plugins: []`): the row is
+  // legitimate, the package is absent. The producer must refuse and name both the plugin
+  // and the row — an operator cannot fix "a plugin is missing" without knowing which one.
+  const fixture = makeFixture({ specs: [{ key: 'acme', hosts: ['acme.test'] }] });
+  const out = mkdtempSync(join(tmpdir(), 'skw-refused-'));
+  try {
+    const db = openAdminWrite(fixture.sitePath('acme'));
     try {
       db.prepare(
         `INSERT INTO cms_plugin_installed
            (plugin_id, version, manifest_json, root_hash, publisher, signature_state, enabled, test_report_sha)
          VALUES ('contact', '1.4.0', ?, ?, 'acme-publisher', 'unsigned', 1, ?)`,
-      ).run(JSON.stringify({ id: 'contact', version: '1.4.0' }), 'a'.repeat(64), 'b'.repeat(64));
+      ).run(
+        JSON.stringify({ id: 'contact', version: '1.4.0', entry: 'index.mjs', capabilities: [], tables: [], settings: [] }),
+        'a'.repeat(64),
+        'b'.repeat(64),
+      );
     } finally {
       db.close();
     }
-    const out = mkdtempSync(join(tmpdir(), 'skw-refused-'));
-    try {
-      const res = spawnSync(
-        'node',
-        [
-          'app/cli/export.ts',
-          '--target', 'cms',
-          '--tenant', 'acme',
-          '--out', out,
-          '--data-dir', bundle.fixture.dir,
-          '--now', '2026-10-20T12:00:00.000Z',
-        ],
-        { cwd: REPO, encoding: 'utf8', timeout: 120_000 },
-      );
-      assert.equal(res.status, 20, `${res.stderr}\n${res.stdout}`);
-      assert.match(res.stderr, /SKW_E_PL_EXPORT_PACKAGE_MISSING/);
-      assert.match(res.stderr, /"id":1,"plugin":"contact","version":"1\.4\.0"/);
-    } finally {
-      rmSync(out, { recursive: true, force: true });
-    }
+    const res = spawnSync(
+      'node',
+      [
+        'app/cli/export.ts',
+        '--target', 'cms',
+        '--tenant', 'acme',
+        '--out', out,
+        '--data-dir', fixture.dir,
+        '--now', '2026-10-20T12:00:00.000Z',
+      ],
+      { cwd: REPO, encoding: 'utf8', timeout: 120_000 },
+    );
+    assert.equal(res.status, 20, `${res.stderr}\n${res.stdout}`);
+    assert.match(res.stderr, /SKW_E_PL_EXPORT_PACKAGE_MISSING/);
+    // The CLI prints the code and the detail; the detail must name the row, not only the
+    // plugin, because "which install row?" is the operator's next question.
+    assert.match(res.stderr, /\{"row":1,"id":"contact","version":"1\.4\.0","error":"no package at /);
+    assert.equal(existsSync(join(out, 'BUNDLE.json')), false, 'a refused export writes no bundle');
   } finally {
-    bundle.cleanup();
+    rmSync(out, { recursive: true, force: true });
+    fixture.cleanup();
   }
 });
 

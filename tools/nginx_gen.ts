@@ -114,6 +114,12 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
     // 80 always; 443 only when the certificate exists (§12.5, E-5).
     out.push(issued.has(key) ? '    listen 80; listen 443 ssl;' : '    listen 80;');
     out.push(`    server_name ${hosts.join(' ')};`);
+    if (issued.has(key)) {
+      // S4d: the block that listens on 443 must name a certificate. ACME writes
+      // `/etc/nginx/certs/<host>.crt|key` per host; the first host is the block's primary.
+      out.push(`    ssl_certificate     /etc/nginx/certs/${hosts[0]}.crt;`);
+      out.push(`    ssl_certificate_key /etc/nginx/certs/${hosts[0]}.key;`);
+    }
     out.push('');
     out.push('    location / {');
     out.push(`        limit_req zone=tenant burst=${burst} nodelay;`);
@@ -162,6 +168,9 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
   out.push('server {');
   out.push('    listen 80; listen 443 ssl;');
   out.push(`    server_name ${opts.demosHost};`);
+  // S4d: same as the admin block — the listener needs a certificate to start.
+  out.push('    ssl_certificate     /etc/nginx/certs/default.crt;');
+  out.push('    ssl_certificate_key /etc/nginx/certs/default.key;');
   out.push('');
   out.push('    # The slash-less form FIRST. If the proxying location below is the only one, it');
   out.push('    # matches /demo/<key> with an empty suffix, the rewrite does not fire, and an');
@@ -185,6 +194,10 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
   out.push('server {');
   out.push('    listen 80; listen 443 ssl;');
   out.push(`    server_name ${opts.adminHost};`);
+  // S4d: a listener without a certificate fails `nginx -t`. Until ACME issues for the admin
+  // host the install's self-signed default pair is what nginx presents.
+  out.push('    ssl_certificate     /etc/nginx/certs/default.crt;');
+  out.push('    ssl_certificate_key /etc/nginx/certs/default.key;');
   out.push('');
   const allowlist = opts.adminAllowlist ?? [];
   if (allowlist.length > 0) {

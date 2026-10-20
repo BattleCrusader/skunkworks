@@ -51,7 +51,11 @@ services:
 
   app:
     # D10: a digest, never a tag. install.sh pins the released digest.
-    image: ghcr.io/skunkworks/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    # `SKW_APP_IMAGE` is the same escape hatch `plugin-runner` has: a gate (and only a
+    # gate) points compose at an image it has just built, so the compose path can be
+    # exercised without pretending the published digest exists here. A released bundle's
+    # compose sets neither variable, so production pulls the digest.
+    image: ${SKW_APP_IMAGE:-ghcr.io/skunkworks/app@sha256:0000000000000000000000000000000000000000000000000000000000000000}
     restart: unless-stopped
     expose:
       - "3000"

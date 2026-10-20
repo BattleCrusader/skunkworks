@@ -1,0 +1,5 @@
+NAME                         IMAGE                       COMMAND                  SERVICE         CREATED         STATUS                          PORTS
+skunkworks-acme-1            nginxproxy/acme-companion   "/bin/bash /app/entr…"   acme            5 minutes ago   Restarting (1) 25 seconds ago   
+skunkworks-app-1             skw-app:s4d                 "node dist/app/main.…"   app             3 minutes ago   Up 3 minutes (healthy)          3000/tcp
+skunkworks-nginx-1           nginx:1.31-alpine           "/docker-entrypoint.…"   nginx           2 minutes ago   Up 2 minutes                    0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp, [::]:443->443/tcp
+skunkworks-plugin-runner-1   skw-runner:s4d              "node /srv/runner/se…"   plugin-runner   5 minutes ago   Up 5 minutes                    

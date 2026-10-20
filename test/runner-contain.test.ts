@@ -142,7 +142,7 @@ test('R2 — the packages load at runtime from outside the source tree, and repo
   assert.equal(list?.ok, true);
   assert.deepEqual(
     (list?.result ?? []).map((p) => `${p.id}@${p.version}:${p.ready}`).sort(),
-    ['echo@1.0.0:true', 'probenet@1.0.0:true'],
+    ['echo@1.0.0:true', 'notes@1.0.0:true', 'probenet@1.0.0:true'],
   );
 });
 
@@ -159,7 +159,7 @@ test('R3 — a declared op is answered by the runner; an undeclared one is refus
   assert.match(String(refused?.message), /store\.insert is not in echo's declared capabilities/);
 });
 
-test('R4 — a host op is authorised and then refused: the app-side client is not wired yet', () => {
+test('R4 — a host op has no direct entry point: it can only be raised by a package inside an invoke', () => {
   const [res] = call([{ id: 1, op: 'store.query', plugin: 'echo' }]) as {
     ok: boolean;
     code?: string;
@@ -172,8 +172,26 @@ test('R4 — a host op is authorised and then refused: the app-side client is no
   assert.match(String(res?.message), /needs the host client/);
 });
 
+test('R8 — a package\'s own code reaches a host over the socket, inside --network none', () => {
+  const [res] = call([
+    { id: 1, op: 'plugin.invoke', plugin: 'notes', tenant: 'acme', args: { op: 'list', args: {} } },
+  ]) as { ok: boolean; plugin?: string; result?: { count?: number; rows?: { body?: string }[] } }[];
+  assert.equal(res?.ok, true, JSON.stringify(res));
+  assert.equal(res?.plugin, 'notes');
+  assert.equal(res?.result?.count, 1, 'the child did not receive the host channel\'s rows');
+  assert.equal(res?.result?.rows?.[0]?.body, 'answered-by-host');
+});
+
+test('R9 — the same package\'s network reach is refused in this netns', () => {
+  const [res] = call([
+    { id: 1, op: 'plugin.invoke', plugin: 'notes', tenant: 'acme', args: { op: 'reach', args: {} } },
+  ]) as { ok: boolean; result?: string }[];
+  assert.equal(res?.ok, true, JSON.stringify(res));
+  assert.equal(res?.result, 'ENETUNREACH');
+});
+
 test('R5 — plugin code runs in the child, and its result comes back over the socket', () => {
-  const [res] = call([{ id: 1, op: 'plugin.invoke', plugin: 'echo', args: { op: 'render', args: { text: 'hi' } } }]) as {
+  const [res] = call([{ id: 1, op: 'plugin.invoke', plugin: 'echo', tenant: 'acme', args: { op: 'render', args: { text: 'hi' } } }]) as {
     ok: boolean;
     plugin?: string;
     result?: { text?: string };
@@ -184,7 +202,7 @@ test('R5 — plugin code runs in the child, and its result comes back over the s
 });
 
 test('R6 — a plugin that opens a socket is refused, and the refusal names the package', () => {
-  const [res] = call([{ id: 1, op: 'plugin.invoke', plugin: 'probenet', args: { op: 'reach', args: {} } }]) as {
+  const [res] = call([{ id: 1, op: 'plugin.invoke', plugin: 'probenet', tenant: 'acme', args: { op: 'reach', args: {} } }]) as {
     ok: boolean;
     plugin?: string;
     result?: Record<string, string>;

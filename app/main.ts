@@ -44,6 +44,7 @@ import { DEFAULT_CONTENT_ROOT } from './assets/store.ts';
 import { Semaphore } from './admin/auth.ts';
 import { seedSettings } from './download/code.ts';
 import { DownloadPlane, RETRY_ATTEMPTS } from './download/plane.ts';
+import { PluginHost } from './plugins/host.ts';
 import type { WatermarkDeps, WatermarkStore } from './download/render.ts';
 
 // §9.1 (E-2) lives in tenancy/listener.ts so the admin router shares one rule;
@@ -77,8 +78,15 @@ export interface AppHandle {
   /**
    * The per-process source cache (§6.2), so a gate can assert a hit. */
   sources: SourceCache;
-  /** The daily seal job (§9.6); stopped by `close()`. */
+  /**
+   * The daily seal job (§9.6); stopped by `close()`. */
   seals: SealSchedulerHandle;
+  /**
+   * The app's end of `run/plugin.sock` (S4d). Present even when the socket could not be
+   * bound: `plugins.isConnected` is then false and every call refuses PL_UNAVAILABLE,
+   * which is the shape a host-only install has always had.
+   */
+  plugins: PluginHost;
   /**
    * The watermark render cache (§7.5), so a gate can sweep at a fixed instant without
    * waiting for the tick. Nothing outside the download plane writes to it.
@@ -122,6 +130,13 @@ export interface BuildAppOptions {
    * and the only honest witness to "reached the app" is the app's own log.
    */
   accessLogPath?: string;
+  /**
+   * `run/plugin.sock`. Derived from the data directory (`<data>/../run/plugin.sock`), which
+   * is compose's `/srv/run/plugin.sock` for `SKW_DATA_DIR=/srv/data`; a gate passes a temp
+   * path instead. Not an environment name: §4.3 stays at its frozen list, and the socket
+   * is a deployment layout, not a knob.
+   */
+  pluginSocket?: string;
 }
 
 /**
@@ -223,8 +238,33 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     }
   }
 
-  // --- step 6 is S4: no plugin socket in S1 ---------------------------------
-  process.stdout.write('plugin.sock: not bound (S4 owns the plugin runner; SDS \u00a72.3 step 6)\n');
+  // --- step 6: the plugin runner's socket (§2.3 step 6, §8.3, S4d) -----------------
+  // One connection, one tenant binding per invoke. A missing socket is not a boot failure:
+  // a host install serves pages without a runner, and every plugin call then refuses
+  // PL_UNAVAILABLE naming the path. What must not happen is a silent "bound" that answers
+  // from a second data path, which is why the host ops are answered by *this* process and
+  // the runner owns no database handle.
+  const pluginSocketPath = opts.pluginSocket ?? join(dirname(dataDir), 'run', 'plugin.sock');
+  const plugins = new PluginHost({
+    socketPath: pluginSocketPath,
+    dataDir,
+    emailMode: env.emailMode,
+    log: opts.logger === true ? (line: string) => process.stdout.write(`plugins: ${line}\n`) : undefined,
+  });
+  const pluginBound = await plugins.connect();
+  if (pluginBound) {
+    let loaded: { id: string; version: string; ready: boolean }[] = [];
+    try {
+      loaded = await plugins.list();
+    } catch (err) {
+      process.stderr.write(`plugin.sock: bound but the registry did not answer (${describe(err)})\n`);
+    }
+    process.stdout.write(
+      `plugin.sock: bound at ${pluginSocketPath} (${loaded.length} package(s): ${loaded.map((p) => `${p.id}@${p.version}${p.ready ? '' : ' (not ready)'}`).join(', ') || 'none'})\n`,
+    );
+  } else {
+    process.stdout.write(`plugin.sock: not bound (no runner at ${pluginSocketPath}); plugin calls will refuse PL_UNAVAILABLE\n`);
+  }
 
   const app = Fastify({
     logger: opts.logger ?? false,
@@ -583,12 +623,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   async function close(): Promise<void> {
     clearInterval(sweepTimer);
     seals.stop();
+    plugins.close();
     pool.close();
     tenants.close();
     await app.close();
   }
 
-  return { app, env, tenants, admin, sources, seals, watermark: plane.watermark, close };
+  return { app, env, tenants, admin, sources, seals, plugins, watermark: plane.watermark, close };
 }
 
 function pathnameOf(url: string): string {

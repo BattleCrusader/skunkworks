@@ -22,8 +22,10 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, rmSync, wri
 import { dirname, join } from 'node:path';
 
 import { planAstro } from './astro.ts';
-import { planCms, type TenantSpec } from './cms.ts';
+import { planCms, type PluginPackage, type TenantSpec } from './cms.ts';
 import { buildProjection, type ExportTarget, type Projection, type Refusal } from './project.ts';
+import { installedPlugins } from '../plugins/install.ts';
+import { packageRootHash } from '../plugins/protocol.ts';
 import { planStatic } from './static.ts';
 import { DiskFullError, freeBytes, hashTree, writeTree, type TreeFile, type TreeHash } from './tree.ts';
 
@@ -98,23 +100,27 @@ export function runExport(request: ExportRequest): ExportResult {
 
   const projection = built.projection;
 
-  // --- S4c: a plugin row is a claim the bundle must be able to honour -----------------
-  // `planCms()` shipped `plugins: []` unconditionally, so a tenant with a row in
-  // `cms_plugin_installed` produced a bundle whose `p_*` tables exist and whose code does
-  // not — a site that 500s the first time the widget renders. Refused here, at the
-  // producer, naming the plugin and the row; `tools/bundle_verify.mjs` refuses the same
-  // shape at install, because a bundle can also be hand-edited.
+  // --- S4d: a plugin row ships its code ------------------------------------------------
+  // `planCms()` refused every tenant with a plugin row in S4c because it had no package
+  // to ship. Now the packages live where compose mounts them (`<data>/plugins/<id>`, read-
+  // only at `/srv/plugins`) and the bundle carries them under `data/plugins/<id>/`. They
+  // are checked here — the row's `root_hash` against the bytes on disk — so a package
+  // edited after install is refused at the producer, not discovered on first render.
+  let pluginPackages: PluginPackage[] = [];
   if (request.target === 'cms') {
-    const rows = pluginRows(request.db);
-    if (rows.length > 0) {
+    pluginPackages = collectPluginPackages(request.db, join(request.tmpDir, 'plugins'));
+    if (pluginPackages.length > 0 && request.tenant !== undefined && pluginPackages.some((p) => p.error !== undefined)) {
+      const first = pluginPackages.find((p) => p.error !== undefined);
       return {
         ok: false,
         target: request.target,
         refusals: [
           {
             code: 'SKW_E_PL_EXPORT_PACKAGE_MISSING',
-            message: `the tenant has ${rows.length} installed plugin(s) and this exporter carries no plugin package`,
-            detail: { plugins: rows, missing: 'plugins/: this export ships no plugin code yet' },
+            message: `plugin ${first?.id ?? '?'} (cms_plugin_installed row ${first?.row ?? '?'}) has a row but its package cannot be shipped: ${first?.error ?? 'unknown'}`,
+            detail: {
+              plugins: pluginPackages.map((p) => ({ row: p.row, id: p.id, version: p.version, error: p.error ?? null })),
+            },
             exit: 20,
           },
         ],
@@ -163,6 +169,7 @@ export function runExport(request: ExportRequest): ExportResult {
         repoRoot: request.repoRoot,
         tenant: request.tenant,
         tmpDir: request.tmpDir,
+        pluginPackages,
         ...(request.adminHost === undefined ? {} : { adminHost: request.adminHost }),
         ...(request.demosHost === undefined ? {} : { demosHost: request.demosHost }),
       }).files;
@@ -216,19 +223,33 @@ export function runExport(request: ExportRequest): ExportResult {
 }
 
 /**
- * `cms_plugin_installed` rows, or `[]`. The id is included because the refusal names the
- * row: "plugin contact" and "row 1" are two different claims, and an operator editing a
- * bundle needs both.
+ * The packages a CMS bundle ships: one per `cms_plugin_installed` row, read from
+ * `<data>/plugins/<id>` and checked against the row's `root_hash`.
+ *
+ * The row is the claim; the package is the code; the hash is the proof the two are the
+ * same package that was tested. An `error` here is `SKW_E_PL_EXPORT_PACKAGE_MISSING` at
+ * the producer — the same shape `tools/bundle_verify.mjs` refuses at install.
  */
-function pluginRows(db: Database.Database): { id: number; plugin: string; version: string }[] {
-  const table = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_plugin_installed'`).get();
-  if (table === undefined) return [];
-  const rows = db.prepare('SELECT id, plugin_id, version FROM cms_plugin_installed ORDER BY id').all() as {
-    id: number;
-    plugin_id: string;
-    version: string;
-  }[];
-  return rows.map((row) => ({ id: Number(row.id), plugin: String(row.plugin_id), version: String(row.version) }));
+function collectPluginPackages(db: Database.Database, pluginsRoot: string): PluginPackage[] {
+  return installedPlugins(db).map((row) => {
+    const dir = join(pluginsRoot, row.plugin_id);
+    if (!existsSync(dir)) {
+      return { row: row.id, id: row.plugin_id, version: row.version, root_hash: row.root_hash, dir, files: [], error: `no package at ${dir}` };
+    }
+    const hashed = packageRootHash(dir);
+    if (hashed.root !== row.root_hash) {
+      return {
+        row: row.id,
+        id: row.plugin_id,
+        version: row.version,
+        root_hash: row.root_hash,
+        dir,
+        files: hashed.files,
+        error: `the package root is ${hashed.root} but the install recorded ${row.root_hash} — the bytes changed after install`,
+      };
+    }
+    return { row: row.id, id: row.plugin_id, version: row.version, root_hash: row.root_hash, dir, files: hashed.files };
+  });
 }
 
 /** True when `pid` names a live process on this host. */

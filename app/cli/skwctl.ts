@@ -10,6 +10,16 @@
  *   skwctl admin reset-totp       --email <email> --enrolment-out <path>
  *   skwctl admin reset-password   --email <email> (--password-stdin | --generate-password)
  *                                 [--enrolment-out <path>]
+ *   skwctl plugin install <dir>   --tenant <key> [--test-report <path>]
+ *                                 [--runner-digest <sha256:…>] [--enable]
+ *   skwctl plugin enable <id>     --tenant <key>
+ *   skwctl plugin disable <id>    --tenant <key>
+ *   skwctl plugin list            --tenant <key>
+ *
+ * The plugin verbs are the operator surface S4d's report named as missing: installing a
+ * package was a library call with no admin route and no CLI, so a plugin could not be put
+ * on a running box at all. They are root-side (they write `<data>/plugins`, which the app
+ * mounts read-only) and audit every change with `actor_label = 'skwctl'`.
  *
  * Three rules the errata fixes and this file does not soften:
  *
@@ -41,7 +51,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ARGON2_OPTIONS, Semaphore } from '../admin/auth.ts';
-import { verifyChain, verifyAgainstSeal } from '../audit/chain.ts';
+import { appendAudit, verifyChain, verifyAgainstSeal } from '../audit/chain.ts';
+import { AppError } from '../errors.ts';
+import { installPlugin, installedPlugins } from '../plugins/install.ts';
 import { healGaps, lastEndedDay, sealDay, sealStatus } from '../audit/scheduler.ts';
 import { SESSION_ABSOLUTE_MS } from '../admin/session.ts';
 import { TOTP_PARAMETERS, groupOf, newPassword, newSecret, otpauthUri } from '../admin/totp.ts';
@@ -68,6 +80,8 @@ type Reason =
   | 'PASSWORD_TOO_SHORT'
   | 'ADMIN_ORIGIN_UNSET'
   | 'ENROLMENT_EXISTS'
+  | 'PLUGIN_REFUSED'
+  | 'PLUGIN_UNKNOWN'
   | 'AUDIT_SEAL_MISMATCH'
   | 'AUDIT_SEAL_UNSEALED'
   | 'AUDIT_SEAL_EMPTY'
@@ -659,19 +673,156 @@ async function audit(ctx: CliContext, verb: string | undefined, flags: Map<strin
   throw new Refusal('USAGE', 'usage: skwctl audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N]');
 }
 
+/**
+ * `skwctl plugin …` — the operator surface S4d lacked.
+ *
+ * §8.2's install row is an operator decision: which third-party code runs on the client's
+ * site, at which root, enabled or not. S4d shipped `installPlugin()` as a library call and
+ * an exporter that ships `data/plugins/<id>/`, but nothing a person with shell access can
+ * run — so a plugin could not be installed on a running box at all.
+ *
+ * It is a CLI verb and **not** an HTTP route on purpose: the admin surface belongs to the
+ * tenant's owner, and the package on disk is root-owned, read-only to the app. This command
+ * runs as the account that can write `<data>/plugins`, and every write it makes is audited
+ * with `actor_label = 'skwctl'` (there is no logged-in user in a shell).
+ */
+async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Promise<number> {
+  const tenantFlag = args.flags.get('tenant');
+  const tenant = typeof tenantFlag === 'string' ? tenantFlag : undefined;
+  if (tenant === undefined) {
+    throw new Refusal('USAGE', `plugin ${verb ?? ''} needs --tenant <key>`.replace('  ', ' '));
+  }
+  const siteDb = join(ctx.env.dataDir, 'tenants', tenant, 'site.db');
+  if (!existsSync(siteDb)) throw new Refusal('TENANT_UNKNOWN', `no tenant ${tenant} at ${siteDb}`);
+  const pluginsRoot = join(ctx.env.dataDir, 'plugins');
+  const actor = { userId: null, label: 'skwctl' };
+
+  if (verb === 'install') {
+    const sourceDir = args.command[2];
+    if (sourceDir === undefined) throw new Refusal('USAGE', 'plugin install needs a package directory');
+    const reportFlag = args.flags.get('test-report');
+    const digestFlag = args.flags.get('runner-digest');
+    let result;
+    try {
+      result = installPlugin({
+        siteDb,
+        pluginsRoot,
+        sourceDir,
+        ...(typeof reportFlag === 'string' ? { testReportPath: reportFlag } : {}),
+        ...(typeof digestFlag === 'string' ? { runnerImageDigest: digestFlag } : {}),
+        enable: args.flags.get('enable') === true,
+      });
+    } catch (err) {
+      if (err instanceof AppError) throw new Refusal('PLUGIN_REFUSED', `${err.code}: ${err.message}`);
+      throw err;
+    }
+    // The install transaction belongs to `installPlugin`; the audit row follows it on the
+    // same connection. A crash between them leaves an install that is not audited — visible
+    // to `audit verify` as a gap, never as a silent grant.
+    const db = openAdminWrite(siteDb, ctx.env.dbBusyTimeoutMs);
+    try {
+      appendAudit(db, actor, 'plugin.install', 'cms_plugin_installed', result.plugin, null, {
+        version: result.version,
+        root_hash: result.root_hash,
+        enabled: result.enabled,
+      });
+    } finally {
+      db.close();
+    }
+    ctx.stdout(
+      `plugin: installed id=${result.plugin} version=${result.version} root=${result.root_hash} enabled=${
+        result.enabled ? 'yes' : 'no'
+      } package=${result.package_dir}`,
+    );
+    // The runner scans `<data>/plugins` **at start** (runner/server.mjs) and holds the
+    // package list; the app reads the row per request, but the code is not loaded until
+    // the runner restarts. Say so, rather than leaving a green install that 500s on first
+    // render — the exact failure mode `bundle_verify` refuses for.
+    ctx.stdout(`plugin: the runner scans ${pluginsRoot} at start; restart the runner service to load ${result.plugin}`);
+    return EXIT_OK;
+  }
+
+  if (verb === 'enable' || verb === 'disable') {
+    const id = args.command[2];
+    if (id === undefined) throw new Refusal('USAGE', `plugin ${verb} needs a plugin id`);
+    const enable = verb === 'enable';
+    const db = openAdminWrite(siteDb, ctx.env.dbBusyTimeoutMs);
+    try {
+      const row = db
+        .prepare('SELECT id, plugin_id, version, root_hash, enabled, test_report_sha FROM cms_plugin_installed WHERE plugin_id = ?')
+        .get(id) as
+        | { id: number; plugin_id: string; version: string; root_hash: string; enabled: number; test_report_sha: string | null }
+        | undefined;
+      if (row === undefined) throw new Refusal('PLUGIN_UNKNOWN', `no cms_plugin_installed row for ${id}`);
+      if (enable) {
+        // The same two preconditions `assertEnabled()` enforces at render time, refused
+        // here so the operator learns before the client's first page view.
+        if (row.test_report_sha === null || row.test_report_sha === '') {
+          throw new Refusal('PLUGIN_REFUSED', `${id} has no test report; a package nobody ran cannot be granted`);
+        }
+        if (!existsSync(join(pluginsRoot, id, 'plugin.json'))) {
+          throw new Refusal('PLUGIN_REFUSED', `no package at ${join(pluginsRoot, id)}; install it before enabling it`);
+        }
+      }
+      const at = new Date().toISOString();
+      const tx = db.transaction(() => {
+        db.prepare('UPDATE cms_plugin_installed SET enabled = ?, enabled_at = ? WHERE id = ?').run(enable ? 1 : 0, enable ? at : null, row.id);
+        appendAudit(db, actor, `plugin.${enable ? 'enable' : 'disable'}`, 'cms_plugin_installed', id, { enabled: row.enabled === 1 }, { enabled: enable });
+      });
+      tx();
+      ctx.stdout(`plugin: ${enable ? 'enabled' : 'disabled'} id=${id} version=${row.version} root=${row.root_hash}`);
+      return EXIT_OK;
+    } finally {
+      db.close();
+    }
+  }
+
+  if (verb === 'list') {
+    const db = openAdminWrite(siteDb, ctx.env.dbBusyTimeoutMs);
+    try {
+      const rows = installedPlugins(db);
+      if (rows.length === 0) {
+        ctx.stdout(`plugin: tenant=${tenant} none installed`);
+        return EXIT_OK;
+      }
+      for (const row of rows) {
+        ctx.stdout(
+          `plugin: tenant=${tenant} row=${row.id} id=${row.plugin_id} version=${row.version} enabled=${
+            row.enabled ? 'yes' : 'no'
+          } root=${row.root_hash}`,
+        );
+      }
+      return EXIT_OK;
+    } finally {
+      db.close();
+    }
+  }
+
+  throw new Refusal(
+    'USAGE',
+    'usage: skwctl plugin (install <dir> [--test-report <path>] [--runner-digest <sha>] [--enable] | enable <id> | disable <id> | list) --tenant <key>',
+  );
+}
+
 export async function run(argv: readonly string[], ctx: CliContext): Promise<number> {
   if (argv.length === 0) {
     throw new Refusal(
       'USAGE',
-      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N]>',
+      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N] | plugin (install <dir> | enable <id> | disable <id> | list) --tenant <key>>',
     );
   }
   const args = parseArgs(argv);
   if (args.command[0] === 'audit') {
     return audit(ctx, args.command[1], args.flags);
   }
+  if (args.command[0] === 'plugin') {
+    return plugin(ctx, args.command[1], args);
+  }
   if (args.command[0] !== 'admin') {
-    throw new Refusal('USAGE', `unknown command ${args.command.join(' ') || '(none)'}; expected "admin <verb>" or "audit <verb>"`);
+    throw new Refusal(
+      'USAGE',
+      `unknown command ${args.command.join(' ') || '(none)'}; expected "admin <verb>", "audit <verb>" or "plugin <verb>"`,
+    );
   }
   const verb = args.command[1];
   switch (verb) {

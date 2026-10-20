@@ -28,8 +28,9 @@ import { applyPick } from '../app/editor/media.ts';
 import { loadRegistry } from '../app/editor/registry.ts';
 import { renderBody } from '../app/editor/render.ts';
 import { loadForEditor, savePage } from '../app/editor/save.ts';
-import { AppError } from '../app/errors.ts';
+import { AppError, HTTP } from '../app/errors.ts';
 import { REPO, SCHEMA, makeFixture, type Fixture } from './helpers/fixture.ts';
+import { cspPolicy } from '../app/render/csp.ts';
 import { twoPasses } from './helpers/grapes.ts';
 
 const registry = loadRegistry(SCHEMA);
@@ -478,6 +479,100 @@ test('S9 — a body with content and no registered component is refused, not wri
     );
     const row = handle.prepare("SELECT count(*) AS n FROM cms_page WHERE path = '/degraded'").get() as { n: number };
     assert.equal(row.n, 0);
+  } finally {
+    handle.close();
+  }
+});
+
+test('S10 — a page whose shell is unknown is 422 at publish, and the same page with a real shell publishes', async () => {
+  const handle = db();
+  const html = '<div class="prose" data-gjs-type="prose"><p data-prop="body">Shell test.</p></div>';
+  try {
+    await assert.rejects(
+      () =>
+        savePage({
+          db: handle,
+          registry,
+          path: '/no-shell',
+          slug: 'no-shell',
+          title: 'No shell',
+          template: 'mystery-shell',
+          status: 'published',
+          html,
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.code, 'SKW_E_RT_TEMPLATE_UNKNOWN');
+        // The §16 row says `422`, and the code's HTTP mapping is what makes that true.
+        assert.equal(HTTP.SKW_E_RT_TEMPLATE_UNKNOWN, 422);
+        return true;
+      },
+    );
+    const missing = handle.prepare("SELECT count(*) AS n FROM cms_page WHERE path = '/no-shell'").get() as { n: number };
+    assert.equal(missing.n, 0, 'a refused publish wrote a row');
+
+    const published = await savePage({
+      db: handle,
+      registry,
+      path: '/no-shell',
+      slug: 'no-shell',
+      title: 'No shell',
+      template: 'page',
+      status: 'published',
+      html,
+    });
+    const row = handle.prepare("SELECT status FROM cms_page WHERE path = '/no-shell'").get() as { status: string };
+    assert.equal(row.status, 'published');
+    // A draft may name a shell the tenant is still building; only publish is the gate.
+    const draft = await savePage({
+      db: handle,
+      registry,
+      path: '/shell-wip',
+      slug: 'shell-wip',
+      title: 'WIP',
+      template: 'mystery-shell',
+      status: 'draft',
+      html,
+    });
+    const wip = handle.prepare("SELECT status FROM cms_page WHERE path = '/shell-wip'").get() as { status: string };
+    assert.equal(wip.status, 'draft');
+  } finally {
+    handle.close();
+  }
+});
+
+test('S11 — v1 forbids frames: an iframe in a body is refused, and frame-src is none for every tenant', async () => {
+  const handle = db();
+  try {
+    await assert.rejects(
+      () =>
+        savePage({
+          db: handle,
+          registry,
+          path: '/embed-youtube',
+          slug: 'embed-youtube',
+          title: 'Embed',
+          template: 'page',
+          html: '<div class="prose" data-gjs-type="prose"><iframe title="video"></iframe></div>',
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.code, 'SKW_E_RT_BODY_FORBIDDEN');
+        assert.equal(detailOf(err)['rule'], 'frame');
+        assert.equal(detailOf(err)['element'], 'iframe');
+        return true;
+      },
+    );
+    // The registered `embed` block is a link card, not a frame — that is what a tenant who
+    // needs YouTube gets in v1, and this asserts the two facts together.
+    const embed = registry.byType.get('embed');
+    assert.ok(embed !== undefined);
+    assert.match(String(embed?.html ?? ''), /class="embed"/);
+    assert.ok(!/<(iframe|embed)\b/i.test(String(embed?.html ?? '')), 'the embed block emits a frame');
+    for (const tenant of ['acme', 'beta']) {
+      assert.equal(cspPolicy(), `default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: https:; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'`);
+      assert.ok(tenant !== '');
+    }
   } finally {
     handle.close();
   }

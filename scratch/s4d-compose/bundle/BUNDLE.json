@@ -1,0 +1,143 @@
+{
+  "schema": "skunkworks/site-bundle/v3",
+  "created_at": "2026-10-21T00:00:00.000Z",
+  "export_now": "2026-10-21T00:00:00.000Z",
+  "tenant": {
+    "key": "acme",
+    "mode": "production",
+    "db_version": 3
+  },
+  "hosts": [
+    "acme.test"
+  ],
+  "image": {
+    "app_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "runner_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "projection_version": 2,
+  "projection_sha": "dfa476b8b4fa0a264baa28166c4e9298145aaa7455541ea7eea26e5e14ba47b3:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "source_counts": {
+    "cms_asset": 0,
+    "cms_asset_alias": 0,
+    "cms_asset_bundle": 0,
+    "cms_asset_bundle_item": 0,
+    "cms_asset_link": 0,
+    "cms_asset_variant": 0,
+    "cms_audit": 0,
+    "cms_component_registry": 0,
+    "cms_datasource": 0,
+    "cms_download_code": 0,
+    "cms_download_code_archive": 0,
+    "cms_download_event": 0,
+    "cms_form": 0,
+    "cms_form_submission": 0,
+    "cms_nav": 0,
+    "cms_page": 1,
+    "cms_page_revision": 0,
+    "cms_plugin_installed": 0,
+    "cms_plugin_migration": 0,
+    "cms_plugin_revoked": 0,
+    "cms_plugin_setting": 0,
+    "cms_redirect": 0,
+    "cms_settings": 0,
+    "cms_table_registry": 0,
+    "cms_trigger_registry": 5,
+    "cms_view_registry": 0,
+    "cms_watermark_render": 0
+  },
+  "files": [
+    {
+      "path": "data/site.db",
+      "bytes": 319488,
+      "sha256": "952da5efce255c20f2eb066263b8f5603c3be216ef681837049cefdad94c730a",
+      "class": "db"
+    },
+    {
+      "path": "data/control.seed.json",
+      "bytes": 1496,
+      "sha256": "27034a8af8b294902be4078d07b2976a43be45650a2fa1c9e49494abd0ff6f6e",
+      "class": "content"
+    },
+    {
+      "path": "docker-compose.yml",
+      "bytes": 4253,
+      "sha256": "2261891e0fc7058f3098899ff3ca8f17cf7386803611fbd73ed09674f78663db",
+      "class": "infra"
+    },
+    {
+      "path": "install.sh",
+      "bytes": 12813,
+      "sha256": "36bb66c8814eb593370a27b47bf0fc93d95777e5575601566a564cc505b50967",
+      "class": "infra"
+    },
+    {
+      "path": "nginx/nginx.conf",
+      "bytes": 556,
+      "sha256": "61cc7020a879f9893cb1e6b4dc40088f47a5739dd99a4e2a9a7bc3626a2a543f",
+      "class": "infra"
+    },
+    {
+      "path": "nginx/conf.d/00-default.conf",
+      "bytes": 349,
+      "sha256": "7938d93891e11a1f6fb84174ffe4bebb87333bc5ccb0cd508fff293b20c4ca52",
+      "class": "infra"
+    },
+    {
+      "path": "snippets/skunk-proxy.conf",
+      "bytes": 1938,
+      "sha256": "dae1472a7fa1721a02d9894a333351b1863b7f706e65db3e3832066d341725a9",
+      "class": "infra"
+    },
+    {
+      "path": "schema/control.sql",
+      "bytes": 8312,
+      "sha256": "dd759bed6aee29a85c9322400441d6f1c06a4de86bce4aaac94314ff27692437",
+      "class": "infra"
+    },
+    {
+      "path": "schema/site.sql",
+      "bytes": 23137,
+      "sha256": "aaf4c5037f38a78b75f76b1262f8b5655ae4fe8b8c0790b6711ce4f12cc0a740",
+      "class": "infra"
+    },
+    {
+      "path": "tools/bundle_verify.mjs",
+      "bytes": 13540,
+      "sha256": "69ea6153b5786808d9eec76cd21e885fa91ef659e7d0bad5d3798524ec5b18e5",
+      "class": "infra"
+    },
+    {
+      "path": "tools/seed_control.mjs",
+      "bytes": 5461,
+      "sha256": "596146ba4277c8c466670eab282c9366d078725c752ad41c1cca18b17bdb8a68",
+      "class": "infra"
+    },
+    {
+      "path": "tools/control_db.mjs",
+      "bytes": 3999,
+      "sha256": "8468aeb50e9f2bea2ce442a7119820207a1b80faa7e8f8bf9a0f30147f3b641f",
+      "class": "infra"
+    },
+    {
+      "path": "nginx/conf.d/10-app.conf",
+      "bytes": 2583,
+      "sha256": "c160b64fdc5c1536413459ea61595075b516aec0572593329d5cabdcfc4aa787",
+      "class": "infra"
+    },
+    {
+      "path": "snippets/skunk-csp.conf",
+      "bytes": 585,
+      "sha256": "6dd0ec9d0a86f93bb11ce6dfef26a7d2f28facced5a2b6dfc797acfe8cc82ecf",
+      "class": "infra"
+    },
+    {
+      "path": "EXPORT-NOTES.md",
+      "bytes": 2115,
+      "sha256": "e15e4d3fac530d7db553640a2088cb0c374cb332aa8c6e28a9f37c69ddd8c6b3",
+      "class": "infra"
+    }
+  ],
+  "plugins": [],
+  "refusals": [],
+  "notes": []
+}

@@ -36,13 +36,17 @@
  */
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 
 const SOCKET = process.env.SKW_RUNNER_SOCKET ?? '/srv/run/plugin.sock';
 const PLUGINS = process.env.SKW_PLUGINS_DIR ?? '/srv/plugins';
 const SCRATCH = process.env.SKW_SCRATCH_DIR ?? '/srv/scratch';
+/** Where `child.mjs` lives. A constant in the image; overridable so a gate can run the
+ *  same server on the host, which is the only place the app-side socket is reachable on
+ *  Docker Desktop (a socket created inside the VM is not connectable from the host). */
+const RUNNER_HOME = process.env.SKW_RUNNER_HOME ?? '/srv/runner';
 /** §15.3: a plugin RPC op has 2 s. A child that misses it is killed and marked unavailable. */
 const OP_TIMEOUT_MS = 2000;
 /** The child's own start-up (module graph + handshake), measured at 0.19 s cold per child. */
@@ -103,7 +107,7 @@ function readManifest(dir) {
   return { id: raw.id, version: raw.version, entry: raw.entry, capabilities, tables };
 }
 
-/** id -> { manifest, dir, child, ready, scratch, pending, nextId } */
+/** id -> { manifest, dir, child, ready, scratch, pending, hostPending, binding, queue, nextId, nextHostId } */
 const packages = new Map();
 
 function load() {
@@ -125,7 +129,19 @@ function load() {
     }
     const scratch = join(SCRATCH, manifest.id);
     mkdirSync(scratch, { recursive: true });
-    packages.set(manifest.id, { manifest, dir, child: null, ready: false, scratch, pending: new Map(), nextId: 1 });
+    packages.set(manifest.id, {
+      manifest,
+      dir,
+      child: null,
+      ready: false,
+      scratch,
+      pending: new Map(),
+      hostPending: new Map(),
+      binding: null,
+      queue: Promise.resolve(),
+      nextId: 1,
+      nextHostId: 1,
+    });
     log(`loaded ${manifest.id} ${manifest.version} (${manifest.capabilities.length} capabilit${manifest.capabilities.length === 1 ? 'y' : 'ies'})`);
   }
 }
@@ -138,15 +154,21 @@ function load() {
  */
 function startChild(pkg) {
   const entry = join(pkg.dir, pkg.manifest.entry);
+  // `realpath`, because on macOS a temp directory is `/var/…` (a symlink to `/private/var/…`)
+  // and `--permission` compares the **resolved** path of the loaded module with the granted
+  // roots. In the container `/srv/…` is already real; on a host test this is the difference
+  // between a loaded package and "Access to this API has been restricted".
+  const grantedDir = realpathSync(pkg.dir);
+  const grantedScratch = realpathSync(pkg.scratch);
   const child = spawn(
     process.execPath,
     [
       '--permission',
-      '--allow-fs-read=/srv/runner/child.mjs',
-      `--allow-fs-read=${pkg.dir}`,
-      `--allow-fs-read=${pkg.scratch}`,
-      '/srv/runner/child.mjs',
-      entry,
+      `--allow-fs-read=${realpathSync(join(RUNNER_HOME, 'child.mjs'))}`,
+      `--allow-fs-read=${grantedDir}`,
+      `--allow-fs-read=${grantedScratch}`,
+      realpathSync(join(RUNNER_HOME, 'child.mjs')),
+      realpathSync(entry),
     ],
     { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin', NODE_ENV: 'production' } },
   );
@@ -168,6 +190,22 @@ function startChild(pkg) {
         try {
           message = JSON.parse(line);
         } catch {
+          continue;
+        }
+        if (message.type === 'host') {
+          // The package's code is asking the **host** for one of the ten ops. It is
+          // forwarded on the very connection that requested this invoke, so the tenant is
+          // the caller's binding and never a field the package wrote (§8.3).
+          forwardHost(pkg, message).then(
+            (result) => {
+              pkg.child?.stdin.write(`${JSON.stringify({ type: 'host.result', id: message.id, ok: true, result: result ?? null })}\n`);
+            },
+            (err) => {
+              const text = err instanceof Error ? err.message : String(err);
+              const { code, detail } = splitCode(text, 'SKW_E_PL_UNAVAILABLE');
+              pkg.child?.stdin.write(`${JSON.stringify({ type: 'host.result', id: message.id, ok: false, code, message: detail })}\n`);
+            },
+          );
           continue;
         }
         if (message.id === undefined) {
@@ -261,8 +299,71 @@ function local(op, args) {
   }
 }
 
+/** `SKW_E_X: detail` -> {code, detail}. The code crosses three processes; it must not double. */
+function splitCode(text, fallback) {
+  const match = /^(SKW_E_[A-Z0-9_]+):\s*([\s\S]*)$/.exec(String(text));
+  if (match === null) return { code: fallback, detail: String(text) };
+  return { code: match[1], detail: match[2] };
+}
+
+/** The runner -> host hop's budget. The host answers from a local `site.db`. */
+const HOST_TIMEOUT_MS = 2000;
+
+/**
+ * One host op, forwarded to the connection that requested the current invoke.
+ *
+ * The binding is set by `invokeSerial()` and cleared in its `finally`; a child that asks
+ * for `store.query` outside an invoke gets `PL_UNAVAILABLE` rather than a guess about
+ * which tenant it meant.
+ */
+function forwardHost(pkg, frame) {
+  const binding = pkg.binding;
+  if (binding === null || binding.socket === null) {
+    return Promise.reject(new Error('SKW_E_PL_UNAVAILABLE: no host channel is bound to this invoke'));
+  }
+  const socket = binding.socket;
+  const id = `h${pkg.nextHostId++}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.hostPending.delete(id);
+      reject(new Error(`SKW_E_PL_UNAVAILABLE: host op ${String(frame.op)} exceeded ${HOST_TIMEOUT_MS} ms`));
+    }, HOST_TIMEOUT_MS);
+    socket.hostPending.set(id, { resolve, reject, timer });
+    socket.write(
+      `${JSON.stringify({ type: 'host.call', id, tenant: binding.tenant, plugin: pkg.manifest.id, op: frame.op, args: frame.args ?? {} })}\n`,
+    );
+  });
+}
+
+/**
+ * §14 F4: one package has one in-flight invoke. The tenant binding is a property of
+ * that invoke, so two tenants calling the same widget at once cannot have their host
+ * ops routed to each other's database. The queue is per package, not per container.
+ */
+function invokeSerial(pkg, tenant, op, args, socket) {
+  const run = async () => {
+    pkg.binding = { tenant, socket };
+    try {
+      return await ask(pkg, op, args);
+    } finally {
+      for (const [id, waiter] of socket.hostPending) {
+        clearTimeout(waiter.timer);
+        waiter.reject(new Error('SKW_E_PL_UNAVAILABLE: the invoke that bound this host channel ended'));
+        socket.hostPending.delete(id);
+      }
+      pkg.binding = null;
+    }
+  };
+  const next = pkg.queue.then(run, run);
+  pkg.queue = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
 /** One line in, one reply out. `invoke` is the asynchronous branch. */
-function handle(line) {
+function handle(line, socket) {
   let request;
   try {
     request = JSON.parse(line);
@@ -301,7 +402,13 @@ function handle(line) {
     const inner = request.args ?? {};
     const innerOp = typeof inner.op === 'string' ? inner.op : '';
     if (innerOp === '') return { reply: refused(id, name, 'SKW_E_PL_ROW', 'plugin.invoke needs args.op'), close: false };
-    return { reply: '', close: false, invoke: { id, pkg, op: innerOp, args: inner.args ?? {} } };
+    // The tenant binding is the caller's, not the package's (§8.3). A host op raised by the
+    // package during this invoke is answered against this tenant and no other.
+    const tenant = typeof request.tenant === 'string' ? request.tenant : '';
+    if (tenant === '') {
+      return { reply: refused(id, name, 'SKW_E_PL_ROW', 'plugin.invoke needs the host tenant binding'), close: false };
+    }
+    return { reply: '', close: false, invoke: { id, pkg, op: innerOp, args: inner.args ?? {}, tenant, socket } };
   }
 
   if (!ALL_OPS.has(op)) {
@@ -328,6 +435,7 @@ function handle(line) {
 
 function attach(socket) {
   socket.setEncoding('utf8');
+  socket.hostPending = new Map();
   let buffer = '';
   socket.on('data', (chunk) => {
     buffer += chunk;
@@ -337,15 +445,31 @@ function attach(socket) {
       buffer = buffer.slice(index + 1);
       index = buffer.indexOf('\n');
       if (line.trim() === '') continue;
-      const result = handle(line);
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        message = null;
+      }
+      if (message !== null && message.type === 'host.result') {
+        const waiter = socket.hostPending.get(String(message.id));
+        if (waiter !== undefined) {
+          socket.hostPending.delete(String(message.id));
+          clearTimeout(waiter.timer);
+          if (message.ok === true) waiter.resolve(message.result ?? null);
+          else waiter.reject(new Error(`${String(message.code ?? 'SKW_E_PL_UNAVAILABLE')}: ${String(message.message ?? '')}`));
+        }
+        continue;
+      }
+      const result = handle(line, socket);
       if (result.invoke !== undefined) {
-        const { id, pkg, op, args } = result.invoke;
-        ask(pkg, op, args).then(
+        const { id, pkg, op, args, tenant } = result.invoke;
+        invokeSerial(pkg, tenant, op, args, socket).then(
           (value) => socket.write(`${JSON.stringify({ id, ok: true, plugin: pkg.manifest.id, result: value ?? null })}\n`),
           (err) => {
             const message = err instanceof Error ? err.message : String(err);
-            const code = message.startsWith('SKW_E_') ? message.slice(0, message.indexOf(':')) : 'SKW_E_PL_PLUGIN_ERROR';
-            socket.write(refused(id, pkg.manifest.id, code, message));
+            const { code, detail } = splitCode(message, 'SKW_E_PL_PLUGIN_ERROR');
+            socket.write(refused(id, pkg.manifest.id, code, detail));
           },
         );
         continue;

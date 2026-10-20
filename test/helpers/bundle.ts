@@ -10,11 +10,12 @@
  * `GET /` — the install's own smoke test would then be measuring a 404.
  */
 import Database from 'better-sqlite3';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { openAdminWrite } from '../../app/db/classes.ts';
+import { packageRootHash } from '../../app/plugins/protocol.ts';
 import { runExport } from '../../app/export/index.ts';
 import { REPO, makeFixture, type Fixture } from './fixture.ts';
 
@@ -32,6 +33,12 @@ export interface BundleOptions {
   pages?: Record<string, string>;
   /** Insert one `cms_plugin_installed` row and ship no package (S4c's install refusal). */
   pluginRow?: { pluginId: string; version?: string };
+  /**
+   * S4d: install a **real** package at `<data>/plugins/<id>` and export it. The row's
+   * `root_hash` is `packageRootHash()` of the files on disk, so this is the shape a
+   * correct producer writes: the claim, the code and the bridge between them.
+   */
+  pluginPackage?: { id: string; version?: string; enabled?: boolean };
 }
 
 export function makeBundle(opts: BundleOptions = {}): Bundle {
@@ -58,9 +65,39 @@ export function makeBundle(opts: BundleOptions = {}): Bundle {
       ).run(
         opts.pluginRow.pluginId,
         opts.pluginRow.version ?? '1.4.0',
-        JSON.stringify({ id: opts.pluginRow.pluginId, version: opts.pluginRow.version ?? '1.4.0', capabilities: [] }),
+        JSON.stringify({
+          id: opts.pluginRow.pluginId,
+          version: opts.pluginRow.version ?? '1.4.0',
+          entry: 'index.mjs',
+          capabilities: [],
+          tables: [],
+          settings: [],
+        }),
         'a'.repeat(64),
         'b'.repeat(64),
+      );
+    }
+    if (opts.pluginPackage !== undefined) {
+      const { id } = opts.pluginPackage;
+      const version = opts.pluginPackage.version ?? '1.4.0';
+      const dir = join(fixture.dir, 'plugins', id);
+      mkdirSync(dir, { recursive: true });
+      // A minimal but real package: `parseManifest()` accepts it, `packageRootHash()` covers
+      // both files, and the exporter copies exactly these bytes.
+      const manifest = { id, version, entry: 'index.mjs', capabilities: [], tables: [], settings: [] };
+      writeFileSync(join(dir, 'plugin.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      writeFileSync(join(dir, 'index.mjs'), 'export default {};\n');
+      db.prepare(
+        `INSERT INTO cms_plugin_installed
+           (plugin_id, version, manifest_json, root_hash, publisher, signature_state, enabled, test_report_sha)
+         VALUES (?, ?, ?, ?, 'acme-publisher', 'unsigned', ?, ?)`,
+      ).run(
+        id,
+        version,
+        JSON.stringify(manifest),
+        packageRootHash(dir).root,
+        opts.pluginPackage.enabled === false ? 0 : 1,
+        opts.pluginPackage.enabled === false ? null : 'c'.repeat(64),
       );
     }
   } finally {

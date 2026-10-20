@@ -122,9 +122,38 @@ export async function savePage(input: SaveInput): Promise<SaveResult> {
     }
   }
 
+  // §10.5 v1's frame decision (S4d item D): the policy is `frame-src 'none'` for **every**
+  // tenant, and that is a promise the editor has to keep. An `<iframe>`/`<object>`/`<embed>`
+  // stored in a body would be silently blanked by the browser, so it is refused here, by
+  // name, instead of shipping a page that looks broken. The `embed` block is a link card
+  // (`<div class="embed">`), not a frame: a tenant who needs YouTube gets a click-through,
+  // not playback. Per-tenant frame declarations are a v2 decision; the CSP parameter exists
+  // so the four producers move together when it is made.
+  const frame = /<(iframe|frame|frameset|object|embed)\b/i.exec(canonical);
+  if (frame !== null) {
+    throw new AppError('SKW_E_RT_BODY_FORBIDDEN', 'v1 serves no frames: frame-src is none for every tenant', {
+      page: input.path,
+      rule: 'frame',
+      element: frame[1]?.toLowerCase(),
+    });
+  }
+
+  // §16 S4's publish row: `cms_page.template` names a shell, and the shell is a registry
+  // row. A published page whose template is not `kind='shell'` is a 422 at publish — not a
+  // 404 on a client's phone, which is where the old behaviour surfaced it.
+  const status = input.status ?? 'draft';
+  if (status === 'published') {
+    const shell = registry.byName.get(input.template);
+    if (shell === undefined || shell.kind !== 'shell') {
+      throw new AppError('SKW_E_RT_TEMPLATE_UNKNOWN', `the page shell ${JSON.stringify(input.template)} is not a registered shell`, {
+        page: input.path,
+        template: input.template,
+      });
+    }
+  }
+
   const css = input.css !== undefined && input.css.trim() !== '' ? input.css : registryCss(registry);
   const sha = bodySha(canonical);
-  const status = input.status ?? 'draft';
   const managedBy = input.managedBy ?? 'editor';
 
   if (managedBy === 'hand') {

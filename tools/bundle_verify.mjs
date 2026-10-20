@@ -108,11 +108,14 @@ function renderRows(path) {
 }
 
 /**
- * S4c: every `cms_plugin_installed` row needs its package under `plugins/<id>/`.
+ * S4d: every `cms_plugin_installed` row needs its package under `data/plugins/<id>/`,
+ * the bytes must still hash to the row's `root_hash`, and an **enabled** row must carry a
+ * test report (a package nobody ran cannot be granted).
  *
- * The row is the claim; the package is the code. A bundle that ships one without the
- * other installs a site whose plugin tables exist and whose widget 500s on first render.
- * All violations are returned so one install names all of them.
+ * The row is the claim; the package is the code; the hash is the bridge between them. A
+ * bundle that ships one without the other installs a site whose plugin tables exist and
+ * whose widget 500s on first render. All violations are returned so one install names all
+ * of them.
  */
 function pluginsWithoutPackages(path) {
   let db;
@@ -126,13 +129,80 @@ function pluginsWithoutPackages(path) {
       .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_plugin_installed'`)
       .get();
     if (table === undefined) return [];
-    const rows = db.prepare('SELECT id, plugin_id FROM cms_plugin_installed ORDER BY id').all();
-    const missing = [];
+    const rows = db
+      .prepare('SELECT id, plugin_id, root_hash, enabled, test_report_sha FROM cms_plugin_installed ORDER BY id')
+      .all();
+    const problems = [];
     for (const row of rows) {
-      const pkg = join(bundle, 'plugins', String(row.plugin_id), 'plugin.json');
-      if (!existsSync(pkg)) missing.push({ id: Number(row.id), plugin: String(row.plugin_id) });
+      const id = String(row.plugin_id);
+      const dir = join(bundle, 'data', 'plugins', id);
+      if (!existsSync(join(dir, 'plugin.json'))) {
+        problems.push({ id: Number(row.id), plugin: id, why: `has no package at data/plugins/${id}/` });
+        continue;
+      }
+      const hashed = hashPackage(dir);
+      if (hashed !== String(row.root_hash)) {
+        problems.push({ id: Number(row.id), plugin: id, why: `package root ${hashed} ≠ installed root ${String(row.root_hash)}` });
+        continue;
+      }
+      if (row.enabled === 1 && (row.test_report_sha === null || String(row.test_report_sha) === '')) {
+        problems.push({ id: Number(row.id), plugin: id, why: 'is enabled with no test report' });
+      }
     }
-    return missing;
+    return problems;
+  } finally {
+    db.close();
+  }
+}
+
+/** The same root hash the installer wrote: sha256 over sorted `path\0sha256` lines. */
+function hashPackage(dir) {
+  const files = [];
+  const walk = (current, prefix) => {
+    for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue;
+      const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) walk(full, rel);
+      else if (entry.isFile()) files.push({ path: rel, sha256: createHash('sha256').update(readFileSync(full)).digest('hex') });
+    }
+  };
+  walk(dir, '');
+  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return createHash('sha256').update(files.map((f) => `${f.path}\0${f.sha256}`).join('\n')).digest('hex');
+}
+
+/**
+ * **A copy is not a snapshot.** `BUNDLE.json.source_counts` is the producer-side count of
+ * every table *inside the snapshot* (§11.4). Re-counting it here is what distinguishes a
+ * `VACUUM INTO` bundle from a `cp` of a live WAL database: the copy carries `site.db` but
+ * not `site.db-wal`, so every row committed since the last checkpoint is absent and the
+ * counts disagree. Without this check a cp-built bundle verifies — its hashes match the
+ * manifest a buggy producer wrote — and the client loses their last edit silently.
+ */
+function countsMatch(path) {
+  const expected = manifest.source_counts;
+  if (expected === null || typeof expected !== 'object' || Array.isArray(expected)) return null;
+  let db;
+  try {
+    db = new SQLite(path, { readOnly: true });
+  } catch (err) {
+    refuse(`cannot open ${path}: ${String(err)}`);
+  }
+  try {
+    for (const [table, count] of Object.entries(expected)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) refuse(`BUNDLE.json source_counts names ${JSON.stringify(table)}, which is not a table`);
+      let actual;
+      try {
+        actual = Number(db.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get().n);
+      } catch {
+        actual = -1;
+      }
+      if (actual !== Number(count)) {
+        return { table, expected: Number(count), actual };
+      }
+    }
+    return null;
   } finally {
     db.close();
   }
@@ -192,12 +262,19 @@ for (const file of files) {
   if (/\.(db|sqlite|sqlite3)$/i.test(normalised)) {
     const rows = renderRows(full);
     if (rows > 0) refuse(`${file.path} carries ${rows} cms_watermark_render row(s); a render never appears in a bundle`);
+    const mismatch = countsMatch(full);
+    if (mismatch !== null) {
+      refuse(
+        `${file.path}: table ${mismatch.table} has ${mismatch.actual} row(s) but BUNDLE.json source_counts says ${mismatch.expected}` +
+          ' — a copy of a live database is not a snapshot; the writer must VACUUM INTO (§11.4)',
+      );
+    }
     const missing = pluginsWithoutPackages(full);
     if (missing.length > 0) {
       refuse(
         `${file.path}: ${missing
-          .map((m) => `plugin ${m.plugin} (cms_plugin_installed row ${m.id}) has no package at plugins/${m.plugin}/`)
-          .join('; ')} — a plugin row without its code is a site that fails on first render`,
+          .map((m) => `plugin ${m.plugin} (cms_plugin_installed row ${m.id}) ${m.why}`)
+          .join('; ')} — a plugin row without its code, or code that is not the tested bytes, is a site that fails on first render`,
       );
     }
   }

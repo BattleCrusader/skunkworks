@@ -37,6 +37,31 @@ socket.on('data', (chunk) => {
     buffer = buffer.slice(index + 1);
     index = buffer.indexOf('\n');
     if (line.trim() === '') continue;
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      message = null;
+    }
+    if (message?.type === 'host.call') {
+      // S4d: this client stands in for the app's host channel. It answers the ten host ops
+      // with a canned but **context-shaped** result, so the gate can prove the child's
+      // skw.call() reached a host over the socket inside `--network none`. The real app
+      // answers from site.db (`test/plugin-host.test.ts`).
+      const answers = {
+        'store.insert': { id: 41, changes: 1 },
+        'store.query': { rows: [{ id: 41, body: 'answered-by-host' }], limit: 10, offset: 0 },
+        'store.count': { count: 1 },
+        'settings.get': null,
+        'settings.has': { has: false },
+        'settings.set': { ok: true },
+        'assets.resolve': null,
+        'mail.send': { queued: true },
+      };
+      const result = answers[message.op] ?? null;
+      socket.write(`${JSON.stringify({ type: 'host.result', id: message.id, ok: true, result })}\n`);
+      continue;
+    }
     process.stdout.write(`${line}\n`);
     received += 1;
     if (received === requests.length) {

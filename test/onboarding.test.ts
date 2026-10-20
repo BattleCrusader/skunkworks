@@ -11,8 +11,9 @@
  * reaches it. That is the week-one failure QA measured (`S1-qa.md` §3.7); this
  * test asserts it deliberately, then asserts the reload fixes it.
  *
- * Real nginx:1.31-alpine, the generator CLI, and `nginx -s reload`. Two harness
- * substitutions only (TLS off, upstream pointed at the host app).
+ * Real nginx:1.31-alpine, the generator CLI, and `nginx -s reload`. The harness
+ * substitutions (TLS and every `ssl_*` directive off, upstream pointed at the host app)
+ * live in `test/helpers/nginx.ts` — one place, asserted there.
  */
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -30,6 +31,7 @@ import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call } from './helpers/http.ts';
 import { removeContainer, trackContainer } from './helpers/docker.ts';
+import { DEFAULT_SERVER, hostGatewayIPv4, nginxConf, prepareAppConf } from './helpers/nginx.ts';
 
 const SKIP = process.env.SKW_SKIP_DOCKER === '1';
 
@@ -48,21 +50,6 @@ function freePort(): Promise<number> {
 
 function dockerAvailable(): boolean {
   return spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], { encoding: 'utf8' }).status === 0;
-}
-
-function hostGatewayIPv4(): string {
-  const r = spawnSync(
-    'docker',
-    [
-      'run', '--rm', '--add-host', 'host.docker.internal:host-gateway',
-      '--entrypoint', 'sh', 'nginx:1.31-alpine',
-      '-c', "grep host.docker.internal /etc/hosts | awk '{print $1}' | grep '\\.' | head -1",
-    ],
-    { encoding: 'utf8' },
-  );
-  const ip = r.stdout.trim();
-  assert.match(ip, /^\d{1,3}(\.\d{1,3}){3}$/, `could not read the host gateway IPv4: ${r.stdout}${r.stderr}`);
-  return ip;
 }
 
 let fixture: Fixture;
@@ -100,28 +87,12 @@ before(async () => {
     .replaceAll('__SKW_EDGE_TOKEN__', EDGE_TOKEN);
   writeFileSync(join(snippets, 'skunk-proxy.conf'), rendered);
   writeFileSync(join(snippets, 'skunk-csp.conf'), readFileSync(join(REPO, 'snippets', 'skunk-csp.conf')));
-  writeFileSync(join(conf, '00-default.conf'), 'server { listen 80 default_server; server_name _; location / { return 404; } }\n');
+  writeFileSync(join(conf, '00-default.conf'), DEFAULT_SERVER);
 
   // Step 2 as an operator runs it: the generator CLI against the committed rows.
   generateConf(gateway);
 
-  writeFileSync(
-    join(tmp, 'nginx.conf'),
-    [
-      'worker_processes 1;',
-      'error_log /dev/stderr warn;',
-      'pid /tmp/nginx.pid;',
-      'events { worker_connections 64; }',
-      'http {',
-      '  include /etc/nginx/mime.types;',
-      '  default_type application/octet-stream;',
-      '  client_max_body_size 16m;',
-      '  access_log off;',
-      '  include /etc/nginx/conf.d/*.conf;',
-      '}',
-      '',
-    ].join('\n'),
-  );
+  writeFileSync(join(tmp, 'nginx.conf'), nginxConf());
 
   edgePort = await freePort();
   container = trackContainer(`skw-onboarding-${process.pid}`);
@@ -167,10 +138,12 @@ function generateConf(gateway: string): void {
     { cwd: REPO, encoding: 'utf8', env: { ...process.env, ...fixture.env } },
   );
   assert.equal(gen.status, 0, `nginx_gen failed: ${gen.stderr}`);
-  const text = readFileSync(confPath, 'utf8')
-    .replace(/listen 443 ssl;/g, '')
-    .replace(/proxy_pass http:\/\/app:3000;/g, `proxy_pass http://${gateway}:${appPort};`);
-  writeFileSync(confPath, text);
+  const generated = readFileSync(confPath, 'utf8');
+  const edge = prepareAppConf(generated, { gateway, appPort });
+  // The freshly onboarded host must get a real block: a helper that stripped too much
+  // would leave nothing to reload for, and the negative control below would pass vacuously.
+  assert.ok(edge.tlsListens >= 1 && edge.upstreams >= 1, `nginx_gen emitted ${edge.tlsListens} TLS listeners / ${edge.upstreams} upstreams`);
+  writeFileSync(confPath, edge.text);
 }
 
 function nginx(args: string[]): { status: number; out: string } {

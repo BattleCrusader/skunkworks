@@ -246,7 +246,10 @@ else
     exit 19
   fi
   say "runtime: docker compose run app (no dist/ in this tree)"
-  docker compose run --rm --no-deps -T app node dist/app/cli/skwctl.js admin bootstrap \
+  # `--entrypoint node`: the image's ENTRYPOINT is `node dist/app/main.js`, so a bare
+  # `run app node dist/app/cli/skwctl.js` appends the CLI to the **server's** argv and boots
+  # the app instead of running skwctl (measured: the command hung until the 120 s timeout).
+  docker compose run --rm --no-deps -T --entrypoint node app dist/app/cli/skwctl.js admin bootstrap \
     --generate-password --enrolment-out /srv/data/first-login.txt
   BOOTSTRAP_STATUS=$?
 fi
@@ -264,6 +267,24 @@ case "$BOOTSTRAP_STATUS" in
     exit 16
     ;;
 esac
+
+# --- 7b. the default TLS pair (S4d) ------------------------------------------
+# Every `listen 443 ssl` block names a certificate. ACME issues per host into
+# certs/<host>.crt; before the first issuance, and for the admin/demos vhosts, nginx needs
+# a pair that exists. Self-signed, 10 years, and never served for a host that has its own
+# certificate in the block (a tenant with cert_state=issued points at its own pair).
+if [ ! -f "$ROOT/certs/default.crt" ] || [ ! -f "$ROOT/certs/default.key" ]; then
+  mkdir -p "$ROOT/certs"
+  if ! command -v openssl >/dev/null 2>&1; then
+    fail "openssl is required to write certs/default.crt before nginx starts"
+    exit 17
+  fi
+  openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 \
+    -subj "/CN=skunkworks-default" \
+    -keyout "$ROOT/certs/default.key" -out "$ROOT/certs/default.crt" 2>/dev/null
+  chmod 600 "$ROOT/certs/default.key"
+  say "certs: self-signed default pair written to certs/ (a pending host still answers on 80)"
+fi
 
 # --- 8. compose up (exit 17) ------------------------------------------------
 if [ "$COMPOSE" -eq 1 ]; then

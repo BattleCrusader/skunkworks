@@ -65,11 +65,29 @@ export interface CmsOptions {
   tenant: TenantSpec;
   /** A directory this writer may use for the one temporary file (`VACUUM INTO`). */
   tmpDir: string;
+  /**
+   * The installed packages, each already hashed and compared with its
+   * `cms_plugin_installed.root_hash` by the caller (S4d). The bundle ships them under
+   * `data/plugins/<id>/`, which is exactly where compose mounts `/srv/plugins:ro`.
+   */
+  pluginPackages?: PluginPackage[];
   adminHost?: string;
   demosHost?: string;
   /** `{app_digest, runner_digest}`; read from the compose file when absent. */
   image?: { appDigest: string; runnerDigest: string };
   origin?: string;
+}
+
+/** One installed package, as the exporter received it. */
+export interface PluginPackage {
+  /** `cms_plugin_installed.id`, so a refusal can name the row and not only the plugin. */
+  row: number;
+  id: string;
+  version: string;
+  root_hash: string;
+  dir: string;
+  files: { path: string; bytes: number; sha256: string }[];
+  error?: string;
 }
 
 interface ProjectionTable {
@@ -337,6 +355,17 @@ export function planCms(options: CmsOptions): CmsPlan {
   // copy on the same response would be two policies where the SDS promises one.
   files.push({ path: 'snippets/skunk-csp.conf', bytes: cspConf() });
 
+  // --- 2b. the packages (S4d) ------------------------------------------------------
+  // `data/plugins/<id>/…` is the layout compose mounts read-only at `/srv/plugins`, so a
+  // bundle that is installed (or re-cut from an installed tree) is already the tree the
+  // runner loads. Every byte was hashed by the caller against the install row.
+  const pluginPackages = options.pluginPackages ?? [];
+  for (const pkg of pluginPackages) {
+    for (const file of pkg.files) {
+      files.push({ path: `data/plugins/${pkg.id}/${file.path}`, bytes: readFileSync(join(pkg.dir, file.path)) });
+    }
+  }
+
   // --- 3. the bytes ---------------------------------------------------------------
   // The bundle ships the whole library (it is the CMS: the client edits it), so every
   // non-gated row and every gated row travels. The public farm carries one relative
@@ -383,7 +412,13 @@ export function planCms(options: CmsOptions): CmsPlan {
     projection_sha: projection.projectionSha,
     source_counts: inside,
     files: entries,
-    plugins: [],
+    plugins: pluginPackages.map((pkg) => ({
+      id: pkg.id,
+      version: pkg.version,
+      root_hash: pkg.root_hash,
+      package: `data/plugins/${pkg.id}`,
+      files: pkg.files.length,
+    })),
     refusals: [],
     notes: [],
   };

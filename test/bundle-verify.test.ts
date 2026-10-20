@@ -15,7 +15,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -174,4 +174,52 @@ test('B5 — a site.db carrying render ROWS is refused; one carrying only the ta
   const clean = verify(empty.dir);
   assert.equal(clean.status, 0, clean.stderr);
   assert.match(clean.stdout, /2 file\(s\) verified, no render tree, no render rows/);
+});
+
+test('B6 — a cp of a live WAL database fails --verify; a VACUUM INTO snapshot of the same rows passes', () => {
+  // The live database: committed rows still in `site.db-wal`, because autocheckpoint is off.
+  // This is the shape a producer that "just copies site.db" ships.
+  const live = join(scratch, 'live-wal.db');
+  const db = new Database(live);
+  let copied: Buffer;
+  let snapshot: Buffer;
+  try {
+    db.pragma('journal_mode = WAL');
+    db.pragma('wal_autocheckpoint = 0');
+    db.exec('CREATE TABLE cms_page (id INTEGER PRIMARY KEY, path TEXT NOT NULL)');
+    const insert = db.prepare('INSERT INTO cms_page (path) VALUES (?)');
+    for (const path of ['/one', '/two', '/three']) insert.run(path);
+    copied = readFileSync(live);
+
+    const snapPath = join(scratch, 'snap-into.db');
+    db.prepare('VACUUM INTO ?').run(snapPath);
+    snapshot = readFileSync(snapPath);
+  } finally {
+    db.close();
+  }
+
+  const write = (name: string, bytes: Buffer): string => {
+    const dir = join(scratch, name);
+    mkdirSync(join(dir, 'data'), { recursive: true });
+    writeFileSync(join(dir, 'data', 'site.db'), bytes);
+    const manifest = {
+      version: 3,
+      files: [{ path: 'data/site.db', sha256: sha256(bytes) }],
+      source_counts: { cms_page: 3 },
+    };
+    writeFileSync(join(dir, 'BUNDLE.json'), JSON.stringify(manifest, null, 2));
+    return dir;
+  };
+
+  // The cp copy: hashes agree with the manifest a buggy producer wrote, but the rows are
+  // in the -wal it did not copy, so the producer's own count disagrees with the bytes.
+  const cp = verify(write('cp-built', copied));
+  assert.equal(cp.status, 12, `a cp-built bundle verified: ${cp.stdout}`);
+  assert.match(cp.stderr, /a copy of a live database is not a snapshot/);
+  assert.match(cp.stderr, /cms_page has -?\d+ row\(s\) but BUNDLE\.json source_counts says 3/);
+
+  // Positive control: the same rows, snapshotted the way the exporter does it.
+  const ok = verify(write('vacuum-built', snapshot));
+  assert.equal(ok.status, 0, `a VACUUM INTO snapshot was refused: ${ok.stderr}`);
+  assert.match(ok.stdout, /1 file\(s\) verified/);
 });

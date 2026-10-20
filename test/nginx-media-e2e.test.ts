@@ -16,11 +16,13 @@
  *       the current `?v=`.
  *   N4  a delete removes the link, the alias stops being a 301, and both URLs are 404.
  *
- * Harness substitutions, the same two the S1 edge gate makes and no others:
- *   `listen 443 ssl;`            -> removed        (TLS is not under test)
- *   `proxy_pass http://app:3000` -> the host app   (the app is not in a container here)
- * Both are asserted to have hit at least one line, so a generator change cannot make this test
- * silently stop testing the edge it claims to test.
+ * Harness substitutions, the same ones the S1 edge gate makes and no others (all in
+ * `test/helpers/nginx.ts`):
+ *   `listen … 443 …`              -> removed        (TLS is not under test)
+ *   every `ssl_*` directive       -> removed        (S4d's certs live outside the harness)
+ *   `proxy_pass http://app:3000`  -> the host app   (the app is not in a container here)
+ * All three are asserted to have hit, so a generator change cannot make this test silently
+ * stop testing the edge it claims to test.
  */
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
@@ -36,12 +38,14 @@ import sharp from 'sharp';
 import { uploadAsset, deleteAsset, renameAsset } from '../app/assets/library.ts';
 import { ensureVariants } from '../app/assets/renditions.ts';
 import { openAdminWrite } from '../app/db/classes.ts';
+import { cspPolicy } from '../app/render/csp.ts';
 import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, header, type Res } from './helpers/http.ts';
 import { removeContainer, trackContainer } from './helpers/docker.ts';
+import { DEFAULT_SERVER, hostGatewayIPv4, nginxConf, prepareAppConf } from './helpers/nginx.ts';
 
 const SKIP = process.env.SKW_SKIP_DOCKER === '1';
 const HOST = 'acme.test';
@@ -61,21 +65,6 @@ function freePort(): Promise<number> {
 
 function dockerAvailable(): boolean {
   return spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], { encoding: 'utf8' }).status === 0;
-}
-
-function hostGatewayIPv4(): string {
-  const r = spawnSync(
-    'docker',
-    [
-      'run', '--rm', '--add-host', 'host.docker.internal:host-gateway',
-      '--entrypoint', 'sh', 'nginx:1.31-alpine',
-      '-c', "grep host.docker.internal /etc/hosts | awk '{print $1}' | grep '\\.' | head -1",
-    ],
-    { encoding: 'utf8' },
-  );
-  const ip = r.stdout.trim();
-  assert.match(ip, /^\d{1,3}(\.\d{1,3}){3}$/, `could not read the host gateway IPv4: ${r.stdout}${r.stderr}`);
-  return ip;
 }
 
 let fixture: Fixture;
@@ -172,42 +161,25 @@ before(async () => {
   const snippet = readFileSync(join(REPO, 'snippets', 'skunk-proxy.conf'), 'utf8');
   writeFileSync(join(snippets, 'skunk-proxy.conf'), snippet.replaceAll('__SKW_EDGE_TOKEN__', EDGE_TOKEN));
   writeFileSync(join(snippets, 'skunk-csp.conf'), readFileSync(join(REPO, 'snippets', 'skunk-csp.conf')));
-  writeFileSync(join(conf, '00-default.conf'), 'server { listen 80 default_server; server_name _; location / { return 404; } }\n');
+  writeFileSync(join(conf, '00-default.conf'), DEFAULT_SERVER);
 
   const gateway = hostGatewayIPv4();
-  let generated = generateAppConf(readHosts(fixture.controlDb), {
+  const generated = generateAppConf(readHosts(fixture.controlDb), {
     adminHost: 'admin.skw.test',
     demosHost: 'demos.skw.test',
     boxRps: 192,
   });
-  const tls = generated.match(/listen 443 ssl;/g)?.length ?? 0;
-  const upstream = generated.match(/proxy_pass http:\/\/app:3000;/g)?.length ?? 0;
-  assert.ok(tls >= 1 && upstream >= 1, `generated conf has ${tls} tls listens and ${upstream} upstreams`);
-  generated = generated
-    .replace(/listen 443 ssl;/g, '')
-    .replace(/proxy_pass http:\/\/app:3000;/g, `proxy_pass http://${gateway}:${appPort};`);
-  // The media location must be the generated one, alias and all.
-  assert.match(generated, /location \/media\/ \{[\s\S]*?alias \/srv\/content\/public\/;[\s\S]*?try_files \$uri =404;/);
-  assert.match(generated, /include \/srv\/content\/edge\/\*\.inc;/);
-  writeFileSync(join(conf, '10-app.conf'), generated);
-
-  writeFileSync(
-    join(tmp, 'nginx.conf'),
-    [
-      'worker_processes 1;',
-      'error_log /dev/stderr warn;',
-      'pid /tmp/nginx.pid;',
-      'events { worker_connections 64; }',
-      'http {',
-      '  include /etc/nginx/mime.types;',
-      '  default_type application/octet-stream;',
-      '  client_max_body_size 16m;',
-      '  access_log off;',
-      '  include /etc/nginx/conf.d/*.conf;',
-      '}',
-      '',
-    ].join('\n'),
+  const edge = prepareAppConf(generated, { gateway, appPort });
+  assert.ok(
+    edge.tlsListens >= 1 && edge.sslDirectives >= 2 && edge.upstreams >= 1,
+    `generated conf has ${edge.tlsListens} TLS listens, ${edge.sslDirectives} ssl directives and ${edge.upstreams} upstreams`,
   );
+  // The media location must be the generated one, alias and all.
+  assert.match(edge.text, /location \/media\/ \{[\s\S]*?alias \/srv\/content\/public\/;[\s\S]*?try_files \$uri =404;/);
+  assert.match(edge.text, /include \/srv\/content\/edge\/\*\.inc;/);
+  writeFileSync(join(conf, '10-app.conf'), edge.text);
+
+  writeFileSync(join(tmp, 'nginx.conf'), nginxConf());
 
   edgePort = await freePort();
   container = trackContainer(`skw-nginx-media-${process.pid}`);
@@ -240,6 +212,26 @@ after(async () => {
   if (handle !== undefined && appAlive) await handle.close();
   if (tmp !== '') rmSync(tmp, { recursive: true, force: true });
   if (fixture !== undefined) fixture.cleanup();
+});
+
+// --- N5: the CSP on the wire --------------------------------------------------------------
+
+test('N5 — a /media/ response through live nginx carries the one CSP, asserted from the wire', async () => {
+  // S4d item E: S4c could only assert the header on the app's listener (C1) and that the
+  // vhost *includes* the snippet. This is the missing observation: a real nginx, the
+  // generated config, one asset fetched over HTTP, and the header read off the response —
+  // not from the file `snippets/skunk-csp.conf`.
+  const res = await get('/media/banner/home.jpg');
+  assert.equal(res.status, 200);
+  const onTheWire = header(res, 'content-security-policy');
+  assert.equal(typeof onTheWire, 'string', 'nginx served /media/ with no CSP header at all');
+  assert.equal(onTheWire, cspPolicy(), 'the wire header is not the policy app/render/csp.ts emits');
+  assert.match(String(onTheWire), /frame-src 'none'/);
+  // A rendition is served by the same location; a second fetch proves the header is not a
+  // one-off response.
+  const thumb = await get('/media/banner/home@thumb.webp');
+  assert.equal(thumb.status, 200);
+  assert.equal(header(thumb, 'content-security-policy'), cspPolicy(), 'the rendition lost the policy');
 });
 
 // --- N1: the no-Node proof ---------------------------------------------------------------

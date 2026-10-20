@@ -29,6 +29,7 @@ import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, header, postRaw } from './helpers/http.ts';
 import { removeContainer, trackContainer } from './helpers/docker.ts';
+import { DEFAULT_SERVER, hostGatewayIPv4, nginxConf, prepareAppConf } from './helpers/nginx.ts';
 
 const SKIP = process.env.SKW_SKIP_DOCKER === '1';
 
@@ -53,29 +54,6 @@ function logLines(): string[] {
 
 function dockerAvailable(): boolean {
   return spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], { encoding: 'utf8' }).status === 0;
-}
-
-/**
- * The host gateway's IPv4, read out of a container's /etc/hosts.
- *
- * `host.docker.internal` also resolves to an IPv6 ULA on Docker Desktop, and
- * nginx picks it, fails to connect and answers 502. Pinning the literal IPv4
- * keeps the harness deterministic; production uses the compose network name
- * `app:3000`, which has one address.
- */
-function hostGatewayIPv4(): string {
-  const r = spawnSync(
-    'docker',
-    [
-      'run', '--rm', '--add-host', 'host.docker.internal:host-gateway',
-      '--entrypoint', 'sh', 'nginx:1.31-alpine',
-      '-c', "grep host.docker.internal /etc/hosts | awk '{print $1}' | grep '\\.' | head -1",
-    ],
-    { encoding: 'utf8' },
-  );
-  const ip = r.stdout.trim();
-  assert.match(ip, /^\d{1,3}(\.\d{1,3}){3}$/, `could not read the host gateway IPv4: ${r.stdout}${r.stderr}`);
-  return ip;
 }
 
 let fixture: Fixture;
@@ -144,49 +122,30 @@ before(async () => {
   assert.ok(rendered.includes(`X-Skunkworks-Edge  "${EDGE_TOKEN}";`), 'the directive has no edge token');
   assert.ok(!rendered.includes('__SKW_EDGE_TOKEN__'), 'a placeholder survived rendering');
 
-  writeFileSync(
-    join(conf, '00-default.conf'),
-    'server { listen 80 default_server; server_name _; location / { return 404; } }\n',
-  );
+  writeFileSync(join(conf, '00-default.conf'), DEFAULT_SERVER);
   // E-17 needs nginx's own view of the peer address, not an assumption about it.
   writeFileSync(
     join(conf, '05-probe.conf'),
     'server { listen 80; server_name probe.test; location / { return 200 "$remote_addr"; } }\n',
   );
 
-  let generated = generateAppConf(readHosts(fixture.controlDb), {
+  const generated = generateAppConf(readHosts(fixture.controlDb), {
     adminHost: 'admin.skw.test',
     demosHost: 'demos.skw.test',
     boxRps: 192,
   });
-  const listens = generated.match(/listen 443 ssl;/g)?.length ?? 0;
-  const upstreams = generated.match(/proxy_pass http:\/\/app:3000;/g)?.length ?? 0;
-  assert.ok(listens >= 4 && upstreams >= 4, `generated conf shape: ${listens} listens, ${upstreams} upstreams`);
-  // TLS is not under test: both listen directives collapse to 80. The generator
-  // emits `listen 80; listen 443 ssl;` on one line (E-5), so removing the TLS half
-  // leaves exactly one listener.
-  generated = generated
-    .replace(/listen 443 ssl;/g, '')
-    .replace(/proxy_pass http:\/\/app:3000;/g, `proxy_pass http://${gateway}:${appPort};`);
-  writeFileSync(join(conf, '10-app.conf'), generated);
-
-  writeFileSync(
-    join(tmp, 'nginx.conf'),
-    [
-      'worker_processes 1;',
-      'error_log /dev/stderr warn;',
-      'pid /tmp/nginx.pid;',
-      'events { worker_connections 64; }',
-      'http {',
-      '  include /etc/nginx/mime.types;',
-      '  default_type application/octet-stream;',
-      '  client_max_body_size 16m;',
-      '  access_log off;',
-      '  include /etc/nginx/conf.d/*.conf;',
-      '}',
-      '',
-    ].join('\n'),
+  // TLS is not under test: the helper strips every 443 listener **and every ssl_*
+  // directive** (S4d added certificates; stripping only `listen` left nginx reading
+  // `/etc/nginx/certs`, which this harness does not mount). The counters still prove the
+  // generator emitted the shape this gate is about.
+  const edge = prepareAppConf(generated, { gateway, appPort });
+  assert.ok(
+    edge.tlsListens >= 4 && edge.upstreams >= 4 && edge.sslDirectives >= 8,
+    `generated conf shape: ${edge.tlsListens} TLS listens, ${edge.sslDirectives} ssl directives, ${edge.upstreams} upstreams`,
   );
+  writeFileSync(join(conf, '10-app.conf'), edge.text);
+
+  writeFileSync(join(tmp, 'nginx.conf'), nginxConf());
 
   edgePort = await freePort();
   container = trackContainer(`skw-nginx-e2e-${process.pid}`);
@@ -230,15 +189,14 @@ before(async () => {
     extraDirs.push(dir);
     const c = join(dir, 'conf.d');
     mkdirSync(c, { recursive: true });
-    writeFileSync(join(c, '00-default.conf'), 'server { listen 80 default_server; server_name _; location / { return 404; } }\n');
-    let text = generateAppConf(readHosts(fixture.controlDb), {
+    writeFileSync(join(c, '00-default.conf'), DEFAULT_SERVER);
+    const text = generateAppConf(readHosts(fixture.controlDb), {
       adminHost: 'admin.skw.test',
       demosHost: 'demos.skw.test',
       boxRps: 192,
       adminAllowlist: parseAdminAllowlist(allowlist.join(',')),
     });
-    text = text.replace(/listen 443 ssl;/g, '').replace(/proxy_pass http:\/\/app:3000;/g, `proxy_pass http://${gateway}:${appPort};`);
-    writeFileSync(join(c, '10-app.conf'), text);
+    writeFileSync(join(c, '10-app.conf'), prepareAppConf(text, { gateway, appPort }).text);
     const port = await freePort();
     const name_ = trackContainer(`skw-nginx-e2e-${name}-${process.pid}`);
     const run2 = spawnSync(
