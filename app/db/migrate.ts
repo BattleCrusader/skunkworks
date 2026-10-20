@@ -73,6 +73,7 @@ function describe(err: unknown): string {
 export function migrateControl(controlPath: string, schemaDir: string): StepReport {
   const ddl = join(schemaDir, 'control.sql');
   const amend2 = join(schemaDir, 'control-r2.sql');
+  const amend3 = join(schemaDir, 'control-r3.sql');
   const target = targetVersion(ddl);
   const rel = 'control.db';
 
@@ -95,7 +96,6 @@ export function migrateControl(controlPath: string, schemaDir: string): StepRepo
   let from = 0;
   try {
     db = new Database(controlPath);
-    db.pragma('legacy_alter_table = ON');
     from = userVersion(db);
     if (from === target) return { path: rel, from, to: target, action: 'skipped', ok: true };
     if (from > target) {
@@ -108,6 +108,10 @@ export function migrateControl(controlPath: string, schemaDir: string): StepRepo
     let at = from;
     if (at === 1) {
       applyDdl(db, amend2);
+      at = userVersion(db);
+    }
+    if (at === 2) {
+      applyDdl(db, amend3);
       at = userVersion(db);
     }
     if (at !== target) {
@@ -148,14 +152,6 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
   let from = 0;
   try {
     db = new Database(dbPath);
-    // schema/r3-amendments.sql rebuilds cms_download_code by DROP + RENAME while
-    // an older trigger still names it. SQLite >= 3.25 re-parses every trigger on
-    // ALTER TABLE ... RENAME and fails on that dangling reference; python's
-    // 3.43 driver tolerated it, better-sqlite3's SQLite does not. The frozen
-    // file cannot be edited, so the connection is put in the legacy rename mode
-    // the file was written for. Convergence on schema/site.sql is asserted in
-    // test/migrate.test.ts.
-    db.pragma('legacy_alter_table = ON');
     from = userVersion(db);
     if (from === target) return { ...base, from, to: target, action: 'skipped', ok: true };
     if (from > target) {

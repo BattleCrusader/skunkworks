@@ -1,7 +1,12 @@
 # nginx/templates/server.tmpl — the generator's template (§3). tools/nginx_gen.ts
 # emits this shape once per tenant; install.sh renders the placeholder block.
+#
+# `listen 80` is always present (§12.5: a host serves on 80 while its certificate
+# is pending) and `listen 443 ssl` is emitted only for a host whose
+# `domain.cert_state = 'issued'` — a block that listens on 443 without a
+# certificate fails `nginx -t` (E-5).
 server {
-    listen 443 ssl;
+    listen 80;{{TLS_LISTEN}}
     server_name {{SERVER_NAMES}};
 
     location / {

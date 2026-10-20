@@ -166,8 +166,14 @@ backup then needs the grant back, reopening the hole (register X9).
 1. Read the environment; refuse to start on any key matching `^SK_|^SKUNK_` (§4.3, C-19); refuse to
    start without `SKW_EDGE_TOKEN`, `SKW_SESSION_KEY`, `SKW_DOWNLOAD_TOKEN_KEY`, `SKW_IP_HASH_KEY`,
    `SKW_ADMIN_ORIGIN`, `SKW_BUILD_ID`.
-2. Assert `SKW_ARGON2_MAX_CONCURRENT=4` and `UV_THREADPOOL_SIZE=8` (C-6: 8 × 64 MiB peaks at 687 MB
-   inside a 1 GB container; 4 × 19 MiB is 76 MiB).
+> Amended by 02-errata.md E-9.
+
+2. Assert `SKW_ARGON2_MAX_CONCURRENT=4`. `UV_THREADPOOL_SIZE` is **set by the image** —
+   `Dockerfile.app` (`ENV UV_THREADPOOL_SIZE=8`), `docker-compose.yml` and `.env.example` — and the
+   process refuses to start unless the inherited value is `8`; absent counts as not 8. libuv sizes the
+   pool when the process starts, so a value exported after launch cannot resize it: this is a check
+   that the image did its job, and it must **fail** rather than pass when an operator supplies the
+   variable late. (C-6: 8 × 64 MiB peaks at 687 MB inside a 1 GB container; 4 × 19 MiB is 76 MiB.)
 3. Open `control.db`; if it cannot be opened **or cannot be migrated**, exit **15** naming the
    migration. Every request needs the tenant map, so a half-migrated control plane is a silent outage
    (C-10).
@@ -308,6 +314,14 @@ skunkworks/
     └── debate/    (history; not authoritative)
 ```
 
+> Amended by 02-errata.md E-10.
+
+§3 lists every path in the build, across all four slices; **§16's `Contains` list is the per-slice
+authority** for who creates a path in which slice. `Dockerfile.runner`, `runner/**` and
+`app/plugins/**` are **S4** (plugin install, enable, RPC). A builder creates neither a stub nor a
+placeholder for a path outside its slice's `Contains` list, and a boot log line that names a deferred
+step is the requirement, not a gap.
+
 ### 3.1 The five rules that keep the layout honest
 
 1. **One file per component** in `app/render/components/`, and its registration is generated from
@@ -416,6 +430,8 @@ uses `GLOB 'p_?*'` (measured — the same off-by-one that made `/` uninsertable)
 
 ### 4.3 Environment, error codes, and why both are files, not tables
 
+> Amended by 02-errata.md E-13, E-4.
+
 > Every environment variable begins `SKW_`; the table in §4.2 is the complete list; the process refuses to
 > start when any environment key matching `^SK_|^SKUNK_` exists, printing the offending key and its
 > replacement, and every error code matches `^SKW_E_(RT|DM|SEC|PLT|EXP|PL)_[A-Z0-9_]+$`.
@@ -463,24 +479,51 @@ rows), `SK_TENANT_HEADER`, `SKUNKWORKS_PUBLIC_PORT`/`ADMIN_PORT` (the app listen
 admin surface is a host, C-25).
 
 **Error-code taxonomy.** `^SKW_E_(RT|DM|SEC|PLT|EXP|PL)_[A-Z0-9_]+$`. The area is the domain that owns
-the decision, not the layer that reported it. A body is always JSON
-`{error: {code, message?, requestId, detail?}}` and never contains a stack, a path, a SQL fragment or
-a key.
+the decision, not the layer that reported it.
 
-`schema/error-codes.json` holds the 67 codes, their HTTP mapping and `Retry-After` values.
+**Every response the app emits** has a JSON taxonomy body — `{error:{code, message?, requestId,
+detail?}}` — and never a stack, a path, a SQL fragment or a key. Four classes of response are
+generated before or outside the app, and they are named here so that no gate asserts a body the app
+cannot produce: nginx's `default_server` 404 for a `Host` that maps to nothing; nginx's 413 when
+`client_max_body_size 16m` is exceeded; nginx's 400 for a request it cannot parse; and Node's 400 for
+an HTTP/1.1 request with no `Host`. Those carry the server's own body. They are the **only**
+exceptions, each is asserted as such (status and `Content-Type`), and any other response that is not a
+taxonomy body is a defect.
+
+`schema/error-codes.json` holds the **71** codes, their HTTP mapping and their `Retry-After` values.
 `validate_schema.py` asserts that every `SKW_E_*` string raised by `schema/*.sql` is a member and
 matches the shape — so a trigger cannot raise a code the app has no mapping for. Two codes are raised
 from inside the database today: `SKW_E_DM_ASSET_IN_USE` and `SKW_E_DM_COLUMN_IMMUTABLE`.
+
+**A response's code and its status are one decision.** `app/errors.ts` maps every code to exactly one
+status from `schema/error-codes.json`, and a framework-level failure is translated **by its own status
+class** into the four codes below — never into a code whose HTTP mapping disagrees with the status
+being sent. `SKW_E_PLT_TENANT_UNAVAILABLE` is raised by row 10 of §5.3 and nowhere else: it means "the
+tenant resolved and its database is unusable", and it is not a catch-all. An unknown thrown value is
+`500 SKW_E_PLT_INTERNAL` carrying `requestId` and no `detail`.
+
+| Code | HTTP | Raised when | Cacheable |
+|---|---|---|---|
+| `SKW_E_RT_PAGE_NOT_FOUND` | 404 | the tenant resolved, `/healthz`, `/readyz` and `/media/` are ruled out, and `cms_page` has no row for the path | no — `Cache-Control: no-store` |
+| `SKW_E_PLT_INTERNAL` | 500 | any unhandled error: a thrown non-`AppError`, a render failure with no taxonomy cause, a bug | no — `no-store` |
+| `SKW_E_PLT_REQUEST_INVALID` | 400 | the request is refused before a route runs: malformed JSON body, unparseable URL, a content type the route cannot accept | no — `no-store` |
+| `SKW_E_PLT_BODY_TOO_LARGE` | 413 | a request body over 16 MiB reached the app | no — `no-store` |
+
+**None of the four is cacheable**, and none adds an exception to §5.5: every response carrying a
+taxonomy body is `Cache-Control: no-store`, and `SKW_E_RT_PAGE_NOT_FOUND` is deliberately the least
+cacheable of them — a page published a second later must not be shadowed by a stored 404, and v1 has
+no CDN. The app's body limit is 16 MiB, the same number as `client_max_body_size 16m` in §12.3; it is
+not a new environment variable (§4.3's table stays at twenty-two names).
 
 **Rejected alternative:** a `cms_error_code` table. It would need a migration per code, could never be
 the compile-time constant the emitter needs, and would put a query on the error path.
 
 | Area | Codes (complete for v1) |
 |---|---|
-| `RT` | `SOURCE_UNKNOWN`, `SOURCE_UNINDEXED`, `SOURCE_BUDGET`, `SOURCE_TIMEOUT`, `LOOP_CONGESTED`, `TEMPLATE_UNKNOWN`, `BODY_FORBIDDEN`, `ROUNDTRIP_UNSTABLE`, `ASSET_MISSING` |
+| `RT` | `SOURCE_UNKNOWN`, `SOURCE_UNINDEXED`, `SOURCE_BUDGET`, `SOURCE_TIMEOUT`, `LOOP_CONGESTED`, `TEMPLATE_UNKNOWN`, `BODY_FORBIDDEN`, `ROUNDTRIP_UNSTABLE`, `ASSET_MISSING`, `PAGE_NOT_FOUND` |
 | `DM` | `SCHEMA_STALE`, `DDL_REJECTED`, `DDL_POSTCONDITION`, `FK_VIOLATION`, `KEY_IN_USE`, `BUSY`, `QUOTA`, `COLUMN_IMMUTABLE`, `ASSET_IN_USE`, `ASSET_UNSTAMPABLE` |
 | `SEC` | `CSRF`, `CODE_INVALID`, `RATE_LIMITED`, `TOKEN_INVALID`, `TOKEN_MISMATCH`, `USES_EXHAUSTED`, `WATERMARK_FAILED`, `AUDIT_SEAL`, `ROLE_DISABLED`, `UPLOAD_REJECTED` |
-| `PLT` | `EDGE_PROOF`, `TENANT_HEADER`, `TENANT_UNKNOWN`, `TENANT_UNAVAILABLE`, `CERT_PENDING`, `DB_BUSY`, `DISK_FULL` |
+| `PLT` | `EDGE_PROOF`, `TENANT_HEADER`, `TENANT_UNKNOWN`, `TENANT_UNAVAILABLE`, `CERT_PENDING`, `DB_BUSY`, `DISK_FULL`, `INTERNAL`, `REQUEST_INVALID`, `BODY_TOO_LARGE` |
 | `EXP` | `GATED_ASSETS`, `MEDIA_GRAPH_OPEN`, `PARAMETERISED`, `NOT_QUIESCENT`, `INSUFFICIENT_DISK`, `TENANT_NOT_FOUND` |
 | `PL` | `SCHEMA`, `NO_TABLE`, `NO_EXPORT_CLASS`, `NO_SETTING`, `SETTING_INVALID`, `ROW`, `QUERY`, `TOO_MANY`, `TOO_LARGE`, `CONTENT_TYPE`, `REJECTED`, `RATE`, `QUOTA`, `PLUGIN_ERROR`, `UNAVAILABLE`, `DOWNGRADE`, `DESTRUCTIVE_UPGRADE`, `ARCHIVE_FAILED`, `TESTS_STALE`, `SIGNATURE`, `REVOKED`, `BROKEN`, `EXPORT_REFUSE`, `EXPORT_FORWARD_NO_TARGET`, `EXPORT_SNAPSHOT` |
 
@@ -536,18 +579,27 @@ hole above. Register X5 records that one union had to be authoritative; this is 
 
 Four files, two chains, and both chains are *proved* against the target DDL every run (check 20):
 
+> Amended by 02-errata.md E-3, E-14, E-6.
+
 ```
-v1 site.db ──r2-amendments.sql──► v2 ──r3-amendments.sql──► v3  ==  schema/site.sql
-v1 control.db ──control-r2.sql─────────────────────────────► v2  ==  schema/control.sql
+v1 site.db   ──r2-amendments.sql──► v2 ──r3-amendments.sql──► v3  ==  schema/site.sql
+v1 control.db ──control-r2.sql──► v2 ──control-r3.sql──► v3  ==  schema/control.sql
 ```
 
-Check 20 compares the table set, the `(name, type, notnull)` set per table and the trigger set, on
-both planes, and fails on any difference. Column *order* is not compared, deliberately: the migration
-appends a column that the fresh DDL declares in the middle (`cms_page_revision.rev`), which SQLite
-allows and no query can observe. Defaults are not compared either, which is why
-`cms_watermark_render.expires_at` carries an epoch default in the migration only — it exists because
-SQLite demands a non-NULL default on `ALTER ADD NOT NULL`, and a legacy render is due for deletion the
-moment it is created.
+Check 20 compares, on both planes and in both directions: the table set; `PRAGMA table_info` per table
+as `(name, type, notnull)`; the `sqlite_master.sql` text of every table, which is where `CHECK`
+constraints live; the trigger set; and the `sqlite_master.sql` text of every trigger — normalising only
+identifier quoting (`"x"` and `x` are the same identifier) and runs of whitespace. Column *order* and
+defaults are still not compared, for the two reasons below. A name-set comparison is **not** this
+check: a table that lost a `CHECK` passes `(type, name)`, and a trigger body that lost a column passes
+a trigger-name comparison. `test/migrate.test.ts` uses the same comparison against
+`schema/site.sql` and reports the differing object by name.
+
+Column *order* is not compared, deliberately: the migration appends a column that the fresh DDL
+declares in the middle (`cms_page_revision.rev`), which SQLite allows and no query can observe.
+Defaults are not compared either, which is why `cms_watermark_render.expires_at` carries an epoch
+default in the migration only — it exists because SQLite demands a non-NULL default on
+`ALTER ADD NOT NULL`, and a legacy render is due for deletion the moment it is created.
 
 `r3` has two preconditions that refuse rather than rewrite:
 
@@ -565,13 +617,26 @@ data-loss incident look like a successful upgrade, and `make test` would still b
 
 The four rebuilds (`cms_page`, `cms_download_code`, `cms_download_event`, `cms_table_registry`) all
 follow the 12-step procedure: `foreign_keys=OFF` **outside** the transaction, `BEGIN IMMEDIATE`,
-`CREATE …_r3`, `INSERT … SELECT` with an explicit column list, `DROP`, `RENAME`, recreate every index,
-restore `sqlite_sequence` from a temp copy, `COMMIT`, pragma back on. Rebuilding
-`cms_download_event` copies the event table once; it is append-only, so the copy is sequential, and it
-exists to remove the `DEFAULT 0` on `bytes_declared` (a default that would let an INSERT write a byte
-count nobody observed).
+`CREATE …_r3`, `INSERT … SELECT` with an explicit column list, **`DROP TRIGGER` for every trigger whose
+body or `ON` clause names the table being rebuilt**, `DROP TABLE`, `RENAME`, recreate every index,
+restore `sqlite_sequence` from a temp copy, `COMMIT`, `foreign_keys` back on; the triggers dropped in the
+rebuild are recreated verbatim, with their `cms_trigger_registry` rows, later in the same transaction.
+The trigger-drop step is not optional: SQLite ≥ 3.25 re-parses every trigger when a table is renamed,
+so a trigger that names the dropped table aborts the rename. `r3`'s two such triggers are
+`trg_cms_asset_delete_guard` and `trg_cms_download_code_hash_immutable`, and both are dropped before
+`DROP TABLE cms_download_code` (A1) and recreated in A9.
+
+**`PRAGMA legacy_alter_table` is set by nobody** — not by `app/db/migrate.ts`, not by
+`scripts/model/verify_claims.py`, not by an operator, not by `install.sh`. With the trigger order above
+the chain applies on a modern SQLite with the pragma at its default, and convergence (check 20, §4.5)
+is what proves the outcome. A migration that needs the pragma to apply is a migration with the defect
+above, not a migration with a workaround. Rebuilding `cms_download_event` copies the event table once;
+it is append-only, so the copy is sequential, and it exists to remove the `DEFAULT 0` on
+`bytes_declared` (a default that would let an INSERT write a byte count nobody observed).
 
 ### 4.6 What is generated and what is frozen
+
+> Amended by 02-errata.md E-3.
 
 | File | Generated by | Rule |
 |---|---|---|
@@ -579,7 +644,7 @@ count nobody observed).
 | `docs/*/diagrams/{r1-data-model,er-data-model}.puml` + `.png` | same script | never edited by hand |
 | `schema/history/v1-*.sql` | frozen at commit `cc1a5b4` | **never** regenerated; editing it invalidates check 20 |
 | `schema/r2-amendments.sql` | hand-written history | frozen once v3 shipped |
-| `schema/r3-amendments.sql`, `schema/control-r2.sql` | hand-written | edited only with a check that proves the change |
+| `schema/r3-amendments.sql`, `schema/control-r2.sql`, `schema/control-r3.sql` | hand-written | edited only with a check that proves the change |
 | `schema/export-projection.json`, `error-codes.json`, `component-registry.json` | hand-written | a table or code added without an entry fails `make test` |
 
 ---
@@ -617,6 +682,8 @@ that 400s it converts a correct configuration into a total outage — 100 % of p
 `snippets/skunk-proxy.conf`, included inside **every** `location` that contains `proxy_pass` — a CI
 check asserts `count(location-with-proxy_pass) == count(skunk-proxy include)`:
 
+> Amended by 02-errata.md E-11.
+
 ```nginx
 proxy_http_version 1.1;
 proxy_set_header Host               $host;
@@ -626,6 +693,7 @@ proxy_set_header X-Forwarded-Proto  $scheme;
 proxy_set_header X-Forwarded-Host   $host;
 proxy_set_header X-Skunkworks-Edge  "<SKW_EDGE_TOKEN rendered at install>";
 proxy_set_header X-Skunkworks-Tenant "";          # fail closed: a client claim never survives
+proxy_set_header X-Forwarded-Prefix  "";          # fail closed: a client prefix never survives
 proxy_ignore_headers X-Accel-Redirect;            # on any location proxying to a non-app upstream
 proxy_connect_timeout 2s;
 proxy_send_timeout    20s;
@@ -633,73 +701,163 @@ proxy_read_timeout    20s;
 proxy_next_upstream   off;
 ```
 
-Path-prefix locations override exactly two lines after the include:
-`proxy_set_header X-Skunkworks-Tenant $demo_key;` and
-`proxy_set_header X-Forwarded-Prefix "/demo/$demo_key";`.
+The path-prefix location still overrides exactly two lines after the include
+(`X-Skunkworks-Tenant $demo_key`, `X-Forwarded-Prefix "/demo/$demo_key"`), so those two overrides are
+the only way either header acquires a value.
 
 The `default_server` answers 404 from `location / { return 404; }` — **not** from server scope, which
 was measured to swallow the health location and make the edge `(unhealthy)`.
 
+> Amended by 02-errata.md E-1.
+
 ### 5.3 Resolution algorithm, in order
 
-`peer` = `req.socket.remoteAddress`; `hdr` = `X-Skunkworks-Tenant`; `edge` = `X-Skunkworks-Edge`.
+`peer` = `req.socket.remoteAddress`; `hdr` = `X-Skunkworks-Tenant`; `edge` = `X-Skunkworks-Edge`;
+`prefix` = `X-Forwarded-Prefix`. **`hdr present`** means the header exists on the request at all,
+including with an empty value; **`hdr non-empty`** means it exists and its value is not `""`.
+**`listener`** is `'admin'` when the normalised `Host` equals the host component of
+`SKW_ADMIN_ORIGIN`, and `'public'` otherwise; the path plays no part in it (E-2).
 
-| Step | Condition | Result |
+The rows are executed once, in this order, first match wins, and no row is evaluated after a row has
+produced a response. Every row is reachable: row 1 answers every admin-listener request that carries
+the tenant header **at all**, so rows 3–6 all run with `listener = 'public'`, and rows 7 and 8 split
+the remaining header-absent case exhaustively.
+
+| # | Condition | Outcome |
 |---|---|---|
-| 1 | `peer ∉ SKW_EDGE_TRUSTED_CIDRS` **and** any `X-Skunkworks-*` header present | `421 SKW_E_PLT_EDGE_PROOF` |
-| 2 | `hdr` non-empty **and** `edge ≠ SKW_EDGE_TOKEN` | `421 SKW_E_PLT_EDGE_PROOF` |
-| 3 | `hdr` non-empty **and** (`hdr` fails `^[a-z0-9][a-z0-9-]{0,62}$` **or** contains `,`) | `400 SKW_E_PLT_TENANT_HEADER` |
-| 4 | `hdr` non-empty **and** `X-Forwarded-Prefix` present **and** prefix key ≠ `hdr` | `400 SKW_E_PLT_TENANT_HEADER` |
-| 5 | `hdr` non-empty **and** valid | tenant = `hdr`; `via='header'` |
-| 6 | `hdr` absent or `""` **and** listener is public | tenant = `domain.host` = normalise(`Host`); `via='host'` |
-| 7 | `hdr` absent or `""` **and** listener is admin | tenant = `session.tenant_id`; `via='session'` |
-| 8 | `hdr` present at all **and** listener is admin | `421 SKW_E_PLT_EDGE_PROOF` (the admin never takes a tenant from a header) |
-| 9 | tenant resolved but `tenant.status ∈ {'suspended','archived'}` | `404 SKW_E_PLT_TENANT_UNKNOWN` |
-| 10 | tenant resolved but `site.db` cannot be opened / `user_version` stale / `SQLITE_BUSY` past timeout | `503 SKW_E_PLT_TENANT_UNAVAILABLE` or `503 SKW_E_DM_SCHEMA_STALE` |
+| 1 | `listener = 'admin'` **and** `hdr present` | `421 SKW_E_PLT_EDGE_PROOF` — the admin never takes a tenant from a header, empty or not (§9.2: "present at all") |
+| 2 | `peer ∉ SKW_EDGE_TRUSTED_CIDRS` **and** any `X-Skunkworks-*` header present (including an empty `X-Skunkworks-Tenant`) | `421 SKW_E_PLT_EDGE_PROOF` |
+| 3 | `hdr non-empty` **and** `edge ≠ SKW_EDGE_TOKEN` | `421 SKW_E_PLT_EDGE_PROOF` |
+| 4 | `hdr non-empty` **and** (`hdr` fails `^[a-z0-9][a-z0-9-]{0,62}$` **or** contains `,`) | `400 SKW_E_PLT_TENANT_HEADER` |
+| 5 | `hdr non-empty` **and** `prefix` present **and** prefix key ≠ `hdr` | `400 SKW_E_PLT_TENANT_HEADER` |
+| 6 | `hdr non-empty` (valid, public listener) | tenant = `hdr`; `via='header'`; `tenant.prefix` = `prefix` when present, else `""` |
+| 7 | `listener = 'admin'` (so `hdr` is absent or `""`) | tenant = `session.tenant_id`; `via='session'`; no session → `404 SKW_E_PLT_TENANT_UNKNOWN` |
+| 8 | `listener = 'public'` (so `hdr` is absent or `""`) | tenant = `domain.host` = `normalise(Host)`; `via='host'`; `tenant.prefix` = `""`; no row → `404 SKW_E_PLT_TENANT_UNKNOWN` |
+| 9 | tenant resolved **and** `tenant.status ∈ {'suspended','archived'}` | `404 SKW_E_PLT_TENANT_UNKNOWN` |
+| 10 | tenant resolved **and** `site.db` unusable | one code per cause, see below |
 
 `normalise(Host)` = lowercase → strip `:port` → strip trailing dot → `domainToASCII` → reject anything
-not `[a-z0-9.-]`. No default tenant at any step. `Host` is never parsed twice: the resolver is the
+not `[a-z0-9.-]`. No default tenant at any row. `Host` is never parsed twice: the resolver is the
 only reader.
+
+**Why row 1 is first, and where it differs from §4.1.** §4.1's rows 7 and 8 disagree for the empty
+header: row 7 sends it to the session, row 8 refuses it. Row 1 resolves the disagreement in favour
+of §9.2's frozen "present at all", because the empty case is **unreachable through the edge** — nginx
+does not forward a header whose `proxy_set_header` value is `""`, so the admin vhost presents no
+tenant header at all and the app answers row 7. Row 1 therefore changes behaviour only for a direct
+connection or a future proxy that forwards empty headers, where failing closed is the correct
+answer. Row 1 ahead of row 2 is not a change of outcome: an untrusted peer with a header on the admin
+listener is `421 SKW_E_PLT_EDGE_PROOF` either way.
+
+After row 10 the request is routed. `/healthz` and `/readyz` are answered before any page lookup and
+on every listener (§9.5); they are not resolution outcomes and carry no tenant.
 
 **One status code per failure, and no code is reused.**
 
 | Code | HTTP | Raised when |
 |---|---|---|
-| `SKW_E_PLT_EDGE_PROOF` | 421 | steps 1, 2, 8 |
-| `SKW_E_PLT_TENANT_HEADER` | 400 | steps 3, 4 |
-| `SKW_E_PLT_TENANT_UNKNOWN` | 404 | step 6/7 miss, step 9 |
-| `SKW_E_PLT_TENANT_UNAVAILABLE` | 503 | tenant resolved, database unusable for a reason other than schema |
-| `SKW_E_DM_SCHEMA_STALE` | 503 + `Retry-After: 5` | `user_version < tenant.db_version` |
-| `SKW_E_DM_BUSY` | 503 + `Retry-After: 1` | `SQLITE_BUSY` after `busy_timeout` |
+| `SKW_E_PLT_EDGE_PROOF` | 421 | rows 1, 2, 3 |
+| `SKW_E_PLT_TENANT_HEADER` | 400 | rows 4, 5 |
+| `SKW_E_PLT_TENANT_UNKNOWN` | 404 | row 7 with no session, row 8 with no `domain` row, row 9 |
+| `SKW_E_DM_SCHEMA_STALE` | 503 + `Retry-After: 5` | row 10, `user_version < tenant.db_version` |
+| `SKW_E_DM_BUSY` | 503 + `Retry-After: 1` | row 10, `SQLITE_BUSY` after `busy_timeout` |
+| `SKW_E_PLT_TENANT_UNAVAILABLE` | 503 + `Retry-After: 5` | row 10, any other reason the database is unusable |
 | `SKW_E_DM_QUOTA` | 507 | per-tenant byte quota exceeded |
+
+**Every `Retry-After` in the taxonomy is asserted on the wire.** `SKW_E_DM_SCHEMA_STALE` carries
+`Retry-After: 5`, `SKW_E_DM_BUSY` carries `Retry-After: 1` and `SKW_E_PLT_TENANT_UNAVAILABLE` carries
+`Retry-After: 5`; **no other code carries the header**. The value is a delta-seconds integer, never an
+HTTP-date. The gate asserts `response.headers['retry-after']` on the HTTP response for each of the
+three, and asserts the header's **absence** for every other code that appears in the S1 suites.
+Asserting a field on the error object is not the gate: the header is the contract, and it is the only
+part a proxy or a client acts on.
 
 `docs/sds/diagrams/request-lifecycle.png` is this table drawn as a sequence.
 
+> Amended by 02-errata.md E-3, E-12.
+
 ### 5.4 The tenant map cache and the cold path
 
-The map (`host → tenant_id`) is read from `control.db` once per process and cached with a version
-stamp (`MAX(control_migration.id) || tenant count`), so a tenant created in another process is picked
-up on the next request without a restart. A cache miss on a *host* is a 404, never a lookup that
-consults a second source: a `Host` that maps to nothing is `SKW_E_PLT_TENANT_UNKNOWN`, and no
-fallback tenant exists.
+`control.db` carries one revision row, and six triggers move it — `AFTER INSERT`, `AFTER UPDATE` and
+`AFTER DELETE` on `tenant`, and the same three on `domain`:
+
+```sql
+CREATE TABLE control_revision (
+  id         INTEGER PRIMARY KEY CHECK(id = 1),
+  rev        INTEGER NOT NULL CHECK(rev >= 1),
+  changed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+INSERT INTO control_revision(id, rev) VALUES (1, 1);
+```
+
+Each trigger is `UPDATE control_revision SET rev = rev + 1, changed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1;`
+in the same transaction as the write that fired it. **Triggers and not the application**, because the
+write that suspends a tenant may come from `sqlite3`, from `migrate`, or from the next image's admin
+tool, and the contract has to hold for all of them — B2's measured case was a second connection.
+
+`TenantMap.stamp()` is `rev || ':' || PRAGMA user_version` read from the control handle it already
+holds: one `SEARCH control_revision USING INTEGER PRIMARY KEY` plus one pragma read. The old
+`MAX(control_migration.id) || count(tenant)` stamp is **deleted**, because it cannot see an UPDATE
+(and a status flip is an UPDATE) and it cannot see a `domain` row deleted while the tenant count is
+unchanged. The migration runner bumps `rev` in the same transaction that writes `control_migration`,
+so the migration ledger stays covered without a second term.
+
+The map carries every column a request decision reads — `tenant.id`, `key`, `mode`, `status`,
+`db_version`, and the host list — so any bump is a full rebuild of one immutable generation. There is
+no partial invalidation and no per-table invalidation to forget.
 
 **Cold cache cost.** One `control.db` query (indexed on `domain.host`) plus one open of that tenant's
 `site.db`. Measured on this box as part of `make test`: 4.05 ms per tenant in the migration fan-out and
 185 KB per pooled handle. A 64-handle pool therefore costs ≈ 11.8 MB, which is why `SKW_DB_POOL_MAX`
 defaults to 64 rather than to "all tenants".
 
+**What "picked up on the next request" covers, and what it does not.** A control write is visible to
+the **app** on the next request (§5.4a). The **edge** is a generated artefact: `tools/nginx_gen.ts`
+writes `nginx/conf.d/10-app.conf` from `control.db`, and nginx does not re-read it until
+`nginx -s reload`. Onboarding is one ordered sequence and no step is optional:
+
+1. the `tenant` and `domain` rows commit (which bumps `rev`, E-3);
+2. `tools/nginx_gen.ts --write` regenerates `10-app.conf` from the committed rows;
+3. `nginx -t`, then `nginx -s reload`;
+4. the certificate for the new host is issued (§12.5); until `domain.cert_state = 'issued'` the
+   generator emits that host's block with `listen 80` **only**, so `nginx -t` never depends on a
+   certificate that does not exist yet, and the host answers on 80 with `certificate: pending`.
+
+Until step 3 the edge 404s a host the app would serve, and no cache refresh can close that gap — the
+app is not the component that decides whether a `Host` reaches it. §16 S1 gates steps 1–3 end to end
+through the real edge, in that order, including the negative: before the reload the new host 404s at
+the edge, so the contract is never overclaimed again.
+
 **Rename.** `control.db.tenant.key` is the tenant's identity and appears in the download cookie name
 and in `audit_seal.tenant_key`. Renaming a key is not supported in v1: it would invalidate every
 issued `__Host-sk-dl-<key>` cookie and orphan the seal. `display_name` is the renameable field. A
 *host* is renameable (delete the `domain` row, insert another) and does not touch tenant identity.
 
+### 5.4a What happens when the counter moves mid-request
+
+The stamp is read **exactly once per request**, before the map is consulted, and the generation it
+selects is immutable for the rest of that request: the resolver never re-reads the stamp, never reads
+a second generation, and never mixes a tenant row from one generation with a host list from another.
+A write that commits while a request is in flight is therefore observed by the **next** request and
+never by the one in flight; a request may serve from a generation one revision stale, and that window
+is bounded by one request rather than by a restart. After a bump, concurrent requests perform **one**
+rebuild and share it (single-flight); the rest wait on that rebuild instead of each running their own.
+
 ### 5.5 Path-prefix demos, and the case-folding constraint
+
+> Amended by 02-errata.md E-11.
 
 > nginx strips the demo prefix (`rewrite ^/demo/<key>/(.*)$ /$1 break;`) and sets
 > `X-Forwarded-Prefix: /demo/<key>`; the app never rewrites or strips an inbound path, and every URL it emits
 > is produced by `site.url()` or `site.asset()`, which prepend `tenant.prefix` (taken from
 > `X-Forwarded-Prefix` and from nowhere else) exactly once; a request under `/demo/` whose key is well-formed
 > but absent from `control.db` is `404 SKW_E_PLT_TENANT_UNKNOWN`.
+>
+> `tenant.prefix` is `/demo/<key>` when and only when the request resolved `via='header'` at a path-prefix
+> location; on `via='host'` and `via='session'` it is `""`. An `X-Forwarded-Prefix` that arrives on a
+> host-routed request is **ignored** — not honoured and not refused: honouring it puts
+> `/demo/<attacker>/…` on every link the site emits, refusing it would 400 real traffic behind a second
+> proxy that sets the header for its own reasons, and ignoring it can produce neither.
 
 Two failures this prevents, both measured: a double strip is a 404 on a prospect's screen
 (`/demo/acme/whoami` → app sees `/whoami`, and if the app strips again it 404s), and a double prefix is
@@ -714,9 +872,12 @@ case through unchanged, or the `NOCASE` unique index must be dropped first — o
 
 ### 5.6 What the demo host may not reach
 
+> Amended by 02-errata.md E-2.
+>
 > A host that serves tenant-authored HTML never serves the admin listener: demos live at
-> `demos.<our-domain>/demo/<key>/`, admin at `admin.<our-domain>`, and the admin listener returns
-> `421 SKW_E_PLT_EDGE_PROOF` for any request whose `Host` maps to a tenant with `mode='demo'`.
+> `demos.<our-domain>/demo/<key>/`, admin at `admin.<our-domain>`, and the admin surface is mounted on
+> no other Host — so a demo page cannot reach it at all, and neither can a production tenant's page.
+> `mode='demo'` no longer participates in that decision (§9.1 rule 4).
 
 Without this, a demo page is tenant-authored HTML with JavaScript in it — that is the product — on the
 same origin as the admin. It can `fetch('/admin/pages')` with the operator's `__Host-sk-sess` cookie
@@ -1192,12 +1353,46 @@ tenant|form|ts, 30 min, minimum fill 1.5 s), honeypot `_hp` → 202 with the suc
 
 ## 9. Admin surface
 
+> Amended by 02-errata.md E-2.
+
 ### 9.1 One listener, one origin, one hostname
 
-The app listens on **one** port and publishes none (`expose` only). The admin surface is a **hostname**,
-`admin.<domain>`, behind nginx. D9's "separate origin/port with an IP allowlist" is amended because a port
-is not an origin boundary — cookies ignore ports — and because an IP allowlist cannot be maintained for
-dynamic addresses, CGNAT and phones.
+The app listens on **one** port and publishes none (`expose` only). The admin surface is a
+**hostname**, and that hostname is the **only** thing that makes a request an admin request:
+
+    listener = 'admin'  ⟺  normalise(Host) == normalise(host(SKW_ADMIN_ORIGIN))
+
+`host(SKW_ADMIN_ORIGIN)` is the host component of the required `SKW_ADMIN_ORIGIN` value, put through
+the same `normalise()` as a tenant `Host` (§5.3). No new environment variable is added: the
+twenty-two-name table in §4.3 is unchanged, and a missing or unnormalisable `SKW_ADMIN_ORIGIN` is a
+boot refusal (step 1 of §2.3 already requires the variable).
+
+The **path never selects the listener**. `/admin`, `/admin/…`, `/adminish` and `/demo/<key>/admin/…`
+are ordinary paths on a public listener.
+
+Four consequences, each a rule and not an implementation note:
+
+1. **The admin surface is mounted only when `listener = 'admin'`.** On a public listener no admin
+   route, no session cookie parse and no admin response exists. `/admin/...` on any Host other than
+   the admin host resolves like any other path — tenant from the Host (row 8 of §5.3), then
+   `cms_page`, then `404 SKW_E_RT_PAGE_NOT_FOUND` (§4.3) — **byte-identical to the body for any path
+   that has no page**, with no `Set-Cookie`, no `Location` and no 421. There is no oracle that says
+   `/admin` is special on a tenant host.
+2. **The admin host serves the admin surface and nothing else.** Any path on the admin host outside
+   `/admin…` is `404 SKW_E_PLT_TENANT_UNKNOWN` — the admin host maps to no tenant (rule 3), so "there
+   is no tenant here" is the true statement. It never renders a tenant page and never serves
+   `/media/`. The only exceptions are `/healthz` and `/readyz` (§9.5), which are answered on every
+   listener.
+3. **The admin host and the `demos.<domain>` host are not `domain` rows.** `tools/nginx_gen.ts`
+   refuses, by name and with a test, a `control.db` whose `domain.host` equals either, and exits
+   non-zero instead of emitting a config that silently shadows the admin or demos vhost. A control
+   plane that mapped the admin host to a tenant would make rule 2 false in one direction and rule 1
+   false in the other.
+4. **C-25 is enforced by absence, not by a status code.** A host that serves tenant-authored HTML
+   does not serve the admin listener — now true of **every** tenant host, not only of
+   `mode='demo'`. `mode='demo'` keeps its CHECK, its `demo_expires_at` and its quota meaning; it no
+   longer gates the admin surface, and **no rule may reintroduce a listener decision keyed on tenant
+   mode** — that is the second source of truth §9.2 forbids.
 
 | Control | Value |
 |---|---|
@@ -1545,18 +1740,23 @@ instead of implying one exists.
 
 ### 12.3 The edge
 
+> Amended by 02-errata.md E-5.
+
 ```nginx
 # 00-default.conf — 404 from a location, never from server scope
 server { listen 80 default_server; server_name _;
          location / { return 404; } }
 
-# 10-app.conf — one block per host, generated from control.db by tools/nginx_gen.ts
+# 10-app.conf — generated from control.db by tools/nginx_gen.ts.
+# One server block per tenant; all of that tenant's hosts share one server_name line, because
+# `map $host $tenant` carries host -> tenant, not the block. Adding a host changes the map and
+# the line, never the number of blocks.
 map $host $tenant { hostnames; default ""; acme.com acme; www.acme.com acme; }
 
 limit_req_zone $tenant zone=tenant:10m rate=4r/s;    # derived, see below
 
 server {
-  listen 443 ssl; server_name acme.com www.acme.com;
+  listen 80; listen 443 ssl; server_name acme.com www.acme.com;
   location / {
     limit_req zone=tenant burst=8 nodelay;
     include /etc/nginx/snippets/skunk-proxy.conf;
@@ -1568,15 +1768,48 @@ server {
                      location ~ "^/__protected/[0-9a-f]{64}\.[a-z0-9]{1,5}$" { limit_rate 1m; } }
 }
 
-# path-prefix demo: one location, no per-demo server block
-location ~ ^/demo/(?<demo_key>[a-z0-9][a-z0-9-]{0,31})(/.*)?$ {
-  rewrite "^/demo/[a-z0-9][a-z0-9-]{0,31}/(.*)$" /$1 break;
-  include /etc/nginx/snippets/skunk-proxy.conf;
-  proxy_set_header X-Skunkworks-Tenant $demo_key;
-  proxy_set_header X-Forwarded-Prefix "/demo/$demo_key";
-  proxy_pass http://app:3000;
+# demos.<domain> — the only host that serves /demo/ (C-25). No per-demo server block.
+server {
+  listen 80; listen 443 ssl; server_name demos.skw.test;
+
+  # The slash-less form FIRST. If the proxying location below is the only one, it matches
+  # /demo/<key> with an empty suffix, the rewrite does not fire, and an unstripped path reaches
+  # the app, which is forbidden to strip it (C-2) and 404s.
+  location ~ "^/demo/(?<demo_key>[a-z0-9][a-z0-9-]{0,39})$" {
+    return 301 /demo/$demo_key/$is_args$args;
+  }
+
+  location ~ "^/demo/(?<demo_key>[a-z0-9][a-z0-9-]{0,39})(/.*)$" {
+    rewrite "^/demo/[a-z0-9][a-z0-9-]{0,39}/(.*)$" /$1 break;
+    include /etc/nginx/snippets/skunk-proxy.conf;
+    proxy_set_header X-Skunkworks-Tenant $demo_key;
+    proxy_set_header X-Forwarded-Prefix "/demo/$demo_key";
+    proxy_pass http://app:3000;
+  }
+
+  location / { return 404; }
+}
+
+# admin.<domain> — the only host that serves /admin (E-2, §9.1). No /demo/, no /media/.
+server {
+  listen 80; listen 443 ssl; server_name admin.skw.test;
+  location / {
+    include /etc/nginx/snippets/skunk-proxy.conf;
+    proxy_pass http://app:3000;
+  }
 }
 ```
+
+Every `location` regex is quoted, so `{` is part of the pattern and not a block delimiter. The demo key
+grammar is `[a-z0-9][a-z0-9-]{0,39}` — the same 40-character maximum as `control.db`'s
+`tenant.key` CHECK, so every key the control plane accepts is reachable through `/demo/`. `listen 80`
+is on every block because §12.5 promises a host serves on 80 while its certificate is
+`certificate: pending`, and `listen 443 ssl` is emitted **only** for a host whose
+`domain.cert_state = 'issued'` — a block that listens on 443 without a certificate fails `nginx -t`,
+so the pending state must be a generated property of the block and not a comment. The admin session
+cookie is `Secure`, so the admin is unusable over 80 by construction. The admin vhost carries no
+`limit_req` zone: C-20's derived rate is per tenant and the admin surface is authenticated,
+single-operator and CSRF-bound (S2's lockout, §16).
 
 > Each tenant's edge rate is `rate = min(20r/s, floor(SKW_BOX_RPS / hot_tenants))` with `burst = 2 × rate`,
 > where `SKW_BOX_RPS` is the box's measured four-source page throughput and `hot_tenants` is the count of
@@ -1803,8 +2036,20 @@ corpus** (a debate paper's run, cited because the SDS depends on it). "Fast" is 
 
 ## 16. Delivery slices
 
-Four slices, each with acceptance criteria and the gate that proves it. A slice is done when its gate is
-green in CI, not when its code is written.
+> Amended by 02-errata.md E-15, E-2, E-8.
+
+Four slices, each with acceptance criteria and the gate that proves it. A slice is done when its gate
+is green in CI, not when its code is written.
+
+**The gates declare their interpreter.** `make test` runs `scripts/model/verify_claims.py` on
+`PYTHON ?= /usr/bin/python3`; that pin is deliberate and deterministic, and it is **not** a claim that
+`/usr/bin/python3` ships `argon2-cffi` on Linux — it does not. `make verify-toolchain` runs first and
+asserts that the chosen interpreter imports `argon2` and `sqlite3`, failing with the package name
+(`argon2-cffi`) and the interpreter path it tried. A **skip is a failure** in `verify_claims.py`
+unless the gate was invoked with `--allow-skip`, and the Makefile never passes it. CI runs the claims
+gate twice: once on `/usr/bin/python3`, and once on an interpreter whose SQLite is **≥ 3.50**, so the
+amendment chain is exercised on the version that re-parses triggers instead of only on the one that
+tolerated the defect.
 
 ### S1 — Hosting core (2 wk)
 
@@ -1817,10 +2062,10 @@ nginx config generation, acme, compose, one hand-built page rendering, the boot 
 | the 10 resolution steps produce the 10 documented outcomes, one test each | `tenancy/resolve.test.ts`, 10 cases |
 | a client-supplied `X-Skunkworks-Tenant` is inert on a host-routed location | same suite, cases 1–5 |
 | `/demo/<key>/whoami` returns `path=/whoami` and `tenant_header=<key>`, query preserved, slash-less form 301s | prefix test, including a **POST with a body** under `/demo/` |
-| a demo `Host` gets `421` from the admin listener | listener test |
+| a demo `Host` cannot reach the admin surface: `/admin/…` is `404` with the same body as an unknown path, and no admin route is mounted on a public listener | listener test, positive and negative |
 | compose has exactly 4 services; `app` publishes no port | `docker compose config` assertion |
 | `migrate` exits 0 with a per-tenant report; a broken tenant 503s alone | migration test with one corrupt fixture |
-| boot refuses any `^SK_|^SKUNK_` env key, naming it | env test |
+| boot refuses any `^SK_|^SKUNK_` env key, naming it, and the gate cannot hang | env test: `spawnSync` with `{timeout: 5000, killSignal: 'SIGKILL'}`; `ETIMEDOUT` is a named failure ("the process booted instead of refusing: <key>"), never a wait; the suite also runs under `node --test --test-timeout=15000`, so a regression is red in under 20 s; the child's stdout must not contain "listening" |
 | `make test` stays green | the same command |
 
 ### S2 — Admin + data plane (2–3 wk)
@@ -1894,6 +2139,8 @@ proves it. `MT` = proved by `make test` today. `S1–S4` = the slice's acceptanc
 
 ### 17.1 Conflicts C-1 … C-25
 
+> Amended by 02-errata.md E-2 (row C-25).
+
 | ID | Verdict | Implemented in | Proved by |
 |---|---|---|---|
 | C-1 | B's mechanism, A's status rule rejected for the empty case | §5.1, §5.2, §5.3 | S1 (10 cases) |
@@ -1920,7 +2167,7 @@ proves it. `MT` = proved by `make test` today. `S1–S4` = the slice's acceptanc
 | C-22 | enumerate, cap, refuse, pin the clock | §6.4, §11.3, §11.4 | MT check 16; S4 (reproducibility) |
 | C-23 | `template` is a slug against the shell registry | §10.4, §4.1 | MT check 26; S2 (publish refusal) |
 | C-24 | a seed, never the fleet file | §11.6, §4.1 | S4 (install + content assertion) |
-| C-25 | demo host ≠ admin host | §5.6, §12.3 | S1 (listener/Host test) |
+| C-25 | demo host ≠ admin host | §5.6, §9.1, §12.3 | S1 (listener/Host test, absence of the admin surface on every tenant Host) |
 
 **25/25 conflicts mapped.**
 

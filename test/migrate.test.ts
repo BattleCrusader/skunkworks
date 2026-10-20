@@ -13,6 +13,7 @@ import { buildApp, type AppHandle } from '../app/main.ts';
 import { loadEnv } from '../app/env.ts';
 import { runMigrations } from '../app/db/migrate.ts';
 import { REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
+import { comparePlanes } from './helpers/schema.ts';
 import { call } from './helpers/http.ts';
 
 function cli(args: string[], env: Record<string, string>) {
@@ -64,7 +65,7 @@ test('control.db is created when absent, and a second run is a no-op', () => {
     assert.equal(first.status, 0, first.stderr);
     const created = JSON.parse(first.stdout) as Report;
     assert.equal(created.control.action, 'created');
-    assert.equal(created.control.to, 2);
+    assert.equal(created.control.to, 3, 'control.db is created at v3 (E-3)');
     assert.deepEqual(created.tenants, [], 'a control.db with no tenant rows has nothing to migrate');
 
     const second = runMigrations({ dataDir: fixture.dir, tenant: 'all' });
@@ -94,19 +95,127 @@ test('a v1 site.db is migrated through the frozen chain to v3', () => {
     assert.equal(legacy?.to, 3);
 
     // The chain has to land on the shipped target shape, not merely on a version number.
+    // §4.5 (E-14): the comparison is the table text (CHECKs), the trigger bodies and the
+    // `(name, type, notnull)` sets — not a name-set comparison.
     const migrated = new Database(file, { readonly: true });
-    const migratedObjects = migrated
-      .prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
-      .all();
-    migrated.close();
     const freshPath = join(fixture.dir, 'target.db');
     const fresh = new Database(freshPath);
     fresh.exec(readFileSync(join(REPO, 'schema', 'site.sql'), 'utf8'));
-    const targetObjects = fresh
-      .prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
-      .all();
-    fresh.close();
-    assert.deepEqual(migratedObjects, targetObjects, 'v1->v2->v3 must converge on schema/site.sql');
+    try {
+      comparePlanes(migrated, fresh, 'site.db v1->v3');
+    } finally {
+      migrated.close();
+      fresh.close();
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('E-14 negative control — dropping one CHECK from the migrated file makes the comparison go red', () => {
+  const fixture = makeFixture({ specs: [{ key: 'legacy', hosts: ['legacy.test'], displayName: 'Legacy' }] });
+  try {
+    const file = fixture.sitePath('legacy');
+    for (const suffix of ['', '-wal', '-shm']) rmSync(`${file}${suffix}`, { force: true });
+    const v1 = new Database(file);
+    v1.exec(readFileSync(join(REPO, 'schema', 'history', 'v1-baseline.sql'), 'utf8'));
+    v1.close();
+    const report = runMigrations({ dataDir: fixture.dir, tenant: 'all' });
+    assert.equal(report.tenants.find((t) => t.key === 'legacy')?.ok, true);
+
+    const freshPath = join(fixture.dir, 'target.db');
+    const fresh = new Database(freshPath);
+    fresh.exec(readFileSync(join(REPO, 'schema', 'site.sql'), 'utf8'));
+
+    // The scratch copy loses cms_download_code's `length(code_selector) = 4` CHECK — the
+    // entire point of r3 — and nothing else. A `(type, name)` comparison would pass this;
+    // the stronger comparison must not, and must name the table.
+    const scratch = new Database(file);
+    const row = scratch.prepare("SELECT sql FROM sqlite_master WHERE name = 'cms_download_code'").get() as {
+      sql: string;
+    };
+    assert.match(row.sql, /CHECK\(length\(code_selector\) = 4\)/);
+    const crippled = row.sql
+      .replace(/,?\s*CHECK\(length\(code_selector\) = 4\)/, '')
+      .replace(/^CREATE TABLE (?:IF NOT EXISTS )?["']?cms_download_code["']?/i, 'CREATE TABLE cms_download_code_crippled');
+    const triggerRows = scratch
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND upper(sql) LIKE '%CMS_DOWNLOAD_CODE%'")
+      .all() as { sql: string }[];
+    try {
+      // Keep the trigger set identical so the failure can only be the missing CHECK.
+      scratch.exec('PRAGMA foreign_keys = OFF');
+      for (const t of triggerRows) {
+        const name = /CREATE TRIGGER\s+(\S+)/i.exec(t.sql)?.[1];
+        if (name !== undefined) scratch.exec(`DROP TRIGGER IF EXISTS ${name}`);
+      }
+      scratch.exec(crippled);
+      scratch.exec(
+        `INSERT INTO cms_download_code_crippled
+           SELECT * FROM cms_download_code`,
+      );
+      scratch.exec('DROP TABLE cms_download_code');
+      scratch.exec('ALTER TABLE cms_download_code_crippled RENAME TO cms_download_code');
+      scratch.exec('CREATE INDEX ix_code_asset ON cms_download_code(asset_id, created_at)');
+      for (const t of triggerRows) scratch.exec(t.sql);
+
+      assert.throws(
+        () => comparePlanes(scratch, fresh, 'site.db'),
+        /table text drift \(CHECK constraints live here\): cms_download_code/,
+        'the convergence gate must name the object whose CHECK went missing',
+      );
+    } finally {
+      scratch.close();
+      fresh.close();
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('E-6 — `legacy_alter_table` appears nowhere in the migration path', () => {
+  for (const rel of ['app/db/migrate.ts', 'scripts/model/verify_claims.py']) {
+    const text = readFileSync(join(REPO, rel), 'utf8');
+    assert.equal(text.includes('legacy_alter_table'), false, `${rel} sets or mentions the pragma`);
+  }
+});
+
+test('E-3 — a control.db at v2 migrates to v3 and control_revision holds one row', () => {
+  const fixture = makeFixture({ createSiteDbs: false });
+  try {
+    for (const suffix of ['', '-wal', '-shm']) rmSync(`${fixture.controlDb}${suffix}`, { force: true });
+    const v1 = new Database(fixture.controlDb);
+    v1.exec(readFileSync(join(REPO, 'schema', 'history', 'v1-control-baseline.sql'), 'utf8'));
+    v1.close();
+    // v1 -> v2 first, exactly as an install that predates the seal would be.
+    const r2 = new Database(fixture.controlDb);
+    r2.exec(readFileSync(join(REPO, 'schema', 'control-r2.sql'), 'utf8'));
+    assert.equal(Number(r2.pragma('user_version', { simple: true })), 2);
+    r2.close();
+
+    const report = runMigrations({ dataDir: fixture.dir, tenant: 'all' });
+    assert.equal(report.control.ok, true, report.control.error ?? '');
+    assert.equal(report.control.from, 2);
+    assert.equal(report.control.to, 3);
+
+    const db = new Database(fixture.controlDb, { readonly: true });
+    try {
+      assert.equal(Number(db.pragma('user_version', { simple: true })), 3);
+      const rows = db.prepare('SELECT id, rev FROM control_revision').all() as { id: number; rev: number }[];
+      assert.deepEqual(rows, [{ id: 1, rev: 1 }], 'exactly one revision row');
+      const triggers = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
+        .all() as { name: string }[];
+      assert.deepEqual(triggers.map((t) => t.name), [
+        'trg_domain_rev_delete',
+        'trg_domain_rev_insert',
+        'trg_domain_rev_update',
+        'trg_tenant_rev_delete',
+        'trg_tenant_rev_insert',
+        'trg_tenant_rev_update',
+      ]);
+    } finally {
+      db.close();
+    }
   } finally {
     fixture.cleanup();
   }

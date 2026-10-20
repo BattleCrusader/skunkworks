@@ -106,5 +106,19 @@ test('host-routed /whoami reports the host resolution and a null header', async 
   assert.equal(body.tenant, 'acme');
   assert.equal(body.via, 'host');
   assert.equal(body.tenant_header, null);
-  assert.equal(body.prefix, null);
+  // E-11: on via='host' the prefix is "" — never null, never a client value.
+  assert.equal(body.prefix, '');
+});
+
+test('E-11 — a client X-Forwarded-Prefix is ignored on a host-routed request', async () => {
+  const res = await call({
+    port,
+    path: '/whoami',
+    host: 'acme.test',
+    headers: { 'x-forwarded-prefix': '/demo/evil' },
+  });
+  assert.equal(res.status, 200);
+  const body = res.json as Whoami;
+  assert.equal(body.via, 'host');
+  assert.equal(body.prefix, '', 'a client prefix must not become tenant.prefix');
 });

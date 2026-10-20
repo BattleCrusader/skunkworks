@@ -1,0 +1,43 @@
+name: gate
+
+# E-15: the gates declare their interpreter, and CI runs the claims gate twice —
+# once on the pinned /usr/bin/python3, and once on an interpreter whose SQLite is
+# >= 3.50, so the amendment chain is exercised on the version that re-parses
+# triggers instead of only on the one that tolerated the ordering defect (E-6).
+on:
+  push:
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: interpreters
+        run: |
+          /usr/bin/python3 -m pip install --user --break-system-packages argon2-cffi
+          # The modern interpreter: a python whose bundled SQLite is >= 3.50.
+          # If the runner's python is older than that, the step fails rather than
+          # silently proving nothing.
+          python3 -c 'import sqlite3,sys; v=tuple(map(int,sqlite3.sqlite_version.split("."))); print(sys.version, sqlite3.sqlite_version); assert v >= (3,50), "modern interpreter has SQLite %s < 3.50" % sqlite3.sqlite_version'
+          python3 -m pip install --user --break-system-packages argon2-cffi
+
+      - run: npm ci
+      - run: docker info
+
+      # One interpreter, declared, no skips (a skip is a failure — E-15).
+      - name: make test (/usr/bin/python3)
+        run: make test PYTHON=/usr/bin/python3
+
+      # The second claims run, on the modern SQLite (E-6/E-15).
+      - name: verify-claims (modern SQLite)
+        run: make verify-claims-modern MODERN_PYTHON=python3
+
+      - name: make verify-s1
+        run: make verify-s1 PYTHON=/usr/bin/python3

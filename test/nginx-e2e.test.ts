@@ -26,7 +26,7 @@ import { buildApp, type AppHandle } from '../app/main.ts';
 import { loadEnv } from '../app/env.ts';
 import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
-import { call } from './helpers/http.ts';
+import { call, postRaw } from './helpers/http.ts';
 
 const SKIP = process.env.SKW_SKIP_DOCKER === '1';
 
@@ -134,8 +134,11 @@ before(async () => {
   const listens = generated.match(/listen 443 ssl;/g)?.length ?? 0;
   const upstreams = generated.match(/proxy_pass http:\/\/app:3000;/g)?.length ?? 0;
   assert.ok(listens >= 4 && upstreams >= 4, `generated conf shape: ${listens} listens, ${upstreams} upstreams`);
+  // TLS is not under test: both listen directives collapse to 80. The generator
+  // emits `listen 80; listen 443 ssl;` on one line (E-5), so removing the TLS half
+  // leaves exactly one listener.
   generated = generated
-    .replace(/listen 443 ssl;/g, 'listen 80;')
+    .replace(/listen 443 ssl;/g, '')
     .replace(/proxy_pass http:\/\/app:3000;/g, `proxy_pass http://${gateway}:${appPort};`);
   writeFileSync(join(conf, '10-app.conf'), generated);
 
@@ -266,4 +269,63 @@ test('through real nginx: an unknown demo key is 404, not a rendered page', { sk
   const res = await call({ port: edgePort, path: '/demo/zzz/whoami', host: 'demos.skw.test' });
   assert.equal(res.status, 404);
   assert.equal((res.json as { error: { code: string } }).error.code, 'SKW_E_PLT_TENANT_UNKNOWN');
+});
+
+test('E-5: a 40-character demo key reaches the app (JSON 404 from the app, not nginx HTML)', { skip: SKIP }, async () => {
+  // `tenant.key` allows 40 characters; the old nginx regex allowed 32, so keys of
+  // 33-40 were legal and unreachable. The distinction asserted here is *who*
+  // answered: nginx's own 404 is HTML, the app's is a taxonomy body.
+  const key = `k${'x'.repeat(39)}`;
+  assert.equal(key.length, 40);
+  const res = await call({ port: edgePort, path: `/demo/${key}/whoami`, host: 'demos.skw.test' });
+  assert.equal(res.status, 404, res.body.slice(0, 200));
+  assert.match(String(res.headers['content-type']), /application\/json/, 'nginx answered instead of the app');
+  assert.equal((res.json as { error: { code: string } }).error.code, 'SKW_E_PLT_TENANT_UNKNOWN');
+});
+
+test('E-11: a client X-Forwarded-Prefix is cleared at the edge', { skip: SKIP }, async () => {
+  const res = await call({
+    port: edgePort,
+    path: '/whoami',
+    host: 'acme.test',
+    headers: { 'x-forwarded-prefix': '/demo/evil' },
+  });
+  assert.equal(res.status, 200, res.body);
+  const body = res.json as Whoami;
+  assert.equal(body.via, 'host');
+  assert.equal(body.prefix, '', 'a client-chosen prefix must never become tenant.prefix');
+});
+
+test('E-1(b): an empty tenant header on the admin host through the real edge is row 7, 404 not 421', { skip: SKIP }, async () => {
+  // nginx does not forward a header whose proxy_set_header value is "": the app
+  // sees no tenant header at all and answers row 7. The direct-connection twin
+  // (row 1, 421) is test/tenancy/resolve.test.ts case E-1 (a).
+  const res = await call({
+    port: edgePort,
+    path: '/admin/t/acme/pages',
+    host: 'admin.skw.test',
+    headers: { 'x-skunkworks-tenant': '' },
+  });
+  assert.equal(res.status, 404, res.body.slice(0, 200));
+  assert.equal((res.json as { error: { code: string } }).error.code, 'SKW_E_PLT_TENANT_UNKNOWN');
+});
+
+test('E-13: a 17 MiB body through the edge is nginx\'s HTML 413, with no taxonomy code', { skip: SKIP }, async () => {
+  const res = await postRaw({ port: edgePort, path: '/demo/acme/whoami', host: 'demos.skw.test', bytes: 17 * 1024 * 1024 });
+  assert.equal(res.status, 413);
+  assert.match(String(res.headers['content-type']), /text\/html/, 'the edge 413 is not a taxonomy body');
+  assert.equal(res.json, undefined, 'the edge 413 must not be JSON');
+  assert.doesNotMatch(res.body, /SKW_E_/);
+});
+
+test('E-13: a 16 MiB body through the edge passes the limit and reaches the app', { skip: SKIP }, async () => {
+  const res = await postRaw({
+    port: edgePort,
+    path: '/demo/acme/whoami',
+    host: 'demos.skw.test',
+    bytes: 16 * 1024 * 1024,
+    contentType: 'application/x-www-form-urlencoded',
+  });
+  assert.equal(res.status, 200, res.body.slice(0, 200));
+  assert.equal((res.json as Whoami).body_bytes, 16 * 1024 * 1024);
 });

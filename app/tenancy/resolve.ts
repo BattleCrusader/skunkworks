@@ -1,20 +1,19 @@
 /**
- * resolveTenant() — the ten steps of SDS §5.3, in order.
+ * resolveTenant() — the ten rows of SDS §5.3 as amended by 02-errata E-1.
  *
- * Frozen contract (register §4.1). Every failure gets exactly one code:
- *   SKW_E_PLT_EDGE_PROOF       421  steps 1, 2, 8
- *   SKW_E_PLT_TENANT_HEADER    400  steps 3, 4
- *   SKW_E_PLT_TENANT_UNKNOWN   404  resolution miss (steps 5, 6, 7), step 9
- *   SKW_E_PLT_TENANT_UNAVAILABLE 503 step 10 (non-schema)
- *   SKW_E_DM_SCHEMA_STALE      503 + Retry-After: 5   step 10 (user_version stale)
- *   SKW_E_DM_BUSY              503 + Retry-After: 1   step 10 (SQLITE_BUSY)
+ * The rows are executed once, in this order, first match wins, and no row is
+ * evaluated after a row has produced a response. Every row is reachable because
+ * row 1 answers every admin-listener request that carries the tenant header **at
+ * all**, so rows 3-6 run with `listener = 'public'`, and rows 7 and 8 split the
+ * remaining header-absent case exhaustively.
  *
- * ORDER DEVIATION, STATED: the table lists step 8 after steps 5 and 7, which
- * makes it unreachable (a valid non-empty header is consumed by step 5 before
- * step 8 is consulted). §9.2 and C-25 both require the admin listener to
- * refuse a header that is *present at all*, so step 8 is evaluated before
- * steps 5 and 7. Steps 1-4 keep their numeric order. Recorded as a spec defect
- * in docs/build/S1-report.md.
+ * Frozen contract (register §4.1, superseded for ordering/numbering by E-1):
+ *   SKW_E_PLT_EDGE_PROOF       421  rows 1, 2, 3
+ *   SKW_E_PLT_TENANT_HEADER    400  rows 4, 5
+ *   SKW_E_PLT_TENANT_UNKNOWN   404  rows 7/8 miss, row 9
+ *   SKW_E_PLT_TENANT_UNAVAILABLE 503 row 10 (non-schema)
+ *   SKW_E_DM_SCHEMA_STALE      503 + Retry-After: 5   row 10 (user_version stale)
+ *   SKW_E_DM_BUSY              503 + Retry-After: 1   row 10 (SQLITE_BUSY)
  */
 import { AppError } from '../errors.ts';
 import { normaliseHost } from './normalise-host.ts';
@@ -59,15 +58,18 @@ export interface ResolveInput {
 
 export interface Resolved {
   ok: true;
+  /** The row of §5.3 that resolved this request (6, 7 or 8). */
   step: number;
   tenant: Tenant;
   via: 'header' | 'host' | 'session';
-  prefix: string | null;
+  /** `tenant.prefix`: `/demo/<key>` on a header-routed request, else `""` (E-11). */
+  prefix: string;
   host: string | null;
 }
 
 export interface Refused {
   ok: false;
+  /** The row of §5.3 that refused this request (1-5, 7, 8, 9, 10). */
   step: number;
   error: AppError;
 }
@@ -80,11 +82,12 @@ function header(headers: ResolveInput['headers'], name: string): string | undefi
   return Array.isArray(v) ? v[0] : v;
 }
 
+/** "present at all" — including an empty value (§5.3, E-1). */
 function headerPresent(headers: ResolveInput['headers'], name: string): boolean {
   return Object.prototype.hasOwnProperty.call(headers, name) && headers[name] !== undefined;
 }
 
-/** Any X-Skunkworks-* header at all (step 1 is about the family, not one name). */
+/** Any X-Skunkworks-* header at all (row 2 is about the family, not one name). */
 function anySkunkworksHeader(headers: ResolveInput['headers']): boolean {
   return Object.keys(headers).some((k) => k.startsWith('x-skunkworks-'));
 }
@@ -100,71 +103,73 @@ export function resolveTenant(input: ResolveInput, deps: ResolveDeps): Resolutio
   const hdr = header(input.headers, TENANT_HEADER);
   const edge = header(input.headers, EDGE_HEADER);
   const prefix = header(input.headers, PREFIX_HEADER);
+  const hdrPresent = headerPresent(input.headers, TENANT_HEADER);
   const hdrNonEmpty = hdr !== undefined && hdr !== '';
 
-  // Step 1 — an untrusted peer may not assert anything at all.
+  // Row 1 — the admin never takes a tenant from a header, empty or not (§9.2:
+  // "present at all"). First, so rows 3-6 all run with listener='public'.
+  if (input.listener === 'admin' && hdrPresent) {
+    return refuse(1, 'SKW_E_PLT_EDGE_PROOF', 'the admin listener does not accept a tenant header');
+  }
+
+  // Row 2 — an untrusted peer may not assert anything at all.
   if (!peerInCidrs(input.peer, deps.trustedCidrs) && anySkunkworksHeader(input.headers)) {
-    return refuse(1, 'SKW_E_PLT_EDGE_PROOF', 'edge assertion from an untrusted peer');
+    return refuse(2, 'SKW_E_PLT_EDGE_PROOF', 'edge assertion from an untrusted peer');
   }
 
-  // Step 2 — the token is the proof; the CIDR is the second half (§4.1).
+  // Row 3 — the token is the proof; the CIDR is the second half (§4.1).
   if (hdrNonEmpty && edge !== deps.edgeToken) {
-    return refuse(2, 'SKW_E_PLT_EDGE_PROOF', 'missing or wrong edge token');
+    return refuse(3, 'SKW_E_PLT_EDGE_PROOF', 'missing or wrong edge token');
   }
 
-  // Step 3 — shape, and the comma that a joined duplicate header produces.
+  // Row 4 — shape, and the comma that a joined duplicate header produces.
   if (hdrNonEmpty && (!TENANT_KEY_RE.test(hdr) || hdr.includes(','))) {
-    return refuse(3, 'SKW_E_PLT_TENANT_HEADER', 'tenant header is not a tenant key');
+    return refuse(4, 'SKW_E_PLT_TENANT_HEADER', 'tenant header is not a tenant key');
   }
 
-  // Step 4 — the header and the prefix must name the same tenant.
+  // Row 5 — the header and the prefix must name the same tenant.
   if (hdrNonEmpty && prefix !== undefined && prefixKey(prefix) !== hdr) {
-    return refuse(4, 'SKW_E_PLT_TENANT_HEADER', 'tenant header disagrees with X-Forwarded-Prefix');
+    return refuse(5, 'SKW_E_PLT_TENANT_HEADER', 'tenant header disagrees with X-Forwarded-Prefix');
   }
 
-  // Step 8 — the admin listener never takes a tenant from a header (§9.2, C-25).
-  if (input.listener === 'admin' && headerPresent(input.headers, TENANT_HEADER)) {
-    return refuse(8, 'SKW_E_PLT_EDGE_PROOF', 'the admin listener does not accept a tenant header');
-  }
-
-  const tenantPrefix = prefix === undefined ? null : prefix;
-
-  // Step 5 — the edge asserted a tenant.
+  // Row 6 — the edge asserted a tenant. Prefix is "" when absent (E-11).
   if (hdrNonEmpty) {
     const tenant = deps.lookupKey(hdr);
-    if (tenant === undefined) return refuse(5, 'SKW_E_PLT_TENANT_UNKNOWN');
-    return finish(5, tenant, 'header', tenantPrefix, normalisedHost(input.host), deps);
-  }
-
-  // Step 6 — public listener, resolve from the normalised Host.
-  if (input.listener === 'public') {
-    const host = normalisedHost(input.host);
-    if (host === null) return refuse(6, 'SKW_E_PLT_TENANT_UNKNOWN');
-    const tenant = deps.lookupHost(host);
     if (tenant === undefined) return refuse(6, 'SKW_E_PLT_TENANT_UNKNOWN');
-    return finish(6, tenant, 'host', tenantPrefix, host, deps);
+    return finish(6, tenant, 'header', prefix ?? '', normalisedHost(input.host), deps);
   }
 
-  // Step 7 — admin listener, session.tenant_id is the only source (C-11).
-  if (input.session === null) return refuse(7, 'SKW_E_PLT_TENANT_UNKNOWN');
-  const tenant = deps.lookupId(input.session.tenantId);
-  if (tenant === undefined) return refuse(7, 'SKW_E_PLT_TENANT_UNKNOWN');
-  return finish(7, tenant, 'session', tenantPrefix, normalisedHost(input.host), deps);
+  // Row 7 — admin listener with no tenant header: session.tenant_id is the only
+  // source (C-11), and no session is a 404.
+  if (input.listener === 'admin') {
+    if (input.session === null) return refuse(7, 'SKW_E_PLT_TENANT_UNKNOWN');
+    const tenant = deps.lookupId(input.session.tenantId);
+    if (tenant === undefined) return refuse(7, 'SKW_E_PLT_TENANT_UNKNOWN');
+    return finish(7, tenant, 'session', '', normalisedHost(input.host), deps);
+  }
+
+  // Row 8 — public listener with no tenant header: the normalised Host is the
+  // only source, and a Host that maps to nothing is a 404 (no default tenant).
+  const host = normalisedHost(input.host);
+  if (host === null) return refuse(8, 'SKW_E_PLT_TENANT_UNKNOWN');
+  const tenant = deps.lookupHost(host);
+  if (tenant === undefined) return refuse(8, 'SKW_E_PLT_TENANT_UNKNOWN');
+  return finish(8, tenant, 'host', '', host, deps);
 }
 
 function finish(
   step: number,
   tenant: Tenant,
   via: Resolved['via'],
-  prefix: string | null,
+  prefix: string,
   host: string | null,
   deps: ResolveDeps,
 ): Resolution {
-  // Step 9 — a resolved tenant that is not serving.
+  // Row 9 — a resolved tenant that is not serving.
   if (tenant.status === 'suspended' || tenant.status === 'archived') {
     return refuse(9, 'SKW_E_PLT_TENANT_UNKNOWN');
   }
-  // Step 10 — the file behind the tenant.
+  // Row 10 — the file behind the tenant, one code per cause.
   const probe = deps.probe(tenant);
   if (probe === 'stale') return refuse(10, 'SKW_E_DM_SCHEMA_STALE');
   if (probe === 'busy') return refuse(10, 'SKW_E_DM_BUSY');

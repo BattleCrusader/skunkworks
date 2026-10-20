@@ -5,6 +5,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
@@ -70,18 +71,28 @@ test('a missing required key refuses the boot, naming it', () => {
   );
 });
 
-test('UV_THREADPOOL_SIZE must be 8 (§2.3 step 2)', () => {
-  const wrong = { ...CLEAN, UV_THREADPOOL_SIZE: '4' };
-  assert.throws(
-    () => loadEnv(wrong),
-    (err: unknown) => err instanceof BootRefusal && /UV_THREADPOOL_SIZE must be 8/.test(err.message),
-  );
+test('E-9 — UV_THREADPOOL_SIZE must be 8, and the message says why it cannot be set late', () => {
+  // libuv sizes the pool at process start, so this is a check that the image did
+  // its job. The message must name the variable and say where the value comes from,
+  // so the next reader does not try to export it in a shell.
+  const message = (source: NodeJS.ProcessEnv): string => {
+    try {
+      loadEnv(source);
+    } catch (err) {
+      assert.ok(err instanceof BootRefusal);
+      return (err as Error).message;
+    }
+    assert.fail('expected a BootRefusal');
+  };
+  const wrong = message({ ...CLEAN, UV_THREADPOOL_SIZE: '4' });
+  assert.match(wrong, /UV_THREADPOOL_SIZE/);
+  assert.match(wrong, /fixed at process start/);
   const absent = { ...CLEAN };
   delete absent.UV_THREADPOOL_SIZE;
-  assert.throws(
-    () => loadEnv(absent),
-    (err: unknown) => err instanceof BootRefusal && /UV_THREADPOOL_SIZE must be 8/.test(err.message),
-  );
+  const missing = message(absent);
+  assert.match(missing, /UV_THREADPOOL_SIZE/);
+  assert.match(missing, /fixed at process start/);
+  assert.match(missing, /\(unset\)/);
 });
 
 test('SKW_ARGON2_MAX_CONCURRENT must be 4 (§2.3 step 2, C-6)', () => {
@@ -91,18 +102,63 @@ test('SKW_ARGON2_MAX_CONCURRENT must be 4 (§2.3 step 2, C-6)', () => {
   );
 });
 
-test('the real process refuses to start and exits non-zero, naming the key on stderr', () => {
+test('the real process refuses to start and exits non-zero, naming the key on stderr', async () => {
   const fixture = makeFixture();
+  // A free port on purpose (E-8): if the refusal regresses, the child boots and
+  // listens instead of exiting, so the run hits the timeout and reports it by name
+  // rather than waiting for the job to die.
+  const port = await freePort();
   try {
     const res = spawnSync(process.execPath, [join(REPO, 'app', 'main.ts')], {
       cwd: REPO,
       encoding: 'utf8',
-      env: { ...process.env, ...fixture.env, SKUNK_EDGE_TOKEN: 'legacy-value' },
+      env: { ...process.env, ...fixture.env, PORT: String(port), SKUNK_EDGE_TOKEN: 'legacy-value' },
+      // E-8: a CI job timeout is not a red test with a message. 5 s, SIGKILL, and
+      // ETIMEDOUT is a named failure — never a wait.
+      timeout: 5000,
+      killSignal: 'SIGKILL',
     });
+    if ((res.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+      assert.fail('the process booted instead of refusing: SKUNK_EDGE_TOKEN (the ^SK_|^SKUNK_ refusal regressed)');
+    }
     assert.notEqual(res.status, 0);
     assert.match(res.stderr, /SKUNK_EDGE_TOKEN/);
     assert.match(res.stderr, /SKW_EDGE_TOKEN/);
     assert.equal(res.stdout.includes('listening'), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+function freePort(): Promise<number> {
+  return new Promise((resolve) => {
+    const srv = createServer();
+    srv.unref();
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+test('E-8 — the spawn harness reports ETIMEDOUT as a named failure rather than waiting', async () => {
+  // The control for the control: a clean environment and a free port make the app
+  // boot and listen, so the child never exits and the 5 s timeout is the only thing
+  // that ends the run. This is the path the refusal case takes when the refusal
+  // regresses — exercised here, not assumed.
+  const fixture = makeFixture();
+  const port = await freePort();
+  try {
+    const res = spawnSync(process.execPath, [join(REPO, 'app', 'main.ts')], {
+      cwd: REPO,
+      encoding: 'utf8',
+      env: { ...process.env, ...fixture.env, PORT: String(port) },
+      timeout: 5000,
+      killSignal: 'SIGKILL',
+    });
+    assert.equal((res.error as NodeJS.ErrnoException | undefined)?.code, 'ETIMEDOUT', `expected the timeout path, got status=${String(res.status)} stderr=${res.stderr.slice(0, 200)}`);
+    assert.equal(res.signal, 'SIGKILL');
   } finally {
     fixture.cleanup();
   }

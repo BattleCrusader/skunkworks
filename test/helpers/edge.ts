@@ -10,7 +10,8 @@
  */
 import { EDGE_TOKEN } from './fixture.ts';
 
-export const DEMO_RE = /^\/demo\/([a-z0-9][a-z0-9-]{0,31})(\/[^?]*)?(\?.*)?$/;
+// 40 characters, the same maximum as `tenant.key`'s CHECK (E-5).
+export const DEMO_RE = /^\/demo\/([a-z0-9][a-z0-9-]{0,39})(\/[^?]*)?(\?.*)?$/;
 
 export type EdgeRequest =
   | { kind: 'redirect'; status: 301; location: string }

@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { BootRefusal, adminHostOf, loadEnv, type Env } from './env.ts';
-import { AppError, errorBody } from './errors.ts';
+import { AppError, errorBody, frameworkCode, HTTP } from './errors.ts';
 import { RenderPool, openAdminWrite } from './db/classes.ts';
 import {
   EXIT_CONTROL_FAILED,
@@ -42,6 +42,8 @@ type AstroHandler = (
 export interface AppHandle {
   app: FastifyInstance;
   env: Env;
+  /** The live tenant map, so a gate can assert §5.4a's one-read-per-request. */
+  tenants: TenantMap;
   close(): Promise<void>;
 }
 
@@ -54,18 +56,30 @@ export interface BuildAppOptions {
   migrateOnBoot?: boolean;
 }
 
-/** §9.2: every admin URL is /admin/t/<key>/…; §9.1: one listener, one origin. */
-export function listenerFor(pathname: string, host: string | null, adminHost: string | null): Listener {
-  if (adminHost !== null && host === adminHost) return 'admin';
-  if (pathname === '/admin' || pathname.startsWith('/admin/')) return 'admin';
-  return 'public';
+/**
+ * §9.1 (E-2): the listener is the admin **hostname**, and that hostname is the
+ * only thing that makes a request an admin request. The path never selects the
+ * listener: `/admin`, `/admin/…`, `/adminish` and `/demo/<key>/admin/…` are
+ * ordinary paths on a public listener.
+ */
+export function listenerFor(host: string | null, adminHost: string | null): Listener {
+  if (adminHost === null) return 'public';
+  const h = normaliseHost(host);
+  const admin = normaliseHost(adminHost);
+  if (h === null || admin === null) return 'public';
+  return h === admin ? 'admin' : 'public';
+}
+
+/** §9.1 rule 2: the admin host serves the admin surface and nothing else. */
+function isAdminPath(pathname: string): boolean {
+  return pathname === '/admin' || pathname.startsWith('/admin/');
 }
 
 interface RequestContext {
   listener: Listener;
   tenant: Tenant;
   via: 'header' | 'host' | 'session';
-  prefix: string | null;
+  prefix: string;
   pathname: string;
 }
 
@@ -186,7 +200,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   app.setNotFoundHandler(async (req, reply) => {
     const ctx = resolveRequest(req);
     const path = normalisePagePath(req.url);
-    if (path === null) throw pageMiss();
+    // §4.3 (E-4): a URL that cannot name a path is refused before a route runs.
+    if (path === null) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'the request path is not a page path');
     const db = getSiteDb(ctx.tenant);
     const page = loadPage(db, path);
     if (page === null) throw pageMiss();
@@ -243,16 +258,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   function resolveRequest(req: FastifyRequest): RequestContext {
     const pathname = pathnameOf(req.url);
     const host = normaliseHost(req.headers.host);
-    const listener = listenerFor(pathname, host, adminHost);
-
-    // §5.6 / C-25: a host that serves tenant-authored HTML never serves the
-    // admin listener. Checked before step 7 so it cannot be shadowed by a session.
-    if (listener === 'admin' && host !== null) {
-      const mapped = tenants.lookupHost(host);
-      if (mapped !== undefined && mapped.mode === 'demo') {
-        throw new AppError('SKW_E_PLT_EDGE_PROOF', 'a demo host never serves the admin listener');
-      }
-    }
+    const listener = listenerFor(host, adminHost);
 
     const headers: Record<string, string | string[] | undefined> = {};
     for (const [k, v] of Object.entries(req.headers)) headers[k.toLowerCase()] = v;
@@ -269,6 +275,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       },
     );
     if (!result.ok) throw result.error;
+    // §9.1 rule 2: the admin host maps to no tenant, so any path outside
+    // `/admin…` is SKW_E_PLT_TENANT_UNKNOWN — "there is no tenant here" is the
+    // true statement. `/healthz` and `/readyz` are answered before this (§9.5).
+    if (listener === 'admin' && !isAdminPath(pathname)) {
+      throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'the admin host serves the admin surface only');
+    }
     return { listener, tenant: result.tenant, via: result.via, prefix: result.prefix, pathname };
   }
 
@@ -278,7 +290,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     await app.close();
   }
 
-  return { app, env, close };
+  return { app, env, tenants, close };
 }
 
 function pathnameOf(url: string): string {
@@ -287,17 +299,23 @@ function pathnameOf(url: string): string {
 }
 
 function sendError(reply: FastifyReply, err: unknown, requestId: string): void {
+  // §5.5: every response carrying a taxonomy body is no-store. The four
+  // exceptions in §4.3 (E-13) are not emitted by the app.
+  reply.header('cache-control', 'no-store');
   if (err instanceof AppError) {
     if (err.retryAfter !== undefined) reply.header('retry-after', String(err.retryAfter));
     reply.code(err.status).type('application/json; charset=utf-8');
     void reply.send(errorBody(err, requestId));
     return;
   }
-  // Never a stack, never a path, never a key (§4.3).
+  // §4.3 (E-4): a framework failure becomes the code its status class owns, and
+  // the status on the wire is that code's mapping — one decision, not two.
   const e = err as { statusCode?: number };
-  const status = typeof e.statusCode === 'number' && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500;
-  reply.code(status).type('application/json; charset=utf-8');
-  void reply.send({ error: { code: 'SKW_E_PLT_TENANT_UNAVAILABLE', requestId } });
+  const raw = typeof e.statusCode === 'number' && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500;
+  const code = frameworkCode(raw);
+  // Never a stack, never a path, never a key, never a detail (§4.3).
+  reply.code(HTTP[code] ?? 500).type('application/json; charset=utf-8');
+  void reply.send({ error: { code, requestId } });
 }
 
 function describe(err: unknown): string {

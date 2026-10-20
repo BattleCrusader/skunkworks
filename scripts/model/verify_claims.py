@@ -253,12 +253,13 @@ def readonly_attach():
 # docs/debate/r2-data-model.md §5 by number. Nothing here is a proposal that has not run.
 
 SITE_SQL = os.path.join(ROOT, "schema/site.sql")          # the v3 target, regenerated from one spec
-CONTROL_SQL = os.path.join(ROOT, "schema/control.sql")    # the v2 control plane
+CONTROL_SQL = os.path.join(ROOT, "schema/control.sql")    # the v3 control plane
 V1_SITE = os.path.join(ROOT, "schema/history/v1-baseline.sql")
 V1_CONTROL = os.path.join(ROOT, "schema/history/v1-control-baseline.sql")
 AMENDMENTS = os.path.join(ROOT, "schema/r2-amendments.sql")
 AMENDMENTS3 = os.path.join(ROOT, "schema/r3-amendments.sql")
 CONTROL_R2 = os.path.join(ROOT, "schema/control-r2.sql")
+CONTROL_R3 = os.path.join(ROOT, "schema/control-r3.sql")
 PROJECTION = os.path.join(ROOT, "schema/export-projection.json")
 COMPONENTS = os.path.join(ROOT, "schema/component-registry.json")
 CODES = os.path.join(ROOT, "schema/error-codes.json")
@@ -309,16 +310,14 @@ _V2 = {}
 
 
 def apply_chain(c, path):
-    """Apply a frozen amendment file.
+    """Apply a frozen amendment file, with no session pragma.
 
-    r3 rebuilds cms_download_code by DROP + RENAME while trg_cms_asset_delete_guard still names
-    the table. SQLite >= 3.25 re-parses every trigger on ALTER TABLE ... RENAME and fails with
-    "no such table: main.cms_download_code"; 3.43 tolerated it, 3.50+ does not, so this check
-    passed or failed depending on which python3 was first on PATH. legacy_alter_table restores
-    the rename semantics the frozen file was written for. The convergence assertion below is
-    unchanged: the chain must still land exactly on schema/site.sql.
+    E-6: r3 rebuilds cms_download_code by DROP + RENAME, and SQLite >= 3.25 re-parses every trigger
+    when a table is renamed. The two triggers whose body or ON clause names cms_download_code are
+    dropped **before** `DROP TABLE cms_download_code` in A1, so the rename parses cleanly at the
+    engine's default rename semantics. No pragma is set here, anywhere in the app, or by an
+    operator: a migration that needs one is a migration with the ordering defect.
     """
-    c.execute("PRAGMA legacy_alter_table = ON")
     c.executescript(open(path).read())
 
 
@@ -750,40 +749,117 @@ def asset_guard_cost():
 # Each check settles a v3 invariant from docs/sds/00-adjudication.md. Named by the register entry
 # it implements, so the SDS's traceability table can point at a running check.
 
-def migration_chain_converges():
-    """C-6..C-23: v1 -> r2 -> r3 lands on exactly the schema site.sql generates; a v2 file with an
-    access code refuses to migrate, and the refusal names its reason."""
-    def shape(path, scripts):
-        c, _ = fresh(path)
-        for sc in scripts:
-            apply_chain(c, sc)
-        tabs = {r[0] for r in c.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
-        cols = {t: {(r[1], r[2].upper(), r[3]) for r in c.execute(f"PRAGMA table_info('{t}')")}
-                for t in tabs}
-        trg = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
-        return c, tabs, cols, trg
+def _split_top_level(body):
+    """Split a CREATE TABLE body on the commas that are not inside parentheses."""
+    parts, depth, cur = [], 0, ""
+    for ch in body:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+            continue
+        cur += ch
+    if cur.strip():
+        parts.append(cur)
+    return parts
 
-    chain, ct, cc, cg = shape("conv_chain.db", [V1_SITE, AMENDMENTS, AMENDMENTS3])
-    fresh_db, ft, fc, fg = shape("conv_fresh.db", [SITE_SQL])
+
+_DEFAULT_RE = re.compile(r"\s*\bDEFAULT\s+(?:\((?:[^()]|\([^()]*\))*\)|'(?:[^']|'')*'|[^\s,]+)")
+
+
+def canon_table(sql):
+    """A table's `sqlite_master.sql`, comparable across a rename and harmless differences.
+
+    Normalises only what §4.5 (E-14) says may be normalised: identifier quoting, runs of
+    whitespace, and — because *column order and defaults are explicitly not compared* — the
+    order of the column/constraint definitions and any DEFAULT clause. Everything else, the
+    CHECK expressions included, is compared as text.
+    """
+    s = re.sub(r'"([A-Za-z_][A-Za-z0-9_]*)"', r"\1", sql)
+    s = re.sub(r"\s+", " ", s).strip()
+    head, body = s[: s.index("(")], s[s.index("(") + 1: s.rindex(")")]
+    parts = []
+    for part in _split_top_level(body):
+        part = _DEFAULT_RE.sub("", part)
+        part = re.sub(r"\s*([(),])\s*", r"\1", part).strip()
+        parts.append(part)
+    return head + "(" + "|".join(sorted(parts)) + ")"
+
+
+def canon_trigger(sql):
+    """A trigger's body text: identifier quoting and whitespace only (§4.5, E-14)."""
+    s = re.sub(r'"([A-Za-z_][A-Za-z0-9_]*)"', r"\1", sql)
+    s = re.sub(r"\s+", " ", s).strip()
+    return re.sub(r"\s*([(),])\s*", r"\1", s)
+
+
+def plane_shape(c):
+    """The convergence shape of one database file, in both directions (§4.5, E-14)."""
+    tables = {r[0] for r in c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    cols = {t: {(r[1], r[2].upper(), r[3]) for r in c.execute(f"PRAGMA table_info('{t}')")}
+            for t in tables}
+    table_sql = {r[0]: canon_table(r[1]) for r in c.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    triggers = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
+    trigger_sql = {r[0]: canon_trigger(r[1]) for r in c.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='trigger'")}
+    indexes = {r[0] for r in c.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'")}
+    return {"tables": tables, "cols": cols, "table_sql": table_sql,
+            "triggers": triggers, "trigger_sql": trigger_sql, "indexes": indexes}
+
+
+def compare_planes(chain, fresh, label):
+    """Assert the migrated file and the shipped DDL are the same schema, naming the object."""
+    a, b = plane_shape(chain), plane_shape(fresh)
+    assert a["tables"] == b["tables"], (
+        f"{label}: table drift chain-only={sorted(a['tables'] - b['tables'])} "
+        f"fresh-only={sorted(b['tables'] - a['tables'])}")
+    assert a["triggers"] == b["triggers"], (
+        f"{label}: trigger drift chain-only={sorted(a['triggers'] - b['triggers'])} "
+        f"fresh-only={sorted(b['triggers'] - a['triggers'])}")
+    assert a["indexes"] == b["indexes"], (
+        f"{label}: index drift chain-only={sorted(a['indexes'] - b['indexes'])} "
+        f"fresh-only={sorted(b['indexes'] - a['indexes'])}")
+    drift = {t: sorted(a["cols"][t] ^ b["cols"][t]) for t in a["tables"] if a["cols"][t] ^ b["cols"][t]}
+    assert not drift, f"{label}: column drift (name,type,notnull): {drift}"
+    sql_drift = [t for t in a["tables"] if a["table_sql"][t] != b["table_sql"][t]]
+    assert not sql_drift, f"{label}: table text drift (CHECK constraints live here): {sql_drift}"
+    trg_drift = [t for t in a["triggers"] if a["trigger_sql"][t] != b["trigger_sql"][t]]
+    assert not trg_drift, f"{label}: trigger body drift: {trg_drift}"
+    return len(a["tables"]), len(a["triggers"])
+
+
+def migration_chain_converges():
+    """C-6..C-23 + E-3/E-6/E-14: v1 -> r2 -> r3 lands on exactly the schema site.sql generates,
+    on both planes, compared by table text (CHECKs) and trigger body, not by name; a v2 file with
+    an access code refuses to migrate, and the refusal names its reason."""
+    chain, _ = fresh("conv_chain.db")
+    for sc in (V1_SITE, AMENDMENTS, AMENDMENTS3):
+        apply_chain(chain, sc)
+    fresh_db, _ = fresh("conv_fresh.db")
+    apply_chain(fresh_db, SITE_SQL)
     assert chain.execute("PRAGMA user_version").fetchone()[0] == 3
     assert fresh_db.execute("PRAGMA user_version").fetchone()[0] == 3
-    assert ct == ft, f"table drift: chain-only={ct - ft} fresh-only={ft - ct}"
-    drift = {t: sorted(cc[t] ^ fc[t]) for t in ct if cc[t] ^ fc[t]}
-    assert not drift, f"column drift (name,type,notnull): {drift}"
-    assert cg == fg, f"trigger drift: {cg ^ fg}"
+    n_tables, n_triggers = compare_planes(chain, fresh_db, "site.db")
     assert chain.execute("PRAGMA foreign_key_check").fetchall() == []
-    ctrl_chain, _, _, _ = shape("conv_control.db", [V1_CONTROL, CONTROL_R2])
-    ctrl_fresh, _, _, _ = shape("conv_control_fresh.db", [CONTROL_SQL])
-    assert ctrl_chain.execute("PRAGMA user_version").fetchone()[0] == 2
-    assert (ctrl_chain.execute("PRAGMA user_version").fetchone()[0]
-            == ctrl_fresh.execute("PRAGMA user_version").fetchone()[0])
-    # control-plane convergence
-    a_t = {r[0] for r in ctrl_chain.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
-    b_t = {r[0] for r in ctrl_fresh.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
-    assert a_t == b_t, f"control table drift: {a_t ^ b_t}"
+
+    # control plane: v1 -> control-r2 -> control-r3 == schema/control.sql at v3 (E-3)
+    ctrl_chain, _ = fresh("conv_control.db")
+    for sc in (V1_CONTROL, CONTROL_R2, CONTROL_R3):
+        apply_chain(ctrl_chain, sc)
+    ctrl_fresh, _ = fresh("conv_control_fresh.db")
+    apply_chain(ctrl_fresh, CONTROL_SQL)
+    assert ctrl_chain.execute("PRAGMA user_version").fetchone()[0] == 3, "control chain at v3"
+    assert ctrl_fresh.execute("PRAGMA user_version").fetchone()[0] == 3
+    c_tables, c_triggers = compare_planes(ctrl_chain, ctrl_fresh, "control.db")
+    rev = ctrl_chain.execute("SELECT count(*) FROM control_revision").fetchone()[0]
+    assert rev == 1, f"control_revision holds {rev} rows, expected 1"
+    assert ctrl_chain.execute("PRAGMA foreign_key_check").fetchall() == []
 
     # the refusal half: a v2 file that HAS a code row cannot reach v3
     legacy, _ = v2("conv_legacy.db", codes=1)
@@ -797,7 +873,8 @@ def migration_chain_converges():
     finally:
         c.close()
     assert err and "legacy_12_char_codes_have_no_v3_selector" in err, err
-    return (f"{len(ct)} tables / {len(cg)} triggers identical on both paths; user_version 3; "
+    return (f"{n_tables} tables / {n_triggers} triggers identical on both paths "
+            f"(table text + trigger bodies), control {c_tables} tables at v3, no session pragma; "
             f"codes-in-file -> REJECTED ({err.split(':')[-1].strip()})")
 
 
@@ -1248,6 +1325,7 @@ CHECKS = [
 
 def main():
     global WORK
+    allow_skip = "--allow-skip" in sys.argv[1:]
     WORK = tempfile.mkdtemp(prefix="skw-verify-claims-")
     for name, fn in CHECKS:
         check(name, fn)
@@ -1258,8 +1336,15 @@ def main():
     skipped = [r for r in results if r[1] == "SKIP"]
     print(f"\n{len(results) - len(failed) - len(skipped)}/{len(results)} passed, "
           f"{len(skipped)} skipped, {len(failed)} failed")
+    if skipped and not allow_skip:
+        # E-15: a skip is a failure unless the gate was invoked with --allow-skip.
+        # The Makefile never passes it, so a missing dependency is a red gate that
+        # names the package instead of a quiet 25/27.
+        print("FAIL  " + ", ".join(f"{r[0]}: {r[2]}" for r in skipped) +
+              "  (a skip is a failure without --allow-skip; E-15)")
+    ok = not failed and (allow_skip or not skipped)
     shutil.rmtree(WORK, ignore_errors=True)
-    sys.exit(1 if failed else (2 if skipped else 0))
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

@@ -6,8 +6,10 @@
  * schema/error-codes.json by test/error-codes.test.ts, so the JSON file stays
  * the authority without a runtime file read on the error path.
  *
- * A body is always JSON {error:{code,message?,requestId,detail?}} and never
- * contains a stack, a path, a SQL fragment or a key.
+ * A body the app emits is JSON {error:{code,message?,requestId,detail?}} and never
+ * contains a stack, a path, a SQL fragment or a key. Four classes of response are
+ * generated before or outside the app (nginx's default_server 404/413/400 and
+ * Node's 400 for a missing Host) and carry the server's own body (§4.3, E-13).
  */
 
 export const CODE_PATTERN = /^SKW_E_(RT|DM|SEC|PLT|EXP|PL)_[A-Z0-9_]+$/;
@@ -21,11 +23,29 @@ export const HTTP: Record<string, number> = {
   SKW_E_PLT_DB_BUSY: 503,
   SKW_E_PLT_DISK_FULL: 507,
   SKW_E_PLT_CERT_PENDING: 503,
+  SKW_E_PLT_INTERNAL: 500,
+  SKW_E_PLT_REQUEST_INVALID: 400,
+  SKW_E_PLT_BODY_TOO_LARGE: 413,
   // DM — the data model plane
   SKW_E_DM_SCHEMA_STALE: 503,
   SKW_E_DM_BUSY: 503,
   SKW_E_DM_QUOTA: 507,
+  // RT — the render plane (§4.3 E-4): a resolved tenant with no page row
+  SKW_E_RT_PAGE_NOT_FOUND: 404,
 };
+
+/**
+ * §4.3 (E-4): a framework-level failure is translated **by its own status class**
+ * into exactly one of the four codes that class owns, and the status sent is the
+ * code's mapping — never a status that disagrees with the code. The old catch-all
+ * borrowed `SKW_E_PLT_TENANT_UNAVAILABLE` (a 503) for a 400 or a 413, which is a
+ * wrong status on the wire and a false statement about the tenant.
+ */
+export function frameworkCode(status: number): string {
+  if (status === 413) return 'SKW_E_PLT_BODY_TOO_LARGE';
+  if (status >= 400 && status < 500) return 'SKW_E_PLT_REQUEST_INVALID';
+  return 'SKW_E_PLT_INTERNAL';
+}
 
 /** Retry-After, in seconds, per code (schema/error-codes.json `retry_after`). */
 export const RETRY_AFTER: Record<string, number> = {

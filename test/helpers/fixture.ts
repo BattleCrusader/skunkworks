@@ -24,6 +24,8 @@ export interface TenantSpec {
   body?: string;
   /** Write a non-database file at tenants/<key>/site.db (the corrupt fixture). */
   corrupt?: boolean;
+  /** §12.5: `issued` gets `listen 443 ssl`, `none` gets `listen 80` only. */
+  certState?: 'none' | 'requested' | 'issued' | 'failed';
 }
 
 export interface Fixture {
@@ -100,7 +102,7 @@ export function makeFixture(opts: FixtureOptions = {}): Fixture {
        VALUES (?, ?, ?, ?, 3, ?)`,
     );
     const insertDomain = control.prepare(
-      'INSERT INTO domain (host, tenant_id, kind, is_primary) VALUES (?, ?, ?, ?)',
+      'INSERT INTO domain (host, tenant_id, kind, is_primary, cert_state) VALUES (?, ?, ?, ?, ?)',
     );
     for (const spec of specs) {
       const info = insertTenant.run(
@@ -112,7 +114,7 @@ export function makeFixture(opts: FixtureOptions = {}): Fixture {
       );
       const tenantId = Number(info.lastInsertRowid);
       spec.hosts.forEach((host, i) => {
-        insertDomain.run(host, tenantId, i === 0 ? 'primary' : 'alias', i === 0 ? 1 : 0);
+        insertDomain.run(host, tenantId, i === 0 ? 'primary' : 'alias', i === 0 ? 1 : 0, spec.certState ?? 'issued');
       });
     }
     control.close();

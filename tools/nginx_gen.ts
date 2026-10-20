@@ -1,15 +1,26 @@
 /**
- * host list -> nginx/conf.d/10-app.conf (SDS §2.3, §3, §12.3).
+ * host list -> nginx/conf.d/10-app.conf (SDS §2.3, §3, §12.3 as amended by E-5/E-12).
  *
  * The generated file is the only place a tenant is spelled into nginx config:
  *   - a `map $host $tenant` so one limit_req_zone can be keyed per tenant
  *   - one server block per tenant, listing every host of that tenant
  *   - a demos vhost with the single path-prefix location (no per-demo block)
- *   - an admin vhost that proxies to the same app
+ *   - an admin vhost that proxies to the same app, and nothing else
  *
- * `X-Skunkworks-Tenant ""` lives in snippets/skunk-proxy.conf, not here: the
- * snippet is the one include inside every proxy_pass location, and a CI check
- * asserts count(location-with-proxy_pass) == count(skunk-proxy include).
+ * Three properties are structural, not cosmetic (E-5):
+ *   - every `location` regex is QUOTED: nginx's tokenizer reads an unquoted `{`
+ *     as a block delimiter, so `{0,39}` in a bare regex fails to load at all;
+ *   - the demo key grammar is `[a-z0-9][a-z0-9-]{0,39}` — the same 40-character
+ *     maximum as `control.db`'s `tenant.key` CHECK, so every key the control
+ *     plane accepts is reachable through `/demo/`;
+ *   - `listen 80` is on every block (§12.5 promises a host serves on 80 while its
+ *     certificate is `pending`) and `listen 443 ssl` is emitted only for a host
+ *     whose `domain.cert_state = 'issued'`, because a block that listens on 443
+ *     without a certificate fails `nginx -t`.
+ *
+ * `X-Skunkworks-Tenant ""` and `X-Forwarded-Prefix ""` live in
+ * snippets/skunk-proxy.conf, not here: the snippet is the one include inside
+ * every proxy_pass location.
  */
 import Database from 'better-sqlite3';
 import { writeFileSync } from 'node:fs';
@@ -25,6 +36,7 @@ export interface GenOptions {
 interface HostRow {
   host: string;
   key: string;
+  cert_state?: string;
 }
 
 /** §12.3: rate = min(20r/s, floor(SKW_BOX_RPS / hot_tenants)), burst = 2 x rate. */
@@ -34,11 +46,15 @@ export function tenantRate(boxRps: number, hotTenants: number): { rate: number; 
   return { rate, burst: rate * 2 };
 }
 
+/** The demo key grammar, quoted at the call site (§12.3, E-5). */
+export const DEMO_KEY = '[a-z0-9][a-z0-9-]{0,39}';
+
 export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): string {
   if (rows.length === 0) throw new Error('nginx_gen: no hosts in control.db.domain');
   // The demos and admin vhosts are emitted by name. A domain row for either
   // name would emit a second server block with the same server_name, and nginx
-  // keeps the first and warns — which silently disables the /demo/ rewrite.
+  // keeps the first and warns — which silently disables the /demo/ rewrite or
+  // shadows the admin surface (§9.1 rule 3, E-2).
   for (const reserved of [opts.demosHost, opts.adminHost]) {
     const clash = rows.find((r) => r.host === reserved);
     if (clash !== undefined) {
@@ -50,10 +66,12 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
   const { rate, burst } = tenantRate(opts.boxRps ?? 192, new Set(rows.map((r) => r.key)).size);
 
   const byTenant = new Map<string, string[]>();
+  const issued = new Set<string>();
   for (const r of [...rows].sort((a, b) => (a.key === b.key ? a.host.localeCompare(b.host) : a.key.localeCompare(b.key)))) {
     const list = byTenant.get(r.key) ?? [];
     list.push(r.host);
     byTenant.set(r.key, list);
+    if (r.cert_state === 'issued') issued.add(r.key);
   }
 
   const out: string[] = [];
@@ -75,7 +93,8 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
   for (const [key, hosts] of byTenant) {
     out.push(`# tenant ${key}`);
     out.push('server {');
-    out.push('    listen 443 ssl;');
+    // 80 always; 443 only when the certificate exists (§12.5, E-5).
+    out.push(issued.has(key) ? '    listen 80; listen 443 ssl;' : '    listen 80;');
     out.push(`    server_name ${hosts.join(' ')};`);
     out.push('');
     out.push('    location / {');
@@ -99,32 +118,32 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
     out.push('');
   }
 
-  out.push('# demos: one location for every demo, no per-demo server block (C-25, §12.3)');
+  out.push('# demos: the only host that serves /demo/ (C-25). No per-demo server block.');
   out.push('server {');
-  out.push('    listen 443 ssl;');
+  out.push('    listen 80; listen 443 ssl;');
   out.push(`    server_name ${opts.demosHost};`);
   out.push('');
-  out.push('    # slash-less form 301s to the slash form, query preserved (§16 S1 gate)');
-  // The regex is quoted: nginx's config tokenizer treats an unquoted '{' as the
-  // start of a block, so `{0,31}` in a bare location regex fails with
-  // "pcre2_compile() failed: missing closing parenthesis". Measured against
-  // nginx:1.31-alpine — see the S1 report.
-  out.push('    location ~ "^/demo/(?<demo_key>[a-z0-9][a-z0-9-]{0,31})$" {');
+  out.push('    # The slash-less form FIRST. If the proxying location below is the only one, it');
+  out.push('    # matches /demo/<key> with an empty suffix, the rewrite does not fire, and an');
+  out.push('    # unstripped path reaches the app, which is forbidden to strip it (C-2) and 404s.');
+  out.push(`    location ~ "^/demo/(?<demo_key>${DEMO_KEY})$" {`);
   out.push('        return 301 /demo/$demo_key/$is_args$args;');
   out.push('    }');
   out.push('');
-  out.push('    location ~ "^/demo/(?<demo_key>[a-z0-9][a-z0-9-]{0,31})(/.*)?$" {');
-  out.push('        rewrite "^/demo/[a-z0-9][a-z0-9-]{0,31}/(.*)$" /$1 break;');
+  out.push(`    location ~ "^/demo/(?<demo_key>${DEMO_KEY})(/.*)$" {`);
+  out.push(`        rewrite "^/demo/${DEMO_KEY}/(.*)$" /$1 break;`);
   out.push('        include /etc/nginx/snippets/skunk-proxy.conf;');
   out.push('        proxy_set_header X-Skunkworks-Tenant $demo_key;');
   out.push('        proxy_set_header X-Forwarded-Prefix "/demo/$demo_key";');
   out.push('        proxy_pass http://app:3000;');
   out.push('    }');
+  out.push('');
+  out.push('    location / { return 404; }');
   out.push('}');
   out.push('');
-  out.push('# admin: one hostname, no path prefix, no tenant header (§9.1, C-25)');
+  out.push('# admin: the only host that serves /admin (E-2, §9.1). No /demo/, no /media/.');
   out.push('server {');
-  out.push('    listen 443 ssl;');
+  out.push('    listen 80; listen 443 ssl;');
   out.push(`    server_name ${opts.adminHost};`);
   out.push('');
   out.push('    location / {');
@@ -140,7 +159,11 @@ export function readHosts(controlDbPath: string): HostRow[] {
   const db = new Database(controlDbPath, { readonly: true, fileMustExist: true });
   try {
     return db
-      .prepare('SELECT d.host AS host, t.key AS key FROM domain d JOIN tenant t ON t.id = d.tenant_id ORDER BY t.key, d.host')
+      .prepare(
+        `SELECT d.host AS host, t.key AS key, d.cert_state AS cert_state
+           FROM domain d JOIN tenant t ON t.id = d.tenant_id
+          ORDER BY t.key, d.host`,
+      )
       .all() as HostRow[];
   } finally {
     db.close();

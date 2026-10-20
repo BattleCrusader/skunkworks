@@ -19,22 +19,36 @@ const generated = generateAppConf(readHosts(fixture.controlDb), {
   boxRps: 192,
 });
 
-/** Every `location ... { ... }` block in the text, with balanced braces. */
+/** Every `location ... { ... }` block in the text, with balanced braces and quotes respected. */
 export function locationBlocks(text: string): string[] {
   const blocks: string[] = [];
-  const re = /\blocation\b[^{]*\{/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    let depth = 1;
-    let i = m.index + m[0].length;
-    const start = m.index;
-    while (i < text.length && depth > 0) {
-      const ch = text[i];
-      if (ch === '{') depth += 1;
-      else if (ch === '}') depth -= 1;
-      i += 1;
+  let start = -1;
+  let depth = 0;
+  let inQuote = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '"') inQuote = !inQuote;
+    if (inQuote) continue;
+    if (start === -1) {
+      // A location directive begins at `location`; its block opens at the next `{`.
+      if (text.startsWith('location', i) && (i === 0 || /[\s;{}]/.test(text[i - 1] as string))) {
+        start = i;
+        depth = 0;
+      }
+      continue;
     }
-    blocks.push(text.slice(start, i));
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        blocks.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    } else if (ch === ';' && depth === 0) {
+      // `location /media/ { ... }` has no `;` before its block; a stray `location`
+      // keyword outside a block would end here.
+      start = -1;
+    }
   }
   return blocks;
 }
@@ -55,11 +69,12 @@ test('every location with proxy_pass includes the snippet, and no other does', (
 });
 
 test('the demo location rewrites, then overrides exactly the two tenant lines', () => {
-  const demo = locationBlocks(generated).find((b) => b.includes('$demo_key'));
+  const demo = locationBlocks(generated).find((b) => b.includes('$demo_key') && b.includes('proxy_pass'));
   assert.ok(demo !== undefined, 'no demo location');
   // Quoted: an unquoted `{0,31}` is a block delimiter to nginx's tokenizer.
   assert.match(demo, /location ~ "\^\/demo\//);
-  assert.match(demo, /rewrite "\^\/demo\/\[a-z0-9\]\[a-z0-9-\]\{0,31\}\/\(\.\*\)\$" \/\$1 break;/);
+  // 40 characters, the same maximum as `tenant.key`'s CHECK (E-5).
+  assert.match(demo, /rewrite "\^\/demo\/\[a-z0-9\]\[a-z0-9-\]\{0,39\}\/\(\.\*\)\$" \/\$1 break;/);
   assert.match(demo, /include \/etc\/nginx\/snippets\/skunk-proxy\.conf;/);
   assert.match(demo, /proxy_set_header X-Skunkworks-Tenant \$demo_key;/);
   assert.match(demo, /proxy_set_header X-Forwarded-Prefix "\/demo\/\$demo_key";/);
@@ -71,6 +86,49 @@ test('the demo location rewrites, then overrides exactly the two tenant lines', 
 
 test('the slash-less demo form 301s to the slash form', () => {
   assert.match(generated, /return 301 \/demo\/\$demo_key\/\$is_args\$args;/);
+  // The slash-less location must come before the proxying one, or it never wins.
+  const slashless = generated.indexOf('return 301 /demo/$demo_key/$is_args$args;');
+  const proxy = generated.indexOf('proxy_set_header X-Forwarded-Prefix "/demo/$demo_key";');
+  assert.ok(slashless !== -1 && proxy !== -1 && slashless < proxy, 'the 301 must be the first demo location');
+});
+
+test('E-5 — every location regex is quoted, so no unquoted `{` can be read as a block', () => {
+  for (const line of generated.split('\n')) {
+    if (!/^\s*location\s/.test(line)) continue;
+    const brace = line.indexOf('{');
+    assert.ok(brace !== -1, `location line without a block: ${line}`);
+    const pattern = line.slice(0, brace);
+    if (pattern.includes('~')) {
+      assert.match(pattern, /~\s*"/, `an unquoted regex in: ${line.trim()}`);
+    }
+    // The only unquoted `{` on a location line is the block opener itself.
+    assert.equal(line.slice(0, brace).includes('{'), false, `unquoted { before the block opener: ${line.trim()}`);
+  }
+});
+
+/** The `server { ... }` block whose `server_name` names `host`. */
+function serverBlock(text: string, host: string): string {
+  const at = text.indexOf(`server_name ${host};`);
+  if (at === -1) return '';
+  const start = text.lastIndexOf('server {', at);
+  const end = text.indexOf('\n}', at);
+  return text.slice(start, end === -1 ? undefined : end + 2);
+}
+
+test('E-5 / §12.5 — a pending certificate gets `listen 80` and no `listen 443 ssl`', () => {
+  const withPending = generateAppConf(
+    [
+      { host: 'pending.test', key: 'pending', cert_state: 'none' },
+      { host: 'issued.test', key: 'issued', cert_state: 'issued' },
+    ],
+    { adminHost: 'admin.skw.test', demosHost: 'demos.skw.test', boxRps: 192 },
+  );
+  const pendingBlock = serverBlock(withPending, 'pending.test');
+  assert.notEqual(pendingBlock, '');
+  assert.match(pendingBlock, /^\s*listen 80;$/m);
+  assert.doesNotMatch(pendingBlock, /listen 443 ssl/);
+  const issuedBlock = serverBlock(withPending, 'issued.test');
+  assert.match(issuedBlock, /listen 80; listen 443 ssl;/);
 });
 
 test('the map carries every host of every tenant, and no default tenant', () => {
@@ -84,10 +142,16 @@ test('the map carries every host of every tenant, and no default tenant', () => 
   }
 });
 
-test('the admin vhost is one hostname with no demo location', () => {
+test('the admin vhost is one hostname with no demo location and no /media/', () => {
   const admin = generated.slice(generated.indexOf('server_name admin.skw.test'));
   assert.match(admin, /include \/etc\/nginx\/snippets\/skunk-proxy\.conf;/);
   assert.doesNotMatch(admin, /\$demo_key/);
+  assert.doesNotMatch(admin, /location \/media\//);
+});
+
+test('the demos vhost 404s everything outside /demo/', () => {
+  const demos = generated.slice(generated.indexOf('server_name demos.skw.test'), generated.indexOf('server_name admin.skw.test'));
+  assert.match(demos, /location \/ \{ return 404; \}/);
 });
 
 test('the rate is derived, not the fixed 20r/s (§12.3: 3 tenants at 192 rps -> 20r/s burst 40)', () => {

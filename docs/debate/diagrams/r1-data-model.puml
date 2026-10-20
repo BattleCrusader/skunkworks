@@ -14,7 +14,7 @@ skinparam class {
 
 title Skunkworks schema v3  (generated from one spec)
 
-package "control.db  (global, never exported, user_version 2)" {
+package "control.db  (global, never exported, user_version 3)" {
   entity tenant as "tenant" <<control>> {
     id : INTEGER <<PK>>
     key : TEXT <<UQ>>
@@ -99,6 +99,11 @@ package "control.db  (global, never exported, user_version 2)" {
     tag : TEXT <<UQ>>
     checksum : TEXT <<NN>>
     applied_at : TEXT <<NN>>
+  }
+  entity control_revision as "control_revision" <<control>> {
+    id : INTEGER <<PK>>
+    rev : INTEGER <<NN>>
+    changed_at : TEXT <<NN>>
   }
 }
 

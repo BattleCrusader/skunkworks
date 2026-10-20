@@ -72,11 +72,10 @@ export function loadPage(db: Database.Database, path: string): PageRecord | null
 }
 
 /**
- * SDS §4.3 has no code for "page not found inside a resolved tenant". The only
- * 404 code in the taxonomy is SKW_E_PLT_TENANT_UNKNOWN, so that is what a page
- * miss returns — recorded as a spec defect in docs/build/S1-report.md rather
- * than inventing a new code.
+ * The tenant resolved and there is no `cms_page` row for the path (§4.3, E-4).
+ * `SKW_E_RT_PAGE_NOT_FOUND` is deliberately the least cacheable 404 in the
+ * taxonomy: a page published a second later must not be shadowed by a stored miss.
  */
 export function pageMiss(): AppError {
-  return new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no such page');
+  return new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'no such page');
 }

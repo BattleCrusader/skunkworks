@@ -1,15 +1,22 @@
 /**
- * §16 S1 gate: "the 10 resolution steps produce the 10 documented outcomes, one
- * test each — tenancy/resolve.test.ts, 10 cases" and "a client-supplied
- * X-Skunkworks-Tenant is inert on a host-routed location — same suite, cases 1-5".
+ * §16 S1 gate as amended by 02-errata E-1: "the 10 resolution rows produce the
+ * 10 documented outcomes, one test each — tenancy/resolve.test.ts, 10 cases",
+ * each asserting **the row number the resolver reports**.
  *
- * One `test()` per step, in step order, asserting the step number the resolver
- * reports as well as the outcome. A wrong step is a defect even when the status
- * matches, because the order is the contract (§5.3).
+ * The numbering is the errata's, not the old table's: the admin-plus-header case
+ * is row 1 (non-empty *and* empty value), the host case is row 8, the session
+ * case is row 7. A right status from the wrong row is a defect.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
+import { buildApp, type AppHandle } from '../../app/main.ts';
+import { loadEnv } from '../../app/env.ts';
+import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from '../helpers/fixture.ts';
+import { call } from '../helpers/http.ts';
 import {
   resolveTenant,
   peerInCidrs,
@@ -71,17 +78,27 @@ function resolve(over: {
   );
 }
 
-test('step 1 — an untrusted peer that asserts any X-Skunkworks-* header is 421', () => {
-  const r = resolve({ peer: UNTRUSTED, host: 'acme.test', headers: { 'x-skunkworks-edge': EDGE } });
-  assert.equal(r.ok, false);
-  if (r.ok) return;
-  assert.equal(r.step, 1);
-  assert.equal(r.error.code, 'SKW_E_PLT_EDGE_PROOF');
-  assert.equal(r.error.status, 421);
+/** Every outcome the public listener produced, for E-1 (c). */
+const publicRows: number[] = [];
+
+test('row 1 — the admin listener refuses a tenant header present at all (non-empty and empty)', () => {
+  for (const value of ['acme', '']) {
+    const r = resolve({
+      listener: 'admin',
+      host: 'acme.test',
+      headers: { 'x-skunkworks-tenant': value },
+      session: { tenantId: 1 },
+    });
+    assert.equal(r.ok, false, `header ${JSON.stringify(value)}`);
+    if (r.ok) return;
+    assert.equal(r.step, 1, `row for header ${JSON.stringify(value)}`);
+    assert.equal(r.error.code, 'SKW_E_PLT_EDGE_PROOF');
+    assert.equal(r.error.status, 421);
+  }
 });
 
-test('step 2 — a non-empty tenant header without the edge token is 421', () => {
-  const r = resolve({ host: 'acme.test', headers: { 'x-skunkworks-tenant': 'beta', 'x-skunkworks-edge': 'wrong' } });
+test('row 2 — an untrusted peer that asserts any X-Skunkworks-* header is 421', () => {
+  const r = resolve({ peer: UNTRUSTED, host: 'acme.test', headers: { 'x-skunkworks-edge': EDGE } });
   assert.equal(r.ok, false);
   if (r.ok) return;
   assert.equal(r.step, 2);
@@ -89,18 +106,27 @@ test('step 2 — a non-empty tenant header without the edge token is 421', () =>
   assert.equal(r.error.status, 421);
 });
 
-test('step 3 — a tenant header that is not a tenant key is 400', () => {
+test('row 3 — a non-empty tenant header without the edge token is 421', () => {
+  const r = resolve({ host: 'acme.test', headers: { 'x-skunkworks-tenant': 'beta', 'x-skunkworks-edge': 'wrong' } });
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.equal(r.step, 3);
+  assert.equal(r.error.code, 'SKW_E_PLT_EDGE_PROOF');
+  assert.equal(r.error.status, 421);
+});
+
+test('row 4 — a tenant header that is not a tenant key is 400', () => {
   for (const bad of ['BETA', 'beta_1', '-beta', 'a'.repeat(64), 'beta,acme']) {
     const r = resolve({ headers: { 'x-skunkworks-tenant': bad, 'x-skunkworks-edge': EDGE } });
     assert.equal(r.ok, false, `expected refusal for ${bad}`);
     if (r.ok) continue;
-    assert.equal(r.step, 3, `step for ${bad}`);
+    assert.equal(r.step, 4, `row for ${bad}`);
     assert.equal(r.error.code, 'SKW_E_PLT_TENANT_HEADER');
     assert.equal(r.error.status, 400);
   }
 });
 
-test('step 4 — a tenant header that disagrees with X-Forwarded-Prefix is 400', () => {
+test('row 5 — a tenant header that disagrees with X-Forwarded-Prefix is 400', () => {
   const r = resolve({
     headers: {
       'x-skunkworks-tenant': 'beta',
@@ -110,13 +136,13 @@ test('step 4 — a tenant header that disagrees with X-Forwarded-Prefix is 400',
   });
   assert.equal(r.ok, false);
   if (r.ok) return;
-  assert.equal(r.step, 4);
+  assert.equal(r.step, 5);
   assert.equal(r.error.code, 'SKW_E_PLT_TENANT_HEADER');
   assert.equal(r.error.status, 400);
 });
 
-test('step 5 — a valid header from the edge selects that tenant (via header)', () => {
-  const r = resolve({
+test('row 6 — a valid header from the edge selects that tenant, prefix from the header or ""', () => {
+  const withPrefix = resolve({
     host: 'acme.test',
     headers: {
       'x-skunkworks-tenant': 'beta',
@@ -124,59 +150,66 @@ test('step 5 — a valid header from the edge selects that tenant (via header)',
       'x-forwarded-prefix': '/demo/beta',
     },
   });
-  assert.equal(r.ok, true);
-  if (!r.ok) return;
-  assert.equal(r.step, 5);
-  assert.equal(r.tenant.key, 'beta');
-  assert.equal(r.via, 'header');
-  assert.equal(r.prefix, '/demo/beta');
+  assert.equal(withPrefix.ok, true);
+  if (!withPrefix.ok) return;
+  assert.equal(withPrefix.step, 6);
+  assert.equal(withPrefix.tenant.key, 'beta');
+  assert.equal(withPrefix.via, 'header');
+  assert.equal(withPrefix.prefix, '/demo/beta');
+
+  // E-11: no prefix header means "", never null and never a client value.
+  const noPrefix = resolve({ host: 'acme.test', headers: { 'x-skunkworks-tenant': 'beta', 'x-skunkworks-edge': EDGE } });
+  assert.equal(noPrefix.ok, true);
+  if (!noPrefix.ok) return;
+  assert.equal(noPrefix.step, 6);
+  assert.equal(noPrefix.prefix, '');
+
+  // A well-formed header naming a tenant that does not exist is a 404 at row 6:
+  // the table gives row 6 no miss row, and TENANT_UNKNOWN is the only code the
+  // taxonomy has for it (recorded in docs/build/S1-report.md §8).
+  const miss = resolve({ host: 'acme.test', headers: { 'x-skunkworks-tenant': 'nope', 'x-skunkworks-edge': EDGE } });
+  assert.equal(miss.ok, false);
+  if (miss.ok) return;
+  assert.equal(miss.step, 6);
+  assert.equal(miss.error.code, 'SKW_E_PLT_TENANT_UNKNOWN');
 });
 
-test('step 6 — no header on the public listener resolves from the normalised Host', () => {
-  const r = resolve({ host: 'WWW.ACME.TEST:8080', headers: {} });
-  assert.equal(r.ok, true);
-  if (!r.ok) return;
-  assert.equal(r.step, 6);
-  assert.equal(r.tenant.key, 'acme');
-  assert.equal(r.via, 'host');
-  assert.equal(r.host, 'www.acme.test');
-});
-
-test('step 7 — no header on the admin listener resolves from session.tenant_id only', () => {
+test('row 7 — the admin listener with no header resolves from session.tenant_id only', () => {
   const r = resolve({ listener: 'admin', host: 'acme.test', headers: {}, session: { tenantId: 2 } });
   assert.equal(r.ok, true);
   if (!r.ok) return;
   assert.equal(r.step, 7);
   assert.equal(r.tenant.key, 'beta', 'the admin listener ignores Host');
   assert.equal(r.via, 'session');
+  assert.equal(r.prefix, '', 'via=session never carries a prefix');
+
+  const noSession = resolve({ listener: 'admin', host: 'acme.test', headers: {}, session: null });
+  assert.equal(noSession.ok, false);
+  if (noSession.ok) return;
+  assert.equal(noSession.step, 7);
+  assert.equal(noSession.error.code, 'SKW_E_PLT_TENANT_UNKNOWN');
+  assert.equal(noSession.error.status, 404);
 });
 
-test('step 8 — the admin listener refuses a tenant header that is present at all', () => {
-  const withHeader = resolve({
-    listener: 'admin',
-    host: 'acme.test',
-    headers: { 'x-skunkworks-tenant': 'acme', 'x-skunkworks-edge': EDGE },
-    session: { tenantId: 1 },
-  });
-  assert.equal(withHeader.ok, false);
-  if (withHeader.ok) return;
-  assert.equal(withHeader.step, 8);
-  assert.equal(withHeader.error.code, 'SKW_E_PLT_EDGE_PROOF');
-  assert.equal(withHeader.error.status, 421);
+test('row 8 — no header on the public listener resolves from the normalised Host', () => {
+  const r = resolve({ host: 'WWW.ACME.TEST:8080', headers: {} });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.equal(r.step, 8);
+  assert.equal(r.tenant.key, 'acme');
+  assert.equal(r.via, 'host');
+  assert.equal(r.host, 'www.acme.test');
+  assert.equal(r.prefix, '', 'via=host never carries a prefix');
 
-  // "present at all" includes the empty string (§9.2, §5.3 step 8).
-  const emptyHeader = resolve({
-    listener: 'admin',
-    host: 'acme.test',
-    headers: { 'x-skunkworks-tenant': '' },
-    session: { tenantId: 1 },
-  });
-  assert.equal(emptyHeader.ok, false);
-  if (emptyHeader.ok) return;
-  assert.equal(emptyHeader.step, 8);
+  const miss = resolve({ host: 'nobody.test', headers: {} });
+  assert.equal(miss.ok, false);
+  if (miss.ok) return;
+  assert.equal(miss.step, 8);
+  assert.equal(miss.error.code, 'SKW_E_PLT_TENANT_UNKNOWN');
+  assert.equal(miss.error.status, 404);
 });
 
-test('step 9 — a resolved tenant that is suspended or archived is 404', () => {
+test('row 9 — a resolved tenant that is suspended or archived is 404', () => {
   const r = resolve({ host: 'frozen.test', headers: {} });
   assert.equal(r.ok, false);
   if (r.ok) return;
@@ -185,7 +218,7 @@ test('step 9 — a resolved tenant that is suspended or archived is 404', () => 
   assert.equal(r.error.status, 404);
 });
 
-test('step 10 — a resolved tenant whose database is unusable is 503, one code per cause', () => {
+test('row 10 — a resolved tenant whose database is unusable is 503, one code per cause', () => {
   const staleRes = resolve({ host: 'stale.test' });
   assert.equal(staleRes.ok, false);
   if (staleRes.ok) return;
@@ -200,6 +233,7 @@ test('step 10 — a resolved tenant whose database is unusable is 503, one code 
   assert.equal(goneRes.step, 10);
   assert.equal(goneRes.error.code, 'SKW_E_PLT_TENANT_UNAVAILABLE');
   assert.equal(goneRes.error.status, 503);
+  assert.equal(goneRes.error.retryAfter, 5, 'the JSON retry_after map is the authority (§4.3)');
 
   const busyRes = resolve({ host: 'busy.test' });
   assert.equal(busyRes.ok, false);
@@ -207,6 +241,54 @@ test('step 10 — a resolved tenant whose database is unusable is 503, one code 
   assert.equal(busyRes.step, 10);
   assert.equal(busyRes.error.code, 'SKW_E_DM_BUSY');
   assert.equal(busyRes.error.retryAfter, 1);
+});
+
+/* ------------------------------------------------------------------ */
+/* E-1 (a): an empty tenant header over a direct connection to the     */
+/* admin host is row 1. The same request through the real edge is row   */
+/* 7, because nginx omits an empty proxy_set_header value — that case  */
+/* is test/nginx-e2e.test.ts, and it is the one that distinguishes the */
+/* two.                                                                */
+/* ------------------------------------------------------------------ */
+test('E-1 (a) — an empty X-Skunkworks-Tenant on the admin listener is row 1, 421', () => {
+  const r = resolve({
+    listener: 'admin',
+    host: 'admin.skw.test',
+    headers: { 'x-skunkworks-tenant': '' },
+    session: { tenantId: 1 },
+  });
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.equal(r.step, 1);
+  assert.equal(r.error.status, 421);
+});
+
+/* ------------------------------------------------------------------ */
+/* E-1 (c): no request with listener='public' may report row 1 or 7.   */
+/* ------------------------------------------------------------------ */
+test("E-1 (c) — no public-listener request reports row 1 or row 7", () => {
+  const cases: Array<Parameters<typeof resolve>[0]> = [
+    { host: 'acme.test', headers: {} },
+    { host: 'www.acme.test', headers: {} },
+    { host: 'nobody.test', headers: {} },
+    { host: 'frozen.test', headers: {} },
+    { host: 'stale.test', headers: {} },
+    { host: 'acme.test', headers: { 'x-skunkworks-tenant': 'beta', 'x-skunkworks-edge': EDGE } },
+    { host: 'acme.test', headers: { 'x-skunkworks-tenant': '', 'x-skunkworks-edge': EDGE } },
+    { host: 'acme.test', headers: { 'x-skunkworks-tenant': 'BETA', 'x-skunkworks-edge': EDGE } },
+    { host: 'acme.test', headers: { 'x-skunkworks-tenant': 'beta', 'x-skunkworks-edge': 'wrong' } },
+    { peer: UNTRUSTED, host: 'acme.test', headers: { 'x-skunkworks-tenant': 'beta' } },
+  ];
+  const rows = cases.map((c) => {
+    const r = resolve({ ...c, listener: 'public', session: null });
+    return r.step;
+  });
+  for (const row of rows) {
+    assert.notEqual(row, 1, `public listener reported row 1: ${rows.join(',')}`);
+    assert.notEqual(row, 7, `public listener reported row 7: ${rows.join(',')}`);
+  }
+  publicRows.push(...rows);
+  assert.ok(publicRows.length > 0);
 });
 
 /* ------------------------------------------------------------------ */
@@ -226,7 +308,7 @@ test('inert 2 — a client header with a guessed edge token is refused, not hono
   const r = resolve({ host: 'acme.test', headers: { 'x-skunkworks-tenant': 'beta', 'x-skunkworks-edge': 'guess' } });
   assert.equal(r.ok, false);
   if (r.ok) return;
-  assert.equal(r.step, 2);
+  assert.equal(r.step, 3);
   assert.equal(r.error.code, 'SKW_E_PLT_EDGE_PROOF');
 });
 
@@ -236,6 +318,7 @@ test('inert 3 — an empty header is no assertion: the Host decides', () => {
   if (!r.ok) return;
   assert.equal(r.tenant.key, 'acme');
   assert.equal(r.via, 'host');
+  assert.equal(r.step, 8);
 });
 
 test('inert 4 — a malformed claim is a 400, never a silent fallback', () => {
@@ -266,4 +349,114 @@ test('CIDR containment: the two frozen defaults and the loopback forms', () => {
   assert.equal(peerInCidrs('203.0.113.9', ['127.0.0.1/32', '172.16.0.0/12']), false);
   assert.equal(peerInCidrs('172.32.0.1', ['172.16.0.0/12']), false);
   assert.equal(peerInCidrs('not-an-ip', ['0.0.0.0/0']), false);
+});
+
+/* ------------------------------------------------------------------ */
+/* E-7 — every Retry-After in the taxonomy is asserted on the wire.    */
+/* The unit assertion on `err.retryAfter` is not the gate: the header  */
+/* is the contract, and it is the only part a proxy or client acts on. */
+/* ------------------------------------------------------------------ */
+interface RetryApp {
+  handle: AppHandle;
+  fixture: Fixture;
+  port: number;
+  locker: Database.Database;
+  close(): Promise<void>;
+}
+
+async function bootRetryApp(): Promise<RetryApp> {
+  const fixture = makeFixture({
+    specs: [
+      { key: 'acme', hosts: ['acme.test'] },
+      { key: 'stale', hosts: ['stale.test'] },
+      { key: 'busy', hosts: ['busy.test'] },
+      { key: 'broken', hosts: ['broken.test'], corrupt: true },
+    ],
+  });
+  const handle = await buildApp({ env: loadEnv({ ...fixture.env, SKW_DB_BUSY_TIMEOUT_MS: '50' }) });
+  await handle.app.listen({ port: 0, host: '127.0.0.1' });
+  const address = handle.app.server.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+
+  // row 10, `user_version < tenant.db_version`
+  const control = new Database(fixture.controlDb);
+  control.prepare("UPDATE tenant SET db_version = 9 WHERE key = 'stale'").run();
+  control.close();
+
+  // row 10, `SQLITE_BUSY` after busy_timeout: a rollback-journal file with an
+  // exclusive lock held by a second connection. WAL readers do not block, so the
+  // journal mode is part of the fixture.
+  const prep = new Database(fixture.sitePath('busy'));
+  prep.pragma('journal_mode = DELETE');
+  prep.close();
+  const locker = new Database(fixture.sitePath('busy'));
+  locker.pragma('busy_timeout = 10');
+  locker.exec('BEGIN EXCLUSIVE');
+  locker.prepare('UPDATE cms_page SET title = title').run();
+
+  return {
+    handle,
+    fixture,
+    port,
+    locker,
+    async close() {
+      locker.exec('ROLLBACK');
+      locker.close();
+      await handle.close();
+      fixture.cleanup();
+    },
+  };
+}
+
+test('E-7 — every code with a retry_after entry carries the header, with that value', async () => {
+  const codes = JSON.parse(readFileSync(join(REPO, 'schema', 'error-codes.json'), 'utf8')) as {
+    retry_after: Record<string, number>;
+  };
+  const app = await bootRetryApp();
+  // One reachable request per entry in the frozen map. The map has three entries,
+  // and the assertion is that the JSON's number is what arrives on the wire.
+  const hosts: Record<string, string> = {
+    SKW_E_DM_SCHEMA_STALE: 'stale.test',
+    SKW_E_DM_BUSY: 'busy.test',
+    SKW_E_PLT_TENANT_UNAVAILABLE: 'broken.test',
+  };
+  try {
+    assert.deepEqual(Object.keys(codes.retry_after).sort(), Object.keys(hosts).sort(), 'the frozen retry_after map changed');
+    for (const [code, seconds] of Object.entries(codes.retry_after)) {
+      const res = await call({ port: app.port, path: '/pricing', host: hosts[code] as string });
+      assert.equal(res.status, 503, `${code} status`);
+      assert.equal((res.json as { error: { code: string } }).error.code, code);
+      assert.equal(res.headers['retry-after'], String(seconds), `${code} retry-after on the wire`);
+      assert.match(String(res.headers['retry-after']), /^\d+$/, 'delta-seconds, never an HTTP-date');
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+test('E-7 — no other code carries the header', async () => {
+  const app = await bootRetryApp();
+  try {
+    const cases: { name: string; res: Awaited<ReturnType<typeof call>> }[] = [];
+    cases.push({
+      name: 'SKW_E_PLT_EDGE_PROOF 421',
+      res: await call({ port: app.port, path: '/pricing', host: 'acme.test', headers: { 'x-skunkworks-tenant': 'acme' } }),
+    });
+    cases.push({
+      name: 'SKW_E_PLT_TENANT_HEADER 400',
+      res: await call({
+        port: app.port,
+        path: '/pricing',
+        host: 'acme.test',
+        headers: { 'x-skunkworks-tenant': 'BETA', 'x-skunkworks-edge': EDGE_TOKEN },
+      }),
+    });
+    cases.push({ name: 'SKW_E_PLT_TENANT_UNKNOWN 404', res: await call({ port: app.port, path: '/pricing', host: 'nobody.test' }) });
+    cases.push({ name: 'SKW_E_RT_PAGE_NOT_FOUND 404', res: await call({ port: app.port, path: '/no-such-page', host: 'acme.test' }) });
+    for (const { name, res } of cases) {
+      assert.equal(res.headers['retry-after'], undefined, `${name} must not carry Retry-After`);
+    }
+  } finally {
+    await app.close();
+  }
 });

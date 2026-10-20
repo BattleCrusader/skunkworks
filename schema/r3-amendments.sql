@@ -87,6 +87,15 @@ INSERT INTO cms_download_code_r3 (id, code_selector, code_hash, asset_id, bundle
      SELECT id, code_selector, code_hash, asset_id, bundle_id, max_uses,
             uses, expires_at, issued_to_email, order_ref, revoked_at,
             last_used_at, created_at FROM cms_download_code;
+
+-- (2b) THE TRIGGER DROPS COME BEFORE THE DROP TABLE (E-6). SQLite >= 3.25 re-parses
+--      every trigger when a table is renamed, so a trigger whose body or ON clause names
+--      cms_download_code aborts `ALTER TABLE cms_download_code_r3 RENAME TO cms_download_code`
+--      with "no such table: main.cms_download_code". Both v2 triggers are dropped here and
+--      recreated verbatim in A9; `legacy_alter_table` is set by nobody.
+DROP TRIGGER IF EXISTS trg_cms_asset_delete_guard;
+DROP TRIGGER IF EXISTS trg_cms_download_code_hash_immutable;
+
 DROP TABLE cms_download_code;
 ALTER TABLE cms_download_code_r3 RENAME TO cms_download_code;
 CREATE INDEX ix_code_asset ON cms_download_code(asset_id, created_at);
@@ -313,9 +322,83 @@ CREATE TABLE cms_plugin_revoked (
 CREATE INDEX ix_trg_table ON cms_trigger_registry(table_name);
 
 -- ===========================================================================
+-- A8b. Three v2 constraint drifts the old name-set convergence check could not see
+--      (02-errata E-14). Each is a CHECK the shipped v3 DDL has and the v1+r2 chain did not:
+--        * cms_redirect.from_path lacked `NOT GLOB '//*'` (O-16's shared path predicate);
+--        * cms_form_submission.state lacked the 'suppressed' outcome (O-30's honeypot);
+--        * cms_datasource.cost_ms_p95 lost the `>= 0` CHECK, because v2's cost_ms never had one
+--          and A5's RENAME COLUMN carries the old column definition forward.
+--      SQLite cannot ALTER a CHECK, so each is the 12-step rebuild. No table references any of
+--      the three, so DROP TABLE cascades nothing. The column lists are explicit.
+-- ===========================================================================
+CREATE TABLE cms_redirect_r3 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_path TEXT NOT NULL UNIQUE COLLATE NOCASE CHECK(from_path = '/' OR (from_path GLOB '/*' AND from_path NOT GLOB '//*' AND from_path NOT GLOB '*..*' AND from_path NOT GLOB '*/' AND from_path NOT GLOB '*//*')),
+  to_path TEXT NOT NULL CHECK(to_path = '/' OR (to_path GLOB '/*' AND to_path NOT GLOB '//*' AND to_path NOT GLOB '*..*' AND to_path NOT GLOB '*/' AND to_path NOT GLOB '*//*')),
+  status INTEGER NOT NULL DEFAULT 301 CHECK(status IN (301,302,308)),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  hits INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO cms_redirect_r3 (id, from_path, to_path, status, created_at, hits)
+     SELECT id, from_path, to_path, status, created_at, hits FROM cms_redirect;
+DROP TABLE cms_redirect;
+ALTER TABLE cms_redirect_r3 RENAME TO cms_redirect;
+UPDATE sqlite_sequence SET seq = COALESCE((SELECT seq FROM _r3_seq WHERE name = 'cms_redirect'), seq)
+ WHERE name = 'cms_redirect';
+
+CREATE TABLE cms_form_submission_r3 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  form_id INTEGER NOT NULL REFERENCES cms_form(id) ON DELETE CASCADE,
+  payload_json TEXT NOT NULL,
+  ip_hash TEXT,
+  spam_score REAL NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'new' CHECK(state IN ('new','read','spam','forwarded','suppressed')),
+  ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+INSERT INTO cms_form_submission_r3 (id, form_id, payload_json, ip_hash, spam_score, state, ts)
+     SELECT id, form_id, payload_json, ip_hash, spam_score, state, ts FROM cms_form_submission;
+DROP TABLE cms_form_submission;
+ALTER TABLE cms_form_submission_r3 RENAME TO cms_form_submission;
+CREATE INDEX ix_sub_form_ts ON cms_form_submission(form_id, ts);
+UPDATE sqlite_sequence SET seq = COALESCE((SELECT seq FROM _r3_seq WHERE name = 'cms_form_submission'), seq)
+ WHERE name = 'cms_form_submission';
+
+CREATE TABLE cms_datasource_r3 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key TEXT NOT NULL UNIQUE COLLATE NOCASE CHECK(key = lower(key) AND key NOT GLOB '*[^a-z0-9-]*'),
+  kind TEXT NOT NULL CHECK(kind IN ('view','query')),
+  spec_json TEXT NOT NULL CHECK(json_valid(spec_json)),
+  aggregate_json TEXT CHECK(aggregate_json IS NULL OR (json_valid(aggregate_json) AND json_type(aggregate_json) = 'object')),
+  group_by_json TEXT CHECK(group_by_json IS NULL OR (json_valid(group_by_json) AND json_type(group_by_json) = 'array')),
+  params_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(params_json) AND json_type(params_json) = 'array'),
+  is_public INTEGER NOT NULL DEFAULT 0 CHECK(is_public IN (0,1)),
+  ttl_s INTEGER NOT NULL DEFAULT 60 CHECK(ttl_s BETWEEN 0 AND 86400),
+  cost_ms_p95 REAL CHECK(cost_ms_p95 IS NULL OR cost_ms_p95 >= 0),
+  cost_ms_max REAL CHECK(cost_ms_max IS NULL OR cost_ms_max >= 0),
+  cost_rows INTEGER,
+  cost_measured_at TEXT,
+  cost_plan TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  published_at TEXT,
+  published_by INTEGER
+);
+INSERT INTO cms_datasource_r3 (id, key, kind, spec_json, aggregate_json, group_by_json, params_json,
+                               is_public, ttl_s, cost_ms_p95, cost_ms_max, cost_rows,
+                               cost_measured_at, cost_plan, created_at, published_at, published_by)
+     SELECT id, key, kind, spec_json, aggregate_json, group_by_json, params_json,
+            is_public, ttl_s, cost_ms_p95, cost_ms_max, cost_rows,
+            cost_measured_at, cost_plan, created_at, published_at, published_by FROM cms_datasource;
+DROP TABLE cms_datasource;
+ALTER TABLE cms_datasource_r3 RENAME TO cms_datasource;
+CREATE INDEX ix_ds_public ON cms_datasource(is_public);
+UPDATE sqlite_sequence SET seq = COALESCE((SELECT seq FROM _r3_seq WHERE name = 'cms_datasource'), seq)
+ WHERE name = 'cms_datasource';
+
+-- ===========================================================================
 -- A9. C-19 — every RAISE message moves to the SKW_E_ taxonomy, and every trigger is registered.
---     The three v2 triggers are dropped and recreated because their message changed from
---     DM_E_<NAME> to SKW_E_DM_<NAME>; the two audit triggers are new in v3.
+--     The three v2 triggers are dropped (the two that name cms_download_code already in A1, E-6)
+--     and recreated because their message changed from DM_E_<NAME> to SKW_E_DM_<NAME>; the two
+--     audit triggers are new in v3.
 -- ===========================================================================
 DROP TRIGGER IF EXISTS trg_cms_asset_delete_guard;
 DROP TRIGGER IF EXISTS trg_cms_asset_sha_immutable;

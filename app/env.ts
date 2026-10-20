@@ -160,7 +160,15 @@ export function loadEnv(
     }
     const pool = source.UV_THREADPOOL_SIZE;
     if (pool !== '8') {
-      throw new BootRefusal(`UV_THREADPOOL_SIZE must be 8 (SDS \u00a72.3 step 2); got ${pool ?? '(unset)'}`);
+      // §2.3 step 2 (E-9): libuv sizes the pool when the process starts, so a value
+      // exported after launch cannot resize it. This is a check that the image did
+      // its job (`Dockerfile.app`'s `ENV UV_THREADPOOL_SIZE=8`), and it must fail
+      // rather than pass when an operator supplies the variable late. Absent counts
+      // as not 8. The message says both things, so the next reader learns why.
+      throw new BootRefusal(
+        `UV_THREADPOOL_SIZE must be 8 and is fixed at process start by the image ` +
+          `(SDS \u00a72.3 step 2, E-9); got ${pool ?? '(unset)'}`,
+      );
     }
     if (env.renderMode === 'snapshot' && env.exportNow === undefined) {
       throw new BootRefusal('SKW_EXPORT_NOW is required when SKW_RENDER_MODE=snapshot (SDS \u00a74.3)');

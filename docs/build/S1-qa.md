@@ -1,686 +1,499 @@
-# S1 — Hosting core: independent QA
+# S1 — Hosting core: independent QA, round 2 (post-errata rework)
 
 **Reviewer:** QA (independent of the builder). **Date:** 2026-10-20.
-**Tree:** `/Volumes/Backup/Development/skunkworks`, uncommitted, as delivered.
-**Verdict: NO-GO.** Two blockers (B1, B2). The 9/9 claim is true as written and every named
-gate has teeth — I broke each behaviour and watched its test go red — but the listener split
-and the tenant map both fail the slice's own frozen rules once the system is running, and one
-of them is the rule C-25 exists to enforce.
+**Tree:** `/Volumes/Backup/Development/skunkworks`, uncommitted, as delivered after the 15-item
+rework. **Previous verdict:** NO-GO (`S1-qa.md`, HEAD~). **This verdict: GO.**
+Both blockers are dead by re-attempt, not by assertion. All four negative controls I ran went red
+and every file I mutated was restored by hash. Two new **gate-only** majors remain (G3, G4) and
+must be closed before S2 leans on this gate; neither is a defect in S1's behaviour.
 
 Environment I measured on: macOS 15.7.4, Node v22.23.1, Docker 29.7.2, nginx `1.31-alpine`,
-`/usr/bin/python3` 3.9.6 / SQLite 3.43.2, Homebrew `python3` 3.14.6 / SQLite 3.53.4.
+`/usr/bin/python3` 3.9.6 / SQLite 3.43.2, and a second interpreter 3.14.6 / SQLite **3.53.4**.
 
 ---
 
-## 0. Summary
+## 0. Summary — every round-1 finding, closed or re-raised
 
-| # | Severity | Defect |
-|---|---|---|
-| B1 | **blocker** | `listenerFor()` treats `/admin/*` on **any** Host as the admin listener. Every production tenant's own site serves the admin surface; §9.1 says one hostname, §5.6 says a host that serves tenant-authored HTML never serves the admin. The test suite asserts the hole (`admin-listener.test.ts:68`). |
-| B2 | **blocker** | A tenant suspended (and, by the same branch, archived) or flipped to `mode='demo'`, a deleted domain and a raised `db_version` are invisible to the running process until a restart. Frozen step 9 says a suspended tenant is 404; measured 200. (§5.4's stamp is the cause — a spec defect the builder disclosed — but the runtime contradicts an S1 acceptance criterion.) |
-| M1 | major | `X-Forwarded-Prefix` is not cleared on host-routed locations, so any client sets `tenant.prefix`. Measured through real nginx: `prefix: "/demo/evil"`. |
-| M2 | major | Every non-`AppError` is answered with `SKW_E_PLT_TENANT_UNAVAILABLE` at whatever status the framework chose: a 400 (bad JSON) and a 413 (>16 MiB) both carry a code the frozen map defines as 503. §4.3 says a body is always JSON `{error:{code}}`, one code per failure. |
-| M3 | major | A new tenant/domain added to `control.db` is not routed at the edge: nginx's `server_name` list is generated at install and nothing reloads it. §5.4 promises "picked up on the next request without a restart". Measured: edge 404 for a host the app would serve. |
-| m1 | minor | The "converges exactly (53 objects)" assertion is a name/column comparison; `migrate.test.ts` compares `(type,name)` only. Full-SQL comparison shows 11 textual diffs (harmless quote-wrapping) — the *claim* is stronger than the *check*. |
-| m2 | minor | `Retry-After` is never asserted over HTTP. Suppressing the header entirely leaves 40/40 S1 tests green. |
-| m3 | minor | `env.test.ts:97` spawns the app with no timeout; with the boot refusal removed the suite **hung** (>180 s) instead of reporting red. |
-| m4 | minor | Demo key length: nginx allows 32 chars (`{0,31}`), §5.1/§5.3 allow 63. Keys of 33–63 chars are valid to the app and unreachable through `/demo/`. |
-| m5 | minor | A >16 MiB body through the edge is nginx's **HTML** 413, not a taxonomy body. |
-| m6 | minor | HTTP/1.1 with no Host at all returns `{}` with 400 (Node/Fastify, before the app). |
-| m7 | minor | The Makefile pin's comment ("/usr/bin/python3 on macOS/Linux ships it") is false on most Linux, and pinning to SQLite 3.43 means the `legacy_alter_table` fix is never exercised by the default gate. |
+| # | Round-1 finding | Status now | Where it is proved |
+|---|---|---|---|
+| **B1** | `/admin/*` on **any** Host was the admin listener; every tenant site served the admin surface; the test asserted it | **CLOSED** | §2: 110-combination sweep, 0 × 421, 0 × `Set-Cookie`, byte-identical bodies on 4 tenant hosts; control 4 puts B1 back and the suite goes red |
+| **B2** | suspend / archive / mode / `db_version` / deleted domain invisible until restart | **CLOSED** | §3: all six mutations by a **second connection**, visible on the next request; counter proven same-transaction by `ROLLBACK` |
+| **M1** | client `X-Forwarded-Prefix` became `tenant.prefix` | **CLOSED** | `via='host'` now yields `prefix: ""` for both `/demo/evil` and `/demo/acme`; header-routed still `/demo/acme` (§6) |
+| **M2** | every non-`AppError` borrowed the 503 code | **CLOSED** | malformed JSON → `400 SKW_E_PLT_REQUEST_INVALID`; 17 MiB direct → `413 SKW_E_PLT_BODY_TOO_LARGE` (§6) |
+| **M3** | a new domain 404s at the edge until someone reloads nginx | **CLOSED as specified**, re-raised as an operational risk | E-12 is now a 4-step ordered contract with a gated negative (`test/onboarding.test.ts`); the *manual* sequence remains — §8 |
+| **m1** | convergence compared `(type,name)`, so a missing CHECK passed | **CLOSED** | control 3: one dropped CHECK turns **both** gates red, naming `cms_download_code` |
+| **m2** | `Retry-After` had no wire gate | **CLOSED** | control 1: suppressed header → `not ok 19` |
+| **m3** | env gate hung >180 s instead of failing | **CLOSED** | control 2: red in ~5 s by named `ETIMEDOUT`; with the inner timeout removed, the suite belt kills it at 15.06 s |
+| **m4** | demo key capped at 32 while `tenant.key` allows 40 | **CLOSED** | `10-app.conf` carries `{0,39}` ×3; 0 unquoted location regexes |
+| **m5** | edge 413 was nginx HTML, outside the always-JSON claim | **CLOSED** (scoped, not "fixed") | E-13 names the four out-of-app responses; the 17 MiB edge case asserts `text/html` + no taxonomy code |
+| **m6** | HTTP/1.1 with no `Host` → `{}` 400 | **CLOSED** (scoped) | asserted as "400, no tenant, nothing about the body" |
+| **m7** | undeclared interpreter prereqs; the pin hid E-6 | **CLOSED in substance, defective in CI** | `make verify-toolchain` fails loudly; `verify-claims-modern` → 27/27 on SQLite 3.53.4, exit 0. The CI half is G4 |
+| **G3** | — | **NEW, major (gate)** | `SKW_SKIP_DOCKER=1 make verify-s1` → **exit 0 with 12 skipped**, i.e. every nginx gate silently off (§7) |
+| **G4** | — | **NEW, major (gate)** | `.github/workflows/gate.yml` has never run **and** aborts at its own interpreter assertion on the runner it names (§7) |
 
-**The one thing most likely to break in week one of real traffic:** onboarding. Add a tenant
-or a second domain to `control.db` and the host 404s at the edge until somebody re-runs
-`tools/nginx_gen.ts` and reloads nginx — the app's cache refresh creates the illusion that the
-change is live (M3, measured below). The first paying customer's new domain is the first 404.
+No round-1 finding was dropped silently. Nothing in the errata's §3 "settled ground" was
+re-litigated by me.
 
 ---
 
-## 1. The gates, run from a clean shell
-
-Everything below was run with a scrubbed environment
-(`env -i HOME=… PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/usr/sbin:/sbin`).
+## 1. The gates, run myself
 
 ```
 $ make test
-…
-PASS  13 must-ignore + 7 must-keep = 20 paths behave as intended
-PASS  1 schema/ER parity + negative tests …
-PASS  2 cp loses data, VACUUM INTO keeps it …
-…  (27 claim checks, all PASS)
-PASS  27 connection classes: query_only is not tenancy (C-15) …
+verify-toolchain: /usr/bin/python3 -> python 3.9.6, sqlite 3.43.2, argon2 ok
+PASS  1 schema/ER parity + negative tests   …  PASS  27 connection classes …
+27/27 passed, 0 skipped, 0 failed
+adopted sentences: 24/25 verbatim in SDS.md; 1 superseded by 02-errata
+frozen §4 blocks: 11/12 verbatim; 1 superseded by 02-errata
+resolution steps: 5/5 present; env names: 29/29 present
 PASS the SDS quotes the register
-# tests 75
-# pass 75
-# fail 0
-# skipped 0
-EXIT=0
-```
-29 `PASS` verdict lines (27 claim checks — check 1 is the schema-parity line — plus the
-gitignore and frozen-quotes gates), 75/75 node tests, 0 skipped — the nginx e2e really ran (a
-skip would show as `# skipped 1`).
+# tests 106  # pass 106  # fail 0  # skipped 0
+EXIT=0                                    (34.8 s wall)
 
-```
 $ make verify-s1
-# tests 75
-# pass 75
-# fail 0
-# skipped 0
+verify-toolchain: /usr/bin/python3 -> python 3.9.6, sqlite 3.43.2, argon2 ok
+# tests 106  # pass 106  # fail 0  # skipped 0
+EXIT=0                                    (25.6 s wall)
+
+$ make verify-claims-modern MODERN_PYTHON=…/py-modern/bin/python
+verify-toolchain: … -> python 3.14.6, sqlite 3.53.4, argon2 ok
+27/27 passed, 0 skipped, 0 failed
 EXIT=0
+
+$ SKW_SKIP_DOCKER=1 make verify-s1
+# tests 106  # pass 94  # fail 0  # skipped 12
+EXIT=0                                    ← G3, §7
 ```
 
-Compose, checked myself rather than taken from the report:
-
-```
-$ docker compose --env-file .env.example config --services
-acme
-app
-nginx
-plugin-runner
-$ docker compose --env-file .env.example config --format json | …
-services ['acme', 'app', 'nginx', 'plugin-runner']
-app.ports None
-app.expose ['3000']
-runner.network_mode none
-nginx.ports [80/tcp, 443/tcp]
-```
-
-So the headline claim — 9/9, `make test` green — is **true**. The rest of this document is
-about whether green means what the report says it means.
+`# skipped 0` on the first two runs is real, not a quiet skip: the two nginx suites ran against
+`nginx:1.31-alpine` (11 + 1 tests). The builder's 106/106 on two interpreters is true as written.
 
 ---
 
-## 2. Negative controls — can the gates fail?
+## 2. B1 re-attempt — `/admin/…` on a production tenant host
 
-Method for every control: copy the file to a scratch baseline, `shasum -a 256` it, mutate,
-run the named suite, restore from the copy, re-hash, run green. No file was left modified;
-the six baselines are listed in §2.6.
-
-### 2.1 Trust a client-supplied tenant header on a host-routed location
-
-Two halves, because the property has two implementations.
-
-**(a) the edge.** `snippets/skunk-proxy.conf`, the line that makes the claim inert:
-
-```diff
--proxy_set_header X-Skunkworks-Tenant "";          # fail closed: a client claim never survives
-+proxy_set_header X-Skunkworks-Tenant $http_x_skunkworks_tenant;
-```
+App-direct (the listener is app state; nginx only forwards `Host`), fixture `control.db`/`site.db`,
+real `buildApp`. For each Host I compare `/admin/t/acme/pages` against `/no-such-page-xyz` on the
+**same** Host, with `requestId` normalised:
 
 ```
-$ node --test test/nginx-e2e.test.ts
-not ok 5 - through real nginx: a client-supplied tenant header is stripped by the snippet
-  error: |-
-    The input did not match the regular expression /Acme pricing/. Input:
-    '<!DOCTYPE html>\n' +
-      '<html lang="en" data-tenant="beta">\n' +
-      '<title>Beta pricing</title>\n' …
-# tests 6
-# pass 5
-# fail 1
-```
-*(the HTML body is trimmed with `…`; the full body was Beta's page, `<html lang="en" data-tenant="beta">`)*
-A client sending `X-Skunkworks-Tenant: beta` to `acme.test` got **Beta's page**. That is a
-cross-tenant read, and it is exactly the failure mode the criterion names.
-
-**(b) the app.** Remove step 2 from `app/tenancy/resolve.ts` (`if (false && hdrNonEmpty && …)`):
-
-```
-not ok 2  - step 2 — a non-empty tenant header without the edge token is 421
-  error: |-
-    Expected values to be strictly equal:
-    true !== false
-not ok 11 - inert 1 — a client header with no edge token is refused, not honoured
-not ok 12 - inert 2 — a client header with a guessed edge token is refused, not honoured
-# tests 16
-# pass 13
-# fail 3
+{"host":"acme.test",      "admin":{"status":404,"code":"SKW_E_RT_PAGE_NOT_FOUND"},
+                          "unknown":{"status":404,"code":"SKW_E_RT_PAGE_NOT_FOUND"},
+                          "bodyEqual":true,"headersEqual":true,"setCookie":null,"location":null}
+{"host":"www.acme.test",  … "bodyEqual":true,"headersEqual":true …}
+{"host":"beta.test",      … "bodyEqual":true,"headersEqual":true …}
+{"host":"acme-demo.test", … "bodyEqual":true,"headersEqual":true …}   ← the demo host: 404, not 421
+{"host":"demos.skw.test", "admin":{"code":"SKW_E_PLT_TENANT_UNKNOWN"},
+                          "unknown":{"code":"SKW_E_PLT_TENANT_UNKNOWN"},
+                          "bodyEqual":true,"headersEqual":true …}     ← that host maps to no tenant
+{"host":"admin.skw.test", … "bodyEqual":true,"headersEqual":true …}
 ```
 
-Restored: `78d68f77…` (snippet) and `660b6b88…` (resolve.ts); e2e 6/6 green, unit 16/16 green.
+Bodies and header sets are equal on every row: **no** `Set-Cookie`, **no** `Location`, **no** 421.
+The demo-host row is the one round 1 could not get — it used to be 421, i.e. an oracle that said
+"this path is special".
 
-### 2.2 Make the app rewrite the inbound path under `/demo/` (double strip)
+Sweep for any Host/path that reaches the admin surface — 10 Host forms × 11 paths
+(`/admin`, `/admin/`, `/admin/t/acme/pages`, `/ADMIN/…`, `//admin`, `/admin%2F…`, `/adminish`,
+`/demo/acme/admin/…`, `/./admin`, `/admin/../admin/…`, `/admin?x=1`):
 
-`app/main.ts`, in `resolveRequest()`:
+```
+sweep rows=110  421s=0  setCookies=0  locations=0
+```
+
+That is structural, not luck: `listenerFor()` now takes **only** the Host, and `resolveRequest()`
+has exactly one branch keyed on it. There is no code path where a pathname can mount the admin
+surface.
+
+The admin host **is** the admin surface. The only S1-visible discriminator is row 1 (it fires only
+when `listener='admin'`):
+
+```
+admin.skw.test + X-Skunkworks-Tenant: ''      -> 421 SKW_E_PLT_EDGE_PROOF   (row 1)
+acme.test     + X-Skunkworks-Tenant: ''      -> 200 acme, via=host          (row 8)
+admin.skw.test /healthz, /readyz              -> 200 (answered before resolution, §9.5)
+admin.skw.test /pricing, /media/x.png         -> 404 SKW_E_PLT_TENANT_UNKNOWN (rule 2)
+```
+
+S1 mounts no admin *route* (`session: null` by design; S2 owns auth), so "reachable" cannot mean a
+200 here. What is proven is what §9.1 claims: one Hostname flips the listener, every other Host
+does not, and a tenant header present at all is refused on it.
+
+Hostile Host forms fold as specified: `ADMIN.SKW.TEST.` → admin, `admin.skw.test:8443` → admin,
+`admin.skw.test.evil.test` → public, `evil.admin.skw.test` → public, `null`/`''` → public.
+
+**One observation, not a finding.** `listenerFor('admin%2Eskw.test')` → `admin`: `normaliseHost()`
+runs `domainToASCII`, which percent-decodes. It is fail-*closed* (it grants the admin listener, never
+a tenant), and it cannot come from a `domain` row — `domain.host` is `CHECK(host NOT GLOB
+'*[^a-z0-9.-]*')`, so `%` is refused at the schema. Worth remembering when S2 lands
+`__Host-sk-sess`: the `__Host-` prefix binds to the literal host, so no cookie would be sent to the
+`%`-form anyway.
+
+---
+
+## 3. B2 re-attempt — control writes seen on the next request, no restart
+
+Second `control.db` connection while the app serves; `rev` read from `control_revision`:
+
+```
+warm                                         rev=10 -> 200 acme
+after UPDATE tenant.status=suspended         rev=11 -> 404 SKW_E_PLT_TENANT_UNKNOWN
+after UPDATE tenant.status=archived          rev=12 -> 404 SKW_E_PLT_TENANT_UNKNOWN
+after UPDATE tenant.status=active            rev=13 -> 200 acme
+after DELETE FROM domain acme.test           rev=14 -> 404 SKW_E_PLT_TENANT_UNKNOWN
+after INSERT domain acme.test                rev=15 -> 200 acme
+after UPDATE tenant.db_version=9             rev=16 -> 503 SKW_E_DM_SCHEMA_STALE  retry-after=5
+after UPDATE tenant.db_version=3             rev=17 -> 200 acme
+after INSERT domain new.test                 rev=18 -> 200 on new.test  (tenant count unchanged)
+```
+
+The last row is the one the old stamp could never see: a new host with **no** tenant insert now
+routes on the next request.
+
+**Same transaction, by construction and by measurement.** The counter is moved by six `AFTER
+INSERT/UPDATE/DELETE` triggers on `tenant` and `domain` whose body is
+`UPDATE control_revision SET rev = rev + 1, changed_at = … WHERE id = 1;` — application code never
+touches it, so a write from `sqlite3`, `migrate` or the next image bumps it too. Proven, not
+assumed:
+
+```
+rev before=19  inside-open-txn=20  after-ROLLBACK=19     ← the bump rolled back with the write
+UPDATE beta status=active (no-op value): rev 19 -> 20    ← still an UPDATE, still moves
+```
+
+**§5.4a, one read per request:**
+
+```
+stats before={"stampReads":132,"rebuilds":10}  after 5 requests={"stampReads":137,"rebuilds":11}
+deltaStampReads=5  deltaRebuilds=1
+```
+
+Five requests → five stamp reads, one rebuild. The stamp is `rev || ':' || PRAGMA user_version` from
+the control handle the map already holds. The design caveat is honest and unchanged from the errata:
+the read is one per *map lookup*, and today the resolver makes exactly one lookup per request.
+
+---
+
+## 4. Negative controls — break, prove red, restore, prove green
+
+Method identical for each: `shasum -a 256` baseline, mutate the **behaviour** (never the test,
+except 2b where the test *is* the thing under test), run the named gate, restore from the baseline
+copy, re-hash, re-run.
+
+### 4.1 E-7 — `Retry-After` suppressed in `sendError()`
 
 ```ts
-let pathname = pathnameOf(req.url);
-// NEGATIVE CONTROL: the app strips the prefix a second time (C-2's double strip).
-if (req.headers['x-forwarded-prefix'] !== undefined && pathname !== '/') {
-  pathname = pathname.replace(/^\/[^/]*/, '') || '/';
-}
-```
-
-```
-not ok 1 - GET /demo/acme/whoami -> path=/whoami, tenant_header=acme, query preserved
-  error: |-
-    Expected values to be strictly equal:
-    '/' !== '/whoami'
-not ok 2 - POST /demo/acme/whoami carries its body through the prefix location
-# tests 6
-# pass 4
-# fail 2
-```
-
-Restored `343c6d15…`; prefix suite 6/6.
-
-### 2.3 Let the admin listener accept a demo Host
-
-`app/main.ts`, the C-25 guard:
-
-```diff
--if (listener === 'admin' && host !== null) {
-+if (false && listener === 'admin' && host !== null) {
-```
-
-```
-not ok 1 - a demo Host is 421 on the admin listener
-  error: |-
-    Expected values to be strictly equal:
-    404 !== 421
-# tests 5
-# pass 4
-# fail 1
-```
-
-Restored `343c6d15…`; 5/5.
-
-### 2.4 Remove the `^SK_|^SKUNK_` boot refusal
-
-`app/env.ts`, `assertNoDeletedPrefixes()` made a no-op:
-
-```
-$ node --test --test-timeout=15000 test/env.test.ts
-not ok 1 - a deleted SKUNK_ key refuses the boot and names both the key and its replacement
-  error: 'Missing expected exception.'
-not ok 2 - a deleted SK_ key refuses the boot and names it
-  error: 'Missing expected exception.'
-not ok 3 - the refusal lists every offending key, sorted, each with its replacement
-  error: |-
-    + []
-    - [ 'SKUNK_MODE -> SKW_FLEET_MODE',
-    -   'SK_DDL_MAX_STATEMENTS -> SKW_DDL_MAX_STATEMENTS' ]
-not ok 7 - the real process refuses to start and exits non-zero, naming the key on stderr
-  error: |-
-    The input did not match the regular expression /SKUNK_EDGE_TOKEN/. Input:
-    'migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone\n' +
-      'registry: tenant broken skipped (SQLITE_NOTADB)\n' +
-      'refusing to start: EADDRINUSE\n'
-# tests 8
-# pass 4
-# fail 4
-```
-
-**Finding inside the control (m3).** Without `--test-timeout` this suite did not fail — it
-**hung** for >180 s (my run was killed at 180 s). `test/env.test.ts:97` calls `spawnSync` with
-no timeout, so when the refusal regresses the child boots and listens and the parent waits
-forever. In CI that is a job timeout, not a red test with a message.
-
-Restored `c67cf7e9…`; 8/8.
-
-### 2.5 Delete the slash-less 301 rule
-
-Removed from both `tools/nginx_gen.ts` and the committed `nginx/conf.d/10-app.conf` (so the
-drift gate would not mask the result):
-
-```
-$ node --test test/nginx-config.test.ts
-not ok 3 - the slash-less demo form 301s to the slash form
-  error: |-
-    The input did not match the regular expression /return 301 \/demo\/\$demo_key\/\$is_args\$args;/
-not ok 8 - the committed nginx/conf.d/10-app.conf is the generator output for this fixture
-# tests 9
-# pass 7
-# fail 2
-
-$ node --test test/nginx-e2e.test.ts
-not ok 3 - through real nginx: /demo/beta 301s to /demo/beta/ and keeps the query
-  error: |-
-    Expected values to be strictly equal:
-    404 !== 301
-# tests 6
-# pass 5
-# fail 1
-```
-
-Restored `b603bfe5…` and `9912ed65…`; 15/15 across both suites.
-
-### 2.6 An extra control the brief did not ask for: `Retry-After`
-
-§5.3 freezes `SKW_E_DM_SCHEMA_STALE` as `503 + Retry-After: 5` and `SKW_E_DM_BUSY` as
-`503 + Retry-After: 1`. Suppressing the header in `sendError()`:
-
-```ts
-// NEGATIVE CONTROL: Retry-After header suppressed.
+// app/main.ts
 if (false && err.retryAfter !== undefined) reply.header('retry-after', String(err.retryAfter));
 ```
 
 ```
-$ node --test … test/tenancy/resolve.test.ts test/integration/three-hosts.test.ts test/migrate.test.ts …
-# tests 40
-# pass 40
-# fail 0
+$ node --test --test-timeout=15000 test/tenancy/resolve.test.ts
+not ok 19 - E-7 — every code with a retry_after entry carries the header, with that value
+# tests 20  # pass 19  # fail 1
+RED_EXIT=1
+→ restored 399dc59f32fc…  →  # tests 20  # pass 20  # fail 0   GREEN_EXIT=0
 ```
 
-**The frozen `Retry-After` clause has no gate.** The unit test asserts `err.retryAfter` on the
-object; nothing asserts the HTTP header. A one-line regression here ships silently.
+### 4.2 E-8 — the boot refusal removed (the regression that used to hang)
 
-### 2.7 Restore proof
-
-```
-$ shasum -a 256 snippets/skunk-proxy.conf app/tenancy/resolve.ts app/main.ts app/env.ts tools/nginx_gen.ts nginx/conf.d/10-app.conf
-78d68f77…  snippets/skunk-proxy.conf
-660b6b88…  app/tenancy/resolve.ts
-343c6d15…  app/main.ts
-c67cf7e9…  app/env.ts
-b603bfe5…  tools/nginx_gen.ts
-9912ed65…  nginx/conf.d/10-app.conf
-$ diff baseline.sha256 <(shasum -a 256 …)  &&  echo RESTORED
-ALL SIX FILES RESTORED TO BASELINE
-$ make test          # after every mutation was reverted
-# tests 75 / # pass 75 / # fail 0 / EXIT=0
-$ git status --short
-(empty)
-```
-
-**Score: 5 of 5 named controls went red, 0 deadweight among them.** One of the five fails by
-hanging rather than reporting (m3), and one frozen clause (Retry-After) has no control at all.
-
----
-
-## 3. Attempts to defeat the implementation
-
-Harness: the real app on a fixture `control.db`/`site.db` set **and** `nginx:1.31-alpine`
-running the generated `10-app.conf` + the rendered snippet, exactly as the e2e suite does
-(two substitutions: `listen 443 ssl` → `80`, `proxy_pass app:3000` → the host gateway).
-Every request below is a raw socket, so `Host` and duplicate headers are exactly mine.
-
-### 3.1 Header spoofing
-
-| Sent | Got | Contract? |
-|---|---|---|
-| edge `acme.test` + `X-Skunkworks-Tenant: beta` | 200, `data-tenant="acme"` | ✅ inert |
-| edge `acme.test` + `beta` + the **real** edge token | 200, `data-tenant="acme"` | ✅ inert (snippet overwrites after the include) |
-| edge `acme.test` + `beta,beta` | 200, `acme` | ✅ |
-| direct to app `acme.test` + `beta` + real token, loopback peer | 200, **`beta`** | ✅ by contract (edge proof), ⚠️ the app is one published port away from being wide open; it is not published |
-| direct `acme.test` + `beta`, no token | 421 `SKW_E_PLT_EDGE_PROOF` | ✅ |
-
-### 3.2 POST bodies under `/demo/`
-
-| Sent | Got |
-|---|---|
-| `POST /demo/acme/whoami`, 1 MiB | 200, `path=/whoami`, `body_bytes=1048576`, `tenant_header=acme` ✅ |
-| same, `Transfer-Encoding: chunked`, 5 B | 200, `body_bytes=5` ✅ |
-| same, 17 MiB | **413 with nginx's HTML page** — not a taxonomy body (m5) |
-| direct `POST /whoami`, 17 MiB | 413 `{"error":{"code":"SKW_E_PLT_TENANT_UNAVAILABLE"}}` — a 503 code on a 413 (M2) |
-
-### 3.3 Traversal and key shape in the demo path
-
-| Sent (`Host: demos.skw.test`) | Got | Reading |
-|---|---|---|
-| `/demo/../acme/whoami` | 404 | nginx normalises before matching; no traversal |
-| `/demo/%2e%2e/acme/whoami` | 404 | decoded then normalised; no traversal |
-| `/demo/acme/../acme/whoami` | 200 `path=/whoami` | normalises to the same demo path |
-| `/demo/acme%2f..%2f..%2fadmin/t/acme/pages` | 404 | did not reach the admin |
-| `/demo/acme%2Fwhoami` | 200 `path=/whoami` | encoded slash == slash; same tenant |
-| `/demo/ACME/whoami` | 404 | no case folding ✅ (§5.5) |
-| `/demo/a..b/whoami` | 404 | nginx regex excludes `.` |
-| `/demo/` + 33 chars, `/demo/` + 63 chars | 404 at nginx | see m4: 33–63 is a legal key per §5.1 |
-| `/demo/-abc/whoami` | 404 | ✅ |
-| `/demo/acme%00/whoami` | 400 | ✅ |
-
-### 3.4 Tenant-key shape (direct, with the real token)
-
-`ACME`, `acmé`, 64 chars, `-acme`, `acme_1` → **400 `SKW_E_PLT_TENANT_HEADER`** each. ✅
-Empty header → 200 via Host. ✅
-`Host: ACME.TEST` → 200 acme; `acme.test.` → 200; `acme.test:8443` → 200; `acme.test@evil.example`
-→ 400 at nginx. ✅ (case/port/dot folding is the documented normalisation)
-
-### 3.5 Two domains → one tenant; one domain → two tenants
-
-`www.acme.test` → acme (in the three-hosts suite). ✅
-`INSERT INTO domain(host,tenant_id) VALUES('beta.test', 1)` → `SQLITE_CONSTRAINT_UNIQUE`. ✅
-One host cannot map to two tenants.
-
-### 3.6 A request during a tenant-map cache invalidation (M3 + B2)
-
-App-direct, raw sockets, mutations applied by a second `control.db` connection while the app
-is serving:
+`assertNoDeletedPrefixes()` made a no-op, test file untouched:
 
 ```
-warm acme.test                                   | 200 OK acme
-warm beta.test                                   | 200 OK beta
-after DELETE domain acme.test                    | 200 OK acme          <- deleted host still routes
-after INSERT domain new.test                     | 404 Not Found SKW_E_PLT_TENANT_UNKNOWN
-after UPDATE beta.status = 'suspended'           | 200 OK beta          <- step 9 never fires
-after UPDATE beta.db_version = 9                 | 200 OK beta
-after UPDATE beta.mode = 'demo'                  | 200 OK beta          <- C-25's guard stays off
-after INSERT tenant gamma (the stamp changes)    | 404 new.test  /  404 acme.test  /  404 beta.test
-after UPDATE beta.key = 'beta-renamed'           | 404 (beta is suspended — masked, not proof)
+$ node --test --test-timeout=15000 test/env.test.ts
+not ok 7 - the real process refuses to start and exits non-zero, naming the key on stderr
+  error: 'the process booted instead of refusing: SKUNK_EDGE_TOKEN (the ^SK_|^SKUNK_ refusal regressed)'
+# tests 9  # pass 5  # fail 4
+RED_EXIT=1        wall clock: real 0m10.374s      ← round 1 measured >180 s and never returned
 ```
 
-The last three lines are the proof that the refresh *mechanism* works: the tenant-count change
-made the process rebuild its maps, and the three earlier lies corrected themselves at once. A
-clean run without the earlier suspension shows the same thing from the other side:
+**Second belt, proved separately (2b):** with the inner `spawnSync({timeout: 5000})` deleted as well
+— i.e. the exact shape of the round-1 defect — the outer runner still bounds it:
 
 ```
-newhost.test before insert       404 SKW_E_PLT_TENANT_UNKNOWN
-newhost.test after domain insert 404 SKW_E_PLT_TENANT_UNKNOWN   (stamp unchanged -> stale)
-newhost.test after tenant insert 200 beta                        (stamp changed -> refreshed)
+$ node --test --test-timeout=15000 test/env.test.ts
+not ok 1 - test/env.test.ts
+  error: 'test timed out after 15000ms'
+# tests 1  # cancelled 1
+RED_EXIT=1        real 0m15.060s
 ```
 
-Everything that did not change `MAX(control_migration.id) || count(tenant)` stayed wrong:
-a suspended tenant served, a deleted domain routed, a demo flip did not arm the C-25 guard.
-Ten minutes of direct SQL, no attacker required.
+A red test in 5 s, or a cancelled test in 15 s. Never a wait.
 
-### 3.7 Edge-level: new host after onboarding
+### 4.3 E-14 — one `CHECK` dropped from `r3`
 
-Through real nginx, `Host: new.test` (a host the app serves once the stamp changes — measured
-directly above: `200 beta`) → **404 with nginx's HTML**, because `10-app.conf` has no `server`
-block for it. The app's cache refresh cannot help; nothing regenerates nginx. This is M3 and it
-is the week-one failure.
+First attempt was invalid and I discarded it: I removed the whole `CHECK(...)` line from
+`cms_download_code_r3`, which left a dangling comma, so the migration died on `near ")": syntax
+error` — red for the wrong reason. Redone by removing the inline constraint, SQL still valid:
 
-### 3.8 Missing / unknown Host
-
-```
-edge  HTTP/1.0, no Host        | 404 (nginx default_server HTML)      ✅ no default tenant
-direct HTTP/1.0, no Host       | 404 SKW_E_PLT_TENANT_UNKNOWN         ✅
-direct HTTP/1.1, no Host       | 400 {}(empty JSON, before the app)   m6
-edge  unknown Host             | 404 (default_server)                 ✅
-direct Host: localhost         | 404 SKW_E_PLT_TENANT_UNKNOWN         ✅
+```sql
+-- schema/r3-amendments.sql
+-  code_selector TEXT NOT NULL UNIQUE CHECK(length(code_selector) = 4),
++  code_selector TEXT NOT NULL UNIQUE,  -- NEGATIVE CONTROL E-14
 ```
 
-### 3.9 The one that matters: `X-Forwarded-Prefix` (M1)
-
-§5.1 says `X-Forwarded-Prefix` exists on **path-prefix locations only**; §5.5 says it is "the
-only source of `tenant.prefix`" and that every URL is prefixed "exactly once". The snippet
-clears the tenant header on host-routed locations but **not** the prefix:
-
 ```
-edge   GET /whoami  Host: acme.test  X-Forwarded-Prefix: /demo/evil
-       → 200 {"tenant":"acme","via":"host","prefix":"/demo/evil"}
-direct GET /whoami  Host: acme.test  X-Forwarded-Prefix: /demo/acme
-       → 200 {"tenant":"acme","via":"host","prefix":"/demo/acme"}
-```
+$ node --test --test-timeout=15000 test/migrate.test.ts
+not ok 3 - a v1 site.db is migrated through the frozen chain to v3
+  error: 'site.db v1->v3: table text drift (CHECK constraints live here): cms_download_code'
+not ok 4 - E-14 negative control — dropping one CHECK …
+# tests 9  # pass 7  # fail 2      TS_RED_EXIT=1
 
-No token, no trusted peer, one header. Today the only consumer is `/whoami` (S1 renders a page
-with no links), which is why this is a major and not a blocker — but the resolver is the thing
-S3/S4 will build `site.url()` on, and a client-chosen prefix is `/demo/<attacker>/…` on every
-link the site emits, plus the double-prefix 404 the SDS spends a paragraph forbidding.
-**The fix belongs in `snippets/skunk-proxy.conf`** (clear it on host-routed locations, exactly
-as it clears the tenant header), not in the app.
-
-### 3.10 Demo Host vs the admin listener
-
-```
-edge   acme-demo.test  /admin/t/acme/pages  | 421 SKW_E_PLT_EDGE_PROOF  ✅
-edge   demos.skw.test  /admin/t/acme/pages  | 404 at nginx (no /admin location) ✅
-direct acme-demo.test  /admin/t/acme/pages  | 421 "a demo host never serves the admin listener" ✅
-direct acme-demo.test  /admin%2Ft%2Facme    | 404 (not classified admin) ✅
-direct acme-demo.test  /pricing             | 200 demo tenant ✅
+$ /usr/bin/python3 scripts/model/verify_claims.py
+FAIL  20 migration chain v1->v3 converges on site.sql
+       AssertionError: site.db: table text drift (CHECK constraints live here): ['cms_download_code']
+26/27 passed, 0 skipped, 1 failed        PY_RED_EXIT=1
 ```
 
-The 421 half is genuinely built. The half that is missing is B1, below.
+Both planes' gates name the object. This is precisely the case round 1 said was invisible: the
+table set, the column sets and the trigger sets are identical; only the text differs.
 
----
+```
+→ restored 9501211c3020…  →  migrate 9/9 GREEN_EXIT=0,  check 20 PASS, 27/27, PY_GREEN_EXIT=0
+```
 
-## 4. Blocker detail
-
-### B1 — the admin listener is every tenant host
-
-`app/main.ts:57-62`:
+### 4.4 E-2 — the path-based listener rule restored (B1, verbatim)
 
 ```ts
-export function listenerFor(pathname: string, host: string | null, adminHost: string | null): Listener {
-  if (adminHost !== null && host === adminHost) return 'admin';
-  if (pathname === '/admin' || pathname.startsWith('/admin/')) return 'admin';
-  return 'public';
-}
+// app/main.ts, resolveRequest()
+const listener = pathname === '/admin' || pathname.startsWith('/admin/')
+  ? 'admin'
+  : listenerFor(host, adminHost);
 ```
 
-A tenant server block proxies `location /` — every path, including `/admin/…` — with the
-snippet. So `https://acme.test/admin/t/acme/pages` arrives with `listener='admin'`, and the
-only host that is refused is one whose tenant has `mode='demo'`. The builder's own test states
-it as intended behaviour (`test/admin-listener.test.ts:68`):
+```
+$ node --test --test-timeout=15000 test/admin-listener.test.ts
+ok     1 - (a) the listener is the admin hostname, and the path never selects it
+not ok 2 - (b) /admin/t/acme/pages on a tenant host is the same 404 as an unknown path …
+not ok 3 - (c) the same path on a demo host is the same 404, not a 421
+ok     4 - (d) the admin host with no session is 404 …
+ok     5 - (d2) the admin host refuses a tenant header that is present at all (row 1)
+# tests 5  # pass 3  # fail 2      RED_EXIT=1
+```
+
+My own B1 probe agrees under the mutation — which is also the proof that the probe is a real
+instrument and not a zero that always reads zero:
 
 ```
-listenerFor('/admin/t/acme/pages', 'acme.test', 'admin.skw.test') === 'admin'   // asserted
+{"host":"acme.test","admin":{"code":"SKW_E_PLT_TENANT_UNKNOWN"},
+                    "unknown":{"code":"SKW_E_RT_PAGE_NOT_FOUND"},"bodyEqual":false}
+→ restored 399dc59f32fc…  →  # tests 5  # pass 5  # fail 0   GREEN_EXIT=0
 ```
 
-Against the frozen text:
+### 4.5 Restore proof
 
-- §9.1: "The admin surface is a **hostname**, `admin.<domain>`, behind nginx." — the listener is
-  identified by hostname, not by a path.
-- §5.6: "A host that serves tenant-authored HTML **never serves the admin listener**." Every
-  production tenant host serves tenant-authored HTML (that is the product). Not just demos.
-- §9.2: "Two sources of truth for 'which tenant am I editing' is how an operator edits tenant B's
-  homepage while looking at tenant A's page list — a cross-tenant **write** by a trusted user."
-  With this rule, `acme.test/admin/t/beta/pages` is the admin listener (session decides the
-  tenant) on a Host that is also a public tenant origin — the two sources, on one origin, in one
-  request. The demo guard does not fire, because acme is not `mode='demo'`.
-- §17 traceability: C-25 is an **S1** gate, "listener/Host test". The gate proves the demo case
-  and enshrines the production case.
+```
+$ shasum -a 256 -c baseline.sha256
+app/main.ts: OK
+app/env.ts: OK
+schema/r3-amendments.sql: OK
+docs/sds/SDS.md: OK
+docs/sds/02-errata.md: OK
+b0b8e4d577694b69baa4eeeaf379959277431323cabc1e90e1e0f18e084cb599  scripts/model/check_frozen.py
+a6eda489d68ffef2a56336dcc570bedad1aedc14bc47a9910d6ccbf8525c505b  test/env.test.ts
 
-Why it is a blocker and not a nit: S2 puts `session.tenant_id` and `__Host-sk-sess` on this
-listener. If the listener is every tenant host, then every tenant's own site is an admin
-surface — the same-origin condition C-25 was written to prevent, one tenant-mode check away
-from being live. It is invisible today only because `main.ts` passes `session: null`, so
-`/admin/…` answers 404 everywhere (the builder says so in §3 of their report). The correct
-shape is `listener = (Host === admin host)`, with C-25 as a separate guard on **any** request
-whose Host maps to a tenant, not as a listener class. The builder's reason for the path rule
-("it is what makes C-25's rule reachable") is satisfied by the guard alone — the guard already
-runs before step 7 and does not need the listener to be `admin`.
+$ make test                 # after every mutation was reverted
+27/27 passed, 0 skipped, 0 failed
+PASS the SDS quotes the register
+# tests 106  # pass 106  # fail 0  # skipped 0
+EXIT=0
 
-### B2 — step 9 does not fire at runtime
+$ git status --porcelain | wc -l
+42                          # 36 modified + 6 untracked — the state I received
+```
 
-§5.3 step 9: "tenant resolved but `tenant.status ∈ {suspended, archived}` → 404". Measured:
-`UPDATE tenant SET status='suspended'` on a served tenant, next request → **200**. Same for
-`archived`, for `mode='demo'`, for `db_version`, and for a deleted `domain` row (which keeps
-routing). Cause: `TenantMap.stamp()` is `MAX(control_migration.id) || count(tenant)` (§5.4
-verbatim), which none of those changes move.
-
-The builder disclosed this as SDS defect 5.5 and implemented the spec as written, which is
-correct behaviour for a builder and still leaves the slice unshippable in this area: "suspend"
-is the one control an operator reaches for during an incident, and it does nothing until a
-restart. The same blindness is what makes M3 invisible. The fix is one counter — a
-`control_change` row bumped by triggers on `tenant`/`domain`, or `PRAGMA data_version` on the
-control handle — and it belongs to the spec, not to a later slice.
+**4 of 4 controls went red, none by hanging.** No file was left modified.
 
 ---
 
-## 5. Judging the five claimed SDS defects
+## 5. The supersession audit
 
-### 5.1 §5.3 steps 5, 7, 8 are not jointly satisfiable as ordered — **REAL**, narrower than claimed
+`scripts/model/check_frozen.py` carries two `SUPERSEDED` entries — `C-25` (E-2) and `proxy snippet`
+(E-11). Each runs the same four assertions in `superseded()`: the errata item exists in
+`02-errata.md`; its section carries the exact `SUPERSEDES` marker; the retired text is **absent**
+from `SDS.md`; the replacement is present **verbatim**. I proved each branch fires, one mutation at
+a time, rather than reading the code and believing it:
 
-The claim is true as a matter of text. Steps 5, 7 and 8 have overlapping predicates in a table
-the SDS calls an algorithm "in order":
+| Assertion broken | Mutation | Output | rc |
+|---|---|---|---|
+| (c) retired text absent | §5.6 replaced with the **retired** C-25 sentence | `BAD SUPERSESSION: C-25: the retired text is STILL in SDS.md — the supersession was not applied` → `FAIL the SDS paraphrases the register` | 1 |
+| (a) errata item exists | `### E-2 —` renamed to `### E-2x —` | `BAD SUPERSESSION: C-25: errata item E-2 is missing from 02-errata.md` | 1 |
+| (b) marker present | `§2 C-25` → `§2 C-26` in the marker | `BAD SUPERSESSION: C-25: E-2 does not carry the marker 'SUPERSEDES 00-adjudication.md §2 C-25'` | 1 |
+| (d) replacement verbatim | `no other Host` → `no other host` in §5.6 | `BAD SUPERSESSION: C-25: the E-2 replacement is not verbatim in SDS.md` | 1 |
+| entry load-bearing | the whole `proxy snippet` entry deleted | `MISSING block: proxy snippet` → `FAIL` | 1 |
 
-- step 5 fires on `hdr` non-empty and valid, so a non-empty valid header never reaches step 8;
-- step 8 fires on `hdr` "present at all" (which includes `""`), so an empty header on admin
-  never reaches step 7's session branch.
+Every mutation restored, `PASS the SDS quotes the register`, `rc=0` after each.
 
-Therefore step 8 is unreachable if the rows are executed in numeric order, and steps 7 and 8
-contradict each other for the empty header. **Real.**
+**A note on the first row, because it is evidence in both directions.** My first attempt pasted only
+the *tail* of the retired sentence (`and the admin listener returns 421 …`) under the new text, and
+the check **passed**. That is not a hole: `norm(old) in NSDS` requires the retired sentence
+contiguously, and a tail is genuinely not the retired text. It is why the second attempt replaced
+the sentence whole. The assertion is exact, not substring-loose — and it is exact in the direction
+that matters (re-introducing the *rule* fails).
 
-One correction to the builder's framing: the production impact is nil, and for a reason the
-report does not state. nginx omits a header whose `proxy_set_header` value is `""` (documented
-behaviour: an empty header field is not passed to the proxied server), so the admin vhost
-presents *no* tenant header at all. Measured through the real edge — the app answers step 7
-(session, 404), never step 8 (421):
+**Was anything weakened or removed relative to HEAD~?** No. The diff is 84 insertions, 5 deletions,
+and the deletions are three print statements' arithmetic plus two list comprehensions gaining an
+` and X not in SUPERSEDED` clause. Concretely:
 
-```
-edge admin.skw.test /admin/t/acme/pages | 404 SKW_E_PLT_TENANT_UNKNOWN   (not 421)
-edge admin.skw.test /admin              | 404 SKW_E_PLT_TENANT_UNKNOWN
-direct (no proxy) same request          | 404 SKW_E_PLT_TENANT_UNKNOWN
-```
+- Every non-superseded artefact is asserted exactly as before: 25 adopted sentences, 12 frozen §4
+  blocks, the resolution-step numbers, 29 env names. Nothing moved out of `BLOCKS` or `found`.
+- The exclusion is keyed to a dict whose every member carries the four assertions above — not a
+  pattern, not a wildcard, and there is no "skip if missing" path: a missing errata item is an
+  error, not a bypass.
+- `ok = not (missing or bad or step_missing or env_missing)` **gained** `bad_supersessions`. The
+  net direction of the change is strictly stronger than HEAD~, which had no supersession concept at
+  all and would have failed on correct errata text.
+- The other three `SUPERSEDES` markers of §1 (E-1, E-4, E-13) need no entry and get none: E-1
+  renumbers nothing that `| N |` checks, and E-4/E-13 touch text this check never quoted. Their
+  unchanged assertions still run.
 
-So the reorder changes behaviour only for a direct connection or a future proxy that forwards
-empty headers — where it would 421 **every** admin request. Correct spec text: make the three
-conditions disjoint ("listener is admin and a tenant header is present at all" as a **guard**
-before 5; step 7 as "no header present at all"), and add the sentence "an empty
-`proxy_set_header` value is omitted by nginx, so the admin vhost presents no header".
-
-### 5.2 §5.3 has no mechanism for "listener is admin" — **REAL as a gap; the implementation's answer is B1**
-
-The table uses `listener` and never defines it; §9.1 only says the admin surface is a hostname.
-The builder's definition (path prefix **or** admin Host) is the wrong half of that gap: it
-makes every tenant host an admin listener. Correct text: `listener = 'admin'` iff the request's
-Host equals the host of `SKW_ADMIN_ORIGIN`; C-25 is enforced by a separate rule ("any request
-whose Host maps to a tenant with `mode='demo'` is 421 on the admin listener"), not by widening
-the listener.
-
-### 5.3 §16 S1 requires a slash-less 301 that §12.3 does not produce — **REAL**
-
-§12.3's regex is `^/demo/(?<demo_key>[a-z0-9][a-z0-9-]{0,31})(/.*)?$` — `/demo/acme` matches
-with an empty suffix, so it enters the block, but `rewrite "^/demo/…/(.*)$" /$1 break;` needs a
-trailing slash and does not fire, so `proxy_pass` forwards `/demo/acme` and the app 404s (the
-app is forbidden to strip). The gate in §16 demands a 301. Two more defects in the same §12.3
-fragment, which the report did not list: the `{0,31}` is unquoted and nginx's tokenizer reads
-`{` as a block delimiter (**emerg** at load), and the `location` is shown outside any `server`
-block. Correct text: add
-
-```nginx
-location ~ "^/demo/(?<demo_key>[a-z0-9][a-z0-9-]{0,31})$" { return 301 /demo/$demo_key/$is_args$args; }
-```
-
-before the proxying location, quoted, inside the demos `server`.
-
-### 5.4 §4.3 has no code for "page not found in a resolved tenant" or an unhandled 500 — **REAL**
-
-`schema/error-codes.json` holds 67 codes (`areas` sum) and 47 HTTP mappings; the 20 unmapped
-ones are all `SKW_E_PL_*` (JSON-RPC, fine). The only 404 is `SKW_E_PLT_TENANT_UNKNOWN` and the
-only PLT 5xx is `SKW_E_PLT_TENANT_UNAVAILABLE`. So a resolved tenant with no `cms_page` row
-must answer "no tenant", which is false, and there is nothing for a 500. **Real.** Correct
-text: add `SKW_E_RT_PAGE_NOT_FOUND` 404 and `SKW_E_PLT_INTERNAL` 500 to §4.3 and the JSON.
-
-The implementation then makes it worse than the spec forces (M2): every non-`AppError` is
-mapped to `SKW_E_PLT_TENANT_UNAVAILABLE` at *whatever* status the framework chose, so a 400 and
-a 413 carry a code the frozen table defines as 503. Even without new codes, a framework error
-should not borrow a code whose HTTP mapping disagrees.
-
-### 5.5 §5.4's version stamp cannot see an update — **REAL, and I measured it**
-
-`MAX(control_migration.id) || tenant count` does not move for a status flip, a mode flip, a
-domain insert/delete, or `db_version`. Measured in §3.6: suspended tenant 200, deleted domain
-200, demo flip 200, new host 404 — all corrected at once by an unrelated tenant insert. **Real.**
-Correct text: a control-plane change counter incremented by triggers on `tenant` and `domain`
-(read once per request, same cost as today's `count(tenant)`), or `PRAGMA data_version` on the
-`control.db` handle. The builder's own §5.5 names `tenant.updated_at`; that misses `domain`,
-which is the case that leaves a deleted host routing.
-
-### 5.6–5.10, briefly
-
-| Claim | Judgement |
-|---|---|
-| 5.6 `UV_THREADPOOL_SIZE` cannot be changed by a boot assert | **Real** and the right call (refuse). §2.3 should say "the image sets". |
-| 5.7 "one block per host" vs one block per tenant with several `server_name`s | **Real**, cosmetic; grouped is what compiles. §2.3/§3 wording. |
-| 5.8 §2.3 step 6 is S4 work | **Not a defect** — a slice boundary, correctly logged at boot. |
-| 5.9 the gate has undeclared interpreter prerequisites | **Real.** Add: the pin hides the pragma it depends on (see §6). |
-| 5.10 §3 lists `Dockerfile.runner`/`runner/`/`plugins/` in S1 | **Real**, harmless; those are S4. |
+**One tightness note, not a defect.** The snippet's marker string is `SUPERSEDES 00-adjudication.md
+§4.1`, which is also the opening of E-1's marker. Because the check scopes the marker search to
+E-11's own section, the assertion is sound today; but it would be tighter if it required the
+errata's own words (`§4.1's snippet`) rather than a prefix that two items share. Zero effect on this
+slice.
 
 ---
 
-## 6. The two gate changes: legitimate, with one blind spot each
-
-### 6.1 `PRAGMA legacy_alter_table = ON` in `scripts/model/verify_claims.py`
-
-**Legitimate. It restores the semantics the frozen file was written for; it does not skip or
-weaken an assertion.** I proved it is load-bearing rather than decorative — removed the pragma,
-ran the gate on SQLite 3.53.4:
+## 6. Prior majors, re-attempted directly
 
 ```
-FAIL  10 root path '/' is insertable          OperationalError: error in trigger trg_cms_asset_delete_guard: no such table: main.cms_download_code
-FAIL  12 asset delete guard holds …           (same)
-FAIL  15 (jti) WHERE kind='first' …           (same)
-FAIL  20 migration chain v1->v3 converges …   (same)
-FAIL  22 redemption on the v3 tables …        (same)
-FAIL  26 body ban + list loop contract …      (same)
-EXIT=1
+M1  /whoami on acme.test + X-Forwarded-Prefix: /demo/evil  -> 200 via=host  prefix=""
+M1  /whoami on acme.test + X-Forwarded-Prefix: /demo/acme  -> 200 via=host  prefix=""
+M1  /whoami on demos.skw.test + tenant:acme + token + /demo/acme -> prefix="/demo/acme"   (header path intact)
+M2  malformed JSON body            -> 400 {"error":{"code":"SKW_E_PLT_REQUEST_INVALID","requestId":…}}
+E-4 17 MiB direct to the app       -> 413 SKW_E_PLT_BODY_TOO_LARGE
+m4  10-app.conf demo-key grammar   -> ["[a-z0-9-]{0,39}" ×3]      (40 = tenant.key's max)
+m4  unquoted location regexes      -> 0
 ```
 
-Restored (`fcd62b37…` verified by `shasum -c`); `/usr/bin/python3 scripts/model/verify_claims.py`
-→ `27/27 passed, 0 skipped, 0 failed`, exit 0.
-
-Why it is not a weakened assertion: `legacy_alter_table` only stops SQLite re-parsing unrelated
-objects during `ALTER TABLE … RENAME`. The rebuild's end state still has to be the shipped
-schema, and I checked the end state independently of the gate — a v1 file migrated to v3, then
-`integrity_check`, `foreign_key_check`, all five trigger bodies, and the r3 CHECK:
-
-```
-migrate legacy: [{… "from":1,"to":3,"action":"migrated","ok":true}]
-objects migrated=53 target=53 sql-text-diffs=11      (all `CREATE TABLE "x"` vs `CREATE TABLE x` from the rename)
-cms_download_code CHECK present: true  (len 699)
-integrity_check: ok
-foreign_key_check: 0 rows
-views 0, broken 0, triggers 5; two trigger bodies name cms_download_code and the table exists
-```
-
-So the workaround is sound. The blind spot is the *assertion*, and the report overstates it:
-
-- `test/migrate.test.ts:99` compares `SELECT type, name FROM sqlite_master` only. A missing
-  CHECK — the entire point of r3 — would pass. The report calls this "identical (53 objects)";
-  it is a name-set comparison.
-- `verify_claims.py:753` is stronger (table names, columns `(name, type, notnull)`, trigger
-  **names**, FK check) but still not CHECKs or trigger bodies.
-
-Recommended (not applied): compare `PRAGMA table_info` + the CHECK/trigger SQL text, ignoring
-only identifier quoting.
-
-**Does the app's migrate path need the same pragma? Yes — and it has it** (`app/db/migrate.ts:98`
-for control, `:158` for tenants), so this is not a blocker. The app's path is what the test at
-`migrate.test.ts:78` exercises, and that test passes on SQLite 3.50+ (my Homebrew run) and 3.43.
-
-### 6.2 `PYTHON ?= $(shell test -x /usr/bin/python3 …)`
-
-**Not a weakened assertion — an interpreter choice — but the comment is wrong and the choice is
-convenient for the wrong reason.**
-
-- It is what makes `make test` deterministic *on this box*: `/usr/bin/python3` is 3.9.6 with
-  SQLite 3.43.2 and `argon2-cffi` present → 27/27, exit 0. Homebrew `python3` is 3.14.6 /
-  SQLite 3.53.4 without `argon2-cffi` → `25/27 passed, 2 skipped, 0 failed`, **exit 2**, which
-  `make test` treats as failure.
-- `/usr/bin/python3 on macOS/Linux ships it` is false for most Linux distributions
-  (`python3-argon2` is not in a default Debian/Ubuntu image). The pin moves a
-  machine-dependent green/non-green from "whichever python3 is on PATH" to "whatever
-  `/usr/bin/python3` is", which is more predictable but still undeclared.
-- The pin also means the default gate runs on the one SQLite that never needed the fix, so
-  §6.1's regression is invisible to `make verify-claims` unless someone overrides `PYTHON`. A
-  second job on Homebrew python (or a `python3 -c 'import argon2'` preflight that fails loudly)
-  would close both.
+The two halves of E-11 hold independently — the snippet clears the header and the resolver ignores
+it on `via='host'` — which is why my round-1 control had to break both to see red. E-4's status and
+code now agree on the wire, so `SKW_E_PLT_TENANT_UNAVAILABLE` is back to meaning only what §5.3 row
+10 says.
 
 ---
 
-## 7. What I did not prove (and would not claim)
+## 7. New findings
 
-- No running compose stack. `docker compose config` is the S1 gate, and the two digest-pinned
-  images do not exist. I did not attempt `up`.
-- Nothing about S2/S3/S4: auth, sessions, byte serving, export, plugins. Where a finding
-  depends on them (B1's exploit, M1's URL poisoning) I say so.
-- The 192 r/s figure and the `SKW_BOX_RPS` derivation: unit-tested only.
-- Load. Every request above was single-threaded; I did not measure rate limits or pool behaviour
-  under concurrency.
+### G3 — the entire edge layer can be skipped, and the gate still exits 0 (major, gate)
+
+`test/nginx-e2e.test.ts` and `test/onboarding.test.ts` short-circuit on `SKW_SKIP_DOCKER=1`. That
+is a reasonable convenience for a box with no daemon; what is not reasonable is that nothing
+counts the skips:
+
+```
+$ SKW_SKIP_DOCKER=1 node --test --test-timeout=15000 test/nginx-e2e.test.ts test/onboarding.test.ts
+ok 1 - through real nginx: GET /demo/acme/whoami strips to /whoami …   # SKIP
+… ok 12 …                                                              # SKIP
+rc=0
+
+$ SKW_SKIP_DOCKER=1 make verify-s1
+# tests 106  # pass 94  # fail 0  # skipped 12
+EXIT=0
+```
+
+Twelve skipped tests is not a corner of the suite — it is E-1(b) (the empty header through the real
+edge), E-5 (the slash-less 301 and the 40-char key), E-11 (the prefix clear), E-12 (onboarding) and
+E-13 (the edge 413). This repository already holds the opposite rule for its Python gate: *"a skip
+is a failure unless `--allow-skip`, and the Makefile never passes it"* (E-15). The node side has no
+such rule, so `make test` green does not mean the edge was exercised. My own run had `# skipped 0`
+and all 12 passed, so the behaviour is real today; the gate is what is weak.
+
+**Why it is not a blocker:** default is to run, the skip prints per test, and no shipped behaviour
+depends on it. **Why it must close before S2:** S2's CSRF matrix and session cookie live on the
+same edge, and "green" must not be purchasable with an env var. The fix is one line — assert
+`# skipped 0` in the Makefile, or fail when `SKW_SKIP_DOCKER` is set and `CI` is.
+
+### G4 — the CI workflow has never run and cannot pass as written (major, gate)
+
+`.github/workflows/gate.yml` is honest about being unexecuted (`S1-report.md` §8.4.7), and I did not
+run GitHub Actions. But it is not merely unproven: its second step asserts
+
+```
+python3 -c '… assert v >= (3,50), "modern interpreter has SQLite %s < 3.50" …'
+```
+
+on `runs-on: ubuntu-24.04`, whose system `python3` links **SQLite 3.45.1** — the distribution's
+SQLite, not one Python ships. The job therefore aborts in the `interpreters` step, before `npm ci`
+and before any gate, on the very runner it names. There is no step that installs a ≥ 3.50 SQLite.
+So E-15's "CI runs the claims gate twice" is satisfied by a file, not by a run, and the file as
+written would go red for a reason that has nothing to do with the code.
+
+Not a blocker for S1 (the DoD in errata §4 is `make test` + `make verify-s1` on both interpreters,
+and I ran both here), but it must not be cited as evidence until it has run green once.
 
 ---
 
-## 8. Reproduction
+## 8. The six open items in `S1-report.md` §8.4, judged
+
+| # | Open item | Blocker? | Judgement |
+|---|---|---|---|
+| 8.4.7 | CI workflow unexecuted | **No** — but the file is broken, not just unrun | **Follow-up, must fix before citing CI.** G4: the SQLite ≥ 3.50 assertion fails on `ubuntu-24.04` (3.45.1). Add an install step (or use a `python:3.14` container) and treat the first green run as the evidence |
+| 8.4.1 | Row-6 miss for a well-formed header naming an unknown tenant → `404 SKW_E_PLT_TENANT_UNKNOWN`, reported at row 6 | **No** | **Follow-up, documentation.** The behaviour is the only defensible one (a 500 or a lie about the row are worse), the code is indistinguishable from row 8's miss so there is no oracle, and the test asserts the row. E-1's status table should gain "row 6 with no `tenant` row" in the next errata pass. Spec gap, not a code defect |
+| 8.4.3 | Three constraint drifts fixed outside the errata's file list (`A8b`: `cms_redirect.from_path` NOT GLOB `//*`, `cms_form_submission.state` `'suppressed'`, `cms_datasource.cost_ms_p95 >= 0`) | **No** | **Follow-up, documentation — and the change is good.** These are exactly what E-14 exists to catch, and I proved the gate catches that class (§4.3). But a frozen file (`r3-amendments.sql`) gained three rebuilds the Architect never specified; that needs an errata line (E-16) recording A8b and its justification, or the next reviewer re-derives it. Gated, correct, undocumented |
+| 8.4.5 | `nginx/templates/server.tmpl` updated but nothing reads it | **No** | **Follow-up.** Either delete it or make `generateAppConf()` render it. Today it is a second, ungated copy of the config shape — the "two sources of truth" failure mode the SDS forbids elsewhere. A reader can be misled; no gate can be |
+| 8.4.6 | §3's `Makefile` fence still lists `test / verify / verify-schema / verify-claims / verify-gitignore` | **No** | **Follow-up, documentation.** The fence is stale by E-10's own restriction (only the paragraph after it may change), so this is the errata's constraint, not an omission. It should be corrected in the same pass that adds E-16 — §3 is the file-list authority, and it now omits two targets the DoD depends on |
+| 8.4.4 | E-6 forbids the literal `legacy_alter_table` in `verify_claims.py`, so the stronger "run the chain with the pragma explicitly OFF" sub-case was dropped | **No** | **Follow-up, no action needed.** The claim is carried: the chain applies with the pragma unset on **both** interpreters (3.43.2 and 3.53.4), and my §4.3 control shows the convergence comparison has teeth. A source assertion plus a real comparison is stronger than an explicit-OFF run, which would only have named the pragma |
+
+Also judged, from §8.4's remaining items: 8.4.2 (mode flip moves the stamp but no longer changes
+routing) is **correct** — asserting a 404 there would re-introduce the listener decision keyed on
+tenant mode that §9.1 rule 4 forbids; 8.4.8 (`AppHandle.tenants` exposed read-only) is a
+justifiable test seam and changes no behaviour; 8.4.9 (`listenerFor` takes no pathname) is the right
+shape, and it is why my B1 sweep could not find a path-based hole; 8.4.10 (free port so the timeout
+path fires rather than `EADDRINUSE`) is correct and I measured it.
+
+---
+
+## 9. What is most likely to break in week one
+
+**Onboarding — and it is now a *documented* trap rather than an undocumented one, which makes it
+more likely to be misread.** E-12 turns "picked up on the next request" into a four-step ordered
+sequence: commit rows → `nginx_gen --write` → `nginx -t` → `nginx -s reload`. Between step 1 and
+step 3 the two planes deliberately disagree: E-3's revision counter makes the **app** serve the new
+host on the very next request, while the **edge** still 404s it because `server_name` is a generated
+artefact. So the operator's first check (`curl` from inside the box, or the app's own log showing
+the tenant served) succeeds and the customer's check fails. That is a support ticket that looks like
+a tenancy bug and is not one. It is gated (`test/onboarding.test.ts` asserts the 404 *before* the
+reload and 200 after) and it is specified — but nothing automates steps 2–4, and `rev` bumping makes
+the window more convincing, not less.
+
+Second, lower: a `tenant.db_version` raise fans out to `migrateTenant()` **inline on the request
+path** through `probe()`. A mass raise (a deploy that bumps every tenant) turns a burst of requests
+into concurrent migrations of the same files, and `SQLITE_BUSY` there is a 503 `SKW_E_DM_BUSY` with
+`Retry-After: 1` — correct by contract, alarming in a dashboard. Worth a look in S2, not an S1
+defect: it is the same design round 1 reviewed.
+
+---
+
+## 10. What I did not prove
+
+- No `docker compose up`. The compose gate is `docker compose config`; the two digest-pinned images
+  still do not exist.
+- GitHub Actions was not executed. G4 is a static judgement about `ubuntu-24.04`'s bundled SQLite.
+- Nothing about S2–S4: sessions, the admin CRUD surface, byte serving, export, plugins. Where B1's
+  severity depended on S2 (the session cookie on that surface) I say so.
+- Load and concurrency: every request above was serial. §5.4a's single-flight is argued by
+  `better-sqlite3`'s synchronous `refresh()` and measured as one rebuild per bump, not raced.
+- I did not re-derive the 27 claim checks; I ran them on two interpreters and read the ones E-6/E-14
+  touch.
+
+---
+
+## 11. Reproduction
 
 ```
 cd /Volumes/Backup/Development/skunkworks
-make test                     # 75/75, exit 0
-make verify-s1                # 75/75, exit 0
-node --test test/nginx-e2e.test.ts        # needs a docker daemon
+make test                     # 27/27 claims, 106/106 tests, exit 0
+make verify-s1                # 106/106, exit 0
+make verify-claims-modern MODERN_PYTHON=…/py-modern/bin/python   # 27/27 on SQLite 3.53.4
+SKW_SKIP_DOCKER=1 make verify-s1                                 # exit 0, 12 skipped — G3
 ```
 
-The defeat harness and the cache/migration probes live outside the repo (scratch):
-`defeats.ts` (app + real nginx), `cache2.mjs` (map cache, raw sockets), `newhost.mjs` (the
-onboarding case), `followup.mjs` (oversized body, full-SQL migration comparison), `views.mjs`
-(post-migration trigger/CHECK integrity). Logs: `make-test.log`, `make-test-final.log`,
-`verify-s1.log`, `defeats.log`, `env-mut-2.log`, `baseline.sha256`, `verify_claims.sha256`.
-The repo is byte-identical to the state I received: `git status --short` is empty and all six
-baseline hashes match.
-
-**Verification after the review** (negative-control mutations reverted): `hermes verify --json`
-→ `ok: true`, every phase exit 0 (`bootstrap`, `build`, `typecheck`, `npm run test` 75/75,
-`make test` 75/75, `make typecheck`, `make build`), readiness `http://127.0.0.1:4321/` → 200.
-`git diff` over `app test nginx snippets tools schema Makefile package.json docker-compose.yml`
-is empty; the only untracked file in the repo is this report.
+My probes live outside the repo, in
+`~/.hermes/profiles/ceo/cache/scratch/qa2/`: `b1b2.ts` (B1 sweep + B2 matrix over a second
+connection), `m1m2.ts` (M1/M2/E-4/m4), `baseline.sha256` + `base/` (the restore proofs), and
+`ctl{1,2a,2b,3,4,D1,D-a,D-b,D-d}-*.log` (every control's red and green output, verbatim).
+The repo is byte-identical to the state I received apart from this report: `git status --porcelain`
+is 43 entries — the same 36 modified files and 6 untracked paths as delivered, plus
+`docs/build/S1-qa.md` (the deliverable) — and every baseline hash verifies.

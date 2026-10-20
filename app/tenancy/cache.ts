@@ -1,10 +1,32 @@
 /**
- * The tenant map cache (SDS §5.4).
+ * The tenant map cache (SDS §5.4 as amended by 02-errata E-3).
  *
- * Read once per process and cached with a version stamp
- * (`MAX(control_migration.id) || tenant count`), so a tenant created in another
- * process is picked up on the next request without a restart. A cache miss on a
- * host is a 404 — never a second source, and no fallback tenant exists.
+ * `control.db` carries one revision row, moved by six triggers — AFTER INSERT,
+ * AFTER UPDATE and AFTER DELETE on `tenant`, and the same three on `domain`. The
+ * stamp is `rev || ':' || PRAGMA user_version`, read from the control handle the
+ * map already holds: one `SEARCH control_revision USING INTEGER PRIMARY KEY` plus
+ * one pragma read.
+ *
+ * The old `MAX(control_migration.id) || count(tenant)` stamp is deleted: it could
+ * not see an UPDATE (a status flip is an UPDATE) and could not see a `domain` row
+ * deleted while the tenant count was unchanged. That blindness is what made a
+ * suspended tenant serve and a deleted host route until a restart.
+ *
+ * The map carries every column a request decision reads — `tenant.id`, `key`,
+ * `mode`, `status`, `db_version` and the host list — so any bump is a full
+ * rebuild of one immutable generation. There is no partial invalidation and no
+ * per-table invalidation to forget.
+ *
+ * MID-REQUEST RULE (§5.4a). The stamp is read exactly once per request, before
+ * the map is consulted, and the generation it selects is immutable for the rest
+ * of that request. The resolver makes exactly one lookup per request, so
+ * `stats.stampReads` must increase by one per request and no more. A write that
+ * commits while a request is in flight is observed by the next request.
+ *
+ * SINGLE-FLIGHT. The rebuild is synchronous: `better-sqlite3` never yields, so
+ * two requests cannot interleave inside `refresh()`. The request that sees the
+ * new stamp performs the one rebuild; every other request arrives after it and
+ * finds the stamp already current (`stats.rebuilds` is the proof).
  */
 import Database from 'better-sqlite3';
 import type { Tenant, TenantMode, TenantStatus } from './resolve.ts';
@@ -29,28 +51,35 @@ function toTenant(row: Row): Tenant {
 
 export class TenantMap {
   readonly #db: Database.Database;
+  readonly #stampStmt: Database.Statement<[], { rev: number }>;
   #stamp = '';
   #byHost = new Map<string, Tenant>();
   #byKey = new Map<string, Tenant>();
   #byId = new Map<number, Tenant>();
+
+  /** Instrumentation for §5.4a's one-read-per-request gate. */
+  readonly stats = { stampReads: 0, rebuilds: 0 };
 
   constructor(controlDbPath: string, opts: { busyTimeoutMs?: number } = {}) {
     this.#db = new Database(controlDbPath, { readonly: true, fileMustExist: true });
     this.#db.pragma('query_only = 1');
     this.#db.pragma('foreign_keys = 1');
     this.#db.pragma(`busy_timeout = ${opts.busyTimeoutMs ?? 5000}`);
+    this.#stampStmt = this.#db.prepare('SELECT rev FROM control_revision WHERE id = 1');
     this.refresh(true);
   }
 
-  /** `MAX(control_migration.id) || tenant count` (§5.4, verbatim). */
+  /** `rev || ':' || PRAGMA user_version` (§5.4, E-3). One SEARCH + one pragma. */
   stamp(): string {
-    const row = this.#db
-      .prepare(
-        `SELECT ifnull((SELECT max(id) FROM control_migration), 0) || ':' ||
-                (SELECT count(*) FROM tenant) AS stamp`,
-      )
-      .get() as { stamp: string };
-    return row.stamp;
+    this.stats.stampReads += 1;
+    const row = this.#stampStmt.get();
+    if (row === undefined) {
+      // A control.db migrated to v3 always has this row; its absence means the
+      // file was hand-edited or migrated by something that skipped control-r3.
+      throw new Error('control.db has no control_revision row (E-3): run `migrate`');
+    }
+    const version = Number(this.#db.pragma('user_version', { simple: true }));
+    return `${row.rev}:${version}`;
   }
 
   refresh(force = false): boolean {
@@ -76,10 +105,12 @@ export class TenantMap {
       if (t !== undefined) byHost.set(h.host.toLowerCase(), t);
     }
 
+    // One immutable generation: swapped wholesale, never mutated in place.
     this.#byKey = byKey;
     this.#byId = byId;
     this.#byHost = byHost;
     this.#stamp = stamp;
+    this.stats.rebuilds += 1;
     return true;
   }
 
