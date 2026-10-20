@@ -627,7 +627,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
         const hooked = await filterSite<string>('asset.url', ctx.tenant.key, { tenant: ctx.tenant.key, key: asset.key, url: asset.url }, asset.url);
         if (hooked !== asset.url) assetUrls.set(asset.key, hooked);
       }
-      page = { ...stored, bodyHtml: renderStoredBody(db, stored.bodyHtml, { urlFor: (key) => assetUrls.get(key) ?? null }) };
+      page = {
+        ...stored,
+        bodyHtml: renderStoredBody(db, stored.bodyHtml, {
+          urlFor: (key) => assetUrls.get(key) ?? null,
+          // §8.6 O-30: a core form rendered for a browser gets its `_pt` minted here, at the one
+          // instant the page is produced. The tenant is the Host's (§5.3), never the body's.
+          forms: { tenant: ctx.tenant.key, sessionKey: env.sessionKey, atMs: Date.now() },
+        }),
+      };
       page.bodyHtml = await filterSite<string>(
         'content.render.html',
         ctx.tenant.key,
@@ -781,7 +789,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     clearInterval(sweepTimer);
     seals.stop();
     // No `plugins.close()`: there is no socket to end and no child to reap. The registry and
-    // its closures die with the process, which is the whole shape of D36.
+    // its closures die with the process, which is the whole shape of D36. The one handle the
+    // runtime does own is the per-tenant read connection `sync()` caches, and that is closed.
+    plugins.closeSyncHandles();
     pool.close();
     tenants.close();
     await app.close();

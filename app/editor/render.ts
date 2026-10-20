@@ -16,11 +16,18 @@ import type Database from 'better-sqlite3';
 
 import { AppError } from '../errors.ts';
 import { siteAsset } from '../assets/url.ts';
+import type { FormIntentContext } from '../forms/intake.ts';
 import { attr, type ElementNode, elements, parseHtml, serialize, setAttr } from './html.ts';
 
 export interface RenderOptions {
   /** Overrides the per-asset `alt` when the body already carries one. */
   keepAlt?: boolean;
+  /**
+   * The intent context a core `<form>` needs (`_pt`, `_hp`, `action`). Absent on the export path,
+   * which has no `SKW_SESSION_KEY` and cannot mint a token that would still be valid when a
+   * visitor loads the bundle; the rendered form then carries `data-form-intent="absent"`.
+   */
+  forms?: FormIntentContext | undefined;
   /**
    * §13.3.4's `asset.url` filter, applied to the URL this render would emit for one key.
    *

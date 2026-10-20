@@ -12,6 +12,12 @@ this document is quoted with the load beside it. `hermes verify --json` returns 
 full runs were green at load 71.76 and 67.32, and two lost one file to the 40 s per-file timeout under load
 44–65 (below). Nothing was committed.
 
+**Closeout pass, same day — §10 supersedes the counts above:** the gate is now **583/583 node tests** (the
+eight new ones are S1–S4 and G1–G4), and `make test` is **exit 0 in two of three consecutive runs**; the
+third lost one pre-existing file to the per-file budget with **no assertion failing**. §10 also records the
+class of assertion that made the rename sampler fail at load 22–34, the four sites that shared it, the
+per-tenant handle `sync()` now reuses, and the form component the registry had declared but never had.
+
 Two things a reader should take from this report before anything else:
 
 1. **The capability check is now a single layer with an exclusive witness.** It was mutated, seen red,
@@ -582,3 +588,237 @@ rss delta total 950,272 B      sync() 730.6–767.3 us/call      enabled-rows SE
 | the schema chain | `python3 scripts/model/verify_claims.py` | 27/27, check 20 now v1→v4 |
 | the built artefact | `make build && make verify-dist` | 6/6, D4 at `user_version 4` |
 | the budget | `node --expose-gc scripts/measure/plugin-budget.ts` | 25 KiB/instance; sync 0.75 ms, SELECT 3.0 µs |
+
+---
+
+## 10. S5 closeout pass — the sampler class, the per-tenant handle, and the form component
+
+**Date:** 2026-10-21. **Trigger:** a QA run that reported 575/575 and then measured **574/575, EXIT 2** on
+`test/nginx-media-e2e.test.ts:302` (N3) at load **22–34**, failing on `the sampler never saw the old URL`.
+That assertion was true by luck, not by construction: it depended on a child process finishing its *boot*
+inside a 150 ms sleep. **Result: all four items done.** `make test` is 583/583 in two of three consecutive
+runs; the third lost one pre-existing file to the 40 s per-file budget and **no assertion failed in any
+run** (§10.5).
+
+### 10.1 N3 — the assertion was about node's boot time, not about the rename
+
+The sampler is a second process issuing real requests to the real edge while the test process renames.
+The old test slept 150 ms and then called `renameAsset`, and asserted `sawOld > 0`. Node's boot is ~110 ms
+on this box, so the margin was the difference between two numbers that both move:
+
+| the same file, before the fix | 1-min load | samples | `sawOld` |
+|---|---|---|---|
+| measured here | 12.30 | 976 | 32 (3.3% of samples) |
+| measured here | 12.30 | 1235 | 96 (7.8%) |
+| measured here | 12.30 | 663 | 53 (8.0%) |
+| QA's failing run | 22–34 | — | **0** |
+
+At load 12 the child usually won the race; at load 22–34 it never did. The assertion was a measurement of
+how fast node starts under load, dressed as a statement about the rename's atomicity.
+
+**The window is now a place the test holds open, not a duration it hopes to hit.** Two handshakes:
+
+1. **`ready`.** The sampler prints `{"event":"ready"}` the first time the old URL resolves. The test waits
+   for that line before it calls `renameAsset` — so `sawOld > 0` is true by construction before the rename
+   exists, on any box.
+2. **The hold.** `renameAsset` parks between "the new links exist" (step 1) and "the old links are removed"
+   (step 3), test-only and gated on `SKW_RENAME_WINDOW_HOLD`, until the sampler has sampled **both** URLs
+   resolving *n* times. It writes `window-open.json`, blocks, and the sampler writes `window-release`. So
+   the samples `dead` counts are samples *of the window* and not of its two endpoints.
+
+The release is never a timeout in the passing path, and it is written on three conditions only — the
+property held (`window`), the property failed (`dead`, so the gate reports `dead > 0` instead of hanging),
+or the harness itself is broken (`timeout`, which fails the gate and the barrier throws).
+
+| the protocol line | what it means | who acts on it |
+|---|---|---|
+| `{"event":"ready","sawOld":≥1}` | the old URL resolved at least once | the test starts the rename |
+| `{"event":"release","reason":"window"}` | both URLs resolved in ≥3 rounds inside the hold | `renameAsset` leaves the window |
+| `{"event":"release","reason":"dead"}` | a round saw **neither** URL — the violation | `renameAsset` leaves, and the gate reddens |
+| `{"event":"done",…}` | final counts: `samples`, `dead`, `sawOld`, `sawNew`, `windowSamples` | the assertions |
+
+**What the gate asserts now**, in this order: the hold engaged at all (`window-open.json` exists);
+`releaseReason === 'window'`; `dead === 0`; **`windowSamples >= 3`** (the anti-vacuous half — `dead === 0`
+means nothing unless the samples were taken while both URLs were supposed to resolve); and `sawOld > 0` /
+`sawNew > 0` as protocol checks. Nothing was weakened: `dead === 0` survives, and a new assertion was
+added that the old test could not make.
+
+**Why blocking is safe.** `/media/` is served by nginx from the farm directory and never proxies to the
+app (that is what N1 proves by killing the app). The only thing that stops answering while the window is
+open is the code that is waiting. The wait is `Atomics.wait` on a `SharedArrayBuffer` — a synchronous park,
+so `renameAsset` keeps its synchronous signature for every caller, and the loop polls a file every 5 ms
+for the few milliseconds the gate holds it.
+
+**Red first, by injection.** `app/assets/library.ts` was edited to the wrong order — remove the old links
+*before* the new ones exist, with the hold between them — and the gate was run twice. The file was then
+restored and its **sha256 verified: `3a0169eed50250cfe677573db0074228b2d804743150f5603c30926886f0feb2`**.
+
+| the broken rename | 1-min load | `dead` | `windowSamples` | `releaseReason` | the gate |
+|---|---|---|---|---|---|
+| old links removed before the new exist | 9.66 | **42** | 0 | `dead` | **red** — "released on `dead`, not because both URLs resolved" |
+| the same, second run | 8.56 | **9** | 0 | `dead` | **red** — same assertion |
+
+**Green, at the load that used to break it** (three consecutive runs of the file):
+
+| run | 1-min load | samples | `dead` | `sawOld` | `windowSamples` | release |
+|---|---|---|---|---|---|---|
+| 1 | 24.86 | 4137 | 0 | 15 | 13 | `window` |
+| 2 | 21.86 | 4744 | 0 | 11 | 8 | `window` |
+| 3 | 20.67 | 4326 | 0 | 11 | 8 | `window` |
+
+### 10.2 The class audit — four sites, not one
+
+The class: **an assertion whose truth depends on a sampler or a retry counter happening to observe an
+intermediate state.** Everything in `test/` that spawns a second process, polls, or counts an attempt was
+read. Four sites were in the class; all four now hold the state open instead of racing it. Two others were
+considered and are not in it, with the reason recorded.
+
+| # | site | what it asserted, and what it really measured | what was done |
+|---|---|---|---|
+| 1 | `nginx-media-e2e` **N3** | `sawOld > 0` — the sampler's boot time | barrier (§10.1) |
+| 2 | `farm.test` **F3** | the same, one layer down (no nginx): `sleep(120)` + `sawOld > 0`, plus **`samples > 200`** — a throughput floor (500 reads/s) inside a correctness gate | the same barrier; the throughput floor **removed**, replaced by `windowSamples >= 3`, which is deterministic and says more |
+| 3 | `ddl-runner` **C3** | `B.lockAttempts >= 2` — "B had to retry", true only if B's first `BEGIN IMMEDIATE` landed inside A's 400 ms hold, with B started after a 120 ms sleep | barrier: A prints `holding` when the lock is held and holds until B proves collision (`signalOnBusy` creates `lock-release` on its first `SQLITE_BUSY`). A cannot commit before B collides |
+| 4 | `ddl-runner` **C7** | `contended.waitedFor >= 1` — "the rebuild reported a wait", over five attempts with two writers on a 12 ms cycle | barrier: w1's first transaction holds the lock until the first rebuild's `BEGIN IMMEDIATE` collides (`holdFirstUntil`), and the assertion moved to that rebuild, not to the busiest of five |
+
+Both barriers live in the helpers (`test/helpers/http-sampler.mjs`, `farm-sampler.mjs`, `ddl-child.ts`) and
+in the one test-only, env-gated hook in `app/assets/library.ts`. The `ddl-child` side uses `runDdl`'s
+`open` seam, which the code already documents as a test seam — no product code changed shape for it.
+
+**Not this class, because:**
+
+- **`pollFor` in `nginx-media-e2e` (N3's 301, N4's 404)** — it polls until the system reaches a *settled*
+  end state and asserts that state. Load can only make it take longer, never make the answer different;
+  the 4 s bound is a hang-detector, and a hang is a real failure.
+- **`first-boot-tls` (cert issuance, 90 s internal deadline)** — end state, not an intermediate one. It is
+  the file with the smallest margin against the suite's 40 s per-file budget, which is a different problem
+  and is measured in §10.5.
+- **`island-ua`** — waits for `DevToolsActivePort` and for `SIGKILL` to land; both are readiness/teardown,
+  and its one retry loop relaxes no assertion.
+- **`download-consume`** — parallel children, and it asserts `spent === 1`. That is a mutual-exclusion
+  invariant that holds for **every** interleaving, so the schedule cannot change the answer.
+- **`download-watermark`'s `queued_ms >= 30`** — a wall-clock number, but a *lower* bound produced by an
+  injected 40 ms budget: load can only increase it, which is the opposite of the fragility this audit is
+  for. Left where it is, because moving it to `test/perf` would remove the only assertion that the refusal
+  reports the wait it claims.
+
+### 10.3 `runtime.sync` — one connection per tenant, not per request
+
+§9.5 measured `sync()` at **730.6–767.3 µs per call at load 8.74**, of which the `SELECT` was **3.0 µs**:
+99.6% was `openAdminWrite()` — a fresh connection, per plugin-bearing request. The fix is a per-tenant
+cached handle, and it was written test-first.
+
+**Failing first.** The test (`test/plugin-sync-handle.test.ts`, S1–S4) counts connections through a
+monotonic diagnostic added to `app/db/classes.ts` (`connectionCount()`), so the number is measured rather
+than asserted. Against the pre-fix behaviour — restored by temporarily returning a fresh handle from
+`syncHandle` — S1 fails with exactly the number in the brief:
+
+```
+not ok 1 - S1 — twenty syncs after the first open one connection, not twenty
+  twenty syncs opened 20 connections (a per-request handle would open 20, ~0.75 ms each)
+```
+
+**The design.** A `render-read` handle per tenant (`openRenderRead`: `readonly` + `query_only=1`) — the
+SELECT path cannot write — cached in the runtime and keyed on the **file's identity** (`dev:ino`), not on
+the path, because a restore replaces the inode and a handle to the old one would answer with rows the site
+no longer has. One `statSync` (~2 µs) per call is the price of not being wrong.
+
+**The regression this found, and the fix.** The first version cached in `boot()` too, and that broke
+`test/tenancy/resolve.test.ts`: an open handle — even a readonly one — holds a shared lock, and
+`PRAGMA journal_mode = DELETE` needs an exclusive one. Measured directly: a WAL database with one readonly
+connection open answers `SQLITE_BUSY`, and the flip succeeds the moment it closes. Boot is one pass over
+every tenant before any request is served, so it has nothing to amortise: `boot()` now uses a transient
+handle (`cache: false`) and only `sync()` caches. S4 keeps the constraint alive as an assertion, and
+`discardSyncHandle(tenant)` exists for a caller about to change the file's journal mode or replace it.
+
+| what | before | after | load |
+|---|---|---|---|
+| `runtime.sync`, end to end | 730.6–767.3 µs/call (§9.5) | **56.4 µs/call** (`plugin-budget.ts`) | 8.74 → **33.00** |
+| connection open + SELECT + close, vs a cached call | 692.62 µs | 17.92 µs (**38.7×**) | 30.68 |
+| the `SELECT` itself | 3.0 µs | 2.81 µs | — |
+| connections opened by 20 syncs after the first | 20 | **0** (S1) | — |
+
+The improvement is 13× *while being measured at four times the load* it was measured at before.
+
+**Behaviour is unchanged**, and that is asserted rather than assumed: S2 writes a `cms_plugin_installed`
+row through a *different* connection after the handle is cached, and the next `sync()` sees it, refuses to
+activate the package (no bytes on disk), records the notice, and leaves `enabled = 0` — the cache is a
+handle, not a snapshot. S3 replaces the file and asserts the handle is reopened.
+
+### 10.4 The form component — `components/form.ts` exists, and a page can submit
+
+`schema/component-registry.json` declared `components/form.ts` and the file had never been written, so the
+`form` block the editor's palette offers rendered markup that posted to the page's own URL with no `_pt`,
+which `submitCoreForm` refuses as `missing`. Every existing form gate minted the token itself (H4/H5 of
+`plugin-hooks-wired.test.ts`), so the suite could not see it: they prove the *intake* works, not that
+anything a page emits can satisfy it.
+
+The renderer emits the intake's contract, from the intake's own functions:
+
+| the intake checks | what the renderer emits |
+|---|---|
+| `action` = `POST /f/<key>` | `<form method="post" action="/f/<key>">` (`forward` mode keeps its declared `action_url`) |
+| `_pt` = `HMAC(SKW_SESSION_KEY, tenant\|form\|ts)`, 30 min | `<input type="hidden" name="_pt" value="<ts>.<mac>">`, minted by `formIntentToken()` — the only minter in the tree |
+| `_hp` non-empty → 202 and no row | `<input name="_hp" value="">` inside an `aria-hidden` wrapper placed out of the tab order |
+| declared fields only, required, per-field max | one input per `fields_json` entry the markup lacks, with `required` and `maxlength` |
+
+It is wired into **`renderStoredBody()`** — the one function the site and all three exporters share — so a
+page cannot render a submittable form on the site and a token-less one in a bundle. The context is passed
+only by the serve path (`app/main.ts`): the export path has no `SKW_SESSION_KEY`, and a token minted at
+export time would be stale before a visitor loaded the bundle, so the form there carries
+`data-form-intent="absent"`. Pages are served `cache-control: no-store`, so a rendered `_pt` is never
+served from a cache older than its 30-minute TTL.
+
+**Proof** (`test/form-component.test.ts`, G1–G4, 4/4): G1 takes the block from the registry — not from a
+string in the test — and asserts the renderer file the entry names exists (the assertion that would have
+been red for the life of the registry). G2 stores that block on a page, serves it, and asserts the action,
+the method, `data-form-intent="minted"`, that the emitted `_pt` **verifies for `(acme, contact)`** and does
+**not** verify for `(acme, newsletter)`, that `_hp` is empty, and that `message` — declared in
+`fields_json`, absent from the registry markup — was rendered with `required` and `maxlength="200"`. G3
+waits out O-30's 1.5 s minimum fill and POSTs the page's own fields and the page's own token to
+`/f/contact`: **202 with an id, and a `cms_form_submission` row carrying the values and not the token**.
+G4 is the negative control set: no `_pt` → 400 `token is missing`; the same token presented to
+`/f/newsletter` → 400 `token is signature`; a filled `_hp` → **202 and no row**.
+
+### 10.5 Stability across three consecutive runs
+
+Three `make test` runs, back to back, nothing else started by this pass:
+
+| run | load (start → end, 1 min) | node suite | result |
+|---|---|---|---|
+| A | 46.08 → 18.40 | 583/583, 158.87 s | **exit 0** — claims 27/27, frozen PASS, dist 6/6, no-leak clean |
+| B | 8.90 → 36.40 | 582/583, one file timed out | **exit 2** — `test/first-boot-tls.test.ts` hit the 40 000 ms per-file budget; **0 assertion failures** |
+| C | 26.44 → 48.10 | 583/583, 174.77 s | **exit 0** — as A |
+
+A fourth full run, `hermes verify --json` (bootstrap → build → typecheck → `npm run test` → `make test` →
+`make typecheck` → `make build` → readiness), returned **`ok: true`, exit 0**: `npm run test` **583/583 in
+166.33 s**, `make test` **583/583 in 182.31 s** with `verify-dist` 6/6 and no-leak clean, and readiness `200`
+on `http://127.0.0.1:4321/`; load 9.68 → 17.99. That is the run that records verification evidence for this
+workspace.
+
+So: **2 of 3 consecutive `make test` runs green, and no run failed an assertion; 4 of 4 full runs green on
+the node suite.** Run B's single failure is the file budget, not
+behaviour, and it is pre-existing rather than introduced here: `first-boot-tls.test.ts` was untouched by
+this pass, and it takes **30.76 s alone at load 25.16** — 77% of its 40 s budget before any contention.
+That file's fixed TLS waits are larger than the 4.4×-of-`ddl-runner` derivation behind `TEST_TIMEOUT_MS`,
+which is why it is one of the two files §9.7 already recorded losing under load. `TEST_TIMEOUT_MS` was
+**not** raised: widening a gate's budget is a decision for the pass that owns the gate, not a silent fix
+inside this one, and the number it would need (≈60 s for 2× margin on the slowest file) is a change with
+its own consequences for a hung test.
+
+Every file this pass touched — `nginx-media-e2e`, `farm`, `ddl-runner`, `plugin-sync-handle`,
+`form-component`, and `tenancy/resolve` — passed in all three runs.
+
+### 10.6 The commands this section rests on
+
+| What | Command | Result |
+|---|---|---|
+| the sampler gate, three runs at the load that used to break it | `node --test test/nginx-media-e2e.test.ts` | 5/5 ×3; `dead 0`, `windowSamples` 13/8/8, `release 'window'`; load 24.86 / 21.86 / 20.67 |
+| the same gate with the rename order broken | edit `app/assets/library.ts`, run, restore | **red twice**: `dead 42` (load 9.66), `dead 9` (load 8.56); restored to sha256 `3a0169ee…0feb2` |
+| the farm rename gate | `node --test test/farm.test.ts` | 5/5; `dead 0`, `windowSamples` ≥ 3 |
+| the two DDL contention gates | `node --test test/ddl-runner.test.ts` | 18/18 (C3, C7 now barrier-held) |
+| the connection budget | `node --expose-gc scripts/measure/plugin-budget.ts` | **sync 56.4 µs/call** at load 33.00 (was 730.6–767.3 at 8.74); SELECT 2.81 µs |
+| the cached handle | `node --test test/plugin-sync-handle.test.ts` | 4/4 (S1–S4); 20 syncs → **0** connections; red at 20 before the fix |
+| the form component | `node --test test/form-component.test.ts` | 4/4 (G1–G4); 202 + row from the page's own token; 3 refusals |
+| the whole gate | `make test` | **exit 0** 583/583 in runs A and C; run B exit 2 on a per-file timeout only; loads in §10.5 |
+| the file that lost run B, alone | `node --test test/first-boot-tls.test.ts` | 5/5 in **30.76 s** at load 25.16 — 77% of the 40 s budget |
+

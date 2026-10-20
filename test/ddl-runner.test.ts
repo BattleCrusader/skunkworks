@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { after, before, test } from 'node:test';
 
@@ -95,8 +95,13 @@ function runChild(mode: string, file: string, spec: unknown): Promise<{ code: nu
   });
 }
 
-/** Starts a child and resolves once it says it is running, so a race is a race. */
-function started(mode: string, file: string, spec: unknown): Promise<{ done: Promise<{ code: number | null; signal: string | null; out: string }>; out: () => string }> {
+/** Starts a child and resolves once it says `needle` on stderr, so a race is a race — or a barrier. */
+function started(
+  mode: string,
+  file: string,
+  spec: unknown,
+  needle = 'ready',
+): Promise<{ done: Promise<{ code: number | null; signal: string | null; out: string }>; out: () => string }> {
   const child = spawn(process.execPath, [CHILD, mode, file, JSON.stringify(spec)], { stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';
   let resolveReady: () => void = () => {};
@@ -108,7 +113,7 @@ function started(mode: string, file: string, spec: unknown): Promise<{ done: Pro
   });
   child.stderr.on('data', (c) => {
     out += String(c);
-    if (out.includes('ready')) resolveReady();
+    if (out.includes(needle)) resolveReady();
   });
   const done = new Promise<{ code: number | null; signal: string | null; out: string }>((resolve) => {
     child.on('close', (code, signal) => resolve({ code, signal, out }));
@@ -197,13 +202,26 @@ test('C2. a batch failing on its third statement leaves the schema byte-identica
 
 test('C3. two processes: BEGIN IMMEDIATE serialises the second behind the first', async () => {
   const path = freshSite();
-  const a = runChild('ddl', path, { ops: [createTable('u_first', [{ name: 'title', type: 'TEXT' }])], holdMs: 400 });
-  // Start B while A is inside its transaction: it has the table-creation statement
-  // written and 400 ms of sleep left before COMMIT.
-  await new Promise((r) => setTimeout(r, 120));
-  const b = runChild('ddl', path, { ops: [createTable('u_second', [{ name: 'title', type: 'TEXT' }])] });
-
-  const [ra, rb] = await Promise.all([a, b]);
+  // **A barrier, not a sleep.** The old version started A, slept 120 ms, then started B and
+  // asserted `B.lockAttempts >= 2` — a statement that B *observed* the lock held, which was true
+  // only if both processes booted inside the 120 ms gap. On a loaded box B's first
+  // `BEGIN IMMEDIATE` can land after A's COMMIT and the gate fails on a counter that was never
+  // about the rename... about DDL serialisation. Now A holds the lock until B proves it collided
+  // (`signalOnBusy`), so the counter is ≥2 by construction.
+  const release = join(dirname(path), 'lock-release');
+  const a = await started(
+    'ddl',
+    path,
+    { ops: [createTable('u_first', [{ name: 'title', type: 'TEXT' }])], holdUntil: release, holdMs: 15_000 },
+    'holding',
+  );
+  // …and B, started only once A says the lock is held. A is still inside its transaction here:
+  // it does not commit until B's first `BEGIN IMMEDIATE` collides and creates the release file.
+  const b = runChild('ddl', path, {
+    ops: [createTable('u_second', [{ name: 'title', type: 'TEXT' }])],
+    signalOnBusy: release,
+  });
+  const [ra, rb] = await Promise.all([a.done, b]);
   assert.equal(ra.code, 0, `A failed: ${ra.out}`);
   assert.equal(rb.code, 0, `B failed: ${rb.out}`);
   const ja = JSON.parse(ra.out.trim().split('\n').pop() as string);
@@ -382,7 +400,21 @@ test('C7. concurrent CRUD writes during a rebuild lose nothing, and the rebuild 
 
   // Two writer processes, one row per transaction through the production CRUD writer,
   // each transaction held open for 12 ms so it owns the write lock a third of the time.
-  const w1 = await started('crud', path, { table: 'u_post', rows: 40, pauseMs: 1, holdMs: 12, prefix: 'w1' });
+  //
+  // w1's **first** transaction is the barrier: it holds the lock until the first rebuild's
+  // `BEGIN IMMEDIATE` collides with it and writes `lock-collided`. That is what makes
+  // `rebuild.waitedFor >= 1` below a construction — the assertion used to rest on two writers
+  // happening to overlap one of five rebuild attempts, which is the same bet on scheduling that
+  // failed the rename sampler at load 22–34.
+  const collided = join(dirname(path), 'lock-collided');
+  const w1 = await started('crud', path, {
+    table: 'u_post',
+    rows: 40,
+    pauseMs: 1,
+    holdMs: 12,
+    holdFirstUntil: collided,
+    prefix: 'w1',
+  }, 'holding');
   const w2 = await started('crud', path, { table: 'u_post', rows: 40, pauseMs: 1, holdMs: 12, prefix: 'w2' });
 
   // The rebuilds run *while* both writers are inserting into the same table. Each holds
@@ -400,8 +432,26 @@ test('C7. concurrent CRUD writes during a rebuild lose nothing, and the rebuild 
     { op: 'drop_column', table: 'u_post', column: 'extra2' } as DdlOp,
   ];
   const reports = [];
-  for (const op of passes) {
-    reports.push(runDdl(path, [op], { actor: ACTOR, busyTimeoutMs: 10_000 }));
+  // The first rebuild's connection signals the collision the writers are waiting for: the instant
+  // its `BEGIN IMMEDIATE` returns BUSY, `collided` exists and w1 commits. No sleep, no bet.
+  const signallingOpen = (file: string): Database.Database => {
+    const db = open(file);
+    const exec = db.exec.bind(db);
+    db.exec = (sql: string): Database.Database => {
+      try {
+        return exec(sql);
+      } catch (err) {
+        if (/BEGIN\s+IMMEDIATE/i.test(sql) && !existsSync(collided)) writeFileSync(collided, String(Date.now()));
+        throw err;
+      }
+    };
+    return db;
+  };
+  for (const [index, op] of passes.entries()) {
+    reports.push(runDdl(path, [op], { actor: ACTOR, busyTimeoutMs: 10_000, ...(index === 0 ? { open: signallingOpen } : {}) }));
+    if (index === 0) {
+      assert.ok(existsSync(collided), 'the first rebuild never collided with the writer that was holding the lock');
+    }
     await new Promise((r) => setTimeout(r, 5));
   }
   const rebuild = reports[0] as ReturnType<typeof runDdl>;
@@ -413,6 +463,10 @@ test('C7. concurrent CRUD writes during a rebuild lose nothing, and the rebuild 
   }
 
   assert.deepEqual(rebuild.rebuilt, ['u_post']);
+  assert.ok(
+    rebuild.waitedFor >= 1,
+    `the rebuild that was held must report the connection it waited behind: ${JSON.stringify({ attempts: rebuild.lockAttempts, waitedMs: rebuild.lockWaitMs })}`,
+  );
   assert.ok(
     contended.waitedFor >= 1,
     `the rebuild must report the connections it waited behind: ${JSON.stringify(reports.map((r) => ({ attempts: r.lockAttempts, waitedMs: r.lockWaitMs })))}`,

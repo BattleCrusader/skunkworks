@@ -6,15 +6,27 @@
  *   node test/helpers/ddl-child.ts ddl  <site.db> '<json>'
  *   node test/helpers/ddl-child.ts crud <site.db> '<json>'
  *
- * `ddl` json: {ops: DdlOp[], holdMs?: number, kill?: boolean, actor?: string}
- *   holdMs — sleep inside the transaction before COMMIT (a contended lock is the point)
- *   kill   — SIGKILL this process between the last statement and COMMIT
+ * `ddl` json: {ops: DdlOp[], holdMs?: number, kill?: boolean, actor?: string,
+ *             holdUntil?: string, signalOnBusy?: string}
+ *   holdMs      — sleep inside the transaction before COMMIT (a contended lock is the point)
+ *   kill        — SIGKILL this process between the last statement and COMMIT
+ *   holdUntil   — **barrier, A's side**: hold the write lock until this file exists, or until
+ *                 `holdMs` elapses as a deadline. Prints `holding` on stderr the instant the lock
+ *                 is held, so the parent can start the contender at the right moment.
+ *   signalOnBusy — **barrier, B's side**: create this file on the first `BEGIN IMMEDIATE` that
+ *                 returns SQLITE_BUSY. That is the moment A's window is proven, not guessed.
+ *
+ * The two barrier keys exist because `holdMs` alone made the serialisation gate a race against
+ * node's boot: A slept 400 ms and the parent slept 120 ms, so the test was only correct on a box
+ * where both processes started inside the gap. With the pair, A cannot commit before B has
+ * collided with its lock — the overlap is a construction.
  * `crud` json: {table: string, rows: number, pauseMs?: number, prefix?: string}
  *
  * Everything it learns goes to stdout as one JSON line; the parent asserts on it.
  */
 import { appendAudit } from '../../app/audit/chain.ts';
 import { createRow } from '../../app/admin/crud.ts';
+import { existsSync, writeFileSync } from 'node:fs';
 import { runDdl, context } from '../../app/ddl/run.ts';
 import { emit } from '../../app/ddl/ops.ts';
 import type { DdlOp } from '../../app/ddl/ops.ts';
@@ -37,9 +49,32 @@ if (mode === 'ddl') {
   const ops = spec.ops as DdlOp[];
   const actor = { userId: 1, label: (spec.actor as string | undefined) ?? 'child@acme.test' };
   const began = Date.now();
+  const holdUntil = typeof spec.holdUntil === 'string' ? spec.holdUntil : null;
+  const signalOnBusy = typeof spec.signalOnBusy === 'string' ? spec.signalOnBusy : null;
+  // B's half of the barrier: the first `BEGIN IMMEDIATE` that finds the lock held creates the
+  // file A is waiting on. Instrumenting `exec` is the only way to see the collision from here,
+  // and it uses the `open` seam `runDdl` already documents as a test seam — no product code moves.
+  const openForDdl = (file: string): ReturnType<typeof openAdminWrite> => {
+    const db = openAdminWrite(file);
+    if (signalOnBusy === null) return db;
+    const exec = db.exec.bind(db);
+    db.exec = (sql: string): typeof db => {
+      try {
+        return exec(sql);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (/BEGIN\s+IMMEDIATE/i.test(sql) && /SQLITE_BUSY|SQLITE_LOCKED|database is locked/i.test(message)) {
+          if (!existsSync(signalOnBusy)) writeFileSync(signalOnBusy, String(Date.now()));
+        }
+        throw err;
+      }
+    };
+    return db;
+  };
   try {
     const report = runDdl(file, ops, {
       actor,
+      open: openForDdl,
       hooks: {
         beforeCommit: ({ db }) => {
           if (spec.kill === true) {
@@ -47,13 +82,23 @@ if (mode === 'ddl') {
             // audit row are written and the transaction is not committed.
             process.kill(process.pid, 'SIGKILL');
           }
-          if (typeof spec.holdMs === 'number') {
+          if (typeof spec.holdMs === 'number' || holdUntil !== null) {
             // Prove the lock is held: a second process must not get in until COMMIT.
             db.prepare(
               `INSERT INTO cms_settings(key, value_json, type) VALUES (?, ?, 'string')
                ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json`,
             ).run(`hold-${process.pid}`, String(Date.now()));
-            sleepSync(spec.holdMs);
+            // The instant the lock is held, said out loud. The parent starts the contender on
+            // this line, so the contender's first `BEGIN IMMEDIATE` lands inside the window.
+            process.stderr.write('holding\n');
+            if (holdUntil !== null) {
+              // Wait for the contender to prove it collided; `holdMs` is only a deadline, so a
+              // broken barrier fails the gate on `lockAttempts` instead of hanging the suite.
+              const deadline = Date.now() + Number(spec.holdMs ?? 10_000);
+              while (!existsSync(holdUntil) && Date.now() < deadline) sleepSync(5);
+            } else {
+              sleepSync(Number(spec.holdMs));
+            }
           }
         },
       },
@@ -70,6 +115,8 @@ if (mode === 'ddl') {
   const prefix = (spec.prefix as string | undefined) ?? 'row';
   const db = openAdminWrite(file);
   const holdMs = Number(spec.holdMs ?? 0);
+  const holdFirstUntil = typeof spec.holdFirstUntil === 'string' ? spec.holdFirstUntil : null;
+  const holdMaxMs = Number(spec.holdMaxMs ?? 15_000);
   // Readiness, so a parent can start the rebuild *while* the writers are running rather
   // than while node is still parsing this file.
   process.stderr.write('ready\n');
@@ -87,7 +134,16 @@ if (mode === 'ddl') {
       // DDL runner itself uses, so the writers contend the same way it does.
       db.transaction(() => {
         createRow(db, table, { slug: `${prefix}-${i}`, title: `${prefix} ${i}`, body_html: '<p>x</p>' }, { userId: 2, label: 'writer@acme.test' });
-        if (holdMs > 0) sleepSync(holdMs);
+        if (holdFirstUntil !== null && i === 0) {
+          // The barrier's writer side: the first transaction holds the write lock until someone
+          // proves it collided (the rebuild writes `holdFirstUntil` on its first BUSY). The
+          // assertion "the rebuild reported a wait" is then true by construction, not by luck.
+          process.stderr.write('holding\n');
+          const deadline = Date.now() + holdMaxMs;
+          while (!existsSync(holdFirstUntil) && Date.now() < deadline) sleepSync(5);
+        } else if (holdMs > 0) {
+          sleepSync(holdMs);
+        }
       }).immediate();
       written += 1;
       if (pauseMs > 0) sleepSync(pauseMs);

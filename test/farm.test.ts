@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { spawn } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 
@@ -193,43 +193,94 @@ test('F3 — a rename leaves no moment where neither URL resolves, and the map n
   // synchronous JS, so an in-process sampler would run only before or after it and report a
   // window it never observed. `readFileSync` in that process is the reader: it either resolves
   // (bytes) or throws (gone), which is what nginx's `try_files` does.
+  //
+  // The window is held open rather than raced: the reader prints `ready` (so it has resolved the
+  // old name before the rename is called) and `renameAsset` then parks between "the new links
+  // exist" and "the old ones are removed" until the reader has sampled both resolving. This is
+  // the same barrier N3 uses at the edge, for the same reason — `sawOld > 0` must be a
+  // construction, not a bet on how fast node boots on a loaded box.
+  const holdDir = join(fixture.dir, 'rename-window');
+  mkdirSync(holdDir, { recursive: true });
   const sampler = spawn(process.execPath, [
     join(REPO, 'test', 'helpers', 'farm-sampler.mjs'),
     publicDirOf(contentRoot),
     oldName,
     newName,
-    '400',
+    '3000',
+    holdDir,
   ]);
-  let raw = '';
+  const events: Record<string, unknown>[] = [];
+  const waiters = new Map<string, (value: Record<string, unknown>) => void>();
+  let buf = '';
   sampler.stdout.on('data', (chunk: Buffer) => {
-    raw += chunk.toString('utf8');
-  });
-  const finished = new Promise<{ samples: number; dead: number; sawOld: number; sawNew: number }>((resolve, reject) => {
-    sampler.on('error', reject);
-    sampler.on('close', () => {
-      try {
-        resolve(JSON.parse(raw.trim()) as { samples: number; dead: number; sawOld: number; sawNew: number });
-      } catch (err) {
-        reject(new Error(`sampler printed ${JSON.stringify(raw)}: ${String(err)}`));
+    buf += chunk.toString('utf8');
+    for (let nl = buf.indexOf('\n'); nl >= 0; nl = buf.indexOf('\n')) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line === '') continue;
+      const event = JSON.parse(line) as Record<string, unknown>;
+      events.push(event);
+      const waiter = waiters.get(String(event.event));
+      if (waiter !== undefined) {
+        waiters.delete(String(event.event));
+        waiter(event);
       }
-    });
+    }
   });
-  // Let the reader settle into its loop, then rename while it is reading.
-  await new Promise((r) => setTimeout(r, 120));
-
-  const writer = db();
-  try {
-    renameAsset(writer, { from: 'campaign/summer', to: 'campaign/spring', contentRoot });
-  } finally {
-    writer.close();
+  const samplerExit = new Promise<void>((resolve, reject) => {
+    sampler.on('error', reject);
+    sampler.on('close', () => resolve());
+  });
+  function waitForEvent(name: string, timeoutMs: number): Promise<Record<string, unknown>> {
+    const seen = events.find((e) => e.event === name);
+    if (seen !== undefined) return Promise.resolve(seen);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        waiters.delete(name);
+        reject(new Error(`the sampler never emitted "${name}" within ${timeoutMs} ms (events: ${JSON.stringify(events)})`));
+      }, timeoutMs);
+      waiters.set(name, (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      });
+    });
   }
-  const samples = await finished;
+  const ready = await waitForEvent('ready', 30_000);
+  assert.ok(Number(ready.sawOld) >= 1, `the reader said ready without resolving the old link: ${JSON.stringify(ready)}`);
 
-  assert.ok(samples.samples > 200, `only ${samples.samples} samples — the window was not observed`);
-  assert.equal(samples.dead, 0, `an interval existed in which neither URL resolved (${samples.dead} of ${samples.samples} samples)`);
+  let samples: Record<string, unknown>;
+  process.env.SKW_RENAME_WINDOW_HOLD = holdDir;
+  try {
+    const writer = db();
+    try {
+      renameAsset(writer, { from: 'campaign/summer', to: 'campaign/spring', contentRoot });
+    } finally {
+      writer.close();
+    }
+  } finally {
+    delete process.env.SKW_RENAME_WINDOW_HOLD;
+  }
+  samples = await waitForEvent('done', 60_000);
+  await samplerExit;
+  // `samples > 200` used to sit here: a throughput number in a correctness gate, asserting that
+  // the reader managed 500 reads a second on whatever box the suite ran on. The window is held
+  // open now, so the honest question is not "how many reads" but "were any of them taken inside
+  // the window" — which the release answers by construction.
+  assert.ok(existsSync(join(holdDir, 'window-open.json')), 'the rename never opened a window the reader could hold');
+  assert.equal(
+    samples.releaseReason,
+    'window',
+    `the window was released on "${String(samples.releaseReason)}", not because both names resolved (${JSON.stringify(samples)})`,
+  );
+  assert.ok(Number(samples.windowSamples) >= 3, `only ${String(samples.windowSamples)} samples inside the held window (${JSON.stringify(samples)})`);
+  assert.equal(
+    Number(samples.dead),
+    0,
+    `an interval existed in which neither name resolved (${String(samples.dead)} of ${String(samples.samples)} samples)`,
+  );
   // The rename did happen inside the window: the reader saw the old name, and then the new one.
-  assert.ok(samples.sawOld > 0, 'the reader never saw the old URL');
-  assert.ok(samples.sawNew > 0, 'the reader never saw the new URL');
+  assert.ok(Number(samples.sawOld) > 0, 'the reader never saw the old link');
+  assert.ok(Number(samples.sawNew) > 0, 'the reader never saw the new link');
 
   // After it: new serves, old link is gone (the edge answers it from the map instead).
   assert.equal(resolves(newName), true);

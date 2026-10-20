@@ -40,14 +40,14 @@
  * keeps serving, because the registry never received its hooks.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type Database from 'better-sqlite3';
 
 import { AppError } from '../errors.ts';
-import { openAdminWrite } from '../db/classes.ts';
+import { openAdminWrite, openRenderRead } from '../db/classes.ts';
 import { makePluginContext, type PluginContext } from './context.ts';
 import { HookBus, type HookFailure } from './hooks.ts';
 import { HOOK_NAMES, packageDir, packageRootHash, parseManifest, type Manifest } from './manifest.ts';
@@ -88,6 +88,8 @@ export interface PluginRuntimeOptions {
   audit?: ((action: string, target: string, detail: Record<string, unknown>) => void) | undefined;
   now?: (() => number) | undefined;
   hookTimeoutMs?: number | undefined;
+  /** `busy_timeout` for the cached `sync()` read handle. Default 5000, the render class's. */
+  syncBusyTimeoutMs?: number | undefined;
 }
 
 export interface ActivationResult {
@@ -115,6 +117,15 @@ export class PluginRuntime {
   private readonly inFlight = new Map<string, number>();
   /** Tenant keys whose rows say `failed`, so `enable` can refuse without an ack. */
   private readonly failed = new Set<string>();
+  /**
+   * `tenant` → the cached read handle `sync()` uses, keyed on the **file's identity** (`dev:ino`)
+   * rather than on the path. A handle to an inode that has been replaced answers with rows the
+   * site no longer has, so a `statSync` per call — ~2 µs — is the price of not being wrong; it is
+   * three orders of magnitude below the ~0.75 ms `openAdminWrite()` it replaces.
+   */
+  private readonly syncHandles = new Map<string, { db: Database.Database; key: string }>();
+  private syncOpens = 0;
+  private syncReuses = 0;
 
   constructor(options: PluginRuntimeOptions) {
     this.options = options;
@@ -488,7 +499,7 @@ export class PluginRuntime {
     for (const tenant of readdirSync(tenantsDir)) {
       const site = this.sitePath(tenant);
       if (!existsSync(site)) continue;
-      for (const row of this.enabledRows(tenant)) {
+      for (const row of this.enabledRows(tenant, { cache: false })) {
         try {
           await this.enable(tenant, row.plugin_id);
           out.push({ tenant, plugin: row.plugin_id, ok: true });
@@ -500,10 +511,14 @@ export class PluginRuntime {
     return out;
   }
 
-  private enabledRows(tenant: string): PluginRow[] {
+  private enabledRows(tenant: string, opts: { cache?: boolean } = {}): PluginRow[] {
     let db: Database.Database | null = null;
+    let cached = false;
     try {
-      db = openAdminWrite(this.sitePath(tenant), 5000);
+      const handle = this.syncHandle(tenant, opts.cache === true);
+      if (handle === null) return [];
+      db = handle.db;
+      cached = handle.cached;
       const table = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_plugin_installed'`).get();
       if (table === undefined) return [];
       const columns = (db.pragma('table_info(cms_plugin_installed)') as { name: string }[]).map((c) => c.name);
@@ -518,8 +533,84 @@ export class PluginRuntime {
     } catch {
       return [];
     } finally {
-      db?.close();
+      // A cached handle belongs to the runtime and is closed by `closeSyncHandles()`. A connection
+      // this call opened because there was nothing to reuse is closed here, exactly as before —
+      // the change is that after the first request there is nothing to open.
+      if (!cached) db?.close();
     }
+  }
+
+  /**
+   * The tenant's read handle, cached when `cache` is true.
+   *
+   * `render-read` and not `admin-write`: `sync` reads a table list, `table_info` and one SELECT,
+   * and `openRenderRead`'s `readonly` + `query_only=1` is what makes "this path cannot write" a
+   * property of the handle instead of a property of the three statements above it.
+   *
+   * **`cache` is false for `boot()`.** An open handle — even a readonly one — holds a shared lock
+   * on the file, and `PRAGMA journal_mode = DELETE` needs an exclusive one: measured, a WAL
+   * database with one readonly connection open refuses the flip with `SQLITE_BUSY`, and succeeds
+   * the moment it closes. Boot is one pass over every tenant before any request is served, so it
+   * has nothing to amortise and must not leave a handle holding a file open; the per-request path
+   * (`sync`) is where the reuse is worth 99.6% of the call.
+   */
+  private syncHandle(tenant: string, cache: boolean): { db: Database.Database; cached: boolean } | null {
+    const file = this.sitePath(tenant);
+    let stat;
+    try {
+      stat = statSync(file);
+    } catch {
+      // No database: `enabledRows` has always answered `[]` for a tenant that is not there, and a
+      // read path must not create the file (the old `openAdminWrite` did, as a side effect).
+      return null;
+    }
+    const key = `${String(stat.dev)}:${String(stat.ino)}`;
+    const existing = this.syncHandles.get(tenant);
+    if (existing !== undefined) {
+      if (existing.key === key) {
+        this.syncReuses += 1;
+        return { db: existing.db, cached: true };
+      }
+      // The file was replaced (a restore, a rebuild). Drop the handle to the old inode.
+      this.discardSyncHandle(tenant);
+    }
+    const db = openRenderRead(file, this.options.syncBusyTimeoutMs ?? 5000);
+    if (!cache) return { db, cached: false };
+    this.syncOpens += 1;
+    this.syncHandles.set(tenant, { db, key });
+    return { db, cached: true };
+  }
+
+  /**
+   * Drop one tenant's cached handle, if any. For a caller that is about to change the file's
+   * journal mode or replace it — the two operations an open handle prevents.
+   */
+  discardSyncHandle(tenant: string): void {
+    const existing = this.syncHandles.get(tenant);
+    if (existing === undefined) return;
+    this.syncHandles.delete(tenant);
+    try {
+      existing.db.close();
+    } catch {
+      /* a handle that cannot close is still out of the map */
+    }
+  }
+
+  /** `sync`'s connection budget: how many it opened, how many it reused. A gate reads the deltas. */
+  syncStats(): { opens: number; reuses: number; size: number } {
+    return { opens: this.syncOpens, reuses: this.syncReuses, size: this.syncHandles.size };
+  }
+
+  /** Close the cached read handles. Called from `AppHandle.close()`; safe to call twice. */
+  closeSyncHandles(): void {
+    for (const { db } of this.syncHandles.values()) {
+      try {
+        db.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.syncHandles.clear();
   }
 
   /**
@@ -535,7 +626,7 @@ export class PluginRuntime {
   async sync(tenant: string): Promise<void> {
     let rows: PluginRow[];
     try {
-      rows = this.enabledRows(tenant);
+      rows = this.enabledRows(tenant, { cache: true });
     } catch {
       return;
     }

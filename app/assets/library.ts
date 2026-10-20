@@ -19,7 +19,8 @@
  *     gets the same verdict; the app's job is to name the count first.
  */
 import type Database from 'better-sqlite3';
-import { basename, extname } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { basename, extname, join } from 'node:path';
 
 import { AppError } from '../errors.ts';
 import { removeAssetLinks, syncAssetLinks, writeAliasMap } from './farm.ts';
@@ -241,9 +242,55 @@ export function renameAsset(
   if (opts.contentRoot !== undefined) {
     syncAssetLinks(db, opts.contentRoot, opts.to);
     writeAliasMap(db, opts.contentRoot);
+    holdRenameWindow(opts.from, opts.to);
     removeAssetLinks(opts.contentRoot, opts.from);
   }
   return { alias: true, links: 0, from: opts.from, to: opts.to };
+}
+
+/**
+ * **The rename window as a place, not a duration.** Test-only, and gated on an environment
+ * variable so production cannot enter it.
+ *
+ * A gate that asserts "no sample saw both URLs dead" needs samples taken *between* step 1 and
+ * step 3, and this function is that interval made explicit: it parks here, after the new links
+ * and the alias map exist and before the old links are removed, until a second process has
+ * sampled both URLs resolving through the real edge. `SKW_RENAME_WINDOW_HOLD` names the
+ * directory the two sides meet in:
+ *
+ *   - this side writes `window-open.json` and blocks;
+ *   - the sampler writes `window-release` when it has seen both URLs resolve (the property held)
+ *     or when it has seen **neither** (it did not — it releases so the gate reports `dead > 0`
+ *     rather than hanging until the deadline);
+ *   - the deadline is a harness failure, not a product one, so it throws a plain `Error`.
+ *
+ * **Why blocking is safe.** `/media/` is served by nginx from the farm directory; it never
+ * proxies to this process (that is what N1 proves by killing the app). The only thing that
+ * stops answering while the window is open is the app, which is exactly the code waiting.
+ *
+ * **Why the wait is sync.** `renameAsset` is synchronous and called from request handlers and
+ * CLIs alike. Parking with `Atomics.wait` keeps that contract — no promise, no callback, no
+ * second ordering rule for callers to learn — and the 5 ms poll costs nothing because the hold
+ * lasts a few milliseconds in the gate and is never entered outside one.
+ */
+function holdRenameWindow(from: string, to: string): void {
+  const dir = process.env.SKW_RENAME_WINDOW_HOLD;
+  if (dir === undefined || dir === '') return;
+  const deadlineMs = Number(process.env.SKW_RENAME_WINDOW_HOLD_MS ?? 15_000);
+  const releaseFile = join(dir, 'window-release');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'window-open.json'), `${JSON.stringify({ from, to, pid: process.pid, at: Date.now() })}\n`);
+  const startedAt = Date.now();
+  const park = new Int32Array(new SharedArrayBuffer(4));
+  while (!existsSync(releaseFile)) {
+    if (Date.now() - startedAt > deadlineMs) {
+      throw new Error(
+        `rename window for ${from} → ${to} was never released within ${deadlineMs} ms ` +
+          `(SKW_RENAME_WINDOW_HOLD=${dir}); this is a harness failure, not a rename failure`,
+      );
+    }
+    Atomics.wait(park, 0, 0, 5);
+  }
 }
 
 /**

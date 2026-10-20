@@ -31,6 +31,7 @@ import type Database from 'better-sqlite3';
 import { unwrapBody } from '../editor/canon.ts';
 import { renderBody, type RenderOptions } from '../editor/render.ts';
 import { AppError } from '../errors.ts';
+import { bindCoreForms } from './components/form.ts';
 
 /** `/<body` anywhere after the unwrap — a document the shell cannot hold. */
 const BODY_DOCUMENT = /<body[\s>]/i;
@@ -57,5 +58,8 @@ export function renderStoredBody(db: Database.Database, storedHtml: string, opti
     });
   }
   if (document === '') return '';
-  return renderBody(db, document, options);
+  // The second projection: a `form` block becomes a form that the intake will accept (§8.6 O-30).
+  // It runs here, in the one function the site and all three exporters share, so a page cannot
+  // render a submittable form on the site and a token-less one in a bundle — or the reverse.
+  return bindCoreForms(renderBody(db, document, options), db, options.forms);
 }

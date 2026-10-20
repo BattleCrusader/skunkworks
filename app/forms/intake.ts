@@ -40,6 +40,20 @@ export const FORM_RATE_WINDOW_MS = 10 * 60 * 1000;
 export const FORM_INTENT_FIELD = '_pt';
 export const FORM_HONEYPOT_FIELD = '_hp';
 
+/**
+ * What a renderer needs to mint `_pt`: the tenant it binds, the install's secret, and the instant.
+ *
+ * It lives here, beside `formIntentToken()`, so the renderer (`app/render/components/form.ts`) and
+ * the render options (`app/editor/render.ts`) can both name it without the editor importing the
+ * render tree — the dependency points at the intake, which is what the token *is*.
+ */
+export interface FormIntentContext {
+  tenant: string;
+  sessionKey: string;
+  /** `Date.now()`. Passed in rather than read by the renderer so a gate can render at a fixed instant. */
+  atMs: number;
+}
+
 export interface FormFieldSpec {
   name: string;
   type?: string;

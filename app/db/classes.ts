@@ -18,6 +18,22 @@ import Database from 'better-sqlite3';
 
 export type ConnectionClass = 'render-read' | 'admin-write' | 'exporter';
 
+/**
+ * How many SQLite connections this process has opened, ever. A diagnostic, not a policy: a
+ * connection costs ~0.7 ms to open on a loaded box (the cost `runtime.sync` used to pay per
+ * plugin-bearing request), and a budget nobody can measure is a budget nobody keeps. The counter
+ * is monotonic and process-wide, so a gate takes deltas rather than absolute values.
+ */
+let connectionsOpened = 0;
+
+export function connectionCount(): number {
+  return connectionsOpened;
+}
+
+export function resetConnectionCount(): void {
+  connectionsOpened = 0;
+}
+
 export interface ClassPragmas {
   queryOnly: boolean;
   foreignKeys: boolean;
@@ -31,6 +47,7 @@ export const PRAGMAS: Record<ConnectionClass, ClassPragmas> = {
 };
 
 export function openRenderRead(file: string, busyTimeoutMs = 5000): Database.Database {
+  connectionsOpened += 1;
   const db = new Database(file, { readonly: true, fileMustExist: true });
   db.pragma('query_only = 1');
   db.pragma('foreign_keys = 1');
@@ -40,6 +57,7 @@ export function openRenderRead(file: string, busyTimeoutMs = 5000): Database.Dat
 }
 
 export function openAdminWrite(file: string, busyTimeoutMs = 5000): Database.Database {
+  connectionsOpened += 1;
   const db = new Database(file);
   db.pragma('foreign_keys = 1');
   db.pragma(`busy_timeout = ${busyTimeoutMs}`);
@@ -48,6 +66,7 @@ export function openAdminWrite(file: string, busyTimeoutMs = 5000): Database.Dat
 }
 
 export function openExporter(file: string, busyTimeoutMs = 5000): Database.Database {
+  connectionsOpened += 1;
   const db = new Database(file, { readonly: false, fileMustExist: true });
   db.pragma('foreign_keys = 1');
   db.pragma(`busy_timeout = ${busyTimeoutMs}`);

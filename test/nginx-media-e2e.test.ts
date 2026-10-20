@@ -11,9 +11,13 @@
  *       never had one.
  *   N2  a gated asset is 404 and its body is **byte-identical** to a key that never existed —
  *       the same response from the same `try_files`, so the 404 is not an oracle.
- *   N3  a rename is sampled through HTTP while it happens: no sample exists in which both the
- *       old and the new URL fail, and after a reload the old URL is a 301 to the new one with
- *       the current `?v=`.
+ *   N3  a rename is sampled through HTTP **inside a window the test holds open**: the sampler
+ *       signals `ready` before the rename is called, and `renameAsset` (test-only, env-gated)
+ *       parks between "the new links exist" and "the old links are removed" until the sampler has
+ *       sampled both URLs resolving. No sample exists in which both the old and the new URL fail,
+ *       and after a reload the old URL is a 301 to the new one with the current `?v=`. The
+ *       barrier is what makes `sawOld > 0` a construction rather than a race against node's boot
+ *       time.
  *   N4  a delete removes the link, the alias stops being a 301, and both URLs are 404.
  *
  * Harness substitutions, the same ones the S1 edge gate makes and no others (all in
@@ -314,49 +318,115 @@ test('N3 — a rename never leaves both URLs dead (HTTP-sampled), and the old UR
 
   // A second process requests both URLs throughout the rename. In-process sampling could not
   // observe the window: the farm writes are synchronous.
+  //
+  // **The window is a place the test holds open, not a duration it hopes to hit.** The first
+  // version slept 150 ms and then renamed; `sawOld > 0` then depended on this child finishing its
+  // *boot* inside 150 ms, which a loaded box does not do — measured at load 22–34 it landed
+  // after the rename and the gate failed on "the sampler never saw the old URL", an assertion
+  // about node's start time wearing an assertion about the rename. Two handshakes replace it:
+  //
+  //   1. the child prints `ready` once it has resolved the old URL — so `sawOld > 0` is true by
+  //      construction before the rename is even called;
+  //   2. `renameAsset` (test-only, `SKW_RENAME_WINDOW_HOLD`) parks between "the new links exist"
+  //      and "the old links are removed" until the child has sampled **both** URLs resolving, so
+  //      the samples `dead` counts are samples of the held window and not of its two endpoints.
+  const holdDir = join(tmp, 'rename-window');
+  mkdirSync(holdDir, { recursive: true });
   const sampler = spawn(process.execPath, [
     join(REPO, 'test', 'helpers', 'http-sampler.mjs'),
     String(edgePort),
     HOST,
     oldPath,
     newPath,
-    '1200',
+    '3000',
+    holdDir,
   ]);
-  let raw = '';
+  const events: Record<string, unknown>[] = [];
+  const waiters = new Map<string, (value: Record<string, unknown>) => void>();
+  let buf = '';
   sampler.stdout.on('data', (chunk: Buffer) => {
-    raw += chunk.toString('utf8');
+    buf += chunk.toString('utf8');
+    for (let nl = buf.indexOf('\n'); nl >= 0; nl = buf.indexOf('\n')) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line === '') continue;
+      const event = JSON.parse(line) as Record<string, unknown>;
+      events.push(event);
+      const waiter = waiters.get(String(event.event));
+      if (waiter !== undefined) {
+        waiters.delete(String(event.event));
+        waiter(event);
+      }
+    }
   });
-  const finished = new Promise<{ samples: number; dead: number; sawOld: number; sawNew: number; oldStatuses: number[]; newStatuses: number[] }>(
-    (resolve, reject) => {
-      sampler.on('error', reject);
-      sampler.on('close', () => {
-        try {
-          resolve(JSON.parse(raw.trim()));
-        } catch (err) {
-          reject(new Error(`sampler printed ${JSON.stringify(raw)}: ${String(err)}`));
-        }
+  const samplerExit = new Promise<void>((resolve, reject) => {
+    sampler.on('error', reject);
+    sampler.on('close', () => resolve());
+  });
+  /** Wait for one protocol line. The child speaks; the test does not sleep and hope. */
+  function waitForEvent(name: string, timeoutMs: number): Promise<Record<string, unknown>> {
+    const seen = events.find((e) => e.event === name);
+    if (seen !== undefined) return Promise.resolve(seen);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        waiters.delete(name);
+        reject(new Error(`the sampler never emitted "${name}" within ${timeoutMs} ms (events: ${JSON.stringify(events)})`));
+      }, timeoutMs);
+      waiters.set(name, (value) => {
+        clearTimeout(timer);
+        resolve(value);
       });
-    },
-  );
-  await new Promise((r) => setTimeout(r, 150));
-
-  const db = openAdminWrite(fixture.sitePath('acme'));
-  let newSha = '';
-  try {
-    renameAsset(db, { from: 'campaign/summer', to: 'campaign/spring', contentRoot });
-    newSha = (db.prepare('SELECT sha256 FROM cms_asset WHERE key = ?').get('campaign/spring') as { sha256: string }).sha256;
-  } finally {
-    db.close();
+    });
   }
-  const samples = await finished;
-  process.stdout.write(
-    `# N3 samples ${samples.samples}, dead ${samples.dead}, sawOld ${samples.sawOld}, sawNew ${samples.sawNew}, ` +
-      `old statuses ${JSON.stringify(samples.oldStatuses)}, new statuses ${JSON.stringify(samples.newStatuses)}\n`,
+  const ready = await waitForEvent('ready', 30_000);
+  assert.ok(
+    Number(ready.sawOld) >= 1,
+    `the sampler said ready without having resolved the old URL: ${JSON.stringify(ready)}`,
   );
-  assert.ok(samples.samples > 5, `only ${samples.samples} samples through the edge — the window was not observed`);
-  assert.equal(samples.dead, 0, `both URLs failed in ${samples.dead} of ${samples.samples} samples (statuses: ${JSON.stringify(samples)})`);
-  assert.ok(samples.sawOld > 0, 'the sampler never saw the old URL');
-  assert.ok(samples.sawNew > 0, 'the sampler never saw the new URL resolve');
+
+  let samples: Record<string, unknown>;
+  let newSha = '';
+  process.env.SKW_RENAME_WINDOW_HOLD = holdDir;
+  try {
+    const db = openAdminWrite(fixture.sitePath('acme'));
+    let newShaLocal = '';
+    try {
+      renameAsset(db, { from: 'campaign/summer', to: 'campaign/spring', contentRoot });
+      newShaLocal = (db.prepare('SELECT sha256 FROM cms_asset WHERE key = ?').get('campaign/spring') as { sha256: string }).sha256;
+    } finally {
+      db.close();
+    }
+    newSha = newShaLocal;
+  } finally {
+    delete process.env.SKW_RENAME_WINDOW_HOLD;
+  }
+  samples = await waitForEvent('done', 60_000);
+  await samplerExit;
+  process.stdout.write(`# N3 ${JSON.stringify(samples)}\n`);
+  // The hold engaged at all: without this file the rename was never parked, and the sampler's
+  // "both URLs resolved" rounds would be pre- and post-rename rounds that happen to overlap a
+  // reload rather than samples of the window.
+  assert.ok(existsSync(join(holdDir, 'window-open.json')), 'the rename never opened a window the test could hold');
+  assert.equal(
+    samples.releaseReason,
+    'window',
+    `the window was released on "${String(samples.releaseReason)}", not because both URLs resolved (${JSON.stringify(samples)})`,
+  );
+  assert.ok(Number(samples.samples) > 5, `only ${String(samples.samples)} samples through the edge — the window was not observed`);
+  assert.equal(
+    Number(samples.dead),
+    0,
+    `both URLs failed in ${String(samples.dead)} of ${String(samples.samples)} samples (${JSON.stringify(samples)})`,
+  );
+  // The anti-vacuous half: `dead === 0` only means something if the samples it counts were taken
+  // while both URLs were supposed to resolve. Three rounds of the held window, guaranteed by the
+  // release the child performs.
+  assert.ok(
+    Number(samples.windowSamples) >= 3,
+    `the sampler took ${String(samples.windowSamples)} samples inside the held window, not 3 (${JSON.stringify(samples)})`,
+  );
+  assert.ok(Number(samples.sawOld) > 0, 'the sampler never saw the old URL');
+  assert.ok(Number(samples.sawNew) > 0, 'the sampler never saw the new URL resolve');
 
   // The edge now answers the old URL with a 301 built from the alias map — no database.
   // The container's own view of the file is asserted first: a passing 301 on a stale map
