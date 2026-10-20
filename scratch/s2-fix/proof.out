@@ -1,0 +1,24 @@
+E-20 discriminating proof — day segments, real files, both models
+
+seal: acme 2026-10-20 written at 2026-10-21T00:00:05.000Z (00:00:05 on the 21st)
+
+1. seal 2026-10-20                          rows_in_day=3 first_id=1 last_id=3 anchor="" late=0
+   verify D                                                2026-10-20   new: OK rows_in_day=3 ids=1..3 late=no              legacy: OK rows=3
+
+2. append one row on 2026-10-21             cms_audit now holds 4 rows, the seal covers 3
+3. verify D after the chain grew                           2026-10-20   new: OK rows_in_day=3 ids=1..3 late=no              legacy: REFUSED SKW_E_SEC_AUDIT_SEAL — the chain disagrees with the seal for 2026-10-20
+
+4. tamper id 2 inside D and recompute every hash (the file is internally consistent again)
+   verify D                                                2026-10-20   new: REFUSED head_mismatch                          legacy: REFUSED SKW_E_SEC_AUDIT_SEAL — the chain disagrees with the seal for 2026-10-20
+   verify D+1 (a different day, a different verdict)       2026-10-21   new: REFUSED unsealed                               legacy: REFUSED no seal
+
+5. delete id 3 — the last row of D’s segment
+   verify D                                                2026-10-20   new: REFUSED count_mismatch                         legacy: REFUSED SKW_E_SEC_AUDIT_SEAL — the chain disagrees with the seal for 2026-10-20
+   whole-file walk (--chain): broken — the successor now carries a prev_hash that names a deleted row, so this particular deletion is visible twice; the deletion only the seal can see is a truncated tail (B1-4)
+
+6. backfill beta 2026-10-18 on the 25th
+   seal: rows_in_day=2 first_id=1 last_id=2 anchor="" late=1 sealed_at=2026-10-25T10:00:00.000Z
+   verify 2026-10-18                                       2026-10-18   new: OK rows_in_day=2 ids=1..2 late=yes             legacy: OK rows=2
+   control.db audit_seal: acme/2026-10-20 ids=1..3 rows=3 late=0; beta/2026-10-18 ids=1..2 rows=2 late=1
+
+steps where the retired model and the segment model disagree: 3 (and only 3)

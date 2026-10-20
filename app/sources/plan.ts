@@ -42,15 +42,20 @@ export function explain(db: Database.Database, sql: string, bind: readonly unkno
 }
 
 /**
- * The column that caused a SCAN. `indexed` is the leftmost-column set, because an
- * index whose second column matches cannot start the search.
+ * The column that caused a SCAN, or `null` when there is none to name.
+ *
+ * `indexed` is the leftmost-column set, because an index whose second column matches cannot start
+ * the search. When every `where`/`order`/`group_by` column IS indexed and the plan still scans — an
+ * inequality (`status != ?`) does not start a `SEARCH` — there is no culprit column, and naming one
+ * would tell the operator `column "title" has no usable index`, which is false and points at the
+ * wrong fix. A null column is a fact, not a gap: the plan is the evidence, and the fix is the
+ * predicate, not an index (E-22).
  */
 export function culpritColumn(spec: SourceSpec, indexed: Set<string>): string | null {
   for (const clause of spec.where) if (!indexed.has(clause.col)) return clause.col;
   for (const clause of spec.order) if (!indexed.has(clause.col)) return clause.col;
   for (const column of spec.groupBy) if (!indexed.has(column)) return column;
-  const first = spec.columns[0];
-  return first ?? null;
+  return null;
 }
 
 export function planReport(db: Database.Database, sql: string, bind: readonly unknown[], spec: SourceSpec, indexed: Set<string>): PlanReport {
@@ -60,20 +65,42 @@ export function planReport(db: Database.Database, sql: string, bind: readonly un
   return { plan, scan, column: scan ? culpritColumn(spec, indexed) : null };
 }
 
-/** The refusal for a plan carrying SCAN: `422 SKW_E_RT_SOURCE_UNINDEXED`, column named. */
+/**
+ * The refusal for a plan carrying SCAN: `422 SKW_E_RT_SOURCE_UNINDEXED`.
+ *
+ * Its detail is shaped so a test can name **this** control rather than the one next door:
+ * `reason = 'plan_scan'` and `role = 'plan'`, where `assertIndexedColumns` carries
+ * `role = 'where' | 'order' | 'group_by'` and never a `reason`. Before that, both emitted the same
+ * code, the same `detail.column` and a `plan` array that still matched `/SCAN/`, so disabling this
+ * function left `S2E-1` green and the row's headline check had no witness at all (`S2-qa.md` §3 NC1).
+ *
+ * Exclusive witness: test/sources.test.ts S2E-11
+ */
 export function refusePlan(report: PlanReport, spec: SourceSpec): never {
-  const column = report.column ?? '(unknown)';
-  throw unindexed(
-    column,
-    `the plan for source ${spec.relation} contains SCAN; column ${JSON.stringify(column)} has no usable index`,
-    { plan: report.plan, relation: spec.relation },
-  );
+  const { column } = report;
+  const message =
+    column === null
+      ? `the plan for source ${spec.relation} contains SCAN although every referenced column is indexed; the predicate does not start a SEARCH`
+      : `the plan for source ${spec.relation} contains SCAN; column ${JSON.stringify(column)} has no usable index`;
+  throw unindexed(column ?? '', message, {
+    column: column,
+    reason: 'plan_scan',
+    role: 'plan',
+    plan: report.plan,
+    relation: spec.relation,
+  });
 }
 
 /**
  * §6.2's second index rule: every `where`/`order`/`group_by` column is indexed,
  * even when SQLite found a plan without a SCAN (it can use a temp B-tree for
  * ORDER BY, which is not a SCAN but is not an index either).
+ *
+ * It never emits a `reason`, so a refusal from here is distinguishable from
+ * `refusePlan`'s by shape alone — and there is a case it cannot refuse (every column
+ * indexed, plan still `SCAN`), which is what makes `S2E-11` the plan rule's own witness.
+ *
+ * Exclusive witness: test/sources.test.ts S2E-1
  */
 export function assertIndexedColumns(spec: SourceSpec, allowed: Allowlist, plan: readonly string[]): void {
   for (const clause of spec.where) {

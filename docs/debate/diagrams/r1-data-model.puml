@@ -14,7 +14,7 @@ skinparam class {
 
 title Skunkworks schema v3  (generated from one spec)
 
-package "control.db  (global, never exported, user_version 3)" {
+package "control.db  (global, never exported, user_version 4)" {
   entity tenant as "tenant" <<control>> {
     id : INTEGER <<PK>>
     key : TEXT <<UQ>>
@@ -80,9 +80,13 @@ package "control.db  (global, never exported, user_version 3)" {
   entity audit_seal as "audit_seal" <<control>> {
     tenant_key : TEXT <<NN>>
     day : TEXT <<NN>>
-    rows : INTEGER <<NN>>
+    first_id : INTEGER <<NN>>
+    last_id : INTEGER <<NN>>
+    rows_in_day : INTEGER <<NN>>
+    anchor : TEXT <<NN>>
     head : TEXT <<NN>>
     sealed_at : TEXT <<NN>>
+    late : INTEGER <<NN>>
   }
   entity deploy_token as "deploy_token" <<control>> {
     id : INTEGER <<PK>>

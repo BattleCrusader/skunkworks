@@ -46,6 +46,10 @@ export function mintPreviewToken(tenantKey: string, path: string, sessionKey: st
   return `${exp}.${mac(tenantKey, path, exp, sessionKey)}`;
 }
 
+/** Verify a token for one tenant and one path: MAC, then the 30-minute window. */
+/*
+ * Exclusive witness: test/preview.test.ts S2E-12
+ */
 export function verifyPreviewToken(
   token: string | null | undefined,
   tenantKey: string,

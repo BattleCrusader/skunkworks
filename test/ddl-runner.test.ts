@@ -332,9 +332,10 @@ test('C6. a DDL audit row tampered with and recomputed still fails against the s
   const db = open(path);
   try {
     assert.equal(verifyChain(db).ok, true);
-    // §9.6's anchor, written by the module S2d ships.
-    sealNow(db, control, 'acme', '2026-10-20');
-    assert.equal(verifyAgainstSeal(db, control, 'acme', '2026-10-20').ok, true);
+    // §9.6's anchor, written by the module S2d ships. A day that has ended, sealed the day after
+    // (E-20 rule 1: a day that can still grow has no segment).
+    sealNow(db, control, 'acme', '2026-10-20', Date.parse('2026-10-21T00:00:05Z'));
+    assert.equal(verifyAgainstSeal(db, control, 'acme', '2026-10-20').status, 'verified');
 
     // Tamper: rewrite what the DDL row claims, delete the append-only trigger, and
     // recompute every hash so the file is internally consistent.

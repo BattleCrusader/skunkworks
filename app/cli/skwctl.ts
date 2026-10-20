@@ -41,8 +41,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ARGON2_OPTIONS, Semaphore } from '../admin/auth.ts';
-import { verifyAgainstSeal, utcDay } from '../audit/chain.ts';
-import { sealDay } from '../audit/scheduler.ts';
+import { verifyChain, verifyAgainstSeal } from '../audit/chain.ts';
+import { healGaps, lastEndedDay, sealDay, sealStatus } from '../audit/scheduler.ts';
 import { SESSION_ABSOLUTE_MS } from '../admin/session.ts';
 import { TOTP_PARAMETERS, groupOf, newPassword, newSecret, otpauthUri } from '../admin/totp.ts';
 import { openAdminWrite } from '../db/classes.ts';
@@ -69,6 +69,9 @@ type Reason =
   | 'ADMIN_ORIGIN_UNSET'
   | 'ENROLMENT_EXISTS'
   | 'AUDIT_SEAL_MISMATCH'
+  | 'AUDIT_SEAL_UNSEALED'
+  | 'AUDIT_SEAL_EMPTY'
+  | 'AUDIT_SEAL_CHAIN'
   | 'AUDIT_SEAL_FAILED'
   | 'USAGE';
 
@@ -513,22 +516,55 @@ export async function resetPassword(ctx: CliContext, flags: Args['flags']): Prom
 }
 
 /**
- * `skwctl audit seal|verify` — the operator's half of §9.6.
+ * `skwctl audit seal|verify|status` — the operator's half of §9.6 (E-20).
  *
- * `seal` writes one seal per active tenant for a UTC day (default today) and exits
- * non-zero if any tenant could not be sealed. `verify` walks the chain and compares
- * count and head to the seal; a mismatch is `SKW_E_SEC_AUDIT_SEAL` on stderr and
- * exit 1, never a warning.
+ *   - `seal` writes one seal per active tenant for a UTC day (default: the last day that ended,
+ *       because a day that has not ended has no segment) and exits non-zero if any tenant could
+ *       not be sealed. A day that is already sealed is **not** a failure: it prints the stored
+ *       `sealed_at`/`late` and exits 0, because "this day is anchored" is the outcome wanted.
+ *   - `seal --heal` backfills every unsealed day through yesterday, one `audit_log` row per day.
+ *   - `verify` walks **one day's segment** against its seal; `verify --chain` walks every link with
+ *       no seal and answers the other question. The three refusals are named separately on stderr:
+ *       `AUDIT_SEAL_UNSEALED`, `AUDIT_SEAL_MISMATCH`, `AUDIT_SEAL_EMPTY` (exit 0).
+ *   - `status` prints the series and exits 1 when the chain is broken or any day is `UNSEALED`.
  */
 async function audit(ctx: CliContext, verb: string | undefined, flags: Map<string, string | true>): Promise<number> {
   const dayFlag = flags.get('day');
-  const day = typeof dayFlag === 'string' ? dayFlag : utcDay();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Refusal('USAGE', '--day is YYYY-MM-DD');
+  const day = typeof dayFlag === 'string' ? dayFlag : undefined;
+  if (day !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Refusal('USAGE', '--day is YYYY-MM-DD');
   const tenantFlag = flags.get('tenant');
   const tenant = typeof tenantFlag === 'string' ? tenantFlag : undefined;
 
   if (verb === 'seal') {
-    const report = sealDay({ dataDir: ctx.env.dataDir, day, ...(tenant === undefined ? {} : { tenant }) });
+    if (flags.get('heal') === true) {
+      const report = healGaps({
+        dataDir: ctx.env.dataDir,
+        ...(tenant === undefined ? {} : { tenant }),
+        ...(day === undefined ? {} : { fromDay: day }),
+      });
+      for (const result of report.tenants) {
+        if (result.error !== undefined) {
+          ctx.stderr(`heal: tenant=${result.key} REFUSED ${result.error.code}: ${result.error.message}`);
+          continue;
+        }
+        if (result.healed.length === 0) {
+          ctx.stdout(`heal: tenant=${result.key} nothing to seal through ${report.throughDay}`);
+          continue;
+        }
+        for (const healedDay of result.healed) {
+          ctx.stdout(
+            `heal: tenant=${result.key} day=${healedDay.day} rows_in_day=${healedDay.rows_in_day} late=${healedDay.late === 1 ? 'yes' : 'no'} sealed_at=${healedDay.sealed_at}`,
+          );
+        }
+      }
+      if (report.tenants.some((t) => t.error !== undefined)) {
+        throw new Refusal('AUDIT_SEAL_FAILED', `a tenant could not be healed through ${report.throughDay}`);
+      }
+      return EXIT_OK;
+    }
+
+    const target = day ?? lastEndedDay();
+    const report = sealDay({ dataDir: ctx.env.dataDir, day: target, ...(tenant === undefined ? {} : { tenant }) });
     let refused = 0;
     for (const result of report.tenants) {
       if (result.error !== undefined) {
@@ -536,12 +572,17 @@ async function audit(ctx: CliContext, verb: string | undefined, flags: Map<strin
         ctx.stderr(`seal: tenant=${result.key} day=${report.day} REFUSED ${result.error.code}: ${result.error.message}`);
         continue;
       }
+      if (result.status === 'empty') {
+        ctx.stdout(`seal: tenant=${result.key} day=${report.day} empty (0 rows on that day; no seal is required)`);
+        continue;
+      }
+      const how = result.status === 'sealed' ? 'sealed' : 'already_sealed (no write)';
       ctx.stdout(
-        `seal: tenant=${result.key} day=${report.day} rows=${result.rows} head=${result.head}${result.created ? '' : ' (existing)'}`,
+        `seal: tenant=${result.key} day=${report.day} ${how} rows_in_day=${result.rows_in_day} first_id=${String(result.first_id)} last_id=${String(result.last_id)} late=${result.late === 1 ? 'yes' : 'no'} sealed_at=${String(result.sealed_at)}`,
       );
     }
     if (refused > 0) {
-      throw new Refusal('AUDIT_SEAL_MISMATCH', `${refused} tenant(s) could not be sealed for ${day}`);
+      throw new Refusal('AUDIT_SEAL_FAILED', `${refused} tenant(s) could not be sealed for ${report.day}`);
     }
     return EXIT_OK;
   }
@@ -554,30 +595,75 @@ async function audit(ctx: CliContext, verb: string | undefined, flags: Map<strin
       if (row === undefined) throw new Refusal('TENANT_UNKNOWN', `no tenant ${tenant}`);
       const db = openAdminWrite(join(ctx.env.dataDir, 'tenants', tenant, 'site.db'));
       try {
-        const report = verifyAgainstSeal(db, control, tenant, day);
+        if (flags.get('chain') === true) {
+          // The other question: every link, no seal. It is what an operator runs after a refusal,
+          // and it is the only path that reads past a segment.
+          const walk = verifyChain(db);
+          if (!walk.ok) {
+            throw new Refusal(
+              'AUDIT_SEAL_CHAIN',
+              `SKW_E_SEC_AUDIT_SEAL: the chain of ${tenant} is broken at row ${String(walk.brokenAt)}`,
+            );
+          }
+          ctx.stdout(`chain: tenant=${tenant} ok rows=${walk.rows} head=${walk.head}`);
+          return EXIT_OK;
+        }
+        const target = day ?? lastEndedDay();
+        const verdict = verifyAgainstSeal(db, control, tenant, target);
+        if (verdict.status === 'empty') {
+          ctx.stdout(`empty: tenant=${tenant} day=${target} 0 rows on that day; no seal is required`);
+          return EXIT_OK;
+        }
         ctx.stdout(
-          `verified: tenant=${tenant} day=${day} rows=${report.rows} head=${report.head} sealed_at=${report.seal?.sealed_at ?? ''}`,
+          `verified: tenant=${tenant} day=${target} rows_in_day=${verdict.rows_in_day} first_id=${verdict.first_id} last_id=${verdict.last_id} late=${verdict.late === 1 ? 'yes' : 'no'} sealed_at=${verdict.seal.sealed_at}`,
         );
+        return EXIT_OK;
       } catch (err) {
-        const e = err as { code?: string; message?: string };
-        throw new Refusal('AUDIT_SEAL_MISMATCH', `${e.code ?? 'SKW_E_SEC_AUDIT_SEAL'}: ${e.message ?? String(err)}`);
+        if (err instanceof Refusal) throw err;
+        const e = err as { code?: string; message?: string; detail?: { reason?: string } };
+        const reason = e.detail?.reason ?? '';
+        const detail = `${e.code ?? 'SKW_E_SEC_AUDIT_SEAL'}: ${e.message ?? String(err)}`;
+        if (reason === 'unsealed') throw new Refusal('AUDIT_SEAL_UNSEALED', detail);
+        throw new Refusal('AUDIT_SEAL_MISMATCH', detail);
       } finally {
         db.close();
       }
     } finally {
       control.close();
     }
+  }
+
+  if (verb === 'status') {
+    if (tenant === undefined) throw new Refusal('USAGE', 'audit status needs --tenant <key>');
+    const daysFlag = flags.get('days');
+    const window = typeof daysFlag === 'string' ? Number(daysFlag) : 5;
+    if (!Number.isInteger(window) || window < 1 || window > 400) throw new Refusal('USAGE', '--days is 1..400');
+    const report = sealStatus({ dataDir: ctx.env.dataDir, tenantKey: tenant, days: window });
+    ctx.stdout(`tenant=${report.tenant} chain=${report.chain.ok ? 'ok' : `broken at row ${String(report.chain.brokenAt)}`}`);
+    for (const entry of report.days) {
+      if (entry.state === 'sealed') {
+        ctx.stdout(
+          `${entry.day} sealed    rows_in_day=${String(entry.rows_in_day).padEnd(5)} first_id=${String(entry.first_id)} last_id=${String(entry.last_id)} late=${entry.late === 1 ? 'yes' : 'no'}${entry.late === 1 ? `  sealed_at=${String(entry.sealed_at)}` : ''}`,
+        );
+      } else if (entry.state === 'UNSEALED') {
+        ctx.stdout(`${entry.day} UNSEALED  ${entry.rows_in_day} rows on that day; no seal`);
+      } else {
+        ctx.stdout(`${entry.day} empty     ${entry.rows_in_day} rows on that day; no seal is required`);
+      }
+    }
+    if (!report.chain.ok) return EXIT_REFUSED;
+    if (report.unsealed.length > 0) return EXIT_REFUSED;
     return EXIT_OK;
   }
 
-  throw new Refusal('USAGE', 'usage: skwctl audit (seal | verify) [--tenant <key>] [--day YYYY-MM-DD]');
+  throw new Refusal('USAGE', 'usage: skwctl audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N]');
 }
 
 export async function run(argv: readonly string[], ctx: CliContext): Promise<number> {
   if (argv.length === 0) {
     throw new Refusal(
       'USAGE',
-      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal | verify) [--tenant <key>] [--day YYYY-MM-DD]>',
+      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N]>',
     );
   }
   const args = parseArgs(argv);

@@ -32,7 +32,7 @@ import { normalisePagePath, pageMiss } from './render/page.ts';
 import { createRenderData } from './render/data.ts';
 import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
 import { SourceCache } from './sources/cache.ts';
-import { startSealScheduler, type SealSchedulerHandle } from './audit/scheduler.ts';
+import { startSealScheduler, sealSummary, type SealSchedulerHandle, type SealSummary } from './audit/scheduler.ts';
 import { TenantMap } from './tenancy/cache.ts';
 import { listenerFor } from './tenancy/listener.ts';
 import { normaliseHost } from './tenancy/normalise-host.ts';
@@ -48,6 +48,16 @@ type AstroHandler = (
   next?: (err?: unknown) => void,
   locals?: object,
 ) => void | Promise<void>;
+
+/** `GET /admin/api/tenants/<key>/health` — §9.5's payload plus E-20's one new field. */
+export interface SealHealthPayload {
+  tenant: string;
+  seal: SealSummary;
+  cache_seconds: number;
+}
+
+/** §9.5: the tenant health endpoint is cached for 30 s, so this one is too. */
+export const SEAL_HEALTH_TTL_MS = 30_000;
 
 export interface AppHandle {
   app: FastifyInstance;
@@ -237,6 +247,32 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     };
     scope.get('/whoami', whoami);
     scope.post('/whoami', whoami);
+  });
+
+  // §9.5's tenant health, and E-20(d)'s one new field: the seal series. Served from a 30 s
+  // cache, because the alternative is a `control.db` read and a whole-file chain walk per poll.
+  // Admin listener only, session-bound to the tenant in the URL: on any other Host this is an
+  // ordinary unmatched path (`serveNotFound`), and with no session it is row 7's 404.
+  const sealHealthCache = new Map<string, { at: number; payload: SealHealthPayload }>();
+  app.get('/admin/api/tenants/:key/health', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    if (ctx.listener !== 'admin') {
+      await serveNotFound(req, reply);
+      return;
+    }
+    const key = (req.params as { key: string }).key;
+    const session = admin.sessionFor(req.headers.cookie);
+    const tenant = tenants.lookupKey(key);
+    if (session === null || tenant === undefined || session.tenantId !== tenant.id) {
+      throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no tenant here');
+    }
+    const at = Date.now();
+    const hit = sealHealthCache.get(key);
+    reply.header('cache-control', 'no-store');
+    if (hit !== undefined && at - hit.at < SEAL_HEALTH_TTL_MS) return hit.payload;
+    const payload: SealHealthPayload = { tenant: key, seal: sealSummary(dataDir, key, at), cache_seconds: 30 };
+    sealHealthCache.set(key, { at, payload });
+    return payload;
   });
 
   // §9.1: the admin surface is mounted on the admin hostname only. The route is

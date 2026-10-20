@@ -290,6 +290,8 @@ skunkworks/
 │   │   ├── migrate.ts                 the host executor: 4 ops, no drop_table/rename/drop_column
 │   │   ├── rpc.ts                     the 14-operation enum + bounds (§8.3)
 │   │   └── client.ts                  2 s timeout, circuit breaker, tenant bound to the channel
+│   ├── cli/
+│   │   └── skwctl.ts                  admin bootstrap / reset-totp / reset-password (§11.6a)
 │   └── security/
 │       ├── csrf.ts                    session-bound token + exact Origin
 │       ├── csp.ts                     the one header string (§10.5)
@@ -308,13 +310,13 @@ skunkworks/
 │   ├── bundle_verify.ts               BUNDLE.json + sha256 + readlink regex + source_counts
 │   └── nginx_gen.ts                   host list → conf.d/10-app.conf
 │
-├── install.sh                         verify → control.sql → seed → compose up; exit 11/12/15
+├── install.sh                         verify → control.sql → seed → .env → bootstrap → compose up; exit 11/12/15/16
 └── docs/
     ├── sds/SDS.md  docs/sds/01-verification.md  docs/sds/diagrams/*.puml,*.png
     └── debate/    (history; not authoritative)
 ```
 
-> Amended by 02-errata.md E-10.
+> Amended by 02-errata.md E-10, E-19.
 
 §3 lists every path in the build, across all four slices; **§16's `Contains` list is the per-slice
 authority** for who creates a path in which slice. `Dockerfile.runner`, `runner/**` and
@@ -439,7 +441,7 @@ uses `GLOB 'p_?*'` (measured — the same off-by-one that made `/` uninsertable)
 (§4.2 of the register is the table below; in this document the environment table and the taxonomy both live
 in this section.)
 
-**Environment: one prefix, `SKW_`. Twenty-two names, and this table is the complete list.**
+**Environment: one prefix, `SKW_`. Twenty-three names, and this table is the complete list.**
 
 | Var | Default | Required | Meaning |
 |---|---|---|---|
@@ -465,6 +467,7 @@ in this section.)
 | `SKW_REPOINT_MAX_ROWS` | `5000` | no | cap on the explicit asset re-point (C-3) |
 | `SKW_BOX_RPS` | `192` | yes in production | the box's measured four-source page throughput; set by the release gate on the target vCPU class (C-20) |
 | `SKW_EMAIL_MODE` | `off` | no | `off` \| `smtp`; `off` returns a code once in the webhook 201 body (O-28) |
+| `SKW_ADMIN_ALLOWLIST` | (empty) | no | comma-separated CIDRs allowed to reach the admin host; enforced by nginx, read by the app for §9.1's two consequences (§9.1a) |
 
 Deleted names, with their replacements, so a reader of an old paper can find the survivor:
 `SKW_DATA_DIR`←`SKUNKWORKS_CONTROL_DB`/`SKUNK_CONTROL_DB`; `SKW_DATA_DIR`←`SKUNKWORKS_TENANTS_DIR`/`SKUNK_TENANTS_DIR`;
@@ -486,14 +489,48 @@ detail?}}` — and never a stack, a path, a SQL fragment or a key. Four classes 
 generated before or outside the app, and they are named here so that no gate asserts a body the app
 cannot produce: nginx's `default_server` 404 for a `Host` that maps to nothing; nginx's 413 when
 `client_max_body_size 16m` is exceeded; nginx's 400 for a request it cannot parse; and Node's 400 for
-an HTTP/1.1 request with no `Host`. Those carry the server's own body. They are the **only**
-exceptions, each is asserted as such (status and `Content-Type`), and any other response that is not a
-taxonomy body is a defect.
+an HTTP/1.1 request with no `Host`. Those four, and **nginx's `403` for a peer outside `SKW_ADMIN_ALLOWLIST` on the admin host** (§9.1a),
+are the only exceptions; each is asserted as such (status and `Content-Type`), and any other response
+that is not a taxonomy body is a defect. The denied peer's body is nginx's on purpose: a taxonomy body
+there would publish the product's error registry to an unauthenticated network peer.
 
-`schema/error-codes.json` holds the **71** codes, their HTTP mapping and their `Retry-After` values.
+> Amended by 02-errata.md E-13, E-17.
+
+`schema/error-codes.json` holds the **72** codes, their HTTP mapping and their `Retry-After` values.
 `validate_schema.py` asserts that every `SKW_E_*` string raised by `schema/*.sql` is a member and
 matches the shape — so a trigger cannot raise a code the app has no mapping for. Two codes are raised
 from inside the database today: `SKW_E_DM_ASSET_IN_USE` and `SKW_E_DM_COLUMN_IMMUTABLE`.
+
+**A credential login failure is its own code, and it is not `SKW_E_SEC_CODE_INVALID`.** `CODE_INVALID`
+is §7.2's decision about a redeemed download code; an admin login is a different decision, owned by a
+different mechanism (`user_account.password_hash`, `user_account.totp_secret`), and the two must not
+share a code — one counter that mixes them cannot be alerted on. The login code is:
+
+| Code | HTTP | Raised when | Cacheable |
+|---|---|---|---|
+| `SKW_E_SEC_AUTH_INVALID` | 401 | an admin login attempt fails at the identity, password or TOTP step; the three are one response | no — `Cache-Control: no-store` |
+
+Its `message` is the fixed literal `invalid credentials`, produced at the call site and not from the
+emitter's table. It carries no `Retry-After` (that is the lockout's, 429 `SKW_E_SEC_RATE_LIMITED`,
+unchanged) and no `WWW-Authenticate` (this surface implements no HTTP authentication scheme).
+
+**The three login failures are one response, and timing is part of the response.** A wrong password, an
+unknown email and a wrong-or-missing TOTP answer with the same status (401), the same code, and a body
+that is byte-identical after `requestId` is substituted; no `Set-Cookie`, no `Location`, no
+`detail`. With TOTP mandatory, **exactly one TOTP computation runs on every attempt** — against the
+row's secret, or against a fixed dummy secret when the row has none — and it runs before the password
+verdict is used; with TOTP optional, none runs. The work an attempt performs is therefore a function of
+the configuration and never of the credentials submitted, so "the password was right, because a TOTP
+step then ran" is not observable. Medians across the three causes stay within 20 %, measured with at
+least 40 samples each; a password-only failure and a TOTP failure are compared in the same test, not
+only the unknown-email and wrong-password pair.
+
+**What the server may still know.** `audit_log` records the cause it observed —
+`reason ∈ {unknown_user, password, totp, locked}` in `after_json` — because an operator investigating a
+break-in needs it and an attacker cannot read that table. The wire distinguishes nothing, and the code
+is one code.
+
+> Amended by 02-errata.md E-16.
 
 **A response's code and its status are one decision.** `app/errors.ts` maps every code to exactly one
 status from `schema/error-codes.json`, and a framework-level failure is translated **by its own status
@@ -522,7 +559,7 @@ the compile-time constant the emitter needs, and would put a query on the error 
 |---|---|
 | `RT` | `SOURCE_UNKNOWN`, `SOURCE_UNINDEXED`, `SOURCE_BUDGET`, `SOURCE_TIMEOUT`, `LOOP_CONGESTED`, `TEMPLATE_UNKNOWN`, `BODY_FORBIDDEN`, `ROUNDTRIP_UNSTABLE`, `ASSET_MISSING`, `PAGE_NOT_FOUND` |
 | `DM` | `SCHEMA_STALE`, `DDL_REJECTED`, `DDL_POSTCONDITION`, `FK_VIOLATION`, `KEY_IN_USE`, `BUSY`, `QUOTA`, `COLUMN_IMMUTABLE`, `ASSET_IN_USE`, `ASSET_UNSTAMPABLE` |
-| `SEC` | `CSRF`, `CODE_INVALID`, `RATE_LIMITED`, `TOKEN_INVALID`, `TOKEN_MISMATCH`, `USES_EXHAUSTED`, `WATERMARK_FAILED`, `AUDIT_SEAL`, `ROLE_DISABLED`, `UPLOAD_REJECTED` |
+| `SEC` | `AUTH_INVALID`, `CSRF`, `CODE_INVALID`, `RATE_LIMITED`, `TOKEN_INVALID`, `TOKEN_MISMATCH`, `USES_EXHAUSTED`, `WATERMARK_FAILED`, `AUDIT_SEAL`, `ROLE_DISABLED`, `UPLOAD_REJECTED` |
 | `PLT` | `EDGE_PROOF`, `TENANT_HEADER`, `TENANT_UNKNOWN`, `TENANT_UNAVAILABLE`, `CERT_PENDING`, `DB_BUSY`, `DISK_FULL`, `INTERNAL`, `REQUEST_INVALID`, `BODY_TOO_LARGE` |
 | `EXP` | `GATED_ASSETS`, `MEDIA_GRAPH_OPEN`, `PARAMETERISED`, `NOT_QUIESCENT`, `INSUFFICIENT_DISK`, `TENANT_NOT_FOUND` |
 | `PL` | `SCHEMA`, `NO_TABLE`, `NO_EXPORT_CLASS`, `NO_SETTING`, `SETTING_INVALID`, `ROW`, `QUERY`, `TOO_MANY`, `TOO_LARGE`, `CONTENT_TYPE`, `REJECTED`, `RATE`, `QUOTA`, `PLUGIN_ERROR`, `UNAVAILABLE`, `DOWNGRADE`, `DESTRUCTIVE_UPGRADE`, `ARCHIVE_FAILED`, `TESTS_STALE`, `SIGNATURE`, `REVOKED`, `BROKEN`, `EXPORT_REFUSE`, `EXPORT_FORWARD_NO_TARGET`, `EXPORT_SNAPSHOT` |
@@ -774,7 +811,7 @@ part a proxy or a client acts on.
 
 `docs/sds/diagrams/request-lifecycle.png` is this table drawn as a sequence.
 
-> Amended by 02-errata.md E-3, E-12.
+> Amended by 02-errata.md E-3, E-12, E-7.
 
 ### 5.4 The tenant map cache and the cold path
 
@@ -923,6 +960,83 @@ which is exactly what the publish gate already decides. `join` is **not** expres
 mechanism (register C-18, "what would overturn it"), and it changes the runtime shape for a feature no
 client has asked for.
 
+### 6.1a A `view` source is anchored to the definition it was published against
+
+`cms_view_registry.checksum` is `sha256(sqlite_master.sql)` of the view — lower-case hex, 64 characters,
+over the exact text SQLite stores for it, with no normalisation. That text is what the renderer's query is
+planned against, so it is the right thing to hash; normalising it (stripping `CREATE VIEW`, folding
+whitespace) would let two different definitions share a checksum, which is the failure mode a checksum is
+for.
+
+**Verified at publish and at resolve.** At publish, a `view` source is refused when the checksum does not
+match, before the source row is written. At resolve — every `resolveSource` call, not only the first — a
+`view` source's checksum is compared before the allowlist is taken, as step 5a of the resolve order:
+
+    5a. kind = 'view':  sha256(sqlite_master.sql of the relation) == cms_view_registry.checksum
+                        else 422 SKW_E_RT_SOURCE_UNKNOWN, reason = 'view_checksum'
+    5b. every named column is in the allowlist (PRAGMA table_xinfo, read after 5a)
+
+The order matters: 5b reads the live view, so it must not run before the body has been proved to be the one
+that was registered.
+
+**Cached under the schema stamp, so the hash is not per-request.** The schema stamp of a tenant file is
+
+    stamp = PRAGMA user_version || ':' || PRAGMA schema_version
+
+`PRAGMA schema_version` is SQLite's schema cookie: it advances on **every** DDL statement that changes the
+schema, including `CREATE VIEW`, `DROP VIEW`, and a `ALTER TABLE … RENAME` that rewrites a view's body. The
+verdict map is therefore `relation → {stamp, checksum}`: one pragma read and **no hash** when the stamp is
+unchanged, one `SELECT sql FROM sqlite_master` and one sha256 per view when it moved. A cache that could go
+stale is not needed and is not permitted: if the stamp did not move, the stored text did not change.
+
+**What this does and does not defend.** It detects drift between the registered definition and the file —
+a re-pointed view, a dropped and recreated view, a rename that rewrote a view's body. It is not tamper
+evidence against an attacker who owns the file: such an attacker can `PRAGMA writable_schema=ON`, rewrite
+the body and the stored checksum together. That is the job of §9.6's chain and seal, and the two controls
+are complementary by design: the seal covers *rows*, the checksum covers *definitions*.
+
+**The refusal.** `422 SKW_E_RT_SOURCE_UNKNOWN`, `reason = 'view_checksum'`,
+`detail = {relation, registered: <first 16 hex>, found: <first 16 hex>}`, message
+
+    the definition of view cms_v_posts_public is not the one the source was published against;
+    review it and republish the source
+
+No new error code: the source is no longer the object that was published, which is the same class as
+`reason = 'view_missing'` (already a taxonomy refusal, measured in `S2-qa.md` §4 A5), and 422 is the status
+that code already carries. One log line per refusal carrying `requestId`, `tenantKey`, `relation` and both
+digests, rate-limited to one per `(tenant, relation)` per 60 s so a page in a hot loop cannot flood the log
+— and no `detail` on the wire beyond the two digests, so nothing tells an attacker whether they were caught
+or merely mistyped.
+
+**What happens when a DDL op touches a published view.** Views are migration-owned; the DDL AST has no
+`create_view` op and this item adds none. A published view's body can still change by two routes, and both
+are specified rather than left to chance:
+
+1. **Through the DDL runner.** Any statement whose execution changes `sqlite_master.sql` for a relation
+   named by a `view` source — a `DROP`/`CREATE` in a migration, or a table rename that SQLite rewrites into
+   the view's body — must, **in the same transaction** as that statement:
+   (i) recompute and store `cms_view_registry.checksum`;
+   (ii) clear publication of every `view` source over that relation —
+   `UPDATE cms_datasource SET published_at = NULL, is_public = 0 WHERE kind = 'view' AND
+   json_extract(spec_json, '$.view') = :relation` (a `view` source names its relation in `spec.view`, not
+   `spec.table`);
+   (iii) write one `cms_audit` row, `action = 'source.view_redefined'`, `target_kind = 'view'`,
+   `target_id = :relation`, `before_json = {checksum}`, `after_json = {checksum, unpublished: [keys]}`.
+   The next resolve then refuses `reason = 'not_published'` — an existing, tested refusal — and republication
+   re-runs the whole publish gate. A redefinition is therefore never silent: the object changed, so the
+   statement "this source was published" stopped being true, and the app says so in the same transaction.
+   Clearing publication is the point, not a side effect: a checksum refreshed without that would anchor the
+   *new* definition and launder exactly the attack A5 performed.
+2. **Out of band** (a second `sqlite3`, a restored backup, a hand-run migration). The stamp moves, the hash
+   disagrees with the registry, and the next resolve refuses `view_checksum` (above). Nothing is
+   un-published, because nothing trustworthy is running to do it.
+
+A `view` source is also measured at publish like any other: `cost_ms_max ≤ 1.5` applies to both kinds
+(§6.2, E-23). The plan and index rules apply to `query` only, because a view's plan is migration-authored
+and the source cannot change it — the checksum is the view's equivalent of those gates.
+
+> Amended by 02-errata.md E-21.
+
 ### 6.2 The `query` grammar
 
 ```json
@@ -938,18 +1052,39 @@ client has asked for.
 }
 ```
 
-Rules, all enforced at publish and re-checked at render:
+**Rules, and the moment each one is enforced.** Two rules run at both publish and render, because both read
+something that can change under a published source: the **column allowlist** (a table can be rebuilt between
+publish and resolve) and a `view` source's **definition checksum** (§6.1a). Everything else runs at publish
+only, because everything else describes a *plan* or a *measurement* of the spec — re-planning and
+re-measuring on every render would put `EXPLAIN QUERY PLAN` and a 200-run measurement inside the page budget
+to re-learn a fact that only a DDL op can change. "Re-checked at render" in this document means exactly the
+two rows marked **both**, and no other rule may claim it.
 
-| Rule | Failure |
-|---|---|
-| every referenced column exists on the table/view | `422 SKW_E_RT_SOURCE_UNKNOWN` |
-| every `where`/`order`/`group_by` column is indexed | `422 SKW_E_RT_SOURCE_UNINDEXED` |
-| `EXPLAIN QUERY PLAN` contains `SEARCH` and no `SCAN` | `422 SKW_E_RT_SOURCE_UNINDEXED` |
-| `cost_ms_max ≤ 1.5` (worst of 200 measured runs) | `422 SKW_E_RT_SOURCE_BUDGET` |
-| `order` only on declared **and indexed** columns | `422 SKW_E_RT_SOURCE_UNINDEXED` |
-| `group_by` ≤ 2 columns | `422 SKW_E_RT_SOURCE_BUDGET` |
-| `limit` clamped to `limit_max` | silently clamped, `data-truncated` set on a `list` |
-| values are bound parameters, never interpolated | a bug, not a refusal — `compile.ts` has no string concatenation |
+| Rule | When | Applies to | Failure |
+|---|---|---|---|
+| every referenced column exists in the relation's allowlist | publish **and** render | `query`, `view` | `422 SKW_E_RT_SOURCE_UNKNOWN` |
+| a `view` source's `cms_view_registry.checksum` equals the view's `sqlite_master.sql` hash | publish **and** render | `view` | `422 SKW_E_RT_SOURCE_UNKNOWN`, `reason='view_checksum'` (§6.1a) |
+| every `where`/`order`/`group_by` column is indexed | publish only | `query` | `422 SKW_E_RT_SOURCE_UNINDEXED` |
+| `EXPLAIN QUERY PLAN` contains `SEARCH` and no `SCAN` | publish only | `query` | `422 SKW_E_RT_SOURCE_UNINDEXED`, `reason='plan_scan'` |
+| `cost_ms_max ≤ 1.5` (worst of 200 measured runs) | publish only | `query`, `view` | `422 SKW_E_RT_SOURCE_BUDGET` |
+| `order` only on declared **and indexed** columns | publish only | `query` | `422 SKW_E_RT_SOURCE_UNINDEXED` |
+| `group_by` ≤ 2 columns | publish only | `query` | `422 SKW_E_RT_SOURCE_BUDGET` |
+| `limit` clamped to `limit_max`, and a non-integer `limit` is refused, never ignored | publish **and** render | `query`, `view` | silently clamped with `data-truncated`; a non-integer is `422 SKW_E_RT_SOURCE_UNKNOWN`, `reason='param_invalid'`, `detail.param='limit'` |
+| values are bound parameters, never interpolated | structural | both | a bug, not a refusal — `compile.ts` has no string concatenation |
+
+**Why a `view` source is not planned or index-checked, and why that is not a hole.** A view's plan is
+migration-authored: the source cannot change it, the operator did not write it, and it was reviewed when the
+migration that created it was reviewed. What a source *can* silently change is which definition it is
+reading, and that is the checksum's job (§6.1a). The cost bound still applies to both kinds, because cost is
+the page's problem whoever wrote the query. The old phrasing "table/view" on the plan and index rows was true
+of neither kind's mechanism and is deleted rather than widened.
+
+**A `limit` that is not an integer is refused, not ignored.** `data-limit` is an HTML attribute and therefore
+always a string; a resolver that accepts `'5'` for one caller and drops it for another is a rule with two
+answers. The clamp is `Math.floor` on a number, and anything else is `param_invalid` (§6.3's `list` is the
+first caller that will produce it).
+
+> Amended by 02-errata.md E-23, E-21.
 
 **The gate reads the maximum, not a percentile.** `p95 of 20` is not an estimator: measured spreads of
 0.29×–13.97× the truth. The gate stores `cost_ms_max` and `cost_ms_p95`, refuses on **max**, and runs the
@@ -1397,12 +1532,89 @@ Four consequences, each a rule and not an implementation note:
 | Control | Value |
 |---|---|
 | Session cookie | `__Host-sk-sess`; `Path=/`; `Secure`; `HttpOnly`; `SameSite=Lax` |
-| Session id | 32-byte random hex, stored as a row in `control.db.session`, rotated on privilege change |
+| Session id | 32-byte random hex, stored as a row in `control.db.session`, rotated on privilege change; the lineage dies 12 h after `created_at`, however continuously it is used (§9.1b) |
 | CSRF | session-bound token on every non-GET, plus an exact `Origin` check against `SKW_ADMIN_ORIGIN` |
-| IP allowlist | opt-in, empty in every exported bundle; **when empty, TOTP is mandatory and idle drops to 15 min** |
+| IP allowlist | opt-in, empty in every exported bundle; **when empty, TOTP is mandatory and idle drops to 15 min**; stored in `SKW_ADMIN_ALLOWLIST` and enforced by nginx on the admin host, never by the app (§9.1a) |
 | Password hash | argon2id, `m=19456, t=2, p=1`, through the same 4-slot semaphore as codes |
 | Lockout | 5 failures → `locked_until`, exponential to 15 min |
 | `fleet_admin` | role stays in the schema; every bundle sets `SKW_FLEET_MODE=0`, and with 0 the app refuses to create or authenticate that role (`403 SKW_E_SEC_ROLE_DISABLED`) |
+
+> Amended by 02-errata.md E-17, E-18.
+
+### 9.1a The IP allowlist: one name, one parser, enforced at the edge
+
+`SKW_ADMIN_ALLOWLIST` is a comma-separated list of CIDR blocks, IPv4 and IPv6, optional, and **empty in
+every exported bundle**. It is the only place the allowlist is stored: no `control.db` table and no
+admin route, because the value protects the surface that would edit it and a lockout administered
+through the locked door is a support ticket with a rebuild attached.
+
+- **Unset and empty mean the same thing: no allowlist.** Unset is the bundle default and is not an
+  error; `""`, `" "` and `","` are empty. With no allowlist the edge emits no access directive and
+  §9.1's consequences apply unchanged — TOTP mandatory, idle 15 min.
+- **There is no way to express "deny all".** A value that parses to zero blocks is empty. The only
+  routes to "refuse everyone" are a typo and a lockout, and neither is a configuration.
+- **A non-empty value that does not parse is a boot refusal** (§2.3 step 1), naming the offending
+  token, and `tools/nginx_gen.ts` refuses to emit a config with the same message from the same parser
+  (`app/admin/allowlist.ts`). Two answers to "is this value usable" would be one answer too many, and
+  the alternative — treating a typo as empty — produces a config that looks applied and is not.
+
+**Enforced at the edge; the app never enforces it.** `tools/nginx_gen.ts` emits one `allow <cidr>;` per
+block followed by `deny all;`, inside the **admin** server block and in no other block. The app cannot
+do this: nginx terminates the connection, so `req.socket.remoteAddress` is the edge's address and not
+the operator's (§5.3 row 2 uses it for exactly that reason, and `trustProxy: false` means an
+`X-Forwarded-For` is not evidence). The app reads the same variable for the two consequences §9.1
+attaches to it — TOTP mandatory, and the idle window — and for nothing else.
+
+A peer outside the list is `403` from nginx, before the app is reached: nginx's body, no taxonomy code,
+no `Set-Cookie` (E-13's fifth exception, below). The admin hostname is public — it is in the
+certificate's CT log — so the list controls *reachability*, not *secrecy*; what it buys is that an
+attacker holding the password and a live TOTP code still has to be on the listed network.
+
+**Changing it.** The list is read at boot by the app and at generation by the edge, so the two disagree
+for as long as it takes to apply both. **Narrowing is edge-first** — `nginx -t`, `nginx -s reload`,
+then `docker compose up -d app` — because the other order leaves the edge admitting peers the app has
+already stopped asking a second factor from. **Widening is safe in either order**; the install report
+does it app-first, so the state it prints is the app's.
+
+### 9.1b Session lifetime: a 12-hour cap over a sliding idle window
+
+Two constants already in `app/admin/session.ts` and one added, none of them an environment variable:
+§4.3's table carries deployment facts, and a session lifetime is a parameter the product fixes — one box
+that sets it to 30 days is a support case, not a configuration.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `IDLE_MS_NO_ALLOWLIST` | 15 min | §9.1's number for an empty allowlist; unchanged |
+| `IDLE_MS_WITH_ALLOWLIST` | 60 min | the populated-allowlist window, fixed here |
+| `SESSION_ABSOLUTE_MS` | 12 h | the cap, measured from `session.created_at` |
+
+`session.created_at` is the **start of the session lineage**; `session.expires_at` is the **idle
+deadline**. A session is live when all three hold: `revoked_at IS NULL`, `expires_at > now`, and
+`created_at + SESSION_ABSOLUTE_MS > now`. `created_at` is written once, never moved by a request, and
+is the only timestamp that can anchor a cap — a new column would buy the same thing and cost a v4
+control-plane migration, a `control-r4.sql`, a `gen_schema.py` bump and a re-baselined check 20, for a
+value that is a pure function of a column already present.
+
+**The idle window slides, and it is clamped.** On an authenticated request,
+`expires_at := min(now + idle, created_at + SESSION_ABSOLUTE_MS)`, so the idle deadline can never be
+pushed past the cap and a session in continuous use dies at 12 h instead of never. The comparison and
+the clamp stay in the code that already parses these strings (`Date.parse`), not in SQL: `datetime()`
+reformats `2026-10-20T10:00:00.000Z` to a space-separated value, and a string comparison against an ISO
+timestamp after that is silently wrong.
+
+**Rotation inherits the lineage.** `session/rotate` revokes the parent and inserts the child with the
+**parent's** `created_at`; only `expires_at` is new. Without that, rotation is a laundering path — an
+operator, or a stolen cookie, that rotates every few hours resets the cap, which is the same hole as
+having none. The parent's revocation stays in the same transaction, as today.
+
+**A dead session is row 7.** Expired by either deadline is no session: `404 SKW_E_PLT_TENANT_UNKNOWN`
+(§5.3 row 7), no `Set-Cookie`, and the row is not slid on the way out — a refused request must not
+extend anything. The sweeper deletes a row when either deadline has passed, and deletes a revoked row
+once the cap has passed.
+
+**Deploy consequence, stated rather than discovered.** A session minted before this change carries a
+`created_at` and a slid `expires_at`; if it is older than 12 h it dies at deploy and the operator logs
+in again. That is the correct outcome for a security change, and it needs no migration.
 
 ### 9.2 Tenant selection (C-11)
 
@@ -1462,9 +1674,123 @@ reads cannot tell a read-only filesystem from a healthy one.
 ### 9.6 Audit (C-21)
 
 > `cms_audit` rows are hash-chained (`prev_hash`, `hash` over the canonical row) inside `site.db` and written in
-> the same transaction as the change they record; one `audit_seal(tenant_key, day, rows, head)` row per tenant
-> per UTC day is written to `control.db`; the verifier compares `count(cms_audit)` and the recomputed head to
-> the seal and raises `SKW_E_SEC_AUDIT_SEAL` when either disagrees.
+> the same transaction as the change they record; one `audit_seal` row per tenant per UTC **day segment** is
+> written to `control.db` — `(tenant_key, day, first_id, last_id, rows_in_day, head, anchor, sealed_at, late)`
+> — where `[first_id, last_id]` is that day's own id range, `rows_in_day` is how many rows are in it, `head` is
+> the last hash **inside that range**, and `anchor` is the hash of the row immediately **before** it (`''` when
+> the segment begins at the chain's first row); the verifier walks that range only, starting from `anchor`, and
+> raises `SKW_E_SEC_AUDIT_SEAL` when the anchor, a link, `rows_in_day` or `head` disagrees. A day that was never
+> sealed stays **visibly unsealed**, and a day sealed after the fact carries `late = 1`.
+
+> Amended by 02-errata.md E-20.
+
+### 9.6a The day segment: what a seal covers, and what verifying one reads
+
+**Why the seal is a segment and not a snapshot.** A snapshot of the whole file (`count`, head) is a statement
+about the file at one instant, and every later audit write falsifies it. That is not tamper — it is the
+product working. A seal must therefore cover an **id range that never changes again**, and the only such
+range is the day: rows are append-only, `ts` is written by the writer and never updated, and no row of an
+earlier day can be added later without its id falling outside that day's range.
+
+**The seal is written for a day that has ended, by one procedure, in one transaction.**
+
+Sealing day `D` at instant `T` (`T` is the writer's clock; `utcDay(T)` is `D + 1` for an on-time seal):
+
+1. **The day must be over.** `D < utcDay(T)`, else `SKW_E_SEC_AUDIT_SEAL` with `reason = 'day_not_over'`.
+   Sealing a day that can still grow writes a segment that is wrong by construction — the defect this item
+   exists to remove, in its smallest form.
+2. **The segment is the day's rows.** With `P = substr(ts, 1, 10) = D`:
+   `first_id = MIN(id)`, `last_id = MAX(id)`, `rows_in_day = COUNT(*)` over `P`. Zero rows: **write no
+   seal** and report `empty` (a day with no audit rows has nothing to anchor, and a seal with
+   `rows_in_day = 0` would have no `head`).
+3. **The segment must be contiguous by id.** `COUNT(*) WHERE id BETWEEN first_id AND last_id` must equal
+   `rows_in_day`. A day whose rows are interleaved with another day's (a clock step backwards, a restored
+   backup) has no id-range that expresses it; refuse with `reason = 'not_contiguous'` rather than write a
+   seal that would verify the wrong set.
+4. **The anchor is the predecessor's hash.** `anchor = (SELECT hash FROM cms_audit WHERE id < first_id ORDER
+   BY id DESC LIMIT 1)`; `''` when that row does not exist. If `first_id > 1` and no predecessor hash is
+   readable, refuse with `reason = 'anchor_missing'` — a segment whose left edge is not anchored is a
+   snapshot of a prefix, which is the thing this design refuses.
+5. **The head is inside the segment.** `head = (SELECT hash FROM cms_audit WHERE id = last_id)`.
+6. **Never anchor a broken chain.** A full `verifyChain` walk must be ok first, or refuse with
+   `reason = 'chain_broken'` naming `brokenAt`. Once a day, a 10,000-row walk costs 37 ms (§9.6's own
+   measurement) and it stops a break from being sealed as if it were history.
+7. **`late` is computed, not asserted.** `late = 1` unless `substr(T, 1, 10) = date(D, '+1 day')` — an
+   on-time seal is written on the day **after** the one it covers, because the tick that seals `D` fires at
+   `00:00` on `D + 1` (§9.6's scheduler seals `utcDay(tick - 1000)`). `sealed_at` is always the real instant,
+   never backdated: `late` is the
+   durable fact and `sealed_at` is the clock, and a verifier that has to subtract dates to guess which one
+   it is looking at has neither.
+
+**Verifying day `D` reads only the segment.** `skwctl audit verify --day D`:
+
+1. Read the seal. No row **and** the day has rows → `SKW_E_SEC_AUDIT_SEAL`, `reason = 'unsealed'`, message
+   names the day and how many rows are on it. No row and no rows → `reason = 'empty'`, **exit 0**: there is
+   nothing to verify and nothing is wrong.
+2. `anchor` must equal the hash of the row immediately before `first_id`, and `''` must mean there is no
+   such row. A mismatch is `reason = 'anchor_mismatch'` — a row was deleted, or inserted before the
+   segment, after the seal was written.
+3. Walk `SELECT … FROM cms_audit WHERE id BETWEEN first_id AND last_id ORDER BY id`, starting with
+   `prev = anchor`, recomputing `auditHash(prev, row)` for each and requiring `row.prev_hash = prev` and
+   `row.hash = auditHash(prev, row)`. The first disagreement is `reason = 'broken_at'` with the id.
+4. Rows walked ≠ `rows_in_day` → `reason = 'count_mismatch'`.
+5. Last recomputed hash ≠ `head` → `reason = 'head_mismatch'`.
+6. **Rows with `id > last_id` are not read.** That is the entire fix: a later day's traffic cannot make an
+   earlier day fail, and a later day's tampering is the later day's verdict.
+
+**A whole-file walk is a different command and answers a different question.** `skwctl audit verify --chain
+--tenant <key>` walks every link with no seal and reports the first break (`reason = 'chain_broken'`, with
+`brokenAt`) or `ok`. It is what an operator runs after a refusal, and it is the only path that reads past a
+segment.
+
+**Four rules about the series, each a refusal rather than a convention.**
+
+**(a) A sealed day is sealed.** Inserting a second `audit_seal` row for `(tenant_key, day)` is refused —
+`reason = 'already_sealed'` — whether or not the computed `head` matches the stored one, and the stored row
+is **never** updated (`trg_audit_seal_immutable`, below). A re-seal that happened to match would be
+harmless; a re-seal path that can write at all is the laundering route the seal exists to close, and a rule
+that distinguishes the two cases is a rule with a branch an attacker can aim at. Re-running the daily job
+therefore reports `already_sealed` as a **non-failure**: `skwctl audit seal` prints the stored
+`sealed_at`/`late` and exits 0, because "this day is anchored" is the outcome the operator wanted.
+
+**(b) Backfilling a past day computes that day's segment.** `skwctl audit seal --day D` for an unsealed
+`D < today` runs exactly the procedure above against `D` — `first_id`/`last_id`/`rows_in_day`/`head` are
+`D`'s, the anchor is the row before `D`'s first, `late = 1`, and `sealed_at` is the real instant of the
+backfill. `--heal` seals every unsealed day from `D` through yesterday, one seal and one `audit_log` row
+(`action = 'audit.seal_backfill'`) per day. A backfilled seal is a **correct** seal of a **late** day; it is
+never a snapshot of today wearing yesterday's date, which is what `S2-qa.md` §5.2 measured.
+
+**(c) A missed day is visibly unsealed.** The tick does not heal. At every tick, before sealing the day it
+owns, `sealDay` scans the series: for each day from the tenant's first audit day through the last day that
+has ended, that has no seal row, a day with rows is reported `UNSEALED` and a day without rows is reported
+`empty`.
+Each unsealed day produces one console line and one `control.db` `audit_log` row
+(`action = 'audit.seal_gap'`, `target_kind = 'audit_seal'`, `target_id = '<tenant>/<day>'`) — so a gap is
+recorded in the control plane at the first tick that can see it, and it is reported again at every
+subsequent tick until somebody seals it. **The tick does not heal its own gap**, because a job that silently
+repairs makes `late = 1` indistinguishable in the operator's memory from a normal seal, and the fact that a
+day went unanchored for six hours is exactly what an operator needs to know.
+
+**(d) What an operator sees.** Three surfaces: the CLI reads the control plane and one tenant file; the
+health field is served from the `30 s` cache that endpoint already keeps; and `/healthz` is untouched — a
+liveness probe that opens a database is a restart loop waiting for a lock (§9.5).
+
+```
+$ skwctl audit status --tenant acme --days 5
+tenant=acme chain=ok
+2026-10-16 sealed    rows_in_day=12  first_id=41  last_id=52  late=no
+2026-10-17 sealed    rows_in_day=3   first_id=53  last_id=55  late=yes  sealed_at=2026-10-19T02:14:07.512Z
+2026-10-18 UNSEALED  4 rows on that day; no seal
+2026-10-19 empty     0 rows on that day; no seal is required
+2026-10-20 sealed    rows_in_day=7   first_id=56  last_id=62  late=no
+```
+
+`audit status` exits 0 only when `chain=ok` and no day is `UNSEALED`; otherwise exit 1. `audit verify`
+distinguishes its refusals by name on stderr — `REFUSAL: AUDIT_SEAL_UNSEALED` (no seal, rows exist),
+`REFUSAL: AUDIT_SEAL_MISMATCH` (anchor, link, count or head), `REFUSAL: AUDIT_SEAL_EMPTY` (nothing to
+anchor, exit 0) — because QA's week-one failure is an operator reading one string for two events. And
+`/admin/api/tenants/<key>/health` (§9.5, already cached 30 s) gains one field:
+`"seal": {"last_sealed_day": "2026-10-20", "unsealed": ["2026-10-18"], "late_days": 1}`.
 
 Why a chain alone is not enough, measured both ways: delete all 10,000 rows and `verify()` returns
 `mismatch=null` — a vacuous chain; delete the tail and the remaining prefix verifies. Tamper row 2 and
@@ -1473,7 +1799,8 @@ so DM's objection ("two sources of truth for one action can disagree") does not 
 itself the evidence.
 
 Measured here (check 25): 10,000 rows chained in **60 ms**, verified in **37 ms**, seal written in **60 µs**;
-after deleting the last 5 rows the chain still verifies and the seal comparison fails. 32.1 KB per
+after deleting the last 5 rows the chain still verifies and the seal comparison fails, and after appending
+rows for the next day the earlier day still verifies. 32.1 KB per
 tenant-year.
 
 The control plane keeps `audit_log` **unchained** on purpose: it is the fleet's record, it never travels in
@@ -1671,11 +1998,77 @@ cannot detect the loss; only a number the producer wrote before the copy can.
 
 ### 11.6 Install
 
-> A bundle carries `data/control.seed.json` — one tenant with `mode='production'`, its hosts, one `owner` user
-> with an argon2id hash and `must_change=1`, `db_version` and settings — and `install.sh` applies
-> `schema/control.sql` and seeds exactly those rows in one transaction before `compose up`; no bundle contains
-> `data/control.db`, `data/site.db-wal`, `data/site.db-shm`, `content/protected/wm/`, `content/sources/` or a
-> populated `.env`.
+> A bundle carries `data/control.seed.json` — one tenant with `mode='production'`, its hosts, one
+> `owner` user marked **unclaimed**: `must_change=1`, `totp_secret` NULL, and a `password_hash` that is
+> a real argon2id hash of 32 random bytes discarded at export, so a verification costs exactly what a
+> real one costs and can never succeed — `db_version` and settings — and `install.sh` applies
+> `schema/control.sql` and seeds exactly those rows in one transaction before `compose up`; no bundle
+> contains `data/control.db`, `data/site.db-wal`, `data/site.db-shm`, `content/protected/wm/`,
+> `content/sources/`, a populated `.env`, or a non-NULL `totp_secret` (a §11.3 preflight refusal, so a
+> bundle can never ship a working second factor). The seeded row is a **claim marker, not a
+> credential**: `install.sh` runs `skwctl admin bootstrap` (§11.6a) between `bundle_verify` and
+> `compose up`, so the box has exactly one operator who can log in, and has one before the admin
+> surface is reachable.
+
+> Amended by 02-errata.md E-19.
+
+### 11.6a The first operator: `skwctl admin bootstrap`
+
+An empty `SKW_ADMIN_ALLOWLIST` makes TOTP mandatory (§9.1), and a row with no `totp_secret` can never
+authenticate. Nothing in a bundle creates either a secret or a password a human holds, so this command
+is the only way into a fresh install, and it runs on the box before the surface exists:
+
+    docker compose run --rm --no-deps --entrypoint node app dist/cli/skwctl.js admin bootstrap \
+      --generate-password --enrolment-out /srv/data/first-login.txt
+
+**What it does, in one transaction.** It claims the seeded row: sets `password_hash` (argon2id,
+`m=19456,t=2,p=1`, through the same 4-slot semaphore), sets `totp_secret` to 20 fresh random bytes
+rendered as unpadded base32 (32 characters), sets `must_change=0`, revokes every live session for that
+user, and writes one `audit_log` row (`action='admin.bootstrap'`, `actor_label='install'`). If no user
+row exists at all it creates one `owner` for the single `mode='production'` tenant, and `--tenant <key>`
+is required when there is more than one. It never creates a `fleet_admin`, and refuses to when
+`SKW_FLEET_MODE=0`.
+
+**What it prints, and where.** The secret goes to `--enrolment-out` and nowhere else: one file created
+`0600` with `O_EXCL` (it will not overwrite an earlier enrolment) holding the admin URL, the email, the
+password when it generated one, the base32 secret in groups of four, the parameters, and the URI
+
+    otpauth://totp/Skunkworks:<email>?secret=<base32>&issuer=Skunkworks&algorithm=SHA1&digits=6&period=30
+
+whose parameters are the normative ones — RFC 6238 defaults, SHA-1, 6 digits, 30 s, one step either side
+accepted. Stdout carries the path and the login URL only. **It refuses to write a secret to a
+non-terminal stdout** (`REFUSAL: SECRET_NOT_PRINTABLE`) unless `--enrolment-out` is given, because
+`install.sh` logs its own output and a TOTP secret in an install log is a secret in a support bundle;
+`--enrolment-out -` is refused for the same reason. No secret reaches `audit_log`, `BUNDLE.json`,
+`control.seed.json` or a log line.
+
+**What it refuses to do.** If a user row exists that is not claimable — `totp_secret IS NOT NULL`, or
+`must_change=0`, or `last_login_at IS NOT NULL` — it writes nothing, exits **3**, and prints
+`REFUSAL: ALREADY_BOOTSTRAPPED` naming the two commands that would change it:
+
+    skwctl admin reset-totp      --email <email> --enrolment-out <path>
+    skwctl admin reset-password  --email <email> (--password-stdin | --generate-password)
+
+Exit 3 is the only benign refusal, so `install.sh` can tell "this box is already set up" from "this
+install failed": 0 and 3 continue (3 with a printed note and nothing changed), any other non-zero exits
+**16**. A second `./install.sh` therefore changes no user row, and a `--generate-password` run never
+rotates a secret it did not create. Every other refusal exits 1 with `REFUSAL: <REASON>` on stderr:
+`NO_CLAIM_TARGET`, `AMBIGUOUS_TARGET`, `TENANT_UNKNOWN`, `FLEET_ADMIN_DISABLED`, `SNAPSHOT_MODE`
+(`SKW_RENDER_MODE=snapshot` must not write `control.db`), `SCHEMA_VERSION_UNKNOWN`,
+`SECRET_NOT_PRINTABLE`, `PASSWORD_TOO_SHORT` (16 characters).
+
+**Why there are no recovery codes.** Recovery is `reset-totp` over shell access on the box, and that is
+not an escalation: whoever can run it can read `SKW_SESSION_KEY` out of `.env` and mint a session
+directly. A recovery code would be a long-lived second factor that has to be stored — a table, a hash, a
+single-use rule, a rate limit — to solve a problem root on the same box already solves, and two factors
+that both live on the same box are one factor. `--generate-password` is why the file says "delete this
+after enrolling": it is the only copy.
+
+**Why `must_change` is not the control.** A forced first-login change needs a code for "password
+expired" and a rule that scopes the session to the change route; v1 has neither, and inventing a second
+code for it is a bigger change than the gap. The column keeps its meaning as the seed's claim marker and
+the claim clears it; the install report tells the operator to change the password, and the file is
+`0600` and deleted.
 
 Sequence, with the measured bracket: `tar xf` → `./install.sh` (DNS check 0.3 s, `control.sql`, seed, `.env`
 generation, `bundle_verify` on every sha256 and every symlink target) → `docker compose up -d` (18.2 s warm,
@@ -1888,6 +2281,34 @@ against a filesystem-level bug in SQLite. A dependency that opens its own handle
 decorative, and the answer would be a process boundary whose cost (10 GB at 200 tenants) we have already
 declined (C-8).
 
+### 13.1a An exclusive witness for every security gate
+
+A gate is a test that can fail for the reason it is named for and for no other. Three rules, and they apply
+to every acceptance criterion in §16 that names a security control:
+
+1. **Exclusivity.** There is at least one test that goes **red when that gate's own mechanism is disabled**
+   and stays green when a neighbouring check is disabled in its place. If two mechanisms produce the same
+   code, the same detail and the same message, the test cannot tell them apart and it is not a witness for
+   either. Where two checks legitimately overlap — the plan rule and the index rule do — each gets a case
+   the other cannot refuse.
+2. **The mechanism names its witness.** The source comment above the mechanism carries the test's file and
+   its exact name, e.g. `Exclusive witness: test/sources.test.ts S2E-11`. A comment that names a test which
+   has been renamed is a lie the build cannot see, so `test/witness.test.ts` holds one table of
+   `mechanism → {file, test name}`; it asserts that the named test exists in the named file **and** that the
+   mechanism's comment contains the name. Adding a security mechanism without a row there fails the suite.
+3. **A positive control in the same suite.** Every gate that asserts a refusal also asserts the acceptance
+   that the refusal is supposed to be distinguished from: the same input with the offending property removed
+   succeeds. A suite that only asserts refusals cannot tell a working control from one that refuses
+   everything, which is exactly how B1 (§9.6) shipped: every verification of a past day refused, and every
+   test expected it to.
+
+**What a mutation record is.** "The gate was seen to fail" is evidence, not a claim: for each new or changed
+gate the build report records the mutation applied (the exact edited expression), the gate that went red,
+the gate that stayed green, and the file's SHA-256 before and after. This is the method `S2-qa.md` §3 used;
+it becomes the Builder's obligation rather than the reviewer's discovery.
+
+> Amended by 02-errata.md E-22.
+
 ### 13.2 The browser half, which is not proven here
 
 No browser exists on this box. Three behaviours are **specified but unverified**, and each has a
@@ -2078,12 +2499,19 @@ the table builder and DDL runner for `u_*`, the Data Source registry + resolver 
 |---|---|
 | every non-GET without a valid CSRF token is `403 SKW_E_SEC_CSRF` | 12-case suite |
 | `Origin` mismatch on a non-GET is `403` | same |
-| the DDL AST refuses the two statements SQLite refuses, before any SQL | `ddl.test.ts` over the 19-statement corpus |
+| the DDL AST refuses the two statements SQLite refuses, before any SQL | `test/ddl-runner.test.ts` `O2.` (the connection's `open` throws if called, so no SQL ran) and `O3.` (`rebuild_required`); no `test/ddl.test.ts` exists and none is created |
 | a `u_*` table with an `asset_key` gets its guard trigger in the same transaction | schema assertion after the runner |
-| a `query` source with a `SCAN` in its plan is refused at publish | plan test with an unindexed column |
+| a `query` source with a `SCAN` in its plan is refused at publish | `test/sources.test.ts` `S2E-1` (the index rule) **and** `S2E-11` (the plan rule). `S2E-11` is the exclusive witness: every column indexed, the plan still `SCAN`, refused with `detail.reason='plan_scan'`; disabling `refusePlan` leaves `S2E-1` green and makes `S2E-11` red |
 | two parameter sets inside one TTL return their own rows | cache test, both orders |
 | a preview token is accepted only for `status='draft'`, 30 min, `no-store` | O-29 test |
 | `SKW_SCHEMA_EDIT=off` hides the builder entirely | UI assertion, no disabled control |
+| a fresh seeded `control.db` and nothing else yields exactly one operator, and a TOTP code from the printed enrolment URI logs in | `test/cli-bootstrap.test.ts`, end to end through the login route |
+| a second bootstrap writes nothing: exit 3, and `password_hash` / `totp_secret` / `must_change` are byte-identical | same suite, idempotence case |
+| no TOTP secret or password reaches stdout, `audit_log`, `BUNDLE.json` or `control.seed.json` | grep assertion over the four artefacts |
+| a day sealed on the 20th still verifies after the chain grows on the 21st, while a row tampered inside that day, a row deleted before it, or a truncated segment each refuse with their own reason | `test/audit-seal.test.ts` `B1-1`…`B1-11`; the positive control is `B1-1` and it is the one that was missing |
+| a `view` source is anchored to its definition: re-pointing the view out of band refuses with `reason='view_checksum'` instead of serving another table, a DDL op that changes a published view un-publishes its sources in the same transaction, and the checksum is hashed once per schema stamp, not once per request | `test/sources.test.ts` `V1-1`…`V1-4` |
+
+> Amended by 02-errata.md E-16, E-17, E-18, E-19, E-20, E-21, E-22, E-23.
 
 ### S3 — Assets + gated downloads (2–2.5 wk)
 

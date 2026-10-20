@@ -17,6 +17,7 @@ import { runDdl } from '../app/ddl/run.ts';
 import { createRenderData } from '../app/render/data.ts';
 import { SourceCache } from '../app/sources/cache.ts';
 import { publishSource, saveSourceDraft, type SourceInput } from '../app/sources/publish.ts';
+import { hashRelationSql, resetViewChecksumStats, viewChecksumStats } from '../app/sources/registry.ts';
 import { resolveSource } from '../app/sources/resolve.ts';
 import { makeFixture, REPO, type Fixture } from './helpers/fixture.ts';
 
@@ -125,9 +126,11 @@ test('S2E-1. a query source with SCAN in its plan is refused at publish, naming 
     error = err;
   }
   assert.ok(error !== undefined, 'an unindexed filter column must be refused');
-  const e = error as { code?: string; message?: string; detail?: { column?: string; plan?: string[] } };
+  const e = error as { code?: string; message?: string; detail?: { column?: string; plan?: string[]; role?: string } };
   assert.equal(e.code, 'SKW_E_RT_SOURCE_UNINDEXED');
   assert.equal(e.detail?.column, 'section', `the refusal must name section; detail was ${JSON.stringify(e.detail)}`);
+  // Refused by the INDEX rule, not by the plan rule: the shape says which control fired (E-22).
+  assert.equal(e.detail?.role, 'where');
   const plan = (e.detail?.plan ?? []).join('\n');
   assert.match(plan, /SCAN/);
   assert.match(e.message ?? '', /section/);
@@ -139,6 +142,62 @@ test('S2E-1. a query source with SCAN in its plan is refused at publish, naming 
   } finally {
     db.close();
   }
+});
+
+test('S2E-11. a plan-only SCAN is refused even when every column it names is indexed, and the refusal names the plan (exclusive witness for refusePlan)', () => {
+  // `status` IS indexed in the fixture — asserted here, so this case cannot silently degrade into
+  // S2E-1 (where `section` is not indexed and the index rule refuses first).
+  const admin = site();
+  try {
+    const indexed = (admin.prepare("PRAGMA index_info('ix_posts_status')").all() as { name: string }[]).map((c) => c.name);
+    assert.deepEqual(indexed, ['status'], 'the fixture must index status for this case to mean anything');
+  } finally {
+    admin.close();
+  }
+
+  const PLAN_ONLY: SourceInput = {
+    ...POSTS,
+    key: 'posts-not-published',
+    // An inequality does not start a SEARCH: SQLite plans `SCAN u_posts` even with the index there,
+    // so `assertIndexedColumns` passes and only `refusePlan` can refuse this spec.
+    spec: { ...SPEC, where: [{ col: 'status', op: '!=' as const, param: 'status' }] },
+  };
+  let error: unknown;
+  try {
+    publishSource(file, PLAN_ONLY, ACTOR);
+  } catch (err) {
+    error = err;
+  }
+  assert.ok(error !== undefined, 'a plan-only SCAN must be refused');
+  const e = error as {
+    code?: string;
+    message?: string;
+    detail?: { column?: string | null; plan?: string[]; reason?: string; role?: string; relation?: string };
+  };
+  assert.equal(e.code, 'SKW_E_RT_SOURCE_UNINDEXED');
+  // The two refusals are distinguishable by shape, which is what lets a test name one of them.
+  assert.equal(e.detail?.reason, 'plan_scan');
+  assert.equal(e.detail?.role, 'plan');
+  assert.equal(e.detail?.column, null, 'there is no culprit column: every referenced column is indexed');
+  assert.equal(e.detail?.relation, 'u_posts');
+  assert.match((e.detail?.plan ?? []).join('\n'), /SCAN/);
+  assert.equal(
+    e.message,
+    'the plan for source u_posts contains SCAN although every referenced column is indexed; the predicate does not start a SEARCH',
+  );
+  // Nothing was written.
+  const db = site();
+  try {
+    assert.equal(count(db, "SELECT count(*) AS n FROM cms_datasource WHERE key = 'posts-not-published'"), 0);
+  } finally {
+    db.close();
+  }
+
+  // The positive control in the same suite (§13.1a rule 3): the same spec with the offending
+  // property removed — equality instead of inequality — publishes.
+  const control = publishSource(file, { ...POSTS, key: 'posts-published-only' }, ACTOR);
+  assert.equal(control.kind, 'query');
+  assert.match(control.plan.join('\n'), /SEARCH/);
 });
 
 test('S2E-2. adding the index the refusal named makes the same source publish, with the measured cost stored', () => {
@@ -470,4 +529,259 @@ test('S2E-10. a query source cannot name a `cms_*` table, and a limit above limi
   } finally {
     db.close();
   }
+});
+
+// =========================================================================
+// E-21 / §6.1a — a `view` source is anchored to the definition it was published
+// against. QA defeated the old code in one statement (`S2-qa.md` §4 A5): publish
+// over a view, DROP + CREATE it as something else, resolve — and the published
+// source served another table, with no republish and no refusal.
+// =========================================================================
+
+/** A view exists only by migration, so the test creates it as one would, registry row included. */
+function migrateView(db: Database.Database, name: string, body: string): string {
+  db.exec(`DROP VIEW IF EXISTS ${name}`);
+  db.exec(`CREATE VIEW ${name} AS ${body}`);
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?").get(name) as { sql: string };
+  const checksum = hashRelationSql(row.sql);
+  db.prepare('INSERT OR REPLACE INTO cms_view_registry (name, checksum) VALUES (?, ?)').run(name, checksum);
+  return checksum;
+}
+
+const POSTS_VIEW: SourceInput = {
+  key: 'posts-view',
+  kind: 'view',
+  spec: {
+    view: 'cms_v_posts_public',
+    columns: ['title', 'slug'],
+    order: [{ col: 'published_at', dir: 'desc' as const }],
+    limit_default: 3,
+    limit_max: 50,
+  },
+  isPublic: true,
+  ttlS: 60,
+};
+
+test('V1-1. re-pointing a published view out of band refuses with reason=view_checksum and serves ZERO rows', () => {
+  const admin = site();
+  let original: string;
+  try {
+    original = migrateView(admin, 'cms_v_posts_public', 'SELECT title, slug, published_at FROM u_posts');
+  } finally {
+    admin.close();
+  }
+  publishSource(file, POSTS_VIEW, ACTOR);
+
+  const db = openRenderRead(file);
+  try {
+    const before = resolveSource(db, 'posts-view', { tenantKey: 'acme' });
+    assert.equal(before.rows.length, 3, 'the anchored view must resolve before it is re-pointed');
+    assert.deepEqual(Object.keys(before.rows[0] ?? {}).sort(), ['slug', 'title']);
+  } finally {
+    db.close();
+  }
+
+  // A5's exact attack: DROP + CREATE the same NAME over a different table, out of band, with no
+  // republish, no audit row and — before this item — no refusal. The columns even satisfy the
+  // allowlist (`path AS title`), which is why the allowlist alone could not notice.
+  const out = site();
+  try {
+    out.exec('DROP VIEW cms_v_posts_public');
+    out.exec("CREATE VIEW cms_v_posts_public AS SELECT path AS title, slug FROM cms_page");
+  } finally {
+    out.close();
+  }
+
+  const db2 = openRenderRead(file);
+  let served: Record<string, unknown>[] | null = null;
+  try {
+    assert.throws(
+      () => {
+        served = resolveSource(db2, 'posts-view', { tenantKey: 'acme' }).rows;
+      },
+      (err: { code?: string; message?: string; detail?: { reason?: string; relation?: string; registered?: string; found?: string } }) => {
+        assert.equal(err.code, 'SKW_E_RT_SOURCE_UNKNOWN');
+        assert.equal(err.detail?.reason, 'view_checksum');
+        assert.equal(err.detail?.relation, 'cms_v_posts_public');
+        // Both digests, truncated to 16 hex: nothing on the wire beyond the two digests.
+        assert.match(String(err.detail?.registered), /^[0-9a-f]{16}$/);
+        assert.match(String(err.detail?.found), /^[0-9a-f]{16}$/);
+        assert.notEqual(err.detail?.registered, err.detail?.found);
+        assert.match(String(err.message), /is not the one the source was published against/);
+        assert.match(String(err.message), /republish/);
+        return true;
+      },
+    );
+    // The assertion is on the ROW SET, not only on the code: a test that refused for another reason
+    // (or served `cms_page` rows before consulting the checksum) cannot pass in its place.
+    assert.equal(served, null, `the re-pointed view served ${JSON.stringify(served)}`);
+  } finally {
+    db2.close();
+  }
+
+  // Restore the fixture for the tests that follow: the view AND its registry row. The restored body
+  // is the same text as before, so the same body hashes to the same digest — which is the property
+  // a checksum is supposed to have.
+  const restore = site();
+  try {
+    const restored = migrateView(restore, 'cms_v_posts_public', 'SELECT title, slug, published_at FROM u_posts');
+    assert.equal(restored, original, 'the same body must hash to the same digest');
+  } finally {
+    restore.close();
+  }
+  const db3 = openRenderRead(file);
+  try {
+    assert.equal(resolveSource(db3, 'posts-view', { tenantKey: 'acme' }).rows.length, 3, 'the restored view must resolve again');
+  } finally {
+    db3.close();
+  }
+});
+
+test('V1-2. a DDL op that changes a published view refreshes the checksum, un-publishes its sources, and audits both digests', () => {
+  // Its own file: this test renames a table, which is not a change the other cases can share.
+  const own = makeFixture({ specs: [{ key: 'vtest', hosts: ['v.test'] }] });
+  const ownFile = own.sitePath('vtest');
+  try {
+    runDdl(
+      ownFile,
+      [
+        {
+          op: 'create_table',
+          name: 'u_articles',
+          columns: [
+            { name: 'title', type: 'TEXT', notNull: true },
+            { name: 'slug', type: 'TEXT', notNull: true },
+            { name: 'published_at', type: 'DATE' },
+          ],
+        },
+        { op: 'create_index', table: 'u_articles', name: 'ix_articles_published_at', columns: ['published_at'], unique: false },
+      ],
+      { actor: ACTOR },
+    );
+    const admin = openAdminWrite(ownFile);
+    let beforeChecksum: string;
+    try {
+      beforeChecksum = migrateView(admin, 'cms_v_posts_public', 'SELECT title, slug, published_at FROM u_articles');
+      admin.prepare('INSERT INTO u_articles (title, slug, published_at) VALUES (?, ?, ?)').run('A', 'a', '2026-10-01T00:00:00.000Z');
+    } finally {
+      admin.close();
+    }
+    publishSource(ownFile, POSTS_VIEW, ACTOR);
+    const read = openRenderRead(ownFile);
+    try {
+      assert.equal(resolveSource(read, 'posts-view', { tenantKey: 'vtest' }).rows.length, 1);
+      assert.equal(resolveSource(read, 'posts-view', { tenantKey: 'vtest' }).rows[0]?.slug, 'a');
+    } finally {
+      read.close();
+    }
+
+    // Through the runner: a rename that SQLite rewrites into the view's body.
+    const report = runDdl(ownFile, [{ op: 'rename_table', from: 'u_articles', to: 'u_articles_2' }], { actor: ACTOR });
+    assert.deepEqual(report.views, ['cms_v_posts_public'], `the postcondition did not see the redefinition: ${JSON.stringify(report.views)}`);
+
+    const after = openAdminWrite(ownFile);
+    try {
+      // (i) the stored text now names the new table — measured, not assumed.
+      const sql = (after.prepare("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'cms_v_posts_public'").get() as { sql: string }).sql;
+      assert.match(sql, /u_articles_2/);
+      // (ii) the registry checksum moved …
+      const registry = after.prepare("SELECT checksum FROM cms_view_registry WHERE name = 'cms_v_posts_public'").get() as { checksum: string };
+      assert.notEqual(registry.checksum, beforeChecksum, 'the registry still carries the pre-rename checksum');
+      assert.equal(registry.checksum, hashRelationSql(sql), 'the stored checksum is not the hash of the stored text');
+      // (iii) … the source is no longer published …
+      const source = after.prepare("SELECT published_at, is_public FROM cms_datasource WHERE key = 'posts-view'").get() as {
+        published_at: string | null;
+        is_public: number;
+      };
+      assert.equal(source.published_at, null, 'a changed view left its source published');
+      assert.equal(source.is_public, 0);
+      // (iv) … and there is exactly one audit row carrying both digests.
+      const audit = after
+        .prepare("SELECT target_kind, target_id, before_json, after_json FROM cms_audit WHERE action = 'source.view_redefined'")
+        .all() as { target_kind: string; target_id: string; before_json: string; after_json: string }[];
+      assert.equal(audit.length, 1, `one audit row per redefined view; got ${JSON.stringify(audit)}`);
+      assert.equal(audit[0]?.target_kind, 'view');
+      assert.equal(audit[0]?.target_id, 'cms_v_posts_public');
+      assert.equal(JSON.parse(audit[0]?.before_json ?? '{}').checksum, beforeChecksum);
+      const afterJson = JSON.parse(audit[0]?.after_json ?? '{}') as { checksum: string; unpublished: string[] };
+      assert.equal(afterJson.checksum, registry.checksum);
+      assert.deepEqual(afterJson.unpublished, ['posts-view']);
+    } finally {
+      after.close();
+    }
+
+    // (v) the next resolve refuses with the existing `not_published` — republication re-runs the gate.
+    const read2 = openRenderRead(ownFile);
+    try {
+      assert.throws(
+        () => resolveSource(read2, 'posts-view', { tenantKey: 'vtest' }),
+        (err: { code?: string; detail?: { reason?: string } }) => err.code === 'SKW_E_RT_SOURCE_UNKNOWN' && err.detail?.reason === 'not_published',
+      );
+    } finally {
+      read2.close();
+    }
+    // (vi) republishing succeeds and resolves against the new definition.
+    publishSource(ownFile, POSTS_VIEW, ACTOR);
+    const read3 = openRenderRead(ownFile);
+    try {
+      const rows = resolveSource(read3, 'posts-view', { tenantKey: 'vtest' }).rows;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]?.slug, 'a');
+    } finally {
+      read3.close();
+    }
+  } finally {
+    own.cleanup();
+  }
+});
+
+test('V1-3. the view hash is paid once per schema stamp, not once per resolve', () => {
+  resetViewChecksumStats();
+  const db = openRenderRead(file);
+  try {
+    for (let i = 0; i < 100; i += 1) resolveSource(db, 'posts-view', { tenantKey: 'acme' });
+    assert.equal(viewChecksumStats.viewChecksumHashes, 1, `100 resolves under one stamp cost ${viewChecksumStats.viewChecksumHashes} hashes`);
+    assert.equal(viewChecksumStats.stampMoves, 0);
+
+    // One DDL statement that changes the schema moves the cookie; the next resolve pays one hash.
+    runDdl(file, [{ op: 'create_index', table: 'u_posts', name: 'ix_posts_section_v13', columns: ['section'], unique: false }], {
+      actor: ACTOR,
+    });
+    for (let i = 0; i < 100; i += 1) resolveSource(db, 'posts-view', { tenantKey: 'acme' });
+    assert.equal(
+      viewChecksumStats.viewChecksumHashes,
+      2,
+      `one DDL must cost exactly one more hash, got ${viewChecksumStats.viewChecksumHashes}`,
+    );
+    assert.equal(viewChecksumStats.stampMoves, 1, 'the stamp did not move on a CREATE INDEX');
+  } finally {
+    db.close();
+  }
+});
+
+test('V1-4. the cost budget applies to a `view` source: an expensive body is refused with SKW_E_RT_SOURCE_BUDGET', () => {
+  const admin = site();
+  try {
+    migrateView(
+      admin,
+      'cms_v_expensive',
+      'WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200000) SELECT sum(i) AS total FROM n',
+    );
+  } finally {
+    admin.close();
+  }
+  assert.throws(
+    () =>
+      publishSource(
+        file,
+        {
+          key: 'expensive-view',
+          kind: 'view',
+          spec: { view: 'cms_v_expensive', columns: ['total'], limit_default: 1, limit_max: 1 },
+          isPublic: true,
+        },
+        ACTOR,
+      ),
+    (err: { code?: string; detail?: { reason?: string } }) => err.code === 'SKW_E_RT_SOURCE_BUDGET' && err.detail?.reason === 'cost',
+  );
 });

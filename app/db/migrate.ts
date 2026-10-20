@@ -74,6 +74,8 @@ export function migrateControl(controlPath: string, schemaDir: string): StepRepo
   const ddl = join(schemaDir, 'control.sql');
   const amend2 = join(schemaDir, 'control-r2.sql');
   const amend3 = join(schemaDir, 'control-r3.sql');
+  // E-20 (02-errata §8): the control plane is at v4 and `audit_seal` is a day segment.
+  const amend4 = join(schemaDir, 'control-r4.sql');
   const target = targetVersion(ddl);
   const rel = 'control.db';
 
@@ -112,6 +114,10 @@ export function migrateControl(controlPath: string, schemaDir: string): StepRepo
     }
     if (at === 2) {
       applyDdl(db, amend3);
+      at = userVersion(db);
+    }
+    if (at === 3) {
+      applyDdl(db, amend4);
       at = userVersion(db);
     }
     if (at !== target) {

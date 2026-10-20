@@ -6,10 +6,11 @@
  *      is arbitrary code in the tenant tree, not a data source;
  *   2. the grammar (`spec.ts`) — a spec the resolver could not compile;
  *   3. the **column allowlist** (`registry.ts`) — the relation's own record;
- *   4. **EXPLAIN QUERY PLAN** — `SEARCH` present, no `SCAN`, and the refusal names
- *      the column (0.015 ms; measuring first would spend 1,304 ms to reject the
- *      same source);
- *   5. the index rule on every where/order/group_by column;
+ *   4. **EXPLAIN QUERY PLAN** — one `explain()`, then the **index rule** on every
+ *      where/order/group_by column, then `SEARCH` present and no `SCAN`. The index rule
+ *      goes first because it names the column to fix, and the two refusals are shaped
+ *      differently (`role='where'` vs `reason='plan_scan'`) so each has its own witness
+ *      (`S2E-1`, `S2E-11` — §13.1a);
  *   6. the **measured worst case** (`cost_ms_max`) against the budget;
  *   7. one transaction: the row, then `cms_audit`.
  *
@@ -24,7 +25,7 @@ import { appendAudit, type AuditActor } from '../audit/chain.ts';
 import { openAdminWrite } from '../db/classes.ts';
 import { AppError } from '../errors.ts';
 import { compile, measurementParams } from './compile.ts';
-import { allowlistFor, readSource } from './registry.ts';
+import { allowlistFor, assertViewChecksum, readSource } from './registry.ts';
 import { assertIndexedColumns, measure, planReport, refusePlan, rowCount } from './plan.ts';
 import {
   COST_MS_MAX,
@@ -181,6 +182,10 @@ export function publishSource(file: string, input: SourceInput, actor: AuditActo
   const db = open(file);
   try {
     const allowed = allowlistFor(db, n.spec.kind, n.spec.relation);
+    // §6.1a: a `view` source is anchored to the body it was published against. At publish the
+    // registry must still describe the live view, or the row about to be written would promise a
+    // relation nobody checked.
+    if (n.spec.kind === 'view') assertViewChecksum(db, n.spec.relation);
     // The publish-time allowlist check is this `compile` call: the first column
     // outside the relation's record is refused with its name.
     const compiled = compile(n.spec, allowed, measurementParams(n.spec));
@@ -188,9 +193,14 @@ export function publishSource(file: string, input: SourceInput, actor: AuditActo
     let plan: string[] = [];
     if (n.spec.kind === 'query') {
       const report = planReport(db, compiled.sql, compiled.bind, n.spec, allowed.indexed);
-      if (report.scan) refusePlan(report, n.spec);
       plan = report.plan;
+      // The index rule first, the plan rule second: `S2E-1`'s spec has an unindexed `where`
+      // column, so it must be refused by the rule that names that column, and `S2E-11`'s spec has
+      // every column indexed while the plan still SCANs, so only the plan rule can refuse it. The
+      // two refusals carry different `detail` shapes (`role='where'` vs `reason='plan_scan'`), which
+      // is what makes each gate an exclusive witness for one mechanism (E-22, §13.1a).
       assertIndexedColumns(n.spec, allowed, plan);
+      if (report.scan) refusePlan(report, n.spec);
     }
     let measured = measure(db, compiled.sql, compiled.bind, opts.measureRuns ?? 200);
     const rows = rowCount(db, n.spec.relation);

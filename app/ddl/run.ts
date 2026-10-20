@@ -36,6 +36,7 @@ import Database from 'better-sqlite3';
 import { appendAudit, type AuditActor } from '../audit/chain.ts';
 import { openAdminWrite } from '../db/classes.ts';
 import { AppError } from '../errors.ts';
+import { hashRelationSql } from '../sources/registry.ts';
 import {
   assertBatch,
   assertContextual,
@@ -81,6 +82,8 @@ export interface DdlReport {
   waitedFor: number;
   rebuilt: string[];
   audit: { from: string; to: string }[];
+  /** Views whose stored definition this batch changed, each refreshed and un-published (E-21). */
+  views: string[];
 }
 
 /**
@@ -108,9 +111,13 @@ export function runDdl(file: string, ops: readonly DdlOp[], options: DdlOptions)
     db.pragma('foreign_keys = 1');
     if (rebuild) db.pragma('foreign_keys = 0');
     const lock = beginImmediate(db, options.busyTimeoutMs ?? 5000);
+    // §6.1a (E-21): the views as they are BEFORE this batch, so the postcondition can prove which
+    // stored definitions this transaction changed instead of guessing from a timestamp.
+    const viewsBefore = snapshotViews(db);
 
     let statements = 0;
     let plans: DdlPlan[] = [];
+    let changedViews: string[] = [];
     try {
       // §9.4's order, with C-13's rule kept: the transaction is open, and the AST
       // refuses before any DDL statement is generated. A refusal here rolls back a
@@ -151,6 +158,7 @@ export function runDdl(file: string, ops: readonly DdlOp[], options: DdlOptions)
       }
 
       postcondition(db);
+      changedViews = applyViewPostcondition(db, viewsBefore, options.actor);
       options.hooks?.beforeCommit?.({ db, plan: plans[plans.length - 1] as DdlPlan });
       db.exec('COMMIT');
     } catch (err) {
@@ -173,6 +181,7 @@ export function runDdl(file: string, ops: readonly DdlOp[], options: DdlOptions)
       lockWaitMs: lock.waitedMs,
       waitedFor: Math.max(0, lock.attempts - 1),
       audit: plans.map((p) => ({ from: p.audit.action, to: p.audit.targetId })),
+      views: changedViews,
     };
   } finally {
     // §9.4: discarded, not returned. Closing is the only way to make that true for a
@@ -353,6 +362,90 @@ function applyRegistry(db: Database.Database, plan: DdlPlan): void {
     // would have refused; failing here keeps the count and the file in step.
     throw new AppError('SKW_E_DM_DDL_POSTCONDITION', `${effect.table} has no cms_table_registry row`);
   }
+}
+
+// --- §6.1a's view postcondition (E-21) ------------------------------------
+
+export interface ViewSnapshot {
+  /** `name → sqlite_master.sql` for every view, before the batch. */
+  views: Map<string, string>;
+  /** `name → checksum` from `cms_view_registry`, before the batch. */
+  registry: Map<string, string>;
+}
+
+export function snapshotViews(db: Database.Database): ViewSnapshot {
+  const views = new Map<string, string>();
+  for (const row of db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'view'").all() as {
+    name: string;
+    sql: string | null;
+  }[]) {
+    if (row.sql !== null) views.set(row.name, row.sql);
+  }
+  const registry = new Map<string, string>();
+  for (const row of db.prepare('SELECT name, checksum FROM cms_view_registry').all() as {
+    name: string;
+    checksum: string;
+  }[]) {
+    registry.set(row.name, row.checksum);
+  }
+  return { views, registry };
+}
+
+/**
+ * A `view` source is a promise about a **relation**, and a DDL op can change what that relation is:
+ * a `DROP`/`CREATE` in a migration, or a table rename that SQLite rewrites into the view's body. When
+ * the stored text changed, this runs **inside the same transaction** as the statement that changed
+ * it (§6.1a, E-21):
+ *
+ *   (i)  recompute and store `cms_view_registry.checksum`;
+ *   (ii) clear publication of every `view` source over that relation — `published_at = NULL,
+ *        is_public = 0`. Clearing publication is the point, not a side effect: a checksum refreshed
+ *        without it would anchor the NEW definition and launder exactly the attack A5 performed;
+ *   (iii) one `cms_audit` row, `action = 'source.view_redefined'`, with both digests and the keys
+ *        that were un-published.
+ *
+ * A view with no registry row is not given one: minting an anchor for a definition nobody reviewed is
+ * the thing the registry is for. It is still un-published and still audited, so the change is visible.
+ */
+export function applyViewPostcondition(
+  db: Database.Database,
+  before: ViewSnapshot,
+  actor: AuditActor,
+): string[] {
+  const after = snapshotViews(db);
+  const changed = new Set<string>();
+  for (const [name, sql] of before.views) if (after.views.get(name) !== sql) changed.add(name);
+  for (const name of after.views.keys()) if (!before.views.has(name)) changed.add(name);
+
+  const touched: string[] = [];
+  for (const relation of changed) {
+    const sql = after.views.get(relation);
+    const afterChecksum = sql === undefined ? null : hashRelationSql(sql);
+    if (afterChecksum === null) {
+      db.prepare('DELETE FROM cms_view_registry WHERE name = ?').run(relation);
+    } else if (before.registry.has(relation)) {
+      db.prepare('UPDATE cms_view_registry SET checksum = ? WHERE name = ?').run(afterChecksum, relation);
+    }
+    const unpublished = (
+      db
+        .prepare("SELECT key FROM cms_datasource WHERE kind = 'view' AND json_extract(spec_json, '$.view') = ? ORDER BY key")
+        .all(relation) as { key: string }[]
+    ).map((row) => row.key);
+    db.prepare(
+      "UPDATE cms_datasource SET published_at = NULL, is_public = 0 WHERE kind = 'view' AND json_extract(spec_json, '$.view') = ?",
+    ).run(relation);
+    appendAudit(
+      db,
+      actor,
+      'source.view_redefined',
+      'view',
+      relation,
+      { checksum: before.registry.get(relation) ?? null },
+      { checksum: afterChecksum, unpublished },
+    );
+    touched.push(relation);
+  }
+  return touched;
 }
 
 // --- the postcondition ----------------------------------------------------

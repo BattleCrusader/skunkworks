@@ -31,6 +31,28 @@ ERRATA = open(os.path.join(ROOT, "docs/sds/02-errata.md")).read()
 # E-4 (§4.2 code lists) and E-13 (§4.2 body shape, scope only) touch text this check does not
 # quote: the pattern is still asserted, and the code lists were never a frozen block here.
 SUPERSEDED = {
+    # E-20 (02-errata §8) retires C-21's "sentence the SDS adopts" and nothing else. C-21's verdict
+    # — a per-day digest in the second file is what makes a chain tamper-evident — is untouched; what
+    # changes is what a digest COVERS, because a whole-file digest cannot distinguish tamper from the
+    # next day's traffic, which is the one property the verdict was bought for. As with the two entries
+    # below this is asserted the strongest way available: the retired text must be ABSENT, the
+    # replacement must be PRESENT verbatim, and E-20 must carry the marker.
+    "C-21": dict(
+        item="E-20",
+        marker="SUPERSEDES 00-adjudication.md §2 C-21",
+        old="""`cms_audit` rows are hash-chained (`prev_hash`, `hash` over the canonical row) inside `site.db` and written in the same transaction as the change they record; one `audit_seal(tenant_key, day, rows, head)` row per tenant per UTC day is written to `control.db`; the verifier compares `count(cms_audit)` and the recomputed head to the seal and raises `SKW_E_SEC_AUDIT_SEAL` when either disagrees.""",
+        new="""`cms_audit` rows are hash-chained (`prev_hash`, `hash` over the canonical row) inside `site.db` and written in the same transaction as the change they record; one `audit_seal` row per tenant per UTC **day segment** is written to `control.db` — `(tenant_key, day, first_id, last_id, rows_in_day, head, anchor, sealed_at, late)` — where `[first_id, last_id]` is that day's own id range, `rows_in_day` is how many rows are in it, `head` is the last hash **inside that range**, and `anchor` is the hash of the row immediately **before** it (`''` when the segment begins at the chain's first row); the verifier walks that range only, starting from `anchor`, and raises `SKW_E_SEC_AUDIT_SEAL` when the anchor, a link, `rows_in_day` or `head` disagrees. A day that was never sealed stays **visibly unsealed**, and a day sealed after the fact carries `late = 1`.""",
+    ),
+    # E-19 replaces §11.6's block quote with the unclaimed-seed text plus §11.6a. That item carries no
+    # `SUPERSEDES` line — it names the block quote as the drop-in target instead — so the marker asserted
+    # here is that phrase, verbatim from E-19. Everything else is the strongest form: C-24's sentence must
+    # be ABSENT from the SDS and E-19's replacement PRESENT verbatim.
+    "C-24": dict(
+        item="E-19",
+        marker="drop-in for `SDS.md` §11.6's block quote",
+        old="""A bundle carries `data/control.seed.json` — one tenant with `mode='production'`, its hosts, one `owner` user with an argon2id hash and `must_change=1`, `db_version` and settings — and `install.sh` applies `schema/control.sql` and seeds exactly those rows in one transaction before `compose up`; no bundle contains `data/control.db`, `data/site.db-wal`, `data/site.db-shm`, `content/protected/wm/`, `content/sources/` or a populated `.env`.""",
+        new="""A bundle carries `data/control.seed.json` — one tenant with `mode='production'`, its hosts, one `owner` user marked **unclaimed**: `must_change=1`, `totp_secret` NULL, and a `password_hash` that is a real argon2id hash of 32 random bytes discarded at export, so a verification costs exactly what a real one costs and can never succeed — `db_version` and settings — and `install.sh` applies `schema/control.sql` and seeds exactly those rows in one transaction before `compose up`; no bundle contains `data/control.db`, `data/site.db-wal`, `data/site.db-shm`, `content/protected/wm/`, `content/sources/`, a populated `.env`, or a non-NULL `totp_secret` (a §11.3 preflight refusal, so a bundle can never ship a working second factor). The seeded row is a **claim marker, not a credential**: `install.sh` runs `skwctl admin bootstrap` (§11.6a) between `bundle_verify` and `compose up`, so the box has exactly one operator who can log in, and has one before the admin surface is reachable.""",
+    ),
     "C-25": dict(
         item="E-2",
         marker="SUPERSEDES 00-adjudication.md §2 C-25",
@@ -167,6 +189,73 @@ if bad_supersessions:
     for msg in bad_supersessions:
         print(f"  BAD SUPERSESSION: {msg}")
 
-ok = not (missing or bad or step_missing or env_missing or bad_supersessions)
+# ---- second phase (02-errata E-23): completeness, which a quote check cannot see ----------------
+#
+# `make test` was green with E-16..E-19 absent from the SDS: the quote phase above compares quotes,
+# and a missing row, a missing table row and a missing pointer are not quotes. This phase counts them
+# and fails naming the missing row, the missing string or the missing pointer.
+S2_ROWS = 13
+S2_REQUIRED = (
+    "a fresh seeded `control.db` and nothing else yields exactly one operator",
+    "a second bootstrap writes nothing",
+    "no TOTP secret or password reaches stdout",
+    "a day sealed on the 20th still verifies after the chain grows on the 21st",
+    "a `view` source is anchored to its definition",
+)
+# every item that must have landed a pointer line in SDS.md — the whole list, not this section's four
+POINTERS = tuple(f"E-{n}" for n in range(1, 24))
+
+
+def s2_section_text():
+    m = re.search(r"^### S2 — .*?(?=^### S3 —)", SDS, re.S | re.M)
+    return m.group(0) if m is not None else None
+
+
+def s2_table_rows():
+    """The §16 S2 acceptance table's data rows, counted rather than eyeballed."""
+    section = s2_section_text()
+    if section is None:
+        return None
+    rows = []
+    for line in section.splitlines():
+        text = line.strip()
+        if not text.startswith("|"):
+            continue
+        if text.startswith("| Acceptance criterion"):
+            continue
+        if set(text) <= set("|-: "):          # the |---|---| separator
+            continue
+        rows.append(text)
+    return rows
+
+
+s2_rows = s2_table_rows()
+row_problems = []
+if s2_rows is None:
+    row_problems.append("§16 has no S2 section")
+else:
+    if len(s2_rows) != S2_ROWS:
+        row_problems.append(f"§16 S2 has {len(s2_rows)} rows, expected {S2_ROWS}")
+    s2_norm = norm(s2_section_text())
+    for required in S2_REQUIRED:
+        if norm(required) not in s2_norm:
+            row_problems.append(f"§16 S2 is missing the row beginning {required!r}")
+
+pointer_lines = re.findall(r"^> Amended by 02-errata\.md ([^.\n]*)\.", SDS, re.M)
+pointer_have = set()
+for group in pointer_lines:
+    pointer_have.update(re.findall(r"E-\d+", group))
+pointer_missing = [p for p in POINTERS if p not in pointer_have]
+
+present_required = len(S2_REQUIRED) - len([p for p in row_problems if "missing the row" in p])
+print(f"§16 S2 rows: {len(s2_rows) if s2_rows is not None else '?'}/{S2_ROWS}; "
+      f"required strings: {present_required}/{len(S2_REQUIRED)}; "
+      f"pointers: {len(POINTERS) - len(pointer_missing)}/{len(POINTERS)}")
+for problem in row_problems:
+    print(f"  {problem}")
+if pointer_missing:
+    print(f"  MISSING pointers: {', '.join(pointer_missing)}")
+
+ok = not (missing or bad or step_missing or env_missing or bad_supersessions or row_problems or pointer_missing)
 print("\n" + ("PASS the SDS quotes the register" if ok else "FAIL the SDS paraphrases the register"))
 sys.exit(0 if ok else 1)

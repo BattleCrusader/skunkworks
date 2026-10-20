@@ -65,7 +65,7 @@ test('control.db is created when absent, and a second run is a no-op', () => {
     assert.equal(first.status, 0, first.stderr);
     const created = JSON.parse(first.stdout) as Report;
     assert.equal(created.control.action, 'created');
-    assert.equal(created.control.to, 3, 'control.db is created at v3 (E-3)');
+    assert.equal(created.control.to, 4, 'control.db is created at v4 (E-3, E-20)');
     assert.deepEqual(created.tenants, [], 'a control.db with no tenant rows has nothing to migrate');
 
     const second = runMigrations({ dataDir: fixture.dir, tenant: 'all' });
@@ -179,7 +179,7 @@ test('E-6 — `legacy_alter_table` appears nowhere in the migration path', () =>
   }
 });
 
-test('E-3 — a control.db at v2 migrates to v3 and control_revision holds one row', () => {
+test('E-3 — a control.db at v2 migrates to v4 through r3 and r4, and control_revision holds one row', () => {
   const fixture = makeFixture({ createSiteDbs: false });
   try {
     for (const suffix of ['', '-wal', '-shm']) rmSync(`${fixture.controlDb}${suffix}`, { force: true });
@@ -195,17 +195,18 @@ test('E-3 — a control.db at v2 migrates to v3 and control_revision holds one r
     const report = runMigrations({ dataDir: fixture.dir, tenant: 'all' });
     assert.equal(report.control.ok, true, report.control.error ?? '');
     assert.equal(report.control.from, 2);
-    assert.equal(report.control.to, 3);
+    assert.equal(report.control.to, 4);
 
     const db = new Database(fixture.controlDb, { readonly: true });
     try {
-      assert.equal(Number(db.pragma('user_version', { simple: true })), 3);
+      assert.equal(Number(db.pragma('user_version', { simple: true })), 4);
       const rows = db.prepare('SELECT id, rev FROM control_revision').all() as { id: number; rev: number }[];
       assert.deepEqual(rows, [{ id: 1, rev: 1 }], 'exactly one revision row');
       const triggers = db
         .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
         .all() as { name: string }[];
       assert.deepEqual(triggers.map((t) => t.name), [
+        'trg_audit_seal_immutable',
         'trg_domain_rev_delete',
         'trg_domain_rev_insert',
         'trg_domain_rev_update',
@@ -215,6 +216,96 @@ test('E-3 — a control.db at v2 migrates to v3 and control_revision holds one r
       ]);
     } finally {
       db.close();
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('E-20 — a v3 control.db reaches v4 with a nine-column segment seal, and its old anchors are kept in audit_log', () => {
+  const fixture = makeFixture({ createSiteDbs: false });
+  try {
+    for (const suffix of ['', '-wal', '-shm']) rmSync(`${fixture.controlDb}${suffix}`, { force: true });
+    // A control.db exactly as v3 shipped: v1 baseline, then r2 and r3.
+    const v1 = new Database(fixture.controlDb);
+    v1.exec(readFileSync(join(REPO, 'schema', 'history', 'v1-control-baseline.sql'), 'utf8'));
+    v1.close();
+    const r2 = new Database(fixture.controlDb);
+    r2.exec(readFileSync(join(REPO, 'schema', 'control-r2.sql'), 'utf8'));
+    r2.exec(readFileSync(join(REPO, 'schema', 'control-r3.sql'), 'utf8'));
+    assert.equal(Number(r2.pragma('user_version', { simple: true })), 3);
+    // A cumulative seal row of the old shape — the thing r4 cannot express as a segment.
+    r2.prepare("INSERT INTO audit_seal (tenant_key, day, rows, head, sealed_at) VALUES (?, ?, ?, ?, ?)").run(
+      'acme',
+      '2026-10-20',
+      7,
+      'a'.repeat(64),
+      '2026-10-21T00:00:05.000Z',
+    );
+    r2.close();
+
+    const report = runMigrations({ dataDir: fixture.dir, tenant: 'all' });
+    assert.equal(report.control.ok, true, report.control.error ?? '');
+    assert.equal(report.control.from, 3);
+    assert.equal(report.control.to, 4);
+
+    const db = new Database(fixture.controlDb, { readonly: true });
+    try {
+      assert.equal(Number(db.pragma('user_version', { simple: true })), 4);
+      const columns = (db.prepare("PRAGMA table_info('audit_seal')").all() as { name: string }[]).map((c) => c.name);
+      assert.deepEqual(columns, ['tenant_key', 'day', 'first_id', 'last_id', 'rows_in_day', 'anchor', 'head', 'sealed_at', 'late']);
+      // The old row is not a segment and is not carried: it is recorded, then replaced.
+      const seals = db.prepare('SELECT count(*) AS n FROM audit_seal').get() as { n: number };
+      assert.equal(seals.n, 0, 'a v3 cumulative row survived into the segment table');
+      const kept = db
+        .prepare("SELECT actor_label, target_kind, target_id, before_json FROM audit_log WHERE action = 'audit.seal_discarded'")
+        .all() as { actor_label: string; target_kind: string; target_id: string; before_json: string }[];
+      assert.equal(kept.length, 1, `the discarded anchor was not recorded: ${JSON.stringify(kept)}`);
+      assert.equal(kept[0]?.actor_label, 'migration');
+      assert.equal(kept[0]?.target_kind, 'audit_seal');
+      assert.equal(kept[0]?.target_id, 'acme/2026-10-20');
+      assert.deepEqual(JSON.parse(kept[0]?.before_json ?? '{}'), {
+        rows: 7,
+        head: 'a'.repeat(64),
+        sealed_at: '2026-10-21T00:00:05.000Z',
+      });
+      // The anchor is immutable in the database, not only in the app.
+      assert.equal(kept[0]?.target_id, 'acme/2026-10-20');
+      assert.deepEqual(JSON.parse(kept[0]?.before_json ?? '{}'), {
+        rows: 7,
+        head: 'a'.repeat(64),
+        sealed_at: '2026-10-21T00:00:05.000Z',
+      });
+    } finally {
+      db.close();
+    }
+
+    const writable = new Database(fixture.controlDb);
+    try {
+      const insert = writable.prepare(
+        `INSERT INTO audit_seal (tenant_key, day, first_id, last_id, rows_in_day, anchor, head, sealed_at, late)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insert.run('acme', '2026-10-20', 1, 7, 7, '', 'a'.repeat(64), '2026-10-21T00:00:05.000Z', 0);
+      assert.throws(
+        () => writable.prepare("UPDATE audit_seal SET head = ? WHERE tenant_key = 'acme'").run('b'.repeat(64)),
+        /SKW_E_SEC_AUDIT_SEAL/,
+        'trg_audit_seal_immutable did not abort the UPDATE',
+      );
+      // A day that cannot exist is refused by the CHECK, not admitted and then unverifiable.
+      assert.throws(
+        () => insert.run('acme', '2026-13-01', 1, 1, 1, '', 'c'.repeat(64), '2026-14-02T00:00:00.000Z', 0),
+        /CHECK constraint failed/,
+        "the day CHECK admitted '2026-13-01'",
+      );
+      // An on-time seal (`late=0`) written on the wrong day is refused by the second CHECK.
+      assert.throws(
+        () => insert.run('acme', '2026-10-19', 1, 1, 1, '', 'd'.repeat(64), '2026-10-22T00:00:00.000Z', 0),
+        /CHECK constraint failed/,
+        'late=0 with sealed_at two days after the day was admitted',
+      );
+    } finally {
+      writable.close();
     }
   } finally {
     fixture.cleanup();

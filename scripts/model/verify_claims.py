@@ -253,13 +253,14 @@ def readonly_attach():
 # docs/debate/r2-data-model.md §5 by number. Nothing here is a proposal that has not run.
 
 SITE_SQL = os.path.join(ROOT, "schema/site.sql")          # the v3 target, regenerated from one spec
-CONTROL_SQL = os.path.join(ROOT, "schema/control.sql")    # the v3 control plane
+CONTROL_SQL = os.path.join(ROOT, "schema/control.sql")    # the v4 control plane (E-20)
 V1_SITE = os.path.join(ROOT, "schema/history/v1-baseline.sql")
 V1_CONTROL = os.path.join(ROOT, "schema/history/v1-control-baseline.sql")
 AMENDMENTS = os.path.join(ROOT, "schema/r2-amendments.sql")
 AMENDMENTS3 = os.path.join(ROOT, "schema/r3-amendments.sql")
 CONTROL_R2 = os.path.join(ROOT, "schema/control-r2.sql")
 CONTROL_R3 = os.path.join(ROOT, "schema/control-r3.sql")
+CONTROL_R4 = os.path.join(ROOT, "schema/control-r4.sql")
 PROJECTION = os.path.join(ROOT, "schema/export-projection.json")
 COMPONENTS = os.path.join(ROOT, "schema/component-registry.json")
 CODES = os.path.join(ROOT, "schema/error-codes.json")
@@ -848,15 +849,34 @@ def migration_chain_converges():
     n_tables, n_triggers = compare_planes(chain, fresh_db, "site.db")
     assert chain.execute("PRAGMA foreign_key_check").fetchall() == []
 
-    # control plane: v1 -> control-r2 -> control-r3 == schema/control.sql at v3 (E-3)
+    # control plane: v1 -> control-r2 -> control-r3 -> control-r4 == schema/control.sql at v4
+    # (E-20: `audit_seal` is a day SEGMENT. The r4 delta DROPs the cumulative table, so the
+    # comparison below is what proves the DROP+CREATE lands on the generated schema.)
     ctrl_chain, _ = fresh("conv_control.db")
     for sc in (V1_CONTROL, CONTROL_R2, CONTROL_R3):
         apply_chain(ctrl_chain, sc)
+    # A v3 file that already carries a cumulative seal: r4 must record it before replacing it.
+    ctrl_chain.execute("INSERT INTO audit_seal(tenant_key,day,rows,head,sealed_at)"
+                       " VALUES('acme','2026-10-20',7,?, '2026-10-21T00:00:05.000Z')",
+                       ("a" * 64,))
+    apply_chain(ctrl_chain, CONTROL_R4)
     ctrl_fresh, _ = fresh("conv_control_fresh.db")
     apply_chain(ctrl_fresh, CONTROL_SQL)
-    assert ctrl_chain.execute("PRAGMA user_version").fetchone()[0] == 3, "control chain at v3"
-    assert ctrl_fresh.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert ctrl_chain.execute("PRAGMA user_version").fetchone()[0] == 4, "control chain at v4"
+    assert ctrl_fresh.execute("PRAGMA user_version").fetchone()[0] == 4
     c_tables, c_triggers = compare_planes(ctrl_chain, ctrl_fresh, "control.db")
+    # The segment shape itself: nine columns, and the trigger that makes an anchor immutable.
+    seg_cols = [r[1] for r in ctrl_chain.execute("PRAGMA table_info('audit_seal')")]
+    assert seg_cols == ["tenant_key", "day", "first_id", "last_id", "rows_in_day", "anchor",
+                        "head", "sealed_at", "late"], seg_cols
+    trg = ctrl_chain.execute("SELECT sql FROM sqlite_master WHERE type='trigger'"
+                             " AND name='trg_audit_seal_immutable'").fetchone()
+    assert trg is not None and "SKW_E_SEC_AUDIT_SEAL" in trg[0], trg
+    # A v3 seal is not lost silently: it is written to audit_log as `audit.seal_discarded`.
+    discarded = ctrl_chain.execute("SELECT target_id, before_json FROM audit_log"
+                                   " WHERE action='audit.seal_discarded'").fetchall()
+    assert discarded == [("acme/2026-10-20", '{"rows":7,"head":"%s","sealed_at":'
+                          '"2026-10-21T00:00:05.000Z"}' % ("a" * 64))], discarded
     rev = ctrl_chain.execute("SELECT count(*) FROM control_revision").fetchone()[0]
     assert rev == 1, f"control_revision holds {rev} rows, expected 1"
     assert ctrl_chain.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -874,7 +894,8 @@ def migration_chain_converges():
         c.close()
     assert err and "legacy_12_char_codes_have_no_v3_selector" in err, err
     return (f"{n_tables} tables / {n_triggers} triggers identical on both paths "
-            f"(table text + trigger bodies), control {c_tables} tables at v3, no session pragma; "
+            f"(table text + trigger bodies), control {c_tables} tables at v4 with a 9-column "
+            f"segment seal, no session pragma; "
             f"codes-in-file -> REJECTED ({err.split(':')[-1].strip()})")
 
 
@@ -1126,64 +1147,105 @@ def plugin_table_class_and_guard():
 
 
 def audit_chain_and_seal():
-    """C-21: a chain in the tenant's own file cannot detect a deleted tail; the daily seal can."""
+    """C-21 as amended by E-20: a chain in the tenant's own file cannot detect a deleted tail; the
+    daily seal of that day's **own id segment** can — and, the direction the old check never tested,
+    an untouched chain that GREW on the next day still verifies for the earlier day.
+
+    A check that only proves the failing direction is the defect E-22 names: under the old cumulative
+    seal, a legitimate new day and a tampered row produced the same answer, so this check was green on
+    a control that could not work."""
     import hashlib as H
     c, _ = fresh("audit.db")
     c.executescript(open(SITE_SQL).read())
     N = 10000
-    prev, rows = "", []
+    SPLIT = 9990                      # rows 1..SPLIT are 2026-10-20; the rest are 2026-10-21
+    D1, D2, D3 = "2026-10-20", "2026-10-21", "2026-10-22"
+    prev, rows, hashes = "", [], {}
     t0 = time.perf_counter()
     c.execute("BEGIN")
     for i in range(N):
         rec = {"actor": "op@us", "action": "page.save", "target": f"/p{i}"}
         h = H.sha256((prev + json.dumps(rec, sort_keys=True)).encode()).hexdigest()
-        rows.append((i + 1, rec["actor"], rec["action"], rec["target"], prev, h))
+        ts = f"{D1}T12:00:00.000Z" if i < SPLIT else f"{D2}T12:00:00.000Z"
+        rows.append((i + 1, rec["actor"], rec["action"], rec["target"], prev, h, ts))
+        hashes[i + 1] = h
         prev = h
-    c.executemany("INSERT INTO cms_audit(id,actor_label,action,target_id,prev_hash,hash)"
-                  " VALUES(?,?,?,?,?,?)", rows)
+    c.executemany("INSERT INTO cms_audit(id,actor_label,action,target_id,prev_hash,hash,ts)"
+                  " VALUES(?,?,?,?,?,?,?)", rows)
     c.execute(f"UPDATE sqlite_sequence SET seq={N} WHERE name='cms_audit'")
     c.execute("COMMIT")
     chain_ms = (time.perf_counter() - t0) * 1000
 
-    def verify(con):
-        prev2 = ""
-        for r in con.execute("SELECT actor_label,action,target_id,prev_hash,hash FROM cms_audit"
-                             " ORDER BY id"):
-            rec = {"actor": r[0], "action": r[1], "target": r[2]}
+    def verify_range(con, first_id, last_id, anchor):
+        """The verifier's walk: that id range only, starting from the anchor. Returns (ok, head)."""
+        prev2 = anchor
+        for r in con.execute("SELECT id,actor_label,action,target_id,prev_hash,hash FROM cms_audit"
+                             " WHERE id BETWEEN ? AND ? ORDER BY id", (first_id, last_id)):
+            rec = {"actor": r[1], "action": r[2], "target": r[3]}
             h = H.sha256((prev2 + json.dumps(rec, sort_keys=True)).encode()).hexdigest()
-            if h != r[4] or r[3] != prev2:
+            if h != r[5] or r[4] != prev2:
                 return None, prev2
             prev2 = h
         return True, prev2
-
-    t0 = time.perf_counter()
-    ok, head = verify(c)
-    verify_ms = (time.perf_counter() - t0) * 1000
-    assert ok and head == prev, (ok, head, prev)
 
     # the seal lives in control.db — here, in its own file
     ctl, _ = fresh("audit_ctl.db")
     ctl.executescript(open(CONTROL_SQL).read())
     t0 = time.perf_counter()
-    ctl.execute("INSERT INTO audit_seal(tenant_key,day,rows,head) VALUES('acme','2026-10-20',?,?)",
-                (N, head))
+    ctl.execute("INSERT INTO audit_seal(tenant_key,day,first_id,last_id,rows_in_day,anchor,head,late,sealed_at)"
+                " VALUES('acme',?,1,?,?,'',?,0,?)", (D1, SPLIT, SPLIT, hashes[SPLIT], f"{D2}T00:00:05.000Z"))
+    ctl.execute("INSERT INTO audit_seal(tenant_key,day,first_id,last_id,rows_in_day,anchor,head,late,sealed_at)"
+                " VALUES('acme',?,?,?,?,?,?,0,?)",
+                (D2, SPLIT + 1, N, N - SPLIT, hashes[SPLIT], hashes[N], f"{D3}T00:00:05.000Z"))
     seal_ms = (time.perf_counter() - t0) * 1000
 
-    # delete the tail: the chain still verifies, the seal does not
+    # 1. the positive control: the chain GREW on the next day, and the earlier day still verifies.
+    ok_grown, head_grown = verify_range(c, 1, SPLIT, "")
+    assert ok_grown and head_grown == hashes[SPLIT], (ok_grown, head_grown)
+    # and appending a third day's rows changes nothing about it, because they are not read.
+    t0 = time.perf_counter()
+    c.execute("BEGIN")
+    add = []
+    p = hashes[N]
+    for i in range(5):
+        rec = {"actor": "op@us", "action": "page.save", "target": f"/q{i}"}
+        h = H.sha256((p + json.dumps(rec, sort_keys=True)).encode()).hexdigest()
+        add.append((N + 1 + i, rec["actor"], rec["action"], rec["target"], p, h, f"{D3}T01:00:00.000Z"))
+        p = h
+    c.executemany("INSERT INTO cms_audit(id,actor_label,action,target_id,prev_hash,hash,ts)"
+                  " VALUES(?,?,?,?,?,?,?)", add)
+    c.execute(f"UPDATE sqlite_sequence SET seq={N + 5} WHERE name='cms_audit'")
+    c.execute("COMMIT")
+    grew_ms = (time.perf_counter() - t0) * 1000
+    ok_after, head_after = verify_range(c, 1, SPLIT, "")
+    ok_d2, head_d2 = verify_range(c, SPLIT + 1, N, hashes[SPLIT])
+    assert ok_after and head_after == hashes[SPLIT], "a later day's traffic falsified the earlier day's segment"
+    assert ok_d2 and head_d2 == hashes[N], "the second day's segment did not verify"
+    whole = c.execute("SELECT count(*) FROM cms_audit").fetchone()[0]
+    assert whole == N + 5, whole
+
+    # 2. the failing direction, inside the segment: delete its last row. The walk still passes, the
+    #    count does not — which is exactly what the seal is for.
     c.execute("DROP TRIGGER trg_cms_audit_no_delete")
-    c.execute("DELETE FROM cms_audit WHERE id > ?", (N - 5,))
-    ok2, head2 = verify(c)
-    assert ok2, "the shortened chain did not verify — the test premise is wrong"
-    sealed = ctl.execute("SELECT rows, head FROM audit_seal WHERE tenant_key='acme'"
-                         " AND day='2026-10-20'").fetchone()
-    count_now = c.execute("SELECT count(*) FROM cms_audit").fetchone()[0]
-    mismatch = (count_now != sealed[0]) or (head2 != sealed[1])
-    assert mismatch, "the seal failed to detect a deleted tail"
+    c.execute("DELETE FROM cms_audit WHERE id = ?", (SPLIT,))
+    ok_short, head_short = verify_range(c, 1, SPLIT, "")
+    walked = c.execute("SELECT count(*) FROM cms_audit WHERE id BETWEEN 1 AND ?", (SPLIT,)).fetchone()[0]
+    sealed = ctl.execute("SELECT rows_in_day, head FROM audit_seal WHERE tenant_key='acme'"
+                         " AND day=?", (D1,)).fetchone()
+    count_mismatch = walked != sealed[0]
+    head_mismatch = head_short != sealed[1]
+    assert ok_short, "the shortened segment did not walk — the test premise is wrong"
+    assert count_mismatch and head_mismatch, (walked, sealed, head_short)
+    # …while the other day is untouched: the two verdicts are independent.
+    ok_d2_again, _ = verify_range(c, SPLIT + 1, N, hashes[SPLIT])
+    assert ok_d2_again, "deleting a row from the 20th disturbed the 21st"
+
     c.close()
     ctl.close()
-    return (f"{N} rows chained {chain_ms:.1f}ms, verified {verify_ms:.1f}ms, sealed {seal_ms * 1000:.0f}us; "
-            f"tail deleted -> chain verifies ({ok2}) but seal says rows={sealed[0]} head={sealed[1][:8]}.. "
-            f"vs {count_now}/{head2[:8]}.. -> SKW_E_SEC_AUDIT_SEAL")
+    return (f"{N} rows chained {chain_ms:.1f}ms, 2 segments verified, sealed {seal_ms * 1000:.0f}us; "
+            f"grew by 5 rows on {D3} in {grew_ms * 1000:.0f}us -> {D1} still ok (head {head_after[:8]}..); "
+            f"row {SPLIT} deleted -> walk ok but rows={walked} of {sealed[0]} and head {head_short[:8]}.. "
+            f"of {sealed[1][:8]}.. -> SKW_E_SEC_AUDIT_SEAL, while {D2} stays ok")
 
 
 def body_ban_and_loop_contract():

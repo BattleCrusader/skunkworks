@@ -9,6 +9,9 @@
  *   4. `is_public = 1` for a public render→ `SKW_E_RT_SOURCE_UNKNOWN` (not_public)
  *   5. every named column is in the allowlist — **re-checked at render**, because a
  *      table can be rebuilt between publish and resolve
+ *   5a. `kind = 'view'`: `sha256(sqlite_master.sql)` equals `cms_view_registry.checksum`
+ *      (E-21, §6.1a) — before 5b, because 5b reads the live view
+ *   5b. every named column is in the allowlist (`PRAGMA table_xinfo`, read after 5a)
  *   6. the compiled statement, with bound parameters, on this handle
  *   7. the parameter-set cache, TTL from `ttl_s`
  *
@@ -19,7 +22,7 @@ import type Database from 'better-sqlite3';
 
 import { bindParams, compile } from './compile.ts';
 import { SourceCache, cacheKey, sha256 } from './cache.ts';
-import { allowlistFor, readSource } from './registry.ts';
+import { allowlistFor, assertViewChecksum, noteViewChecksumRefusal, readSource, viewAnchor } from './registry.ts';
 import { assertKind, parseSpec, sourceUnknown, type SourceSpec } from './spec.ts';
 
 export type ResolveAudience = 'render' | 'preview';
@@ -59,11 +62,23 @@ export function resolveSource(db: Database.Database, key: string, opts: ResolveO
     throw sourceUnknown('not_published', `source ${key} is a draft; publish it before it can render`, { key });
   }
   const audience = opts.audience ?? 'render';
+  // §6.2's `is_public` rule. Exclusive witness: test/sources.test.ts S2E-4
   if (audience === 'render' && row.is_public !== 1) {
     throw sourceUnknown('not_public', `source ${key} is not public`, { key });
   }
 
   const spec = specOf(row, kind);
+  // Step 5a before 5b: the allowlist is a live read of whatever the view is NOW, so the body must
+  // be proved to be the one that was registered before its columns are trusted (E-21).
+  if (kind === 'view') {
+    try {
+      assertViewChecksum(db, spec.relation);
+    } catch (err) {
+      const anchor = viewAnchor(db, spec.relation);
+      if (anchor !== null && !anchor.ok) noteViewChecksumRefusal(opts.tenantKey, anchor);
+      throw err;
+    }
+  }
   const allowed = allowlistFor(db, kind, spec.relation);
   const bound = bindParams(spec, opts.params ?? {});
   const request: Record<string, unknown> = { ...bound };

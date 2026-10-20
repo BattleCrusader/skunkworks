@@ -1452,3 +1452,720 @@ the command and the login it enables, not the install. The multi-operator surfac
   E-16's last paragraph, not re-opened.
 - **The seed and never the fleet file (C-24).** E-19 changes what the seeded row *means* — a claim
   marker instead of an unusable credential — and not what travels in a bundle.
+
+---
+
+## 8. Errata E-20..E-23 (post-S2-QA)
+
+**Status:** amendment of record for `docs/sds/SDS.md`, issued after independent QA returned **NO-GO** on
+slice S2 (`docs/build/S2-qa.md`, tree `b1aec3e`): one blocker (B1, §5.3 of that report), four majors, six
+minors — and a verdict whose most damning sentence is not about code: *"the risk that stops S2 lives
+outside the table QA was told to grade."*
+
+**Date:** 2026-10-20. **Author:** Architect. **Scope:** the specification. No implementation file is edited
+by this pass; every SQL statement below is text the Builder applies.
+
+**Four proposed, four accepted, none narrowed.** E-20 is the blocker, and its subject is *coverage*, which
+is a specification decision before it is a line of code: the seal covers the whole file, so it can never
+verify a day that has a successor, and the only way to use it produces a false accusation. E-21 is the
+major QA refused to let the Builder defer to S4 (`S2-qa.md` §7 item 2, "**Reject the deferral**"):
+`cms_view_registry.checksum` exists, is written, and is never read, so a published `view` source is not
+anchored to anything. E-22 is the gate-quality rule whose absence let both B1 and D3 read as passes. E-23
+is the register: E-16..E-19 were never pasted into `SDS.md`, and §6.2's "re-checked at render" is true of
+exactly one rule out of eight.
+
+**Numbering.** This section keeps the number it was issued with. The S2a section above already occupies
+§7–§9, so a citation to this section is written `§8 (post-S2-QA)` or `§9 (post-S2-QA)`, and no citation
+above this line changes.
+
+**Precedence, and the supersessions this section relies on** (§1's order is unchanged):
+
+1. **E-20** `SUPERSEDES 00-adjudication.md` §2 **C-21**'s "sentence the SDS adopts", and only that
+   sentence. C-21's *verdict* — a per-day digest in the second file is what makes a chain tamper-evident —
+   is untouched. What changes is what a digest **covers**, because a whole-file digest cannot distinguish
+   tamper from the next day's traffic, which is the one property the verdict was bought for. This is the
+   same shape as E-19: the decision stands, its restatement was too coarse to implement.
+2. **E-20 also amends E-18's closing line** ("no `control-r4.sql` exists"). True when written, false now:
+   E-20's column set is a control-plane delta, so `schema/control-r4.sql` exists and `control.sql` moves to
+   **v4**. E-18's decision — no new column for the session cap — is untouched.
+3. **E-21 decides a silence in §6.1**, which names `cms_view_registry` and never says what its `checksum`
+   is *for*. No frozen text is replaced; the registry gains its rule.
+4. **E-22 decides a silence in §13 and §16**: nothing in the SDS says what makes a gate a gate, which is
+   why two dead gates passed review as green.
+5. **E-23 replaces §16 S2's table and §6.2's "re-checked at render" sentence.** Both are the SDS's own
+   text, not the register's; no supersession.
+
+---
+
+### E-20 — the seal covers the whole file, so it can never verify a day that has a successor
+
+**Defect.** `SDS.md` §9.6's block quote — and the identical sentence it quotes from
+`00-adjudication.md` §2 C-21 under *"The sentence the SDS adopts"*: `audit_seal(tenant_key, day, rows,
+head)`, where `rows = count(cms_audit)` and `head` is the chain's last hash, and "the verifier compares
+`count(cms_audit)` and the recomputed head to the seal". `app/audit/chain.ts` implements it literally:
+`sealNow` (`:218–231`) writes `report.rows`/`report.head` from a **whole-file** `verifyChain`, and
+`verifyAgainstSeal` (`:252–277`) compares the seal to a whole-file report of the file *as it is now*. A
+seal is therefore verifiable only in the interval between its own write and the next audit row.
+
+QA measured it (`S2-qa.md` §5.3): three days, five verifications, and every day that has a successor
+refuses with `SKW_E_SEC_AUDIT_SEAL — the chain disagrees with the seal for <day>`, which is the exact
+string a real tamper produces (§9 of that report). Four consequences, of which the first is the one that
+matters: **the control has no discriminating power for history** — a signal that always fires is not a
+signal, and the operator's rational response after the third false alarm is to stop running it. S3 makes
+the failure certain rather than likely: gated downloads write `cms_download_event` and audit rows
+continuously, so from S3's first day every prior seal mismatches.
+
+Two adjacent facts are the same defect seen from other angles, and are closed by the same text:
+
+- **The backfill records the wrong day** (§5.2): `sealNow` is cumulative, so a seal for the 21st written on
+  the 22nd records `rows=2` where one of those rows is the 22nd's; only `sealed_at > day` betrays it, and
+  nothing checks that.
+- **The gates can only pass in the failing direction.** `S2E-21` asserts that a chain which moved after
+  the seal must fail — correct for tamper, equally true of every new day's traffic — and
+  `verify_claims.py` check 25 deletes the tail and asserts the mismatch, never that an *untouched, grown*
+  chain still verifies. Both were green on a control that cannot work. E-22 states the rule; this item
+  supplies the missing positive control.
+
+**Corrected text — drop-in for `SDS.md` §9.6's block quote, replacing it entirely, followed by the new
+§9.6a.** `SUPERSEDES 00-adjudication.md §2 C-21`'s adopted sentence (see the preamble), and
+`scripts/model/check_frozen.py` must gain the matching `SUPERSEDED` entry — that check requires the retired
+C-21 sentence to be **absent** and its replacement **present**, so without the entry the whole gate goes
+red the moment this text is pasted.
+
+````markdown
+### 9.6 Audit (C-21)
+
+> `cms_audit` rows are hash-chained (`prev_hash`, `hash` over the canonical row) inside `site.db` and written in
+> the same transaction as the change they record; one `audit_seal` row per tenant per UTC **day segment** is
+> written to `control.db` — `(tenant_key, day, first_id, last_id, rows_in_day, head, anchor, sealed_at, late)`
+> — where `[first_id, last_id]` is that day's own id range, `rows_in_day` is how many rows are in it, `head` is
+> the last hash **inside that range**, and `anchor` is the hash of the row immediately **before** it (`''` when
+> the segment begins at the chain's first row); the verifier walks that range only, starting from `anchor`, and
+> raises `SKW_E_SEC_AUDIT_SEAL` when the anchor, a link, `rows_in_day` or `head` disagrees. A day that was never
+> sealed stays **visibly unsealed**, and a day sealed after the fact carries `late = 1`.
+
+### 9.6a The day segment: what a seal covers, and what verifying one reads
+
+**Why the seal is a segment and not a snapshot.** A snapshot of the whole file (`count`, head) is a statement
+about the file at one instant, and every later audit write falsifies it. That is not tamper — it is the
+product working. A seal must therefore cover an **id range that never changes again**, and the only such
+range is the day: rows are append-only, `ts` is written by the writer and never updated, and no row of an
+earlier day can be added later without its id falling outside that day's range.
+
+**The seal is written for a day that has ended, by one procedure, in one transaction.**
+
+Sealing day `D` at instant `T` (`T` is the writer's clock; `utcDay(T)` is `D + 1` for an on-time seal):
+
+1. **The day must be over.** `D < utcDay(T)`, else `SKW_E_SEC_AUDIT_SEAL` with `reason = 'day_not_over'`.
+   Sealing a day that can still grow writes a segment that is wrong by construction — the defect this item
+   exists to remove, in its smallest form.
+2. **The segment is the day's rows.** With `P = substr(ts, 1, 10) = D`:
+   `first_id = MIN(id)`, `last_id = MAX(id)`, `rows_in_day = COUNT(*)` over `P`. Zero rows: **write no
+   seal** and report `empty` (a day with no audit rows has nothing to anchor, and a seal with
+   `rows_in_day = 0` would have no `head`).
+3. **The segment must be contiguous by id.** `COUNT(*) WHERE id BETWEEN first_id AND last_id` must equal
+   `rows_in_day`. A day whose rows are interleaved with another day's (a clock step backwards, a restored
+   backup) has no id-range that expresses it; refuse with `reason = 'not_contiguous'` rather than write a
+   seal that would verify the wrong set.
+4. **The anchor is the predecessor's hash.** `anchor = (SELECT hash FROM cms_audit WHERE id < first_id ORDER
+   BY id DESC LIMIT 1)`; `''` when that row does not exist. If `first_id > 1` and no predecessor hash is
+   readable, refuse with `reason = 'anchor_missing'` — a segment whose left edge is not anchored is a
+   snapshot of a prefix, which is the thing this design refuses.
+5. **The head is inside the segment.** `head = (SELECT hash FROM cms_audit WHERE id = last_id)`.
+6. **Never anchor a broken chain.** A full `verifyChain` walk must be ok first, or refuse with
+   `reason = 'chain_broken'` naming `brokenAt`. Once a day, a 10,000-row walk costs 37 ms (§9.6's own
+   measurement) and it stops a break from being sealed as if it were history.
+7. **`late` is computed, not asserted.** `late = 1` unless `substr(T, 1, 10) = date(D, '+1 day')` — an
+   on-time seal is written on the day **after** the one it covers, because the tick that seals `D` fires at
+   `00:00` on `D + 1` (§9.6's scheduler seals `utcDay(tick - 1000)`). `sealed_at` is always the real instant,
+   never backdated: `late` is the
+   durable fact and `sealed_at` is the clock, and a verifier that has to subtract dates to guess which one
+   it is looking at has neither.
+
+**Verifying day `D` reads only the segment.** `skwctl audit verify --day D`:
+
+1. Read the seal. No row **and** the day has rows → `SKW_E_SEC_AUDIT_SEAL`, `reason = 'unsealed'`, message
+   names the day and how many rows are on it. No row and no rows → `reason = 'empty'`, **exit 0**: there is
+   nothing to verify and nothing is wrong.
+2. `anchor` must equal the hash of the row immediately before `first_id`, and `''` must mean there is no
+   such row. A mismatch is `reason = 'anchor_mismatch'` — a row was deleted, or inserted before the
+   segment, after the seal was written.
+3. Walk `SELECT … FROM cms_audit WHERE id BETWEEN first_id AND last_id ORDER BY id`, starting with
+   `prev = anchor`, recomputing `auditHash(prev, row)` for each and requiring `row.prev_hash = prev` and
+   `row.hash = auditHash(prev, row)`. The first disagreement is `reason = 'broken_at'` with the id.
+4. Rows walked ≠ `rows_in_day` → `reason = 'count_mismatch'`.
+5. Last recomputed hash ≠ `head` → `reason = 'head_mismatch'`.
+6. **Rows with `id > last_id` are not read.** That is the entire fix: a later day's traffic cannot make an
+   earlier day fail, and a later day's tampering is the later day's verdict.
+
+**A whole-file walk is a different command and answers a different question.** `skwctl audit verify --chain
+--tenant <key>` walks every link with no seal and reports the first break (`reason = 'chain_broken'`, with
+`brokenAt`) or `ok`. It is what an operator runs after a refusal, and it is the only path that reads past a
+segment.
+
+**Four rules about the series, each a refusal rather than a convention.**
+
+**(a) A sealed day is sealed.** Inserting a second `audit_seal` row for `(tenant_key, day)` is refused —
+`reason = 'already_sealed'` — whether or not the computed `head` matches the stored one, and the stored row
+is **never** updated (`trg_audit_seal_immutable`, below). A re-seal that happened to match would be
+harmless; a re-seal path that can write at all is the laundering route the seal exists to close, and a rule
+that distinguishes the two cases is a rule with a branch an attacker can aim at. Re-running the daily job
+therefore reports `already_sealed` as a **non-failure**: `skwctl audit seal` prints the stored
+`sealed_at`/`late` and exits 0, because "this day is anchored" is the outcome the operator wanted.
+
+**(b) Backfilling a past day computes that day's segment.** `skwctl audit seal --day D` for an unsealed
+`D < today` runs exactly the procedure above against `D` — `first_id`/`last_id`/`rows_in_day`/`head` are
+`D`'s, the anchor is the row before `D`'s first, `late = 1`, and `sealed_at` is the real instant of the
+backfill. `--heal` seals every unsealed day from `D` through yesterday, one seal and one `audit_log` row
+(`action = 'audit.seal_backfill'`) per day. A backfilled seal is a **correct** seal of a **late** day; it is
+never a snapshot of today wearing yesterday's date, which is what `S2-qa.md` §5.2 measured.
+
+**(c) A missed day is visibly unsealed.** The tick does not heal. At every tick, before sealing the day it
+owns, `sealDay` scans the series: for each day from the tenant's first audit day through the last day that
+has ended, that has no seal row, a day with rows is reported `UNSEALED` and a day without rows is reported
+`empty`.
+Each unsealed day produces one console line and one `control.db` `audit_log` row
+(`action = 'audit.seal_gap'`, `target_kind = 'audit_seal'`, `target_id = '<tenant>/<day>'`) — so a gap is
+recorded in the control plane at the first tick that can see it, and it is reported again at every
+subsequent tick until somebody seals it. **The tick does not heal its own gap**, because a job that silently
+repairs makes `late = 1` indistinguishable in the operator's memory from a normal seal, and the fact that a
+day went unanchored for six hours is exactly what an operator needs to know.
+
+**(d) What an operator sees.** Three surfaces: the CLI reads the control plane and one tenant file; the
+health field is served from the `30 s` cache that endpoint already keeps; and `/healthz` is untouched — a
+liveness probe that opens a database is a restart loop waiting for a lock (§9.5).
+
+```
+$ skwctl audit status --tenant acme --days 5
+tenant=acme chain=ok
+2026-10-16 sealed    rows_in_day=12  first_id=41  last_id=52  late=no
+2026-10-17 sealed    rows_in_day=3   first_id=53  last_id=55  late=yes  sealed_at=2026-10-19T02:14:07.512Z
+2026-10-18 UNSEALED  4 rows on that day; no seal
+2026-10-19 empty     0 rows on that day; no seal is required
+2026-10-20 sealed    rows_in_day=7   first_id=56  last_id=62  late=no
+```
+
+`audit status` exits 0 only when `chain=ok` and no day is `UNSEALED`; otherwise exit 1. `audit verify`
+distinguishes its refusals by name on stderr — `REFUSAL: AUDIT_SEAL_UNSEALED` (no seal, rows exist),
+`REFUSAL: AUDIT_SEAL_MISMATCH` (anchor, link, count or head), `REFUSAL: AUDIT_SEAL_EMPTY` (nothing to
+anchor, exit 0) — because QA's week-one failure is an operator reading one string for two events. And
+`/admin/api/tenants/<key>/health` (§9.5, already cached 30 s) gains one field:
+`"seal": {"last_sealed_day": "2026-10-20", "unsealed": ["2026-10-18"], "late_days": 1}`.
+````
+
+**The DDL delta — `schema/control-r4.sql` (new, v3 → v4).** The old rows cannot be expressed in the new
+shape — they carry no id boundary, so no row of them is a segment — and they are provably useless (§5.3):
+their evidence is preserved in `audit_log` before the table is replaced, and the days they covered become
+**visibly unsealed** under rule (c), which is the truthful state. Acceptable **now** because S2 has not
+shipped; once a box is live, a model change must migrate anchors, not replace them.
+
+```sql
+-- schema/control-r4.sql — the v3 -> v4 delta for the control plane (02-errata E-20).
+-- Applies to a control.db at PRAGMA user_version = 3 and yields 4 == schema/control.sql.
+-- Convergence is asserted by verify_claims.py check 20 and by test/migrate.test.ts.
+PRAGMA foreign_keys = OFF;
+BEGIN IMMEDIATE;
+
+-- 1. The cumulative anchor rows are not expressible as segments. Record each one, then replace.
+INSERT INTO audit_log (tenant_id, actor_user_id, actor_label, action, target_kind, target_id,
+                       before_json, after_json)
+SELECT NULL, NULL, 'migration', 'audit.seal_discarded', 'audit_seal', s.tenant_key || '/' || s.day,
+       json_object('rows', s.rows, 'head', s.head, 'sealed_at', s.sealed_at), NULL
+  FROM audit_seal s;
+
+-- 2. Replace the table. A DROP, not an ALTER: every surviving column changes meaning.
+DROP INDEX IF EXISTS ix_seal_day;
+DROP TABLE audit_seal;
+
+CREATE TABLE audit_seal (
+  tenant_key  TEXT NOT NULL CHECK(length(tenant_key) BETWEEN 2 AND 40),
+  day         TEXT NOT NULL CHECK(day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                                     AND date(day) IS NOT NULL),
+  first_id    INTEGER NOT NULL CHECK(first_id >= 1),
+  last_id     INTEGER NOT NULL CHECK(last_id >= first_id),
+  rows_in_day INTEGER NOT NULL CHECK(rows_in_day >= 1),
+  anchor      TEXT NOT NULL CHECK(length(anchor) IN (0, 64)),
+  head        TEXT NOT NULL CHECK(length(head) = 64),
+  sealed_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  late        INTEGER NOT NULL DEFAULT 0 CHECK(late IN (0, 1)),
+  PRIMARY KEY(tenant_key, day),
+  -- an on-time seal is written on the day AFTER the day it covers; anything else is late.
+  -- The first CHECK is not decoration: date() returns NULL for an impossible day, and a
+  -- CHECK that compares to NULL PASSES — so a single comparison would admit '2026-13-01'.
+  CHECK(date(day) IS NOT NULL),
+  CHECK(late = 1 OR substr(sealed_at, 1, 10) = date(day, '+1 day'))
+);
+CREATE INDEX ix_seal_day ON audit_seal(day);
+CREATE INDEX ix_seal_late ON audit_seal(tenant_key, late);
+
+-- 3. The anchor is immutable. A re-seal is a refusal in the app and an ABORT in the database,
+--    because the app is not the only thing that can write this file.
+CREATE TRIGGER trg_audit_seal_immutable BEFORE UPDATE ON audit_seal
+BEGIN
+  SELECT RAISE(ABORT, 'SKW_E_SEC_AUDIT_SEAL');
+END;
+
+PRAGMA user_version = 4;
+COMMIT;
+PRAGMA foreign_keys = ON;
+```
+
+`schema/control.sql` is **regenerated** from `scripts/model/gen_schema.py` with `CONTROL_VERSION = 4` and an
+`audit_seal` spec whose `checks=[…]` are the two table-level CHECKs above verbatim; a `DROP` in a delta file
+and a fresh `CREATE` in the generated file must produce the same `sqlite_master.sql` text, which is what
+check 20 compares. §4.5's chain block gains one step (`v3 --control-r4.sql--> v4`) and §4.6's table gains
+one row: `schema/control-r4.sql` | hand-written | edited only with a check that proves the change.
+
+**Also — `§16 S2` gains one row** (the count after this item, E-21 and E-23 is stated once, in E-23):
+
+```markdown
+| a day sealed on the 20th still verifies after the chain grows on the 21st, while a row tampered inside that day, a row deleted before it, or a truncated segment each refuse with their own reason | `test/audit-seal.test.ts` `B1-1`…`B1-8`; the positive control is `B1-1` and it is the one that was missing |
+```
+
+**Test that must change.** The current suite is not weakened, it is *inverted in one place and replaced in
+another*:
+
+- `test/audit-seal.test.ts` — `A3`/`A5`/`A7` are rewritten for the segment shape (`A5`'s "deleted tail" case
+  becomes a deleted row *inside* the segment, because deleting the tail no longer touches an earlier day's
+  verdict), and `A7`'s idempotence assertion becomes the refusal of (a). Eight new cases:
+  `B1-1` an untouched chain that grew on the next day still verifies for the earlier day (**the positive
+  control** — it must fail against today's code, which is how this item is proved); `B1-2` a row deleted
+  before the segment → `anchor_mismatch`; `B1-3` a row tampered inside the segment → `broken_at`, with the
+  later day's rows deliberately corrupted too and day `D` still green (proves the range bound); `B1-4` a
+  segment truncated on disk → `count_mismatch`; `B1-5` sealing a day that has not ended → `day_not_over`;
+  `B1-6` a second seal → `already_sealed`, the row byte-identical, and a direct `UPDATE audit_seal` refused
+  by the trigger with `SKW_E_SEC_AUDIT_SEAL`; `B1-7` a backfill → `late = 1`, `sealed_at` = the real
+  instant, `first_id`/`last_id` on that day's ids only; `B1-8` the tick reports a gap and writes one
+  `audit_log` row, and does **not** seal it.
+- `test/seal-scheduler.test.ts` — `S2E-18`'s "a second run with the same head is idempotent" becomes "a
+  second run is refused as `already_sealed` and the row is unchanged"; `S2E-21`'s "fails after the chain
+  moves" is the defect stated as a criterion and becomes **two** cases: passes after the chain grows,
+  fails after a row inside the day is altered.
+- `scripts/model/verify_claims.py` check 25 keeps its number and its subject, and gains the assertion that
+  was missing: after appending rows for day `D + 1`, day `D` still verifies; and after deleting a row
+  inside `D`, it refuses. A check that only proves the failing direction is the bug (E-22).
+- `scripts/model/check_frozen.py` — `SUPERSEDED["C-21 seal"]` with `item="E-20"`, the `marker` string, the
+  retired sentence and the replacement, so the C-21 quote check moves with the text instead of failing.
+- `scratch/s2-qa/seal-history.ts` (QA's own probe) is kept as the reproduction: its five verifications
+  become five expected verdicts, and it is the fastest way to see the item is closed.
+
+**Severity: blocker (B1).** This is the integrity anchor of §9.6 shipped in a state where the only way to
+use it accuses an innocent file. It is not a data-exposure defect; it is the control that is supposed to be
+trustworthy after everything else has been rewritten.
+
+---
+
+### E-21 — a `view` source is not anchored to its definition, so re-pointing the view serves another table
+
+**Defect.** `SDS.md` §6.1 and `schema/site.sql`'s `cms_view_registry` (`name`, `checksum`, `created_at`):
+the registry exists, the checksum column exists, and **nothing reads it**. `app/sources/registry.ts:89–100`
+checks that the relation is registered and that it exists, then takes the column allowlist from
+`PRAGMA table_xinfo` — a live read of whatever the view is *now*. `app/sources/resolve.ts` never looks at
+the checksum either.
+
+QA defeated it in one statement (`S2-qa.md` §4 A5): publish a `view` source over `cms_v_posts_public`,
+then `DROP VIEW` + `CREATE VIEW … AS SELECT path AS title, slug FROM cms_page`, and the published source
+**resolves `cms_page` rows** — `[{"title":"/pricing","slug":"pricing"},{"title":"/soon","slug":"soon"}]` —
+with no republish, no audit row and no refusal. The allowlist does not notice, because `path AS title`
+satisfies it. The builder proposed deferring the checksum half to S4 (`S2e` §7 item 2); QA rejected the
+deferral (`S2-qa.md` §7), correctly: the gate is a resolve-time hash of `sqlite_master.sql`, it is writable
+today, and it is the only thing that makes a `view` source an object rather than a name.
+
+The same report measured the sibling hole: the plan, index and budget rules run only
+`if (kind === 'query')` (`app/sources/publish.ts:189–194`), so a `view` source published with an unindexed
+`order` column and an over-large `limit_max` — while §6.2's table said "table/view". E-23 narrows the
+sentence to what is true and adds the one bound a view must still meet (cost); this item supplies the
+anchor that makes the narrowing safe.
+
+**Corrected text — a new `SDS.md` §6.1a, after §6.1's closing paragraph.** No frozen text is replaced and
+**no column is added**, so there is no site.db DDL delta for this item: `cms_view_registry.checksum` already
+exists and `NOT NULL`. A shape CHECK on it would require rebuilding the registry table in the tenant chain
+to buy a property the single writer already guarantees, so it is deliberately not added.
+
+```markdown
+### 6.1a A `view` source is anchored to the definition it was published against
+
+`cms_view_registry.checksum` is `sha256(sqlite_master.sql)` of the view — lower-case hex, 64 characters,
+over the exact text SQLite stores for it, with no normalisation. That text is what the renderer's query is
+planned against, so it is the right thing to hash; normalising it (stripping `CREATE VIEW`, folding
+whitespace) would let two different definitions share a checksum, which is the failure mode a checksum is
+for.
+
+**Verified at publish and at resolve.** At publish, a `view` source is refused when the checksum does not
+match, before the source row is written. At resolve — every `resolveSource` call, not only the first — a
+`view` source's checksum is compared before the allowlist is taken, as step 5a of the resolve order:
+
+    5a. kind = 'view':  sha256(sqlite_master.sql of the relation) == cms_view_registry.checksum
+                        else 422 SKW_E_RT_SOURCE_UNKNOWN, reason = 'view_checksum'
+    5b. every named column is in the allowlist (PRAGMA table_xinfo, read after 5a)
+
+The order matters: 5b reads the live view, so it must not run before the body has been proved to be the one
+that was registered.
+
+**Cached under the schema stamp, so the hash is not per-request.** The schema stamp of a tenant file is
+
+    stamp = PRAGMA user_version || ':' || PRAGMA schema_version
+
+`PRAGMA schema_version` is SQLite's schema cookie: it advances on **every** DDL statement that changes the
+schema, including `CREATE VIEW`, `DROP VIEW`, and a `ALTER TABLE … RENAME` that rewrites a view's body. The
+verdict map is therefore `relation → {stamp, checksum}`: one pragma read and **no hash** when the stamp is
+unchanged, one `SELECT sql FROM sqlite_master` and one sha256 per view when it moved. A cache that could go
+stale is not needed and is not permitted: if the stamp did not move, the stored text did not change.
+
+**What this does and does not defend.** It detects drift between the registered definition and the file —
+a re-pointed view, a dropped and recreated view, a rename that rewrote a view's body. It is not tamper
+evidence against an attacker who owns the file: such an attacker can `PRAGMA writable_schema=ON`, rewrite
+the body and the stored checksum together. That is the job of §9.6's chain and seal, and the two controls
+are complementary by design: the seal covers *rows*, the checksum covers *definitions*.
+
+**The refusal.** `422 SKW_E_RT_SOURCE_UNKNOWN`, `reason = 'view_checksum'`,
+`detail = {relation, registered: <first 16 hex>, found: <first 16 hex>}`, message
+
+    the definition of view cms_v_posts_public is not the one the source was published against;
+    review it and republish the source
+
+No new error code: the source is no longer the object that was published, which is the same class as
+`reason = 'view_missing'` (already a taxonomy refusal, measured in `S2-qa.md` §4 A5), and 422 is the status
+that code already carries. One log line per refusal carrying `requestId`, `tenantKey`, `relation` and both
+digests, rate-limited to one per `(tenant, relation)` per 60 s so a page in a hot loop cannot flood the log
+— and no `detail` on the wire beyond the two digests, so nothing tells an attacker whether they were caught
+or merely mistyped.
+
+**What happens when a DDL op touches a published view.** Views are migration-owned; the DDL AST has no
+`create_view` op and this item adds none. A published view's body can still change by two routes, and both
+are specified rather than left to chance:
+
+1. **Through the DDL runner.** Any statement whose execution changes `sqlite_master.sql` for a relation
+   named by a `view` source — a `DROP`/`CREATE` in a migration, or a table rename that SQLite rewrites into
+   the view's body — must, **in the same transaction** as that statement:
+   (i) recompute and store `cms_view_registry.checksum`;
+   (ii) clear publication of every `view` source over that relation —
+   `UPDATE cms_datasource SET published_at = NULL, is_public = 0 WHERE kind = 'view' AND
+   json_extract(spec_json, '$.view') = :relation` (a `view` source names its relation in `spec.view`, not
+   `spec.table`);
+   (iii) write one `cms_audit` row, `action = 'source.view_redefined'`, `target_kind = 'view'`,
+   `target_id = :relation`, `before_json = {checksum}`, `after_json = {checksum, unpublished: [keys]}`.
+   The next resolve then refuses `reason = 'not_published'` — an existing, tested refusal — and republication
+   re-runs the whole publish gate. A redefinition is therefore never silent: the object changed, so the
+   statement "this source was published" stopped being true, and the app says so in the same transaction.
+   Clearing publication is the point, not a side effect: a checksum refreshed without that would anchor the
+   *new* definition and launder exactly the attack A5 performed.
+2. **Out of band** (a second `sqlite3`, a restored backup, a hand-run migration). The stamp moves, the hash
+   disagrees with the registry, and the next resolve refuses `view_checksum` (above). Nothing is
+   un-published, because nothing trustworthy is running to do it.
+
+A `view` source is also measured at publish like any other: `cost_ms_max ≤ 1.5` applies to both kinds
+(§6.2, E-23). The plan and index rules apply to `query` only, because a view's plan is migration-authored
+and the source cannot change it — the checksum is the view's equivalent of those gates.
+```
+
+**Also — `§16 S2` gains one row:**
+
+```markdown
+| a `view` source is anchored to its definition: re-pointing the view out of band refuses with `reason='view_checksum'` instead of serving another table, a DDL op that changes a published view un-publishes its sources in the same transaction, and the checksum is hashed once per schema stamp, not once per request | `test/sources.test.ts` `V1-1`…`V1-3` |
+```
+
+**Test that must change.** `test/sources.test.ts` gains three cases, and `S2E-5`'s "a column outside the
+allowlist is refused at publish AND at resolve time" keeps its shape with `kind='view'` covered too:
+`V1-1` reproduces A5 exactly — publish over the view, `DROP` + re-`CREATE` out of band, resolve → `422
+SKW_E_RT_SOURCE_UNKNOWN`, `reason='view_checksum'`, zero rows; `V1-2` runs `ALTER TABLE u_posts RENAME TO
+u_posts_2` **through the runner** on a fixture whose view selects from `u_posts`, and asserts (i) the view's
+`sqlite_master.sql` now names `"u_posts_2"` (SQLite rewrote it — measured, not assumed), (ii)
+`cms_view_registry.checksum` moved, (iii) `cms_datasource.published_at IS NULL` for the view source, (iv)
+one `cms_audit` row with both digests, (v) the next resolve refuses `not_published`, and (vi) republishing
+succeeds and resolves; `V1-3` asserts the counter — add `viewChecksumHashes` to the resolver's stats, then
+100 resolves under one stamp increase it by **1** and one DDL increases it by 1 again. Negative control for
+the item: with the step-5a comparison deleted, `V1-1` must go red by *serving rows* — the assertion is on
+the row set, not only on the code, so a test that refuses for another reason cannot pass in its place.
+
+**Severity: major (M1).** A published source is a promise about a relation; without the checksum the
+promise is about a *name*, and one `CREATE VIEW` repoints it.
+
+---
+
+### E-22 — a gate that cannot fail when its mechanism is removed is not a gate
+
+**Defect.** Nothing in `SDS.md` says what makes an acceptance criterion a *gate* rather than a passing test
+that sits near the code, and S2 shipped two gates that cannot witness the check they are named for.
+
+Measured, `S2-qa.md` §3 NC1, on `app/sources/publish.ts` and `app/sources/plan.ts`:
+
+| Mutation | Gate `S2E-1` |
+|---|---|
+| `if (report.scan) refusePlan(...)` → `if (false)` | **`ok 1` — still green** |
+| `culpritColumn` skips its `where` loop | `not ok 1` — the refusal names the wrong column |
+| `refusePlan` **and** `assertIndexedColumns` both disabled | `not ok 1` — refused |
+
+With `refusePlan` disabled, `assertIndexedColumns` throws the same code, the same `detail.column` and a
+`plan` array that still matches `/SCAN/`, so `S2E-1` cannot tell whether `EXPLAIN QUERY PLAN` ran at all. The
+behaviour is still refused and the row's headline check has no witness. The same shape is B1: `S2E-21` and
+`verify_claims.py` check 25 assert only that a moved chain fails, which is true of a legitimate new day —
+both go red on tamper and on Tuesday.
+
+This is not two mistakes in two files, it is one missing rule, and it is the rule that decides whether the
+269-green number means anything.
+
+**Corrected text — a new `SDS.md` §13.1a, inserted between §13.1 and §13.2.**
+
+```markdown
+### 13.1a An exclusive witness for every security gate
+
+A gate is a test that can fail for the reason it is named for and for no other. Three rules, and they apply
+to every acceptance criterion in §16 that names a security control:
+
+1. **Exclusivity.** There is at least one test that goes **red when that gate's own mechanism is disabled**
+   and stays green when a neighbouring check is disabled in its place. If two mechanisms produce the same
+   code, the same detail and the same message, the test cannot tell them apart and it is not a witness for
+   either. Where two checks legitimately overlap — the plan rule and the index rule do — each gets a case
+   the other cannot refuse.
+2. **The mechanism names its witness.** The source comment above the mechanism carries the test's file and
+   its exact name, e.g. `Exclusive witness: test/sources.test.ts S2E-11`. A comment that names a test which
+   has been renamed is a lie the build cannot see, so `test/witness.test.ts` holds one table of
+   `mechanism → {file, test name}`; it asserts that the named test exists in the named file **and** that the
+   mechanism's comment contains the name. Adding a security mechanism without a row there fails the suite.
+3. **A positive control in the same suite.** Every gate that asserts a refusal also asserts the acceptance
+   that the refusal is supposed to be distinguished from: the same input with the offending property removed
+   succeeds. A suite that only asserts refusals cannot tell a working control from one that refuses
+   everything, which is exactly how B1 (§9.6) shipped: every verification of a past day refused, and every
+   test expected it to.
+
+**What a mutation record is.** "The gate was seen to fail" is evidence, not a claim: for each new or changed
+gate the build report records the mutation applied (the exact edited expression), the gate that went red,
+the gate that stayed green, and the file's SHA-256 before and after. This is the method `S2-qa.md` §3 used;
+it becomes the Builder's obligation rather than the reviewer's discovery.
+```
+
+**Applied to the SCAN refusal — the mechanism, the shape, and the witness.** Two changes in
+`app/sources/plan.ts`, both required by rule 1 because the two checks currently emit an identical detail:
+
+- `refusePlan` adds `reason: 'plan_scan'` and `role: 'plan'` to its `detail`; `assertIndexedColumns` keeps
+  `role: 'where' | 'order' | 'group_by'` and never emits `reason`. The two refusals become distinguishable
+  by shape, which is what lets a test name one of them.
+- A case the index rule **cannot** refuse: every `where`/`order`/`group_by` column is indexed and the plan
+  still contains `SCAN`. Measured on SQLite 3.53.1 against the S2 fixture: a single
+  `where: [{col: 'status', op: '!=', param: 'status'}]` over the indexed `status` column plans as
+  `["SCAN u_posts"]` — an inequality does not start a `SEARCH` — so `assertIndexedColumns` passes and only
+  `refusePlan` can refuse. A second, independent instance of the same shape is `order` on an indexed column
+  with no `where` at all: `["SCAN u_posts USING INDEX ix_posts_published_at"]`.
+- In that case there is no culprit column to name: `culpritColumn` skips every indexed `where`/`order`/
+  `group_by` column and falls through to `spec.columns[0]`, so the operator would be told
+  `column "title" has no usable index` — false, and pointing at the wrong thing. So: when `scan` is true and
+  no `where`/`order`/`group_by` column is unindexed, `culpritColumn` returns `null`, `refusePlan` sets
+  `detail.column = null`, and its message becomes
+
+      the plan for source u_posts contains SCAN although every referenced column is indexed;
+      the predicate does not start a SEARCH
+
+  A null column is a fact, not a gap: the plan is the evidence, and the fix is the predicate, not an index.
+
+Both mutations then have a witness, and neither test can pass in place of the other:
+
+| Mechanism disabled | `S2E-1` | `S2E-11` |
+|---|---|---|
+| `refusePlan` | green — `S2E-1`'s own spec is refused by the index rule | **red** — the source publishes |
+| `assertIndexedColumns` | **red** — "an unindexed filter column must be refused" | green (the index rule never refuses this spec) |
+
+**Test that must change.** `test/sources.test.ts` gains `S2E-11. a plan-only SCAN is refused even when every
+column it names is indexed, and the refusal names the plan (exclusive witness for refusePlan)` — it asserts
+`detail.reason === 'plan_scan'`, `detail.role === 'plan'`, `detail.column === null`, `detail.plan` matching
+`/SCAN/`, the message quoted above, and that the publish wrote **zero** `cms_datasource` rows. The `status`
+column is indexed in the
+fixture, which the test asserts explicitly, so the case cannot silently degrade into `S2E-1`. New
+`test/witness.test.ts` with the `WITNESSES` table seeded from the mechanisms that exist today —
+`refusePlan → S2E-11`, `assertIndexedColumns → S2E-1`, `verifyAgainstSeal → B1-1`/`B1-3`,
+`isPublic → S2E-4`, `previewTokenStatus → S2E-12`, `writeSeal → B1-6`, `viewChecksum → V1-1` — and an
+assertion that each named test exists. Negative control: rename `S2E-11` in the test file without touching
+`plan.ts` and `test/witness.test.ts` must go red, which proves the comment-to-test link is checked and not
+decorative.
+
+**Also — `§16 S2` row 5's gate cell is replaced** (no row is added; the subject is already that row):
+
+```markdown
+| a `query` source with a `SCAN` in its plan is refused at publish | `test/sources.test.ts` `S2E-1` (the index rule) **and** `S2E-11` (the plan rule). `S2E-11` is the exclusive witness: every column indexed, the plan still `SCAN`, refused with `detail.reason='plan_scan'`; disabling `refusePlan` leaves `S2E-1` green and makes `S2E-11` red |
+```
+
+**Severity: major (gate).** Two dead gates passed a review that ran 269 tests; the rule is what makes the
+next 269 mean something.
+
+---
+
+### E-23 — §16 S2 is eight rows of eleven, and §6.2's "re-checked at render" is true of one rule
+
+**Defect.** Two register failures, both measured in `S2-qa.md` §2 and §6.
+
+**(M2 / D2 — the rows are missing.)** Errata checklist item 12 (§7 above) requires three new `§16 S2` rows
+and they were never pasted: §16 S2 has **8** rows, not 11, and `grep -n "Amended by 02-errata" docs/sds/SDS.md`
+returns **0** pointers for E-16..E-19 against **14** for E-1..E-15. None of `SKW_E_SEC_AUTH_INVALID`,
+`SKW_ADMIN_ALLOWLIST`, `SESSION_ABSOLUTE_MS` or `skwctl admin bootstrap` appears in the SDS at all. The gates
+exist and are green — QA ran them (§2.1 of that report) and judged all three **PASS** — so the product is
+right and the register is wrong, which is the failure mode that makes a register worthless one slice later.
+The errata's own text also says "add the **four** §16 rows below" and then lists three; it is three.
+
+**(M4 / D4 — the sentence overclaims.)** §6.2 says "Rules, all enforced at publish and re-checked at
+render", and its table is introduced under a `query` heading while the first row says "table/view". Measured:
+`app/sources/resolve.ts` re-checks the **column allowlist only**; the plan, index and budget rules run at
+publish (`publish.ts:189–194`) and only `if (kind === 'query')`, so a dropped index or a re-pointed view
+serves without republication. A builder reading §6.2 implements three checks at render that the SDS does not
+require and the page budget cannot afford; a reviewer reading it believes a re-check that does not happen. The
+honest sentence is narrower and stronger because each rule now names the moment it is enforced.
+
+**(Carried — the row whose gate does not exist.)** §16 S2 row 3's gate cell names `ddl.test.ts` over a
+19-statement corpus. There is no `test/ddl.test.ts` in S2, and the 19-statement corpus belongs to the write
+validator (§10, S4). The behaviour is gated — `test/ddl-runner.test.ts` `O2.` refuses
+`ADD COLUMN … NOT NULL` with no default on a connection whose `open` throws if it is called, and `O3.` refuses
+`DROP COLUMN` on an indexed column with `rebuild_required` — so the cell is corrected rather than the row.
+
+**Corrected text — drop-in for `SDS.md` §16 S2's table, replacing all eight rows with eleven.** The three
+added rows are §7's, verbatim; row 3's and row 5's gate cells are replaced by this item and by E-22. With
+E-20's and E-21's rows pasted in the same pass the table is **thirteen** rows, and the count of amendments to
+§16 S2 is five, not three — stated here so the numbers in this file and in `SDS.md` agree on the day it is
+pasted.
+
+```markdown
+| Acceptance criterion | Gate |
+|---|---|
+| every non-GET without a valid CSRF token is `403 SKW_E_SEC_CSRF` | 12-case suite |
+| `Origin` mismatch on a non-GET is `403` | same |
+| the DDL AST refuses the two statements SQLite refuses, before any SQL | `test/ddl-runner.test.ts` `O2.` (the connection's `open` throws if called, so no SQL ran) and `O3.` (`rebuild_required`); no `test/ddl.test.ts` exists and none is created |
+| a `u_*` table with an `asset_key` gets its guard trigger in the same transaction | schema assertion after the runner |
+| a `query` source with a `SCAN` in its plan is refused at publish | `test/sources.test.ts` `S2E-1` (the index rule) **and** `S2E-11` (the plan rule). `S2E-11` is the exclusive witness: every column indexed, the plan still `SCAN`, refused with `detail.reason='plan_scan'`; disabling `refusePlan` leaves `S2E-1` green and makes `S2E-11` red |
+| two parameter sets inside one TTL return their own rows | cache test, both orders |
+| a preview token is accepted only for `status='draft'`, 30 min, `no-store` | O-29 test |
+| `SKW_SCHEMA_EDIT=off` hides the builder entirely | UI assertion, no disabled control |
+| a fresh seeded `control.db` and nothing else yields exactly one operator, and a TOTP code from the printed enrolment URI logs in | `test/cli-bootstrap.test.ts`, end to end through the login route |
+| a second bootstrap writes nothing: exit 3, and `password_hash` / `totp_secret` / `must_change` are byte-identical | same suite, idempotence case |
+| no TOTP secret or password reaches stdout, `audit_log`, `BUNDLE.json` or `control.seed.json` | grep assertion over the four artefacts |
+```
+
+**Corrected text — drop-in for `SDS.md` §6.2, replacing the sentence "Rules, all enforced at publish and
+re-checked at render:" and the table beneath it.**
+
+```markdown
+**Rules, and the moment each one is enforced.** Two rules run at both publish and render, because both read
+something that can change under a published source: the **column allowlist** (a table can be rebuilt between
+publish and resolve) and a `view` source's **definition checksum** (§6.1a). Everything else runs at publish
+only, because everything else describes a *plan* or a *measurement* of the spec — re-planning and
+re-measuring on every render would put `EXPLAIN QUERY PLAN` and a 200-run measurement inside the page budget
+to re-learn a fact that only a DDL op can change. "Re-checked at render" in this document means exactly the
+two rows marked **both**, and no other rule may claim it.
+
+| Rule | When | Applies to | Failure |
+|---|---|---|---|
+| every referenced column exists in the relation's allowlist | publish **and** render | `query`, `view` | `422 SKW_E_RT_SOURCE_UNKNOWN` |
+| a `view` source's `cms_view_registry.checksum` equals the view's `sqlite_master.sql` hash | publish **and** render | `view` | `422 SKW_E_RT_SOURCE_UNKNOWN`, `reason='view_checksum'` (§6.1a) |
+| every `where`/`order`/`group_by` column is indexed | publish only | `query` | `422 SKW_E_RT_SOURCE_UNINDEXED` |
+| `EXPLAIN QUERY PLAN` contains `SEARCH` and no `SCAN` | publish only | `query` | `422 SKW_E_RT_SOURCE_UNINDEXED`, `reason='plan_scan'` |
+| `cost_ms_max ≤ 1.5` (worst of 200 measured runs) | publish only | `query`, `view` | `422 SKW_E_RT_SOURCE_BUDGET` |
+| `order` only on declared **and indexed** columns | publish only | `query` | `422 SKW_E_RT_SOURCE_UNINDEXED` |
+| `group_by` ≤ 2 columns | publish only | `query` | `422 SKW_E_RT_SOURCE_BUDGET` |
+| `limit` clamped to `limit_max`, and a non-integer `limit` is refused, never ignored | publish **and** render | `query`, `view` | silently clamped with `data-truncated`; a non-integer is `422 SKW_E_RT_SOURCE_UNKNOWN`, `reason='param_invalid'`, `detail.param='limit'` |
+| values are bound parameters, never interpolated | structural | both | a bug, not a refusal — `compile.ts` has no string concatenation |
+
+**Why a `view` source is not planned or index-checked, and why that is not a hole.** A view's plan is
+migration-authored: the source cannot change it, the operator did not write it, and it was reviewed when the
+migration that created it was reviewed. What a source *can* silently change is which definition it is
+reading, and that is the checksum's job (§6.1a). The cost bound still applies to both kinds, because cost is
+the page's problem whoever wrote the query. The old phrasing "table/view" on the plan and index rows was true
+of neither kind's mechanism and is deleted rather than widened.
+
+**A `limit` that is not an integer is refused, not ignored.** `data-limit` is an HTML attribute and therefore
+always a string; a resolver that accepts `'5'` for one caller and drops it for another is a rule with two
+answers. The clamp is `Math.floor` on a number, and anything else is `param_invalid` (§6.3's `list` is the
+first caller that will produce it).
+```
+
+**Test that must change.** No new behaviour except the `limit` coercion, which is `D5` made a rule:
+`test/sources.test.ts` gains one case — `limit: '5'` → `422 SKW_E_RT_SOURCE_UNKNOWN`,
+`reason='param_invalid'`, `detail.param='limit'` — the same code, reason and detail every other invalid
+parameter already produces (`compile.ts:63,73,81,96,141`), which is why this is a code fix and not a taxonomy
+change; `limit: 2.7` → floors to 2, as today. The `view`-kind rows are already covered by
+`V1-1`/`V1-2` (E-21) and a publish-time cost case for a view source (a view with a deliberately expensive
+body → `SKW_E_RT_SOURCE_BUDGET`). For the register half, `scripts/model/check_frozen.py` gains a **second
+phase**, because the gate it runs today compares quotes and cannot see a missing row — which is precisely why
+`make test` was green with E-16..E-19 absent:
+
+```python
+# 02-errata's checklist claims these; a quote check cannot see a missing row or a missing table.
+S2_ROWS = 13
+S2_REQUIRED = (
+    "a fresh seeded `control.db` and nothing else yields exactly one operator",
+    "a second bootstrap writes nothing",
+    "no TOTP secret or password reaches stdout",
+    "a day sealed on the 20th still verifies after the chain grows on the 21st",
+    "a `view` source is anchored to its definition",
+)
+# every item that must have landed a pointer line in SDS.md
+POINTERS = tuple(f"E-{n}" for n in range(1, 24))
+```
+
+and it fails naming the missing row, the missing string or the missing pointer. **`POINTERS` is the whole
+list, not this section's four** — the point of the check is that a pointer cannot be forgotten in the next
+pass either.
+
+**Severity: major (process).** A slice whose acceptance table is eight rows of thirteen, in a document that
+says "a slice is done when its gate is green in CI", is a slice that will be declared done at the wrong size.
+
+---
+
+## 9. Builder checklist for the S2 fix — ordered, each item naming the file and the gate that proves it
+
+Same shape as §4 and §7. **The order is the dependency order, not the severity order.** E-20's DDL comes
+first because every other seal item is written against the new column set, and a sealer built against the old
+one would be rewritten. E-21 comes before E-23 because §6.2's corrected table cites `§6.1a`, and a document
+that cites a section that does not exist yet is the defect this errata is here to stop repeating. E-22 comes
+before the new gates are *credited* rather than before they are written: it defines what "gated" means, and
+its witness table cannot be filled until the tests it names exist.
+
+| # | Item | Files | Gate that proves it |
+|---|---|---|---|
+| 1 | **E-20** schema v4: `audit_seal` rebuilt as a segment, the immutability trigger, the two table CHECKs; regenerate `control.sql` | `scripts/model/gen_schema.py` (`CONTROL_VERSION = 4`, the `audit_seal` spec), `schema/control.sql` (regenerated), `schema/control-r4.sql` (new) | `test/migrate.test.ts` — a v1 control.db migrates through r2/r3/r4 to v4, `audit_seal` has the nine columns and the trigger, and check 20's `sqlite_master.sql` comparison finds the migrated file identical to the generated one |
+| 2 | **E-20** the sealer: segment scan, contiguity / `anchor_missing` / `day_not_over` / `chain_broken` refusals, `late` computed from the seal instant | `app/audit/chain.ts` (`writeSeal`, `sealNow`, `readSeal`, `SealRow`) | `test/audit-seal.test.ts` `B1-5` (`day_not_over`), `B1-6` (`already_sealed`, row byte-identical, direct `UPDATE` aborted by the trigger), `B1-7` (backfill: `late=1`, real `sealed_at`, that day's ids) |
+| 3 | **E-20** the verifier reads only `[first_id, last_id]`; `--chain` is the whole-file walk; `SealVerification` becomes a segment report | `app/audit/chain.ts` (`verifyAgainstSeal`, `verifyChain`), `app/cli/skwctl.ts` (`audit verify`) | `test/audit-seal.test.ts` `B1-1` (the positive control: grew by a day, still verifies), `B1-2` (anchor mismatch), `B1-3` (tamper inside, later day also corrupted, day `D` still green), `B1-4` (count mismatch) |
+| 4 | **E-20** the tick: no idempotence, the gap scan, one `audit_log` row per tenant-day gap, the health field | `app/audit/scheduler.ts` (`sealDay`), `app/main.ts` (health payload) | `test/seal-scheduler.test.ts` — `S2E-18` rewritten (a second run is `already_sealed` and changes nothing), `S2E-19` kept, `S2E-21` split into "passes after the chain grows" and "fails after a row inside the day is altered"; `B1-8` (gap reported, one `audit_log` row, **not** sealed) |
+| 5 | **E-20** the operator surface: `audit status`, `seal --heal`, distinct refusal names, exit codes | `app/cli/skwctl.ts` | new `test/cli-audit.test.ts` — the three status lines (`sealed` / `UNSEALED` / `empty`), exit 0 vs 1, `--heal` writing `late=1` for every gap with one `audit_log` row each, and `REFUSAL: AUDIT_SEAL_UNSEALED` vs `REFUSAL: AUDIT_SEAL_MISMATCH` as distinct strings |
+| 6 | **E-20** the claims gate: check 25 gains the direction it never tested; `check_frozen.py` gains the C-21 `SUPERSEDED` entry | `scripts/model/verify_claims.py`, `scripts/model/check_frozen.py` | `make verify-claims-modern` 27/27 — check 25 asserts both that a grown chain still verifies for the earlier day **and** that a row deleted inside it refuses; `make test` green, which proves the retired C-21 sentence is absent and its replacement present |
+| 7 | **E-21** the checksum: written at publish, verified at resolve as step 5a, cached under `user_version:schema_version` | `app/sources/publish.ts`, `app/sources/registry.ts` (the `view` branch and the stamp-keyed verdict map), `app/sources/resolve.ts` | `test/sources.test.ts` `V1-1` (A5 reproduced: re-point out of band → `422`, `reason='view_checksum'`, zero rows), `V1-3` (`viewChecksumHashes` +1 per schema stamp, not per resolve) |
+| 8 | **E-21** the DDL postcondition: a changed view body refreshes the checksum, un-publishes its sources and writes one `cms_audit` row, all in the same transaction | `app/ddl/run.ts` (the postcondition), `app/sources/registry.ts` | `V1-2` — the rename rewrote the view body, the checksum moved, `published_at IS NULL`, one audit row, next resolve `not_published`, republish resolves; plus a `view` cost case → `SKW_E_RT_SOURCE_BUDGET` |
+| 9 | **E-22** distinct refusal shapes and the witness comments | `app/sources/plan.ts` (`refusePlan` gains `reason:'plan_scan'`, `role:'plan'`; both functions' comments name their test) | `test/sources.test.ts` `S2E-11` — the indexed-column-but-SCAN case, refused with `reason='plan_scan'`, zero `cms_datasource` rows, and `status` asserted indexed so the case cannot degrade into `S2E-1` |
+| 10 | **E-22** the witness table | new `test/witness.test.ts` | itself: every `mechanism → {file, test}` row names a test that exists and a comment that contains the name; renaming `S2E-11` alone turns it red |
+| 11 | **E-23** paste every drop-in with its pointer line; §16 S2 to 13 rows; §6.2's table replaced; `check_frozen.py`'s second phase | `docs/sds/SDS.md`, `scripts/model/check_frozen.py` | `make test` — the quote phase (no retired sentence present, every replacement present) **and** the completeness phase (`S2_ROWS = 13`, the five required strings, every `POINTERS` entry) |
+| 12 | **Evidence** the mutation record for items 1–11 | `docs/build/S2-fix.md` | one row per gate: the edited expression, the gate that went red, the gate that stayed green, SHA-256 before/after; plus the five negative controls of `S2-qa.md` §3 re-run and all five red |
+
+**Definition of done for the S2 fix.** `make test`, `make verify-s1` and `make verify-claims-modern` green
+after items 1–12, on both interpreters (§16's preamble), with:
+
+- **`B1-1` shown red against `b1aec3e` and green after item 3.** It is the only test that proves the blocker
+  is closed, and it is the one test the old suite cannot contain.
+- **Every new gate shown red under its named mutation** — `refusePlan` → `S2E-11`; the step-5a comparison →
+  `V1-1`; `writeSeal`'s `already_sealed` branch → `B1-6`; the range bound in the verifier → `B1-3`;
+  the postcondition in `run.ts` → `V1-2`. A green suite whose new gate has not been seen to fail is not
+  evidence (§13.1a).
+- **The five hashes of `S2-qa.md` §10 unchanged**, so the proof that nothing else moved is the same proof QA
+  used.
+- **§16 S2 counted, not eyeballed**: 13 rows, and `grep -c "Amended by 02-errata" ` no longer returns 14 for
+  15 items — E-20..E-23 land four pointers of their own.
+
+**Not in this fix, and why.** `D6` (a raw `SQLITE_ERROR` on out-of-band column drift) is a resolver
+catch-all with no specification question — §6.2's allowlist is already the intended detector and
+`SKW_E_RT_SOURCE_UNKNOWN` the intended code — so it is queued for S3's error-surface work rather than
+written into a sentence it does not need. `D10` (§17 claims S2 proof for O-17, O-30 and C-23, none of which
+exists) is a register correction that belongs with the §17 pass, not with this one; it is recorded as open in
+§10 below so it cannot be lost. `D5`'s `limit` coercion is **in** this fix (E-23), because the `list`
+component in S4 will produce it on day one and a silently ignored parameter is a rule with two answers.
+
+---
+
+## 10. Traceability — E-20..E-23 to the S2-QA finding each closes
+
+| E | Closes | Source (verified in this pass) | Severity |
+|---|---|---|---|
+| E-20 | **B1** — a seal older than the latest audit row can never verify; the backfill records the next day's rows; both gates test only the failing direction | `S2-qa.md` §5.3 (five verifications), §5.2 (the backfilled `rows=2`), §9 (the week-one failure), §6 B1; `app/audit/chain.ts:197–215, 218–231, 252–277`; `test/seal-scheduler.test.ts` `S2E-21`; `scripts/model/verify_claims.py` check 25 | blocker |
+| E-21 | **D1 / M1** — `cms_view_registry.checksum` is written and never read, so a re-pointed view serves another table through a published source | `S2-qa.md` §4 A5 (the resolved `cms_page` rows), §6 D1, §7 item 2 ("**Reject the deferral**"); `app/sources/registry.ts:89–100`; `schema/site.sql` `cms_view_registry` | major |
+| E-22 | **D3 / M3** — the SCAN refusal has no exclusive witness; disabling `refusePlan` leaves `S2E-1` green; and the general rule whose absence made that invisible | `S2-qa.md` §3 NC1 (the three mutations), §2 row 5, §6 D3 | major (gate) |
+| E-23 | **D2 / M2** — E-16..E-19 never pasted; §16 S2 has 8 rows of 11; 0 pointers against 14 — and **D4 / M4** — §6.2's "re-checked at render" is true of the column allowlist alone, and "table/view" is true of neither mechanism | `S2-qa.md` §2 (8/8 PASS and the 8-row tally), §2.1 (the three gate rows, adjudicated PASS), §6 D2/D4, §7 | major (process) |
+| — | **carried, not separate items:** C-21's adopted sentence retired (inside E-20); E-18's "no `control-r4.sql` exists" amended (inside E-20); §16 S2 row 3's non-existent `ddl.test.ts` corrected (inside E-23); §16 S2 row 5's gate cell replaced (inside E-22); `check_frozen.py`'s `SUPERSEDED` entry and its completeness phase (inside E-20 and E-23) | E-20, E-22, E-23 above | — |
+| — | **declined — not a defect:** `D7`, "`scratch/s2d/` and `scratch/s2e/` are said to be uncommitted and are committed". It is a sentence in a **build report**, not in the SDS: no contract, no control, no gate depends on it, and correcting it changes nothing a Builder or a reviewer would do differently. The reports are evidence, and errors in evidence are corrected by the next report | `S2-qa.md` §6 D7 | none |
+| — | **declined — not a defect:** `D9`, "CI has never run". A fact about the pipeline's provisioning, not about any sentence in the specification. It is carried as the S1 gate finding G4 and is closed by running the workflow once, not by an errata item — and this pass cannot make a workflow run | `S2-qa.md` §6 D9, §1 | none (carried) |
+| — | **declined — not a defect:** "no S2 shell calls `data.source`, so publish→page→rows has no end-to-end gate". True, and not a specification gap: no §16 S2 criterion claims a template consumer, §6.3 puts the `list` component in S4, and this errata does not invent an S2 integration to make a diagram look complete. It is recorded in §16 S4's scope as the first consumer, where it already is | `S2-qa.md` §4 A3 note, §8 | none |
+| — | **not a new item — already specified:** `D8`, "no session sweeper". E-18 already requires one in writing ("the sweeper deletes a row when either deadline has passed, and deletes a revoked row once the cap has passed"), so this is a build gap against frozen text, not a specification gap; S2b's checklist item 3 is where it is proved | `S2-qa.md` §6 D8; E-18 above | minor (build) |
+| — | **open, not closed here:** `D6` (a raw `SQLITE_ERROR` when a `query` source's table loses a column out of band — a 500 on a public render) is a resolver catch-all, queued for S3's error-surface work; `D10` (§17 attributes S2 proof to O-17, O-30 and C-23) is a register correction belonging to the §17 pass | `S2-qa.md` §4 A5b, §2.1, §6 D6/D10 | minor |
