@@ -431,3 +431,467 @@ docker build -t skw-runner:qa runner
 Artifacts: `scratch/s4-qa/` (logs, JSON probes, the bundle, the cold install, the three export
 trees, mutation backups). No product file is modified; `git status` shows only the builder's
 untracked `docs/build/STATUS.md` and this scratch directory.
+
+---
+---
+
+# S4 QA — Round 2
+
+**Verdict: NO-GO**, narrowly. **All five round-1 blockers are genuinely closed** — I reproduced each
+one, and every gate I broke went red and the file came back byte-identical. The trust surface is
+real and resisted **7 of 7** attacks, including a genuine fingerprint-prefix collision. The 566-test
+gate is green three times, `verify-dist` is 6/6, and the leak audit is clean.
+
+The two things that stop a GO are both in the **newest** work, and both are claims of closure that
+do not survive being used:
+
+1. **§8.5's revocation clause has no implementation of the action.** The spec names
+   `data/trust/revoked.json`; nothing reads it, nothing writes it, and `skwctl` has no `revoke`
+   verb. The table the code does read (`cms_plugin_revoked`) has exactly one writer in the tree —
+   `test/plugin-host.test.ts:217`, a gate. An operator who revokes a package root, exactly as §8.5
+   instructs, gets a silent no-op and the revoked build **installs**.
+2. **E-29/E-30 are drafted, not applied.** `docs/sds/02-errata.md` §13 is written and good; the
+   builder items that amend `docs/sds/SDS.md` have not run — the file has not changed since
+   `18bb785` — so the specification of record still states the rule that produced round 1's dead
+   first boot (§12.5/:2220/:2222/:2256), still says a package "cannot starve the host"
+   (§8.4/:1443, §13.3/:2354), carries no `Amended by 02-errata.md E-29/E-30` pointer, and
+   `POINTERS` is still `range(1, 24)` (`scripts/model/check_frozen.py:206`). The final report's
+   table cites `make verify-frozen` as the gate for this, and `verify-frozen` does not check it.
+
+**Tree:** `ccedc82`. `git status --short` after every mutation and restore: `?? scratch/s4-qa2/` —
+**no tracked file modified**, nothing committed.
+**Date:** 2026-10-21, 06:48–07:10 AEDT. **Box:** macOS 15.7.4, 8 CPUs, Docker 29.7.2 (1.54 GB VM),
+node 22.23.1. Load average 11–36 throughout; every timing below is labelled with that.
+
+---
+
+## R2-1. The gate, three times — plus `verify-dist` alone and the perf guard
+
+`/usr/bin/time -p make test`, full output captured. Logs `scratch/s4-qa2/make-test-{1,2,3}.log`;
+exit codes in `scratch/s4-qa2/exits.txt`. Counts are the TAP summary, not a grep of `ok` lines.
+
+| run | tests | pass | fail | skipped | exit | wall |
+|---|---|---|---|---|---|---|
+| 1 | 566 | 566 | 0 | 0 | **0** | 218.55 s |
+| 2 | 566 | 566 | 0 | 0 | **0** | 183.15 s |
+| 3 | 566 | 566 | 0 | 0 | **0** | 203.51 s |
+
+`make verify-dist` alone: **6/6, exit 0, 6.06 s** (`scratch/s4-qa2/verify-dist.log`), D1–D6 each
+printing what it executed (boot, page, download, migrate, skwctl, nginx_gen).
+
+`make test-perf`: **REFUSED, exit 2** (`scratch/s4-qa2/test-perf.log`):
+
+```
+make test-perf: PERFORMANCE GATE — wall-clock assertions, not correctness
+  box: 8 cpus, 1-min load average 11.73
+  REFUSED: load 11.73 on 8 cpus — this box is oversubscribed …
+make: *** [test-perf] Error 2
+```
+
+So the perf gate **did not run** and none of its numbers can be quoted as a pass — same as round 1,
+and the builder's own §10.5 lists it as still needing an idle box. `SKW_ALLOW_SKIP` and
+`SKW_SKIP_DOCKER` were never set; a skip is a failure in this suite and none was reported.
+
+**Count claim checked:** 566, three times, matching the final report. (§10.6's artifact note calls
+`scratch/s4f/make-test.log` "the 565 run" — a stale filename, not a claim about this tree.)
+
+---
+
+## R2-2. The five round-1 blockers — each reproduced, not read
+
+| # | round-1 blocker | how I verified it this round | result |
+|---|---|---|---|
+| 1 | a cold install's nginx cannot start; `cert_state` claims `issued` | cut a CMS bundle from a tenant whose control plane said `issued`; installed into an empty dir; `docker compose up` four services; HTTPS GET through nginx; `openssl s_client` for the peer; read `cert_state` from the installed control.db | **CLOSED** |
+| 2 | no product code calls a plugin | `test/plugin-composed.test.ts` alone: 4/4, 7.34 s; C2 is a real `GET /_plugin/notes/list` answered 200 with the row the host read from `site.db` inside the container | **CLOSED** |
+| 3 | the runner has no memory cap | my own container, shipped flags, 4 GiB hoard | **CLOSED** |
+| 4 | §16 S4 row 2: two `[data-repeat]` children accepted | production `savePage()` on a two-child document, and on a one-child control | **CLOSED** |
+| 5 | no uninstall / no clean tenant | data-bearing uninstall through `skwctl`, then a full tenant census | **CLOSED** |
+
+### 2.1 First boot over HTTPS, honest `cert_state` — `scratch/s4-qa2/transcript.log`
+
+Bundle: seed hosts both `cert_state: none`; **0** `.crt`/`.key` in the bundle; every tenant block
+`listen 80; listen 443 ssl;` naming `<host>.crt`. Install minted `acme.test` + `default` pairs into
+`<data>/certs` (keys 0600). `compose up`: `acme`, `app`, `nginx`, `plugin-runner` all Up. Then:
+
+```
+HTTP/1.1 200 OK
+Server: nginx/1.31.7
+<!DOCTYPE html> … <h1>acme pricing</h1>
+--- certificate ---
+subject= /CN=acme.test
+issuer= /CN=acme.test
+SAN: DNS:acme.test,DNS:www.acme.test
+--- cert_state in the installed control plane ---
+{ host: 'acme.test', cert_state: 'none' }
+--- acme log ---
+acme: pass failed: connect ECONNREFUSED 127.0.0.1:9
+```
+
+Both facts true at once: a certificate answers on 443, and the control plane does **not** claim a CA
+issued it. `nginx -t` against the generated conf plus the minted certs: *syntax is ok / test is
+successful*. Independently, the suite's T1–T5 passed in all three runs, including T5 against Pebble.
+
+**One defect this surfaced, minor and uncovered** — see R2-6.6: the *generated conf's comment* still
+says `# certificate: issued` on a bundle whose seed says `none`.
+
+### 2.2 A plugin through the composed stack
+
+`test/plugin-composed.test.ts` alone: `4/4 pass`, 7.34 s. C1 asserts the two-container shape and the
+bound socket; C2 is an HTTP request to the app container answered `200 application/json` with
+`{"rows":[{"body":"written-before-the-request"}],"count":1}` — the row read by the host from the
+tenant database inside the invoke the HTTP request started; C3 is a POST that writes through the
+host and is then found in `site.db`; C4 is the 404 after uninstall.
+
+### 2.3 The runner memory bound, by hand — `scratch/s4-qa2/memhoard-probe.sh`
+
+Own container, flags copied from `docker-compose.yml`, `skw-runner` built from `runner/`:
+
+```
+Memory=402653184 MemorySwap=402653184 PidsLimit=64
+memory.max=402653184
+idle: 20.68MiB / 384MiB
+4 GiB request:
+{"ok":false,"plugin":"memhoard","code":"SKW_E_PL_OOM",
+ "message":"plugin memhoard was killed at the runner's 384 MiB cgroup while running hold"}
+memory.peak=402653184
+Running=true OOMKilled=true ExitCode=0      # the container is alive; the child that died was restarted
+250 ms later: {"ok":true,"result":{"requested_mb":8,"held_mb":8,"rss_mb":48}}
+JS-object hoard: {"ok":false,"code":"SKW_E_PL_OOM", … "while running holdObjects"}
+```
+
+The ceiling is real, `memswap_limit` equals it, the host is out of the blast radius, and the package
+answers on the next request. §8.4's sentence is now true *by the cgroup*, not by assertion.
+*(Observability nuance, not a defect: `OOMKilled=true` is set on the container even though
+`Running=true` — a dashboard reading that flag will report a dead runner that is not dead.)*
+
+### 2.4 The repeat validator, and its teeth
+
+`node scratch/s4-qa2/two-repeat.mts` → `REFUSED a list has 2 [data-repeat] children; exactly one
+repeat template is allowed`; the one-child control → `ACCEPTED` with `items.list` position 0.
+
+Mutation `app/editor/model.ts:183` `if (rows.length > 1)` → `if (rows.length > 1 && false)`:
+`test/editor-save.test.ts` **exit 1, 11 pass / 1 fail**, `not ok 7 - S6b …`. Restored:
+`321588b073cf6a00bbf54e6f52241fba9cf747ad8d0c6f66fc5d5887d7fa8294` before = after, gate back to
+**12/12**. (Hash matches the builder's own §6 row 5.)
+
+### 2.5 Uninstall leaves a clean tenant
+
+Signed install, then 2 rows and 2 settings written into `p_notes_note`/`cms_plugin_setting` (one of
+them `secret: true`), then `skwctl plugin uninstall notes`:
+
+```
+plugin: uninstalled id=notes version=1.0.0 root=cf4e41d1… tables=p_notes_note(2) settings=2
+archive … notes-1.0.0-….json (0600; table-scoped, restore by hand)
+```
+
+Archive: `format skw-plugin-archive/1`, rows `["first-row","second-row"]` in order, settings
+`[{"key":"api_token","secret":true,"value_json":null},{"key":"signature",…,"value_json":"\"sig-value\""}]`,
+and the literal secret value **absent from the file** (`contains('super-secret-token') → false`).
+Tenant census after: `installed 0, registry 0, migration 0, settings 0, p_* tables 0, asset triggers
+0`; `data/plugins/` empty; archive 0600.
+
+---
+
+## R2-3. The trust surface, attacked seven ways — `scratch/s4-qa2/trust-attacks.{mts,log}`
+
+Every attack is driven through the shipped `skwctl` and the shipped `tools/plugin_sign.ts`; nothing
+re-implements the verifier. Each row snapshots the tenant (installed row, plugin tables, audit count,
+`publishers.json` sha256, plugin tree hash) before and after; *state* = that whole snapshot is
+byte-identical. Full text in `scratch/s4-qa2/trust/attacks.json`.
+
+| # | attack | exact refusal | exit | state |
+|---|---|---|---|---|
+| i | edit a file after signing | `SKW_E_PL_SIGNATURE: the package was edited after it was signed: index.mjs` | 1 | unchanged |
+| ii | edit `plugin.json` | `… edited after it was signed: plugin.json` | 1 | unchanged |
+| ii-b | *widen* the grant in `plugin.json` (add `store.delete`) | `… edited after it was signed: plugin.json` | 1 | unchanged |
+| iii | **add** a file | `… edited after it was signed: extra.mjs was added` | 1 | unchanged |
+| iv-a | signature swapped between two builds of one `id@version` | `… edited after it was signed: plugin.json` (the differing file named) | 1 | unchanged |
+| iv-b | signature swapped between two plugin ids | `the signature is for echo@1.0.0 but the package is notes@1.0.0` | 1 | unchanged |
+| v | `--allow-unsigned` | without the flag: `notes is not signed by any key this install trusts; pass --allow-unsigned to install it anyway (the install is audited as unsigned)`. With it: banner printed twice, row `publisher=unsigned, fingerprint=null, signature_state=unsigned`, audit `"allow_unsigned":true` | 1 / 0 | changed **by design**, audited |
+| vi | replace a trusted publisher key silently | `acme-labs is already imported as spki-sha256:b5f39950…6541; this key is spki-sha256:e92f6a03…babf — re-run with --replace to revoke the old key`; store sha `8e7ea4b9c5b95c06` unchanged. `--replace` then succeeds (positive control) | 1 | trust file unchanged |
+| vii | a key colliding in **fingerprint prefix only** | trusted `b5f3…`; generated a real 16-bit collision at attempt 100,087 in 20.4 s — `b5f3f806…5425`; install: `the package was signed by spki-sha256:b5f3f806… but acme-labs is trusted as spki-sha256:b5f39950…`. Forged variant (rewrite `key_id` to the *trusted* fingerprint verbatim): `the signature does not verify against spki-sha256:b5f39950…` | 1 | unchanged |
+
+**7/7 refused correctly.** The verifier's order is right — shape, then key identity, then the
+cryptographic statement, then the file list, then the root — so an edit is reported as an edit and not
+as a bad signature, and the two ways to lie about *which key signed* (a colliding prefix, a stolen
+`key_id`) both fail: the first at the trust-store comparison, the second at the signature check.
+
+**But the surface records a publisher it never verified.** An **unsigned** package that merely writes
+`"publisher": {"id": "acme-labs"}` in `plugin.json` and is installed with `--allow-unsigned` produces:
+
+```
+screen:   publisher        acme-labs
+          key fingerprint  (none — unsigned)
+row:      notes|acme-labs|NULL|unsigned|1
+audit:    {"publisher":"acme-labs","publisher_key_fingerprint":null,"signature_state":"unsigned",
+           "allow_unsigned":true}
+```
+
+The durable record — the row an auditor reads after an incident, and `cms_audit` — attributes the
+package to a trusted publisher id with no fingerprint. `signature_state=unsigned` is the only tell,
+and a `WHERE publisher='acme-labs'` query does not filter on it. The screen is honest ("(none —
+unsigned)" plus the banner); the row is not. See R2-6.4.
+
+---
+
+## R2-4. Two capability layers — disabled one at a time
+
+`scratch/s4-qa2/capability-mutations.sh`, `test/plugin-capability.test.ts` after each edit, restore by
+hash. Baseline 5/5 green.
+
+| mutation | C1 (runner) | C1b | C1c (intersection) | C2 (host) | C2b (no grant) |
+|---|---|---|---|---|---|
+| **M1** `runner/server.mjs:420` `if (!binding.granted.has(op))` → `if (false && …)` | **not ok** | ok | **not ok** | ok | ok |
+| **M2** `app/plugins/host.ts:168` `if (!row.manifest.capabilities.includes(op))` → `if (false && …)` | ok | ok | ok | **not ok** | ok |
+| restored | ok | ok | ok | ok | **5/5** |
+
+`server.mjs` `547553c57645c4b32ea5da805983bdffe47fbef2adf92588f02f10113fc59186` before = after;
+`host.ts` `712c213061a32d87482f4f339c683205b8ea2d239ac5833bff643f0bbee41ae3` before = after. The two
+layers fail **only** in their own column — neither can pass by way of the other.
+
+**With the host check off, `store.delete` succeeds.** The failure message is the evidence:
+
+```
+not ok 4 - C2 — the host refuses an undeclared op even when the runner forwards it …
+    {"type":"host.result","id":"h1","ok":true,"result":{"changes":1}}
+```
+
+one row deleted, and the gate's post-condition (the row is still there) is what makes it visible.
+
+**Are they genuinely independent?** *As controls, yes; as trust roots, no.* They run in different
+processes and share no code path: the runner's set is `binding.granted` = the app's `granted`
+**intersected with `plugin.json` on disk** (`server.mjs:529`); the host's is
+`row.manifest.capabilities` read from `cms_plugin_installed.manifest_json` **in the tenant database**
+(`host.ts:168`). Two different artefacts can disagree (a stale runner holds the old manifest; the DB
+row holds the new one), and either layer alone refuses. But both read the **same authored object** —
+the package's manifest — one copy on disk, one in the row. A defect in manifest parsing, or write
+access to that row, widens both at once. Stated exactly: the layers are independent *implementations*
+of the same policy, not independent *sources* of it. That is the right shape for defence in depth
+(the runner trusts its own copy of the package, not the app's word), and it should not be described
+as two independent authorities.
+
+---
+
+## R2-5. Regression sweep on what round 1 found sound
+
+| property | round 1 | round 2 | evidence |
+|---|---|---|---|
+| `make test` | 534/534 ×4 | **566/566 ×3**, exit 0 | R2-1 |
+| `make verify-dist` | 6/6, 5.66 s | **6/6, 6.06 s** | R2-1 |
+| leak audit | clean | **clean** (`before: 0/0`, negative control red, `after: 0/0`) | run logs |
+| export determinism, same clock | identical | **identical** — static `1d276222…`, astro `28440950…`, cms `5cccfeb9…` for both exports | `scratch/s4-qa2/det` |
+| at +1 h | only `exported_at` moves | **only `EXPORT-NOTES.md`** (static, astro) and `BUNDLE.json` + `EXPORT-NOTES.md` (cms) | `diff -rq` |
+| install, machine half | 1.25 s / 0.52 s | **1.15 s / 0.60 s**; page served 200 543 B; one tenant after two installs | `install-1.log`, `install-2.log` |
+| install, human half | 20 s (allowance) | **20 s allowance, not measured** — a person must scan a TOTP QR | — |
+| total against the 5-minute promise | 21.25 s | **21.15 s of 300 s** (host-side, `--no-compose`, no image pull, no TLS) | — |
+| CSP on the wire | one hash in three targets | live header **194 bytes, identical** to `snippets/skunk-csp.conf`; cms bundle ships the same file `6dd0ec9d…` | `csp-wire.txt` |
+| bundle unchanged by install (round-1 defect 9) | certs written into the bundle | **certs go to `<data>/certs`**; the bundle gains only an empty `run/` directory | tree hash before/after |
+
+The determinism hashes are **not** the product's `hashTree()`: `scratch/s4-qa2/treehash.py` walks
+every file, directory and symlink, sorts `kind\0relpath\0sha256`, and hashes that.
+
+Install timing caveat, same as round 1 and still material: this box was at load 11–36, and the
+composed install (image pull, TLS, bundle transfer) is **NOT COVERED** — see R2-7.
+
+---
+
+## R2-6. New defects, in severity order
+
+**1. Major (specification, security) — §8.5's revocation control has no implementation of the
+action.** §8.5: *"revocation is an operator action against a package root in
+`data/trust/revoked.json`, which is local to the install"*, and install refuses *"a revoked root
+(`SKW_E_PL_REVOKED`)"*. The same read is drawn in `docs/sds/diagrams/plugin-install.puml:22`
+("read revoked.json"). Measured (`scratch/s4-qa2/revoke-probe.mts`):
+
+```
+revoked_file_written: …/trust/revoked.json          (0600, the root, the plugin id, a reason)
+install of that exact root:  status 0  "plugin: installed id=notes … root=cf4e41d1… enabled=yes"
+skwctl plugin revoke notes --root …:  status 1  REFUSAL: USAGE: usage: skwctl plugin (install … |
+                                      trust … | enable | disable | uninstall | list)
+hand-insert into cms_plugin_revoked:  status 1  SKW_E_PL_REVOKED: package root cf4e41d1… is revoked
+```
+
+So the **file has no reader and no writer**, the **verb does not exist**, and the only way to revoke
+is to hand-edit SQLite. `grep -rn "INTO cms_plugin_revoked" app/ tools/ scripts/ test/` finds exactly
+one writer: `test/plugin-host.test.ts:217`. A security control that accepts the documented gesture
+and does nothing is worse than an absent one: the operator believes the build is blocked and it is
+not. §10.5 names the file as "no writer" and grades it *minor*, framing it as a duplicate source of
+truth — the file is not a second source of truth, it is not a source at all.
+
+**2. Major (specification, evidence) — E-29/E-30 are drafted, not applied, and the closure claim
+cites a gate that does not check them.** `docs/sds/02-errata.md` §13 exists and is good. Its own
+builder items 1–4 say *paste the drop-ins into `docs/sds/SDS.md`*. `git log 18bb785..HEAD --
+docs/sds/SDS.md` is **empty**; the retired clauses are still there:
+
+```
+1443  … It cannot starve the host and it cannot affect a page (§13.3).      # E-30, unamended
+2354  … it cannot starve the host, and it cannot affect a page …            # E-30, unamended
+2220  is on every block because §12.5 promises a host serves on 80 while …   # E-29, unamended
+2222  `domain.cert_state = 'issued'` — a block that listens on 443 … fails
+2256  reports `certificate: pending` and serves on 80.                       # E-29, unamended
+```
+
+No `> Amended by 02-errata.md E-29/E-30.` pointer (the established convention — E-20…E-23 all have
+one), and `POINTERS = tuple(f"E-{n}" for n in range(1, 24))` at `scripts/model/check_frozen.py:206`,
+i.e. still `23/23`. The errata's item 5 is acknowledged as owed; items 1–4 are not. `verify-frozen`
+asserts that the SDS quotes the *frozen register* — it cannot see an unapplied errata, so
+§10's "**closed** … `make verify-frozen` green" is not evidence for what it claims. This matters
+in the direction the errata itself warns about (line 2923): *"an errata that only re-worded the
+sentence would leave the next Builder free to 'fix' the code back to the text"* — here even the
+sentence was not re-worded.
+
+Also in that section, a citation error: builder item 3 says §16's S4 row 12 still says *"serves on
+80 while pending"*. §16's S4 row 12 actually reads *"install on a clean host: ≤ 5 min with images
+present, `certificate: pending` allowed"* — it never mentions 80 or 443, so no change is owed there;
+the phrase the errata wants to retire lives in §12.5/:2256.
+
+**3. Major (operator surface) — the only upgrade path §8.2 defines fails with `INTERNAL:`.**
+`SKW_E_PL_SCHEMA` is not in `schema/error-codes.json`'s `http` map. `AppError`'s constructor *throws*
+when the code has no mapping (`app/errors.ts:189-191`), so the intended refusal never survives:
+
+```
+REFUSAL: INTERNAL: no HTTP mapping for SKW_E_PL_SCHEMA (schema/error-codes.json)
+exit 1
+```
+
+Reached by installing a different root under an installed id — which is exactly what
+`installPlugin()` says to do after uninstalling, and the message that should read *"notes is
+installed at root X; uninstall it before installing Y"* is lost — and by any
+`requires.site_db_min/max` refusal. `app/plugins/ops.ts:39-45` documents the correct pattern in a
+comment (*"an AppError here would demand an HTTP mapping the taxonomy does not have"*) and uses a
+plain `Error`; `install.ts` did not follow it for `SKW_E_PL_SCHEMA`. No gate covers the downgrade
+refusal (`grep 'uninstall it before installing' test/` → none), and `test/error-codes.test.ts` only
+mirrors JSON↔table, not code references. `SKW_E_PL_DOWNGRADE`, which §8.2 names, exists **nowhere**
+in `app/`, `schema/` or `test/`.
+
+**4. Major (audit integrity) — an unsigned package can name a publisher that never signed it.**
+Proven in R2-3: row `publisher=acme-labs`, `publisher_key_fingerprint=NULL`,
+`signature_state=unsigned`. `VerifiedPackage.publisher` takes the manifest's self-declared id when
+there is no signature (`trust.ts:257`). It should stay `unsigned`, with the self-claim in a separate,
+clearly-labelled field (`claimed_publisher`), so the durable record cannot attribute an unsigned
+package to a trusted id.
+
+**5. Minor — re-installing identical bytes with `--allow-unsigned` silently downgrades the recorded
+provenance.** Audit rows from one session: first install
+`{"publisher":"acme-labs","signature_state":"imported","allow_unsigned":false}`, then the same root
+`cf4e41d1…` installed again with `--allow-unsigned` →
+`{"publisher":"unsigned","signature_state":"unsigned","allow_unsigned":true}`. The bytes are the
+same, so nothing was substituted; what is lost is the strongest evidence *about* those bytes. The
+audit chain still holds the earlier row, so this is recoverable by a careful reader.
+
+**6. Minor — the exported nginx conf tells the operator the wrong certificate state.**
+`app/export/cms.ts:361-363` feeds `generateAppConf` the *source tenant's* `cert_state`, while the
+seed is forced to `none`. Result, on a bundle cut from a tenant that had TLS:
+
+```
+data/control.seed.json   → cert_state: "none"
+nginx/conf.d/10-app.conf → # certificate: issued
+```
+
+E-29's whole point is that the state is a **comment** the operator reads *because* the listener no
+longer depends on it; on a cold install the truth is "pending (self-signed until ACME)". The comment
+is the one claim in the artefact that still travels from the source box — the same class of defect as
+round 1's blocker 1, in the last place it was left. It is a comment only: `nginx -t` passes and the
+site serves. One-line fix; no gate asserts it (`T1` checks the seed, not the comment).
+
+**7. Minor (evidence) — the builder's end-to-end transcript no longer reproduces what §9 cites it
+for.** `bash scratch/s4e-transcript.sh` exits 0 but its steps 7–10 now fail:
+
+```
+### 7. a plugin, through the product's public endpoint (D25)
+REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: notes is not signed by any key …
+GET /_plugin/notes/list  -> {"code":"SKW_E_RT_PAGE_NOT_FOUND"}      # never installed
+### 10. runner memory … -> {"code":"SKW_E_PL_ROW","message":"plugin.invoke needs the granted
+        capability set (the app owns the grant)"}                   # 28.8 MiB peak, not 384
+```
+
+The script predates S4f's signature requirement and the `granted` wire field, and `set -uo pipefail`
+without `-e` means it exits 0 while printing refusals it never asserts. §9's
+`bash scratch/s4e-transcript.sh  # the transcript quoted above` therefore does not reproduce §2.3 or
+§3.3. The *gates* for those steps are sound (I ran them); the transcript is evidence that has rotted.
+
+**8. Cosmetic — `install.sh` still writes one thing into the verified bundle: an empty `run/`
+directory** (34 → 35 entries; `bundle_verify` passes because it ignores extra paths). It is the
+socket mount point and is created next to the compose file, so this is understandable, but "the
+verified artefact is the installed artefact" is still not quite true.
+
+---
+
+## R2-7. What is NOT COVERED
+
+- **The composed install end-to-end as a customer does it** — image pull from a registry, bundle
+  transfer, real DNS, a real CA. The registry digests do not exist on this box; the transcript and
+  the gates use locally built images (`skw-app:s4d`, `skw-acme:s4e`, `skw-runner:s4e`). The first
+  boot *is* proven over HTTPS (R2-2.1); the *acquisition* of the images is not.
+- **A production-CA issuance.** Pebble, with validation not short-circuited, is proven (T5). That is
+  stronger than §13.4's note claims, and still not Let's Encrypt.
+- **`make test-perf`** — refused by its own load guard (R2-1). No wall-clock number in this report is
+  a perf-gate pass; the install timings are single measurements on a box at load 11–36.
+- **The human half of the install** (TOTP enrolment) — 20 s is the spec's allowance, not a
+  measurement.
+- **A 1 GiB bundle transfer**, browser behaviours, PII retention — unchanged from §13.4.
+
+---
+
+## R2-8. The five named limits in §10.5, judged
+
+| # | limit as the builder states it | my judgement | why |
+|---|---|---|---|
+| 1 | per-tenant trust is not modelled (`publishers.json` is one file per install, "§8.5's own path") | **Acceptable** | §8.5 names that exact path, so it is conformant to the letter. With one operator account per install the "tenant owner" is the box operator; the screen says where the key came from. It becomes a cross-tenant trust bleed only when tenants are unrelated customers — a v2 decision, correctly named. Not a violation. |
+| 2 | the image's first-party key is a placeholder with no retained private half, so first-party packages cannot be signed | **Spec violation** (fails closed) | §8.5: *"the image carries our public key and verifies first-party packages against it."* The image carries a key that can verify nothing, and no signer exists, so **every** vendor package must be installed with `--allow-unsigned` and is audited as unsigned. The control is not bypassed — it is unusable on its primary path, and the workaround trains operators to type the flag that exists to be rare. A release-pipeline step, but the shipped artefact does not meet the sentence. |
+| 3 | `data/trust/revoked.json` is named by §8.5 and has no writer — "revocation is `cms_plugin_revoked` today" | **Spec violation, and the highest-severity item** | The file has no **reader** either, and the table has no operator writer (one test only). Revocation is not "the table today"; it is nothing an operator can do. The builder's framing (a duplicate source of truth) understates a control that silently no-ops. |
+| 4 | a signature does not travel in an export; the bundle's root and `BUNDLE.json` are the integrity claim | **Acceptable** | §8.5 does not promise bundle provenance, and the two artefacts it does name are checked by `bundle_verify`. The distinction that matters — integrity of the bytes vs. who published them — is stated rather than implied. |
+| 5 | the runner holds its package list from boot, so install/uninstall say "restart the runner service" | **Acceptable with real friction** | Not a spec violation: the CLI says it, and the app reconnects on demand. But it is the limit a customer meets **first** — install succeeds, the endpoint 404s, and the fix is the last line of output. A `reload` verb on the socket (the runner already owns the scan) would remove it. |
+
+**Which would hurt a customer first:** #2 and #5, on day one — #2 because the vendor's own packages
+need `--allow-unsigned`, #5 because "install → enable → it works" needs a restart the customer will
+not read. **Which would hurt worst:** #3, on the day they need it — an incident where a bad build must
+be blocked, and the revocation they perform does nothing.
+
+---
+
+## R2-9. Reproducing
+
+```
+make test                                            # 566/566/0/0, exit 0, ×3
+make verify-dist                                     # 6/6, exit 0
+make test-perf                                       # refused at load 11.73/8 cpus, exit 2
+
+node scratch/s4-qa2/trust-attacks.mts                # the seven attacks
+node scratch/s4-qa2/revoke-probe.mts                 # the revocation probe
+bash scratch/s4-qa2/capability-mutations.sh          # M1/M2 + byte-identical restore
+bash scratch/s4-qa2/memhoard-probe.sh                # the 4 GiB hoard against 384 MiB
+node scratch/s4-qa2/two-repeat.mts                   # row 2, refused
+bash scratch/s4e-transcript.sh                       # first boot (steps 7–10 are stale, R2-6.7)
+node scratch/s4-qa2/treehash.py <dir>…               # independent tree hash
+```
+
+Artifacts: `scratch/s4-qa2/` — `make-test-{1,2,3}.log`, `verify-dist.log`, `test-perf.log`,
+`trust-attacks.{mts,log}` and `trust/attacks.json`, `revoke-probe.mts`, `cap/`,
+`memhoard-probe.sh`, `det/` (three targets × three exports), `bundle/`, `cold/`, `install-{1,2}.log`,
+`transcript.log`, `csp-wire.txt`, `treehash.py`, and the mutation backups. No product file is
+modified; `git status --short` is `?? scratch/s4-qa2/` only, and every mutated file's sha256 is
+identical to its backup (R2-2.4, R2-4).
+
+---
+
+## R2-10. Verdict
+
+**NO-GO**, on one security control and one unapplied amendment — not on the five blockers, all of
+which are closed and were closed properly.
+
+What is genuinely good, and should not be redone: the first boot serves HTTPS with a certificate
+whose bytes exist and a `cert_state` that does not lie; a plugin answers through two containers and a
+unix socket; the memory ceiling is a real cgroup at 384 MiB with no swap escape and a surviving
+container; a two-child `list` is refused by name; uninstall archives the data, redacts the secret and
+leaves a clean tenant; and the signature verifier refused all seven attacks, including a real
+fingerprint-prefix collision and a forged `key_id`. The capability split is two real controls in two
+processes.
+
+**Highest-severity remaining item:** §8.5's revocation control is unimplemented as an operator
+action — `data/trust/revoked.json` is neither read nor written, `skwctl` has no `revoke` verb, and
+`cms_plugin_revoked` is written only by a gate, so a package root an operator believes they have
+revoked still installs. Fix that (a reader for the file *or* a `revoke` verb that writes the table,
+plus a gate that revokes through the operator surface and then asserts the refusal), apply E-29/E-30
+to `docs/sds/SDS.md` with their pointer lines and the `POINTERS` range, and map `SKW_E_PL_SCHEMA` —
+then this slice is a GO.

@@ -1,0 +1,120 @@
+[
+  {
+    "attack": "setup",
+    "import_status": 0,
+    "import_stdout": "plugin: imported publisher=acme-labs fingerprint=spki-sha256:b5f3995024f161fb19af543dd740fd6f6228f4f3f5bf2e9e3c93fbcb98df6541\nplugin: 1 key(s) in /var/folders/sc/90s9zqm54p5f2mj8tx1bzlx40000gn/T/skw-s1-eC3i9y/trust/publishers.json (0600); this file is the install's whole trust decision",
+    "a_fingerprint": "spki-sha256:b5f3995024f161fb19af543dd740fd6f6228f4f3f5bf2e9e3c93fbcb98df6541",
+    "sign_status": 0,
+    "install_status": 0,
+    "install_stdout": "install screen — notes@1.0.0\n  what it is       S4d's third-party reference package: one table, one setting, five declared host ops. Its code reaches the host only through skw.call().\n  publisher        acme-labs\n  key fingerprint  spki-sha256:b5f3995024f161fb19af543dd740fd6f6228f4f3f5bf2e9e3c93fbcb98df6541   [imported by the tenant owner into data/trust/publishers.json]",
+    "install_stderr": "",
+    "install_exit_ok": true
+  },
+  {
+    "attack": "i. edit a file",
+    "exit": 1,
+    "refusal": "REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the package was edited after it was signed: index.mjs",
+    "state_unchanged": true
+  },
+  {
+    "attack": "ii. edit plugin.json",
+    "exit": 1,
+    "refusal": "REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the package was edited after it was signed: plugin.json",
+    "state_unchanged": true
+  },
+  {
+    "attack": "ii-b. widen the grant in plugin.json",
+    "exit": 1,
+    "refusal": "REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the package was edited after it was signed: plugin.json",
+    "state_unchanged": true
+  },
+  {
+    "attack": "iii. add a file",
+    "exit": 1,
+    "refusal": "REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the package was edited after it was signed: extra.mjs was added",
+    "state_unchanged": true
+  },
+  {
+    "attack": "iv-a. signature swapped between two builds of one id",
+    "exit": 1,
+    "refusal": "REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the package was edited after it was signed: plugin.json",
+    "state_unchanged": true
+  },
+  {
+    "attack": "iv-b. signature swapped between two plugin ids",
+    "exit": 1,
+    "refusal": "REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the signature is for echo@1.0.0 but the package is notes@1.0.0",
+    "state_unchanged": true
+  },
+  {
+    "attack": "v. --allow-unsigned and its audit row",
+    "refused_without_flag_exit": 1,
+    "refused_text": "REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: notes is not signed by any key this install trusts; pass --allow-unsigned to install it anyway (the install is audited as unsigned)",
+    "with_flag_exit": 0,
+    "with_flag_stdout": "  *** UNSIGNED — no key this install trusts vouches for this package.            ***\nplugin: installed id=notes version=1.0.0 root=cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96 enabled=yes package=/var/folders/sc/90s9zqm54p5f2mj8tx1bzlx40000gn/T/skw-s1-eC3i9y/plugins/notes\nplugin: *** UNSIGNED *** this package is not vouched for by any key; the audit row records allow_unsigned=true",
+    "audit_rows": [
+      {
+        "action": "plugin.install",
+        "target_kind": "cms_plugin_installed",
+        "target_id": "notes",
+        "after_json": "{\"version\":\"1.0.0\",\"root_hash\":\"cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96\",\"enabled\":true,\"publisher\":\"acme-labs\",\"publisher_key_fingerprint\":\"spki-sha256:b5f3995024f161fb19af543dd740fd6f6228f4f3f5bf2e9e3c93fbcb98df6541\",\"signature_state\":\"imported\",\"allow_unsigned\":false}"
+      },
+      {
+        "action": "plugin.install",
+        "target_kind": "cms_plugin_installed",
+        "target_id": "notes",
+        "after_json": "{\"version\":\"1.0.0\",\"root_hash\":\"cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96\",\"enabled\":true,\"publisher\":\"unsigned\",\"publisher_key_fingerprint\":null,\"signature_state\":\"unsigned\",\"allow_unsigned\":true}"
+      }
+    ],
+    "rows": [
+      {
+        "plugin_id": "notes",
+        "version": "1.0.0",
+        "root_hash": "cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96",
+        "publisher": "unsigned",
+        "publisher_key_fingerprint": null,
+        "signature_state": "unsigned",
+        "enabled": 1
+      }
+    ]
+  },
+  {
+    "attack": "vi. replace a trusted publisher key",
+    "silent_exit": 1,
+    "silent_text": "REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: acme-labs is already imported as spki-sha256:b5f3995024f161fb19af543dd740fd6f6228f4f3f5bf2e9e3c93fbcb98df6541; this key is spki-sha256:e92f6a037d87bcd2479e4131888da2d5edc0f3b5907a52a2d317756c3162babf — re-run with --replace to revoke the old key",
+    "trust_unchanged": true,
+    "trust_sha_before": "8e7ea4b9c5b95c06",
+    "trust_sha_after": "8e7ea4b9c5b95c06",
+    "with_replace_exit": 0,
+    "with_replace_text": "plugin: imported publisher=acme-labs fingerprint=spki-sha256:e92f6a037d87bcd2479e4131888da2d5edc0f3b5907a52a2d317756c3162babf",
+    "trust_changed_by_replace": true
+  },
+  {
+    "attack": "vii. fingerprint prefix collision",
+    "trusted_prefix": "b5f3… (4 hex / 16 bits)",
+    "trusted_fingerprint": "spki-sha256:b5f3995024f161fb19af543dd740fd6f6228f4f3f5bf2e9e3c93fbcb98df6541",
+    "colliding_fingerprint": "spki-sha256:b5f3f806ac97c3ec1b1111cb781a17c25c761a0adef915ce875c34a6cfb55425",
+    "attempts": 100087,
+    "seconds": "20.4",
+    "exit": 1,
+    "refusal": "REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the package was signed by spki-sha256:b5f3f806ac97c3ec1b1111cb781a17c25c761a0adef915ce875c34a6cfb55425 but acme-labs is trusted as spki-sha256:b5f3995024f161fb19af543dd740fd6f6228f4f3f5bf2e9e3c93fbcb98df6541",
+    "state_unchanged": true,
+    "forged_key_id_exit": 1,
+    "forged_key_id_refusal": "REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the signature does not verify against spki-sha256:b5f3995024f161fb19af543dd740fd6f6228f4f3f5bf2e9e3c93fbcb98df6541",
+    "forged_state_unchanged": true
+  },
+  {
+    "attack": "extra: unsigned package self-declaring a publisher",
+    "exit": 1,
+    "screen_lines": "",
+    "row": {
+      "plugin_id": "notes",
+      "version": "1.0.0",
+      "root_hash": "cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96",
+      "publisher": "unsigned",
+      "publisher_key_fingerprint": null,
+      "signature_state": "unsigned",
+      "enabled": 1
+    }
+  }
+]

@@ -1,0 +1,57 @@
+{
+  "id": "notes",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "description": "S4d's third-party reference package: one table, one setting, five declared host ops. Its code reaches the host only through skw.call(). (widened)",
+  "capabilities": [
+    "store.insert",
+    "store.query",
+    "settings.get",
+    "settings.set",
+    "assets.resolve"
+  ],
+  "tables": [
+    {
+      "name": "p_notes_note",
+      "export": "rows",
+      "columns": [
+        {
+          "name": "body",
+          "type": "TEXT",
+          "notNull": true,
+          "indexed": true
+        },
+        {
+          "name": "asset_key",
+          "type": "ASSET",
+          "indexed": true
+        }
+      ]
+    }
+  ],
+  "settings": [
+    {
+      "key": "signature",
+      "type": "string",
+      "max": 120
+    },
+    {
+      "key": "api_token",
+      "type": "secret"
+    }
+  ],
+  "tests": {
+    "entry": "index.mjs",
+    "timeout_s": 5
+  },
+  "endpoints": [
+    {
+      "name": "list",
+      "method": "GET"
+    },
+    {
+      "name": "sign",
+      "method": "POST"
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+{
+  "format": "skw-plugin-archive/1",
+  "plugin": "notes",
+  "version": "1.0.0",
+  "root_hash": "cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96",
+  "uninstalled_at": "2026-10-20T19:54:12.026Z",
+  "tables": [
+    {
+      "name": "p_notes_note",
+      "rows": []
+    }
+  ],
+  "settings": [],
+  "registry": [
+    {
+      "id": 1,
+      "table_name": "p_notes_note",
+      "table_class": "plugin",
+      "plugin_id": "notes",
+      "ddl_version": 1,
+      "column_count": 3,
+      "index_count": 2,
+      "columns_json": "[{\"name\":\"id\",\"type\":\"INTEGER\",\"notNull\":true,\"pk\":true},{\"name\":\"body\",\"type\":\"TEXT\",\"notNull\":true,\"indexed\":true},{\"name\":\"asset_key\",\"type\":\"ASSET\",\"indexed\":true}]",
+      "created_at": "2026-10-20T19:54:11.623Z",
+      "created_by": null,
+      "notes": null
+    }
+  ],
+  "migrations": [
+    {
+      "id": 1,
+      "plugin_id": "notes",
+      "version": "1.0.0",
+      "seq": 1,
+      "checksum": "ab77a36a57003efac443cfe80aa73206a475214f0b7b4c841af0ccdc3b95fcbe",
+      "duration_ms": null,
+      "applied_at": "2026-10-20T19:54:11.623Z"
+    }
+  ],
+  "triggers": [],
+  "installed": {
+    "plugin_id": "notes",
+    "version": "1.0.0",
+    "root_hash": "cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96",
+    "manifest": {
+      "id": "notes",
+      "version": "1.0.0",
+      "entry": "index.mjs",
+      "capabilities": [
+        "store.insert",
+        "store.query",
+        "settings.get",
+        "settings.set",
+        "assets.resolve"
+      ],
+      "tables": [
+        {
+          "name": "p_notes_note",
+          "export": "rows",
+          "columns": [
+            {
+              "name": "body",
+              "type": "TEXT",
+              "notNull": true,
+              "indexed": true
+            },
+            {
+              "name": "asset_key",
+              "type": "ASSET",
+              "indexed": true
+            }
+          ]
+        }
+      ],
+      "settings": [
+        {
+          "key": "signature",
+          "type": "string",
+          "max": 120
+        },
+        {
+          "key": "api_token",
+          "type": "secret"
+        }
+      ],
+      "description": "S4d's third-party reference package: one table, one setting, five declared host ops. Its code reaches the host only through skw.call().",
+      "endpoints": [
+        {
+          "name": "list",
+          "method": "GET"
+        },
+        {
+          "name": "sign",
+          "method": "POST"
+        }
+      ],
+      "tests": {
+        "entry": "index.mjs",
+        "timeout_s": 5
+      }
+    },
+    "signature_state": "imported",
+    "test_report_sha": "301b7ff497ebb873cc5656984a7cda819beac22e200ee689690e3edda683e3e3",
+    "runner_image_digest": "sha256:qa2",
+    "enabled": true
+  }
+}

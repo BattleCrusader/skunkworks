@@ -1,0 +1,21 @@
+{
+  "format": "skw-plugin-signature/1",
+  "plugin": "notes",
+  "version": "1.0.0",
+  "publisher": "acme-labs",
+  "key_id": "spki-sha256:b5f3995024f161fb19af543dd740fd6f6228f4f3f5bf2e9e3c93fbcb98df6541",
+  "algorithm": "ed25519",
+  "manifest": "57d643e4ab56a81e26786c8f69667e6a9a959c2cd27528ddbb3159f284fdb036",
+  "root_hash": "d8969f9f513be39e79c0abd327fc06f70bd67799852863209f3f104542d7178a",
+  "files": [
+    {
+      "path": "index.mjs",
+      "sha256": "2a7df27e21891acab127762523ce59d762ce16316655d7081cfc1e5ceaa3a257"
+    },
+    {
+      "path": "plugin.json",
+      "sha256": "57d643e4ab56a81e26786c8f69667e6a9a959c2cd27528ddbb3159f284fdb036"
+    }
+  ],
+  "signature": "lezP6Ln8TyH5NYHTPeIBQwSvOEye+4kDZAC3txK6qa+2j88K7upnguV8qrCdgcLPxmxdiF+eQ02qFvPqm5nICA=="
+}

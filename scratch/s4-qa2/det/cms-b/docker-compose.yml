@@ -1,0 +1,142 @@
+# Skunkworks — four services, four cgroups, four trust boundaries (SDS §12.1, C-8).
+#
+# There is no `migrate` service: `app` runs the migration itself and reports per
+# tenant (§2.3, C-10), because a one-shot gate makes one tenant's corruption a
+# fleet-wide outage.
+#
+# `app` publishes NO port. It is reachable only from the nginx network, and the
+# admin surface is a hostname, not a port (C-11, §9.1).
+name: skunkworks
+
+x-app-environment: &app-environment
+  SKW_DATA_DIR: /srv/data
+  SKW_BUILD_ID: ${SKW_BUILD_ID:?SKW_BUILD_ID is required}
+  SKW_EDGE_TOKEN: ${SKW_EDGE_TOKEN:?SKW_EDGE_TOKEN is required}
+  SKW_EDGE_TRUSTED_CIDRS: ${SKW_EDGE_TRUSTED_CIDRS:-127.0.0.1/32,172.16.0.0/12}
+  SKW_SESSION_KEY: ${SKW_SESSION_KEY:?SKW_SESSION_KEY is required}
+  SKW_DOWNLOAD_TOKEN_KEY: ${SKW_DOWNLOAD_TOKEN_KEY:?SKW_DOWNLOAD_TOKEN_KEY is required}
+  SKW_IP_HASH_KEY: ${SKW_IP_HASH_KEY:?SKW_IP_HASH_KEY is required}
+  SKW_ADMIN_ORIGIN: ${SKW_ADMIN_ORIGIN:?SKW_ADMIN_ORIGIN is required}
+  SKW_ARGON2_MAX_CONCURRENT: ${SKW_ARGON2_MAX_CONCURRENT:-4}
+  SKW_DB_POOL_MAX: ${SKW_DB_POOL_MAX:-64}
+  SKW_DB_BUSY_TIMEOUT_MS: ${SKW_DB_BUSY_TIMEOUT_MS:-5000}
+  SKW_DDL_MAX_STATEMENTS: ${SKW_DDL_MAX_STATEMENTS:-8}
+  SKW_RENDER_MODE: ${SKW_RENDER_MODE:-live}
+  SKW_SCHEMA_EDIT: ${SKW_SCHEMA_EDIT:-off}
+  SKW_FLEET_MODE: ${SKW_FLEET_MODE:-1}
+  SKW_SNAPSHOT_MAX_COMBOS: ${SKW_SNAPSHOT_MAX_COMBOS:-1024}
+  SKW_SNAPSHOT_MAX_BYTES: ${SKW_SNAPSHOT_MAX_BYTES:-2097152}
+  SKW_REPOINT_MAX_ROWS: ${SKW_REPOINT_MAX_ROWS:-5000}
+  SKW_BOX_RPS: ${SKW_BOX_RPS:-192}
+  SKW_EMAIL_MODE: ${SKW_EMAIL_MODE:-off}
+  # §9.1a (E-17): the edge reads it to emit allow/deny, the app reads it for TOTP
+  # and the idle window. It must reach both, or they disagree about the control.
+  SKW_ADMIN_ALLOWLIST: ${SKW_ADMIN_ALLOWLIST:-}
+  UV_THREADPOOL_SIZE: "8"
+
+services:
+  nginx:
+    image: nginx:1.31-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./snippets:/etc/nginx/snippets:ro
+      - ./content:/srv/content:ro
+      # S4e: the pairs install.sh mints and the acme service replaces live with the install's
+      # mutable state, not inside the verified bundle (a read-only bundle used to fail at the
+      # cert step, and the verified tree was no longer the installed tree).
+      - ./data/certs:/etc/nginx/certs:ro
+      # The http-01 webroot the acme service writes into (`location ^~ /.well-known/…` in the
+      # generated tenant blocks).
+      - ./data/acme:/srv/acme:ro
+    depends_on:
+      - app
+
+  app:
+    # D10: a digest, never a tag. install.sh pins the released digest.
+    # `SKW_APP_IMAGE` is the same escape hatch `plugin-runner` has: a gate (and only a
+    # gate) points compose at an image it has just built, so the compose path can be
+    # exercised without pretending the published digest exists here. A released bundle's
+    # compose sets neither variable, so production pulls the digest.
+    image: ${SKW_APP_IMAGE:-ghcr.io/skunkworks/app@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    restart: unless-stopped
+    expose:
+      - "3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    user: "10001:10001"
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./data:/srv/data
+      - ./content:/srv/content
+      - ./run:/srv/run
+    environment: *app-environment
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+
+  plugin-runner:
+    # D10: a digest, never a tag. `SKW_RUNNER_IMAGE` exists so a gate can run the image it
+    # has just built (`test/runner-contain.test.ts`) without pretending the published digest
+    # exists locally; a released bundle's compose pins the digest and nothing sets the
+    # variable, so the published artefact is what production pulls.
+    image: ${SKW_RUNNER_IMAGE:-ghcr.io/skunkworks/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    # S4e (F4): the missing ceiling. §8.4 claimed "it cannot starve the host"; with no
+    # `mem_limit` the cgroup was unbounded and a package could hold the whole 1.54 GB Docker
+    # VM until the kernel killed the app or nginx with it (measured by the S4 QA: 256 MB held,
+    # `memory.max = max`). 384 MiB covers the parent (~48 MiB) plus four or five permission
+    # children (~45 MiB idle each) and is less than a quarter of the VM, so one runaway
+    # package dies in its own cgroup. `memswap_limit` equals `mem_limit` on purpose: with swap
+    # enabled a package would escape the ceiling by being paged out.
+    mem_limit: 384m
+    memswap_limit: 384m
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./data/plugins:/srv/plugins:ro
+      - ./run:/srv/run
+      - ./data/scratch:/srv/scratch
+
+  acme:
+    # S4e: this used to be `nginxproxy/acme-companion`, which cannot run against this stack.
+    # It looks for the docker-gen container that `nginx-proxy` ships, and this nginx is a
+    # bespoke generated config, not an nginx-proxy vhost tree — measured: exit 1,
+    # "can't get docker-gen container id", so no certificate could ever be replaced and the
+    # `pending` state had no path to `issued`. The replacement is ours: RFC 8555, http-01
+    # through the webroot nginx serves, a write to `./data/certs`, and a HUP over the Docker
+    # socket (the image has no docker CLI). One dependency: `node:sqlite` reads `control.db`.
+    image: ${SKW_ACME_IMAGE:-ghcr.io/skunkworks/acme@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    restart: unless-stopped
+    environment:
+      # Empty in a bundle? No: the ACME contact is a deployment fact (§4.3), and `install.sh`
+      # writes ACME_EMAIL into .env. A directory that cannot be reached is a logged failure
+      # per tenant, never a boot failure — the site keeps serving its self-signed pair.
+      SKW_ACME_DIRECTORY: ${SKW_ACME_DIRECTORY:-https://acme-v02.api.letsencrypt.org/directory}
+      SKW_ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+      SKW_ACME_INSECURE: ${SKW_ACME_INSECURE:-0}
+      # Empty: discover the nginx container by compose labels, narrowed to this project. The
+      # literal `nginx` is the service name, not the container name, and the HUP 404'd.
+    volumes:
+      # control.db (the hosts and their state), the pairs it replaces, and the webroot.
+      - ./data:/srv/data
+      - ./data/certs:/srv/certs
+      - ./data/acme:/srv/acme
+      # `kill -s HUP nginx` after a pair is replaced. Read-only: the service never creates or
+      # removes a container, it only signals the one compose already started.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - nginx
