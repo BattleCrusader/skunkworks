@@ -71,6 +71,9 @@ import {
 import { openAdminWrite, openRenderRead } from '../db/classes.ts';
 import type { Env } from '../env.ts';
 import { AppError } from '../errors.ts';
+import { PREVIEW_PARAM, PREVIEW_TTL_MS, mintPreviewToken } from '../render/preview.ts';
+import { listSources } from '../sources/registry.ts';
+import { publishSource, saveSourceDraft, type SourceInput } from '../sources/publish.ts';
 import type { TenantMap } from '../tenancy/cache.ts';
 import { listenerFor } from '../tenancy/listener.ts';
 import {
@@ -558,6 +561,21 @@ ${items}
       return;
     }
 
+    // §6.1 — the Data Source registry. Listing is a read; publish and draft are
+    // the gate's only callers in the app, and both run through `app/sources/publish.ts`.
+    if (action === 'sources') {
+      this.#requireMethod(req, 'GET');
+      this.#sourcesList(reply, tenant);
+      return;
+    }
+    if (action === 'sources/publish' || action === 'sources/draft') {
+      this.#requireMethod(req, 'POST');
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#sourceWrite(req, reply, tenant, session, action === 'sources/draft');
+      return;
+    }
+
     // §9.3 — the CRUD write path, on `admin-write`.
     if (action === 'tables' && req.method === 'GET') {
       this.#tablesIndex(reply, tenant);
@@ -582,6 +600,7 @@ ${items}
   <a href="/admin">All tenants</a>
   <a href="/admin/t/${esc(tenant.key)}/pages">Pages</a>
   <a href="/admin/t/${esc(tenant.key)}/tables">Tables</a>
+  <a href="/admin/t/${esc(tenant.key)}/sources">Data sources</a>
   ${this.#env.schemaEdit === 'on' ? `<a href="/admin/t/${esc(tenant.key)}/builder">Table builder</a>` : ''}
   <a href="/admin/t/${esc(tenant.key)}/session">Session</a>
 </nav>`,
@@ -751,7 +770,18 @@ ${items}
         )
         .get(id) as Record<string, unknown> | undefined;
       if (row === undefined) throw new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'no such page');
-      reply.send({ tenant: tenant.key, page: row });
+      // O-29: the token is minted here, in admin, and bound to this tenant and this
+      // normalised path. A published page has no preview URL — there is nothing to
+      // preview, and the render path refuses the token for it anyway.
+      const preview =
+        row.status === 'draft'
+          ? {
+              url: `${String(row.path)}?${PREVIEW_PARAM}=${mintPreviewToken(tenant.key, String(row.path), this.#env.sessionKey)}`,
+              expires_in_s: PREVIEW_TTL_MS / 1000,
+            }
+          : null;
+      reply.header('cache-control', 'no-store');
+      reply.send({ tenant: tenant.key, page: row, preview });
     } finally {
       db.close();
     }
@@ -783,6 +813,64 @@ ${items}
     const user = this.auth.userById(session.userId);
     if (user === null) throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no session');
     return { userId: user.id, label: user.email };
+  }
+
+  // --- S2e: the Data Source registry (§6.1) -------------------------------
+
+  /**
+   * The registry as the operator sees it: what is published, at what cost, by
+   * whom. `cost_plan` is not returned — it can be long and the publish response
+   * already carries it once.
+   */
+  #sourcesList(reply: FastifyReply, tenant: Tenant): void {
+    const db = this.#siteDb(tenant.key);
+    try {
+      reply.header('cache-control', 'no-store');
+      reply.send({
+        tenant: tenant.key,
+        sources: listSources(db).map((row) => ({
+          key: row.key,
+          kind: row.kind,
+          is_public: row.is_public === 1,
+          ttl_s: row.ttl_s,
+          published_at: row.published_at,
+          published_by: row.published_by,
+          cost_ms_max: row.cost_ms_max,
+          cost_rows: row.cost_rows,
+        })),
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * The only caller of the publish gate in the app. The route does no validation
+   * of its own: `publishSource` refuses a `function` kind before a connection
+   * exists, and the refusals propagate as §4.3's taxonomy body, exactly like the
+   * builder's apply.
+   */
+  #sourceWrite(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord, draft: boolean): void {
+    const body = req.body;
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'a source request is a JSON object');
+    }
+    const raw = body as Record<string, unknown>;
+    const input: SourceInput = {
+      key: typeof raw.key === 'string' ? raw.key : '',
+      kind: typeof raw.kind === 'string' ? raw.kind : '',
+      spec: raw.spec ?? {},
+      isPublic: raw.is_public === true,
+      ...(Array.isArray(raw.params) ? { params: raw.params as NonNullable<SourceInput['params']> } : {}),
+      ...(typeof raw.ttl_s === 'number' ? { ttlS: raw.ttl_s } : {}),
+      ...(raw.aggregate === undefined || raw.aggregate === null ? {} : { aggregate: raw.aggregate as NonNullable<SourceInput['aggregate']> }),
+      ...(Array.isArray(raw.group_by) ? { groupBy: raw.group_by as string[] } : {}),
+    };
+    const file = join(this.#env.dataDir, 'tenants', tenant.key, 'site.db');
+    const actor = this.#actor(session);
+    const report = draft ? saveSourceDraft(file, input, actor) : publishSource(file, input, actor);
+    reply.header('cache-control', 'no-store');
+    reply.send(draft ? { tenant: tenant.key, draft: report } : { tenant: tenant.key, published: report });
   }
 
   #tablesIndex(reply: FastifyReply, tenant: Tenant): void {

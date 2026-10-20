@@ -11,6 +11,8 @@ export interface PageRecord {
   id: number;
   path: string;
   title: string;
+  /** `draft` | `published` | `hidden`. Only O-29's preview may read a draft. */
+  status: string;
   template: string;
   bodyHtml: string;
   bodyCss: string;
@@ -21,6 +23,7 @@ interface Row {
   id: number;
   path: string;
   title: string;
+  status: string;
   template: string;
   body_html: string;
   body_css: string;
@@ -53,7 +56,7 @@ export function normalisePagePath(rawUrl: string): string | null {
 export function loadPage(db: Database.Database, path: string): PageRecord | null {
   const row = db
     .prepare(
-      `SELECT id, path, title, template, body_html, body_css, updated_at
+      `SELECT id, path, title, status, template, body_html, body_css, updated_at
          FROM cms_page
         WHERE path = ? AND status = 'published'
         LIMIT 1`,
@@ -64,6 +67,7 @@ export function loadPage(db: Database.Database, path: string): PageRecord | null
     id: row.id,
     path: row.path,
     title: row.title,
+    status: row.status,
     template: row.template,
     bodyHtml: row.body_html,
     bodyCss: row.body_css,

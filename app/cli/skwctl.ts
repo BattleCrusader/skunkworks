@@ -41,6 +41,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ARGON2_OPTIONS, Semaphore } from '../admin/auth.ts';
+import { verifyAgainstSeal, utcDay } from '../audit/chain.ts';
+import { sealDay } from '../audit/scheduler.ts';
 import { SESSION_ABSOLUTE_MS } from '../admin/session.ts';
 import { TOTP_PARAMETERS, groupOf, newPassword, newSecret, otpauthUri } from '../admin/totp.ts';
 import { openAdminWrite } from '../db/classes.ts';
@@ -66,6 +68,8 @@ type Reason =
   | 'PASSWORD_TOO_SHORT'
   | 'ADMIN_ORIGIN_UNSET'
   | 'ENROLMENT_EXISTS'
+  | 'AUDIT_SEAL_MISMATCH'
+  | 'AUDIT_SEAL_FAILED'
   | 'USAGE';
 
 export class Refusal extends Error {
@@ -508,16 +512,80 @@ export async function resetPassword(ctx: CliContext, flags: Args['flags']): Prom
   return EXIT_OK;
 }
 
+/**
+ * `skwctl audit seal|verify` — the operator's half of §9.6.
+ *
+ * `seal` writes one seal per active tenant for a UTC day (default today) and exits
+ * non-zero if any tenant could not be sealed. `verify` walks the chain and compares
+ * count and head to the seal; a mismatch is `SKW_E_SEC_AUDIT_SEAL` on stderr and
+ * exit 1, never a warning.
+ */
+async function audit(ctx: CliContext, verb: string | undefined, flags: Map<string, string | true>): Promise<number> {
+  const dayFlag = flags.get('day');
+  const day = typeof dayFlag === 'string' ? dayFlag : utcDay();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Refusal('USAGE', '--day is YYYY-MM-DD');
+  const tenantFlag = flags.get('tenant');
+  const tenant = typeof tenantFlag === 'string' ? tenantFlag : undefined;
+
+  if (verb === 'seal') {
+    const report = sealDay({ dataDir: ctx.env.dataDir, day, ...(tenant === undefined ? {} : { tenant }) });
+    let refused = 0;
+    for (const result of report.tenants) {
+      if (result.error !== undefined) {
+        refused += 1;
+        ctx.stderr(`seal: tenant=${result.key} day=${report.day} REFUSED ${result.error.code}: ${result.error.message}`);
+        continue;
+      }
+      ctx.stdout(
+        `seal: tenant=${result.key} day=${report.day} rows=${result.rows} head=${result.head}${result.created ? '' : ' (existing)'}`,
+      );
+    }
+    if (refused > 0) {
+      throw new Refusal('AUDIT_SEAL_MISMATCH', `${refused} tenant(s) could not be sealed for ${day}`);
+    }
+    return EXIT_OK;
+  }
+
+  if (verb === 'verify') {
+    if (tenant === undefined) throw new Refusal('USAGE', 'audit verify needs --tenant <key>');
+    const control = new Database(ctx.controlPath);
+    try {
+      const row = control.prepare('SELECT key FROM tenant WHERE key = ?').get(tenant) as { key: string } | undefined;
+      if (row === undefined) throw new Refusal('TENANT_UNKNOWN', `no tenant ${tenant}`);
+      const db = openAdminWrite(join(ctx.env.dataDir, 'tenants', tenant, 'site.db'));
+      try {
+        const report = verifyAgainstSeal(db, control, tenant, day);
+        ctx.stdout(
+          `verified: tenant=${tenant} day=${day} rows=${report.rows} head=${report.head} sealed_at=${report.seal?.sealed_at ?? ''}`,
+        );
+      } catch (err) {
+        const e = err as { code?: string; message?: string };
+        throw new Refusal('AUDIT_SEAL_MISMATCH', `${e.code ?? 'SKW_E_SEC_AUDIT_SEAL'}: ${e.message ?? String(err)}`);
+      } finally {
+        db.close();
+      }
+    } finally {
+      control.close();
+    }
+    return EXIT_OK;
+  }
+
+  throw new Refusal('USAGE', 'usage: skwctl audit (seal | verify) [--tenant <key>] [--day YYYY-MM-DD]');
+}
+
 export async function run(argv: readonly string[], ctx: CliContext): Promise<number> {
   if (argv.length === 0) {
     throw new Refusal(
       'USAGE',
-      'usage: skwctl admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>]',
+      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal | verify) [--tenant <key>] [--day YYYY-MM-DD]>',
     );
   }
   const args = parseArgs(argv);
+  if (args.command[0] === 'audit') {
+    return audit(ctx, args.command[1], args.flags);
+  }
   if (args.command[0] !== 'admin') {
-    throw new Refusal('USAGE', `unknown command ${args.command.join(' ') || '(none)'}; expected "admin <verb>"`);
+    throw new Refusal('USAGE', `unknown command ${args.command.join(' ') || '(none)'}; expected "admin <verb>" or "audit <verb>"`);
   }
   const verb = args.command[1];
   switch (verb) {

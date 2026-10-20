@@ -28,7 +28,11 @@ import {
   runMigrations,
   targetVersion,
 } from './db/migrate.ts';
-import { loadPage, normalisePagePath, pageMiss } from './render/page.ts';
+import { normalisePagePath, pageMiss } from './render/page.ts';
+import { createRenderData } from './render/data.ts';
+import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
+import { SourceCache } from './sources/cache.ts';
+import { startSealScheduler, type SealSchedulerHandle } from './audit/scheduler.ts';
 import { TenantMap } from './tenancy/cache.ts';
 import { listenerFor } from './tenancy/listener.ts';
 import { normaliseHost } from './tenancy/normalise-host.ts';
@@ -52,6 +56,10 @@ export interface AppHandle {
   tenants: TenantMap;
   /** The admin surface (S2a), so a gate can inspect a session row without a socket. */
   admin: AdminSurface;
+  /** The per-process source cache (§6.2), so a gate can assert a hit. */
+  sources: SourceCache;
+  /** The daily seal job (§9.6); stopped by `close()`. */
+  seals: SealSchedulerHandle;
   close(): Promise<void>;
 }
 
@@ -130,10 +138,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
 
   const tenants = new TenantMap(controlPath, { busyTimeoutMs: env.dbBusyTimeoutMs });
   const pool = new RenderPool(env.dbPoolMax, env.dbBusyTimeoutMs);
+  // §6.2's result cache: one per process, keyed by tenant+source+specRev+params.
+  const sources = new SourceCache();
   const sitePath = (key: string): string => join(tenantsDir, key, 'site.db');
 
   // --- S2a: the admin surface (§9.1, §9.2) --------------------------------
   const admin = new AdminSurface({ env, controlPath, tenants, adminHost });
+
+  // --- S2e: one seal per tenant per UTC day (§9.6) -------------------------
+  // The timer is unref'd, so it never keeps the process alive; `close()` stops it.
+  const seals = startSealScheduler({ dataDir });
 
   // --- step 5: component registry, one transaction per tenant --------------
   const registry = readComponentRegistry(schemaDir);
@@ -247,12 +261,24 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     // §4.3 (E-4): a URL that cannot name a path is refused before a route runs.
     if (path === null) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'the request path is not a page path');
     const db = getSiteDb(ctx.tenant);
-    const page = loadPage(db, path);
-    if (page === null) throw pageMiss();
+    // O-29: `?preview=<token>` is the one way a draft reaches a browser. The token
+    // is bound to this tenant and this normalised path, and `loadPageForRender`
+    // accepts it only for `status='draft'`.
+    const previewToken = queryParam(req.url, PREVIEW_PARAM);
+    const loaded = loadPageForRender(db, {
+      tenantKey: ctx.tenant.key,
+      path,
+      token: previewToken ?? null,
+      sessionKey: env.sessionKey,
+    });
+    if (loaded.page === null) throw pageMiss();
+    const page = loaded.page;
+    // §6: templates receive resolved data through one accessor and never a handle.
+    const data = createRenderData(db, { tenantKey: ctx.tenant.key, cache: sources, audience: loaded.preview ? 'preview' : 'render' });
     const handler = await astroHandler();
     reply.raw.setHeader('cache-control', 'no-store');
     reply.hijack();
-    await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page });
+    await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page, preview: loaded.preview, data });
   }
 
   app.setNotFoundHandler(async (req, reply) => {
@@ -345,17 +371,26 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   }
 
   async function close(): Promise<void> {
+    seals.stop();
     pool.close();
     tenants.close();
     await app.close();
   }
 
-  return { app, env, tenants, admin, close };
+  return { app, env, tenants, admin, sources, seals, close };
 }
 
 function pathnameOf(url: string): string {
   const q = url.indexOf('?');
   return q === -1 ? url : url.slice(0, q);
+}
+
+/** One query value, decoded; `undefined` when absent or malformed. */
+function queryParam(url: string, name: string): string | undefined {
+  const q = url.indexOf('?');
+  if (q === -1) return undefined;
+  const value = new URLSearchParams(url.slice(q + 1)).get(name);
+  return value === null || value === '' ? undefined : value;
 }
 
 function sendError(reply: FastifyReply, err: unknown, requestId: string): void {

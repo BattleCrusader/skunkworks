@@ -59,6 +59,13 @@ export const HTTP: Record<string, number> = {
   SKW_E_SEC_AUDIT_SEAL: 500,
   // RT — the render plane (§4.3 E-4): a resolved tenant with no page row
   SKW_E_RT_PAGE_NOT_FOUND: 404,
+  // §6.1/§6.2 (S2e): the Data Source plane. UNKNOWN covers an unknown key, an
+  // unregistered relation, a column outside the allowlist and C-18's `function`
+  // kind; UNINDEXED covers a where/order/group_by column with no usable index and
+  // a plan containing SCAN; BUDGET covers `cost_ms_max` and `group_by` arity.
+  SKW_E_RT_SOURCE_UNKNOWN: 422,
+  SKW_E_RT_SOURCE_UNINDEXED: 422,
+  SKW_E_RT_SOURCE_BUDGET: 422,
 };
 
 /**
