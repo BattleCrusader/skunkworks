@@ -1,0 +1,12 @@
+{
+  "id": "actseq",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "main": "index.mjs",
+  "description": "S5's activation-counter witness: the module reads the `?act=` its own URL carried at import time and hands it back through `page.head`, so a gate can prove the number in the URL, the number on the entry and the number in the row are one number — across a process boundary.",
+  "hooks": ["page.head"],
+  "capabilities": [],
+  "tables": [],
+  "settings": [],
+  "tests": { "entry": "index.mjs", "timeout_s": 5 }
+}

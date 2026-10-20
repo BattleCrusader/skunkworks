@@ -310,6 +310,9 @@ range without writing the E-24…E-33 pointer lines at the sections those errata
 shortfall is reported here and in §7. **This is the honest reading of "verify": the item was checked, and
 it is not applied.**
 
+> **Superseded — see §9.3.** The E-24…E-33 pointer lines were written and `POINTERS` was raised to
+> `range(1, 34)` in the S4-completion pass; `make verify-frozen` reports `pointers: 33/33`.
+
 ---
 
 ## 7. What remains before S4 can be GO
@@ -336,6 +339,9 @@ it is not applied.**
 7. **The remaining S4 rows that this pass did not touch** — the editor, export and install rows of §16 S4
    are unchanged and were green before it; this report claims nothing about them.
 
+> **Items 1, 2, 3 and 5 of this list are closed in §9**, and item 4 (the memory measurement) is measured
+> there. Item 6's SELECT is now a stated budget with a measured number (§9.5).
+
 ---
 
 ## 8. The commands this report rests on
@@ -360,3 +366,219 @@ it is not applied.**
 after. Both are load artefacts of an HTTP sampler and a child-process-spawning suite on a box at load 44–72;
 neither touches the plugin model, and neither was skipped, weakened or re-run until green inside a single
 `make test` invocation. The two green runs are the numbers quoted above.
+
+---
+
+## 9. S4-completion pass — the call sites, the counter, the pointer lines, the screen
+
+**Date:** 2026-10-21, second pass. **Result: 5 of 5 items done.** `make test` exits **0** at
+**575/575 node tests, 27/27 claims, frozen PASS (`pointers: 33/33`), `verify-dist` 6/6**; the node
+suite reports **148.25 s**, the whole gate ~3 min, at **load average 14.10 (1 min) at the start and
+29.37 (5 min 30.51) at the end** — every timing number below is quoted with the load beside it.
+Nothing was committed. Three new test files (**21 cases**: H1–H12, A1–A4, N1–N4/N3b), one child
+helper and two fixture packages are added; no gate was weakened, no test was skipped, and
+`SKW_ALLOW_SKIP` was never set.
+
+The one sentence that matters: **all twelve hooks now have a call site, and each one is proved to
+fire with the arguments §13.3.4 names and to change the value the host was about to use.** The
+dispatch primitive existed before this pass; what did not exist was the product calling it.
+
+### 9.1 Item 1 — the ten host call sites of the twelve hooks
+
+`app/plugins/site.ts` is new: one attach point (`attachPluginRuntime`, called by `buildApp` after
+step 6) and two functions, `filterSite` / `actionSite`, that every host module uses. A filter with no
+callbacks is **not a dispatch** — the value passes through with no snapshot, no counter and no
+allocation — which `H12` proves by detaching the runtime mid-flight and re-rendering the page.
+
+| Hook | Kind | Call site (file: what it does there) | Case |
+|---|---|---|---|
+| `content.render.html` | filter | `app/main.ts` `serveNotFound` — replaces `page.bodyHtml` | H2 |
+| `page.head` | filter | `app/main.ts` `serveNotFound` → `head` local → `app/render/pages/*.astro` → `shells/page.astro` `<head>` | H1 |
+| `asset.url` | filter | `app/main.ts` `serveNotFound` pre-pass (`assetUrlsIn`) → `editor/render.ts` `urlFor` → `render/body.ts` → emitted `src`/`href` | H3 |
+| `form.validate` | filter | `app/forms/intake.ts` `submitCoreForm` — core's verdict is the value it may only worsen (`coreRefused`) | H4 |
+| `form.submitted` | action | `app/forms/intake.ts` — after the `cms_form_submission` insert, with the row id | H5 |
+| `admin.menu` | filter | `app/admin/routes.ts` `#tenantHome` — core's items in, a declared screen's entry out | H6 |
+| `mail.template` | filter | `app/plugins/context.ts` `facade['mail.send']` — the host's only mail path, before `hostOp('mail.send')` | H7 |
+| `download.redeemed` | action | `app/download/plane.ts` `redeem` — after the code verified, before the 303 | H8 |
+| `admin.login` | action | `app/admin/routes.ts` `#login` — after authentication, `{tenant, operatorId}` | H9 |
+| `page.rendered` | action | `app/main.ts` `serveNotFound` — after the response is written, `{path, status, ms}` | H10 |
+| `plugin.enabled` | action | `app/plugins/runtime.ts` `load` step 10 — after `registry.commit` and the row update | H11 |
+| `plugin.disabled` | action | `app/plugins/runtime.ts` `disable` — before the prune, on the callbacks it had | H11 |
+
+**Two things had to be built to have a real call site, and both are product, not harness:**
+
+1. **Core form intake** (`app/forms/intake.ts`, `POST /f/<key>`). §8.6/O-30 specified it and nothing
+   in the tree implemented it, so `form.validate`/`form.submitted` had nowhere to run. The route is
+   O-30's contract in O-30's order: 16 KiB cap, 5 per 10 min per hashed address, intent token
+   `_pt` (HMAC over `tenant|form|ts`, 30 min, 1.5 s minimum fill), honeypot `_hp` → `202` with **no
+   row and no hook**, core's rules first, then the filter, then the row, then the action.
+2. **`page.head` needed a shell that accepts a head fragment.** `shells/page.astro` gained an
+   optional `head` prop rendered **inside `<head>` and nowhere else**; the filter has no parameter
+   for the body, the status or a header, and the 4 KiB cap is enforced by the bus (`page.head` →
+   `bad_value` above the limit). The fragment is emitted adjacent to `</title>` on the same source
+   line: a new line would have changed the served bytes for **every** page on a box with no plugin,
+   which `export-targets.test.ts` T1/T2 caught (it compares the static tree to the served page byte
+   for byte). That failure is recorded here because it is the reason the shell looks odd.
+
+**The fixture** (`test/fixtures/plugins/hooksall`: twelve declared hooks, one table, one screen)
+appends a JSONL trace line per dispatch and returns a value visibly different from the one it was
+handed. `H7` is the return-value witness that a hook's *effect* cannot be faked: the fixture pads
+the vars object it returns when it sees `pad: 'yes'`, and the host's own 32 KiB measure refuses the
+send (`SKW_E_PL_MAIL: vars exceed 32 KiB`) — the same call without the pad is `{queued: true}`.
+
+**One rule was wrong, and the gate found it.** `H6` failed with core's entire menu missing: the
+`admin.menu` filter in `hooks.ts` kept **only** entries matching a declared screen, so the first
+plugin to implement the hook deleted the operator's navigation. §13.3.4's row says an entry
+"pointing anywhere else is dropped" — it does not say core's own entries have to be justified by the
+filter. The rule now applies to what the filter **added** (identity by handed-in href), and core's
+items survive; `H6` asserts both halves (a declared screen is kept, an undeclared href is dropped,
+`/pages` is still there).
+
+### 9.2 Item 2 — `activation_seq` as a column (E-31 item 5)
+
+The counter was process-wide. Inside one process that is the whole of the ESM cache story, and L9
+still proves it; **across a restart it was a guess**, because a new process starts at zero, hands
+`import()` the URL the previous process used, and gets the namespace that process already
+evaluated.
+
+- `schema/site.sql` at **v4** (`scripts/model/gen_schema.py`, `SCHEMA_VERSION = 4`):
+  `activation_seq INTEGER NOT NULL DEFAULT 0 CHECK(activation_seq >= 0)` on
+  `cms_plugin_installed`, and `tenant.db_version` now defaults to 4.
+- `schema/r4-amendments.sql`: one `ALTER TABLE … ADD COLUMN`, `PRAGMA user_version = 4`, applied
+  outside a table rebuild. Wired into `app/db/migrate.ts` as the `at === 3` step.
+- `runtime.enable` reads the row, asks `registry.nextActivation(tenant, id, floor)` for
+  `max(process, row) + 1`, and step 10 writes that number back in the same statement that sets
+  `enabled = 1`. The URL, the entry and the row cannot disagree, and a refused enable consumes the
+  number (the notices gate `N3` asserts that: the retry after a revocation is activation 2, not 1) —
+  a counter that re-issued a URL the cache had seen would be the failure it exists to prevent.
+- `verify_claims.py` check 20 now runs the chain **v1 → r2 → r3 → r4** and asserts convergence on
+  the v4 DDL (27/27 claims green); `test/migrate.test.ts` targets v4; `scripts/dist-gate.mjs` D4
+  compares the migrated file against `schema/site.sql`'s own `user_version` instead of a literal 3,
+  so the next bump cannot read as a build failure; `docs/sds/01-verification.md` and SDS §4/§17's
+  column counts move 297 → **298** and 228 → **229**.
+
+**The restart proof is two OS processes, not a simulation** (`test/plugin-activation-seq.test.ts`):
+the fixture package reads the `?act=` its own `import.meta.url` carried and returns it through
+`page.head`, so the number in the URL and the number the module saw are the same observation.
+
+```
+A1  the DDL carries activation_seq, DEFAULT 0, NOT NULL; user_version = 4
+A2  enable -> entry 1, module saw act=1, row 1; disable -> enable -> entry 2, act=2, row 2
+A3  child process #1: entry 3, head <!--act:3-->, row 3
+    child process #2: entry 4, head <!--act:4-->, row 4
+A4  a v3 file (column dropped, user_version 3) migrates to v4, keeps its row, activation_seq = 0
+```
+
+### 9.3 Item 3 — the missing pointer lines (E-29's range, E-24…E-33)
+
+Four passes reported this and left it. It is closed: each erratum now has a pointer line at the
+section it amends, and only then was the range raised.
+
+| Erratum | Pointer line at |
+|---|---|
+| E-24 | §6.2 (the `query` grammar) |
+| E-25, E-28 | §16 (delivery slices — the gate set and the test-timeout row) |
+| E-26 | §7.4 (the token) |
+| E-27 | §7.5 (watermarking) |
+| E-29 | §12.5 (TLS) |
+| E-30 | §8.4 (containment) |
+| E-31 | §3 (already) and §13.3 |
+| E-32 | §8.6, §13.3, §15.2 |
+| E-33 | §13.1a (already) |
+
+`scripts/model/check_frozen.py`: `POINTERS = tuple(f"E-{n}" for n in range(1, 34))`, with the mapping
+in a comment so the next reader knows where each line is. Output:
+
+```
+$ python3 scripts/model/check_frozen.py | tail -3
+§16 S2 rows: 13/13; required strings: 5/5; pointers: 33/33
+
+PASS the SDS quotes the register
+```
+
+### 9.4 Item 4 — the runtime-notice screen
+
+`GET /admin/t/<key>/plugins` (and the tenant home's `Plugins (N)` entry) renders what
+`runtime.noticesFor(tenant)` and the rows actually say:
+
+- **Notices** — plugin, code, message, when. Populated by a failed load, a three-in-60-s
+  auto-disable, and a revocation refusal.
+- **Loaded now** — the registry's entries with their `activation_seq` and hook list.
+- **Installed** — the rows with `enabled`, `activation_seq`, and a state that distinguishes
+  `enabled, loaded` from `enabled, NOT loaded — failed since boot`.
+- **Re-enable** — a `POST /admin/t/<key>/plugins/enable` form per package that is not running,
+  session CSRF in a hidden field and the `Origin` check in front of it, calling
+  `runtime.enable(tenant, id, { ackFailed: true })` (the operator's acknowledgement is the one thing
+  §13.3.6 requires before a `failed` row is retried) and redirecting with a flash that names the
+  activation number.
+
+**A second defect surfaced while building it**: the notice's `code` was `SKW_E_PL_LOAD` for *every*
+load-time refusal, because `runtime.load` parsed the code out of the error **message** and an
+`AppError`'s message is prose. A revocation and a broken module were indistinguishable on the screen
+an operator acts on. `err instanceof AppError ? err.code : code(message)` fixes it, and `N1` asserts
+`SKW_E_PL_LOAD` for `badshape` **and** `SKW_E_PL_REVOKED` with the revocation reason for `actseq`.
+
+Proof (`test/admin-plugin-notices.test.ts`, 5/5):
+
+```
+N1  data-notice="badshape" + SKW_E_PL_LOAD + "does not export activate"
+    data-notice="actseq"  + SKW_E_PL_REVOKED + "S5 notices gate"
+N2  two POST forms, name="plugin", name="csrf" = the session's token
+N4  the tenant home nav reads Plugins (2)
+N3  un-revoke (both sources) -> submit the form -> 303 + "actseq enabled (activation 2, hooks: page.head)"
+    -> screen says "enabled, loaded" -> GET /pricing carries <!--act:2-->
+N3b no CSRF token -> 403 SKW_E_SEC_CSRF (the field is not a bypass)
+```
+
+`#assertCsrf` now also accepts the `csrf` **body field**, because a JS-free HTML form cannot set
+`X-CSRF-Token` and the admin surface has no JavaScript by design. The token is still the session's
+own HMAC and `#assertOrigin` still runs first; `N3b` is the negative control.
+
+### 9.5 Item 5 — the two numbers §13.4 asked for
+
+`scripts/measure/plugin-budget.ts` (a measurement tool, deliberately **not** in `make test`), run
+three times at load **8.74 (1 min) / 23.3 (5 min)**:
+
+```
+instances 12   heap per module instance (median) 25,504 B   (25 KiB; total heap delta 397,928 B)
+rss delta total 950,272 B      sync() 730.6–767.3 us/call      enabled-rows SELECT 3.0 us/call
+```
+
+- **§13.4 item 6:** one module instance per enabled (tenant, plugin) pair costs **≈25 KiB of heap**
+  for the reference package (12 tenants, forced GC, delta across the eleventh activation).
+  That is the number the spec asked to measure instead of assume.
+- **`runtime.sync`'s one SELECT per plugin request** is now a stated budget: **≈0.75 ms per
+  plugin-bearing request** at load 8.74, of which the SELECT is **3.0 µs**. The remaining 99.6% is
+  `openAdminWrite()` — a fresh SQLite connection per call. That is the budget as it stands, and it
+  is the obvious next optimisation (a per-tenant cached handle); it is named in §9.6 rather than
+  done here, because a connection-lifetime change under a green gate on a loaded box is a change
+  that deserves its own failing test first.
+
+### 9.6 What remains before S4 can be GO
+
+1. **`runtime.sync` pays for a connection per request** (~0.75 ms, 3 µs of it the query — §9.5). A
+   stated cost, not a hidden one, and the one performance item this pass leaves open.
+2. **The core form intake has no renderer.** `POST /f/<key>` is real, rate-limited, token-checked
+   and hook-wired, but nothing generates the markup that embeds `_pt` — the component registry
+   declares `components/form.ts` and that file has never existed (it predates this pass). Until it
+   does, a core form is authored by hand and must carry a minted token.
+3. **`plugin.enabled`/`plugin.disabled` payloads are `{tenant}`** (plus `plugin` on disable) exactly
+   as §13.3.4's table says; nothing dispatches `page.head` for a *preview* render distinct from a
+   public one, which the spec does not ask for and this pass did not invent.
+4. **The §16 S4 rows this pass did not touch** — the editor, export and install rows — are unchanged
+   and were green before it; this report claims nothing new about them.
+5. **Nothing is committed.** The tree carries the work; the branch is the caller's to review.
+
+### 9.7 The commands this section rests on
+
+| What | Command | Result |
+|---|---|---|
+| the whole gate | `make test` | **exit 0** — 575/575 tests, 148.25 s node suite, 27/27 claims, `pointers: 33/33`, dist 6/6; load 14.10 → 29.37 |
+| the whole gate, recorded | `hermes verify --json` | **`ok: true`** — bootstrap, build, typecheck, `npm run test` (575/575, 152.7 s), `make test` (exit 0, dist 6/6), `make typecheck`, `make build`, readiness `200` on `http://127.0.0.1:4321/`; load 37.36 at the end |
+| the hook call sites | `node --test test/plugin-hooks-wired.test.ts` | 12/12 (H1–H12) |
+| the counter, across processes | `node --test test/plugin-activation-seq.test.ts` | 4/4 (A1–A4) |
+| the notices screen | `node --test test/admin-plugin-notices.test.ts` | 5/5 (N1–N4, N3b) |
+| the pointer lines | `python3 scripts/model/check_frozen.py` | `pointers: 33/33`, PASS |
+| the schema chain | `python3 scripts/model/verify_claims.py` | 27/27, check 20 now v1→v4 |
+| the built artefact | `make build && make verify-dist` | 6/6, D4 at `user_version 4` |
+| the budget | `node --expose-gc scripts/measure/plugin-budget.ts` | 25 KiB/instance; sync 0.75 ms, SELECT 3.0 µs |

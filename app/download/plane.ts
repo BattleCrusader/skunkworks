@@ -48,6 +48,7 @@ import {
   verifyWebhookSignature,
 } from './code.ts';
 import { consumeUse, type ConsumeResult } from './ledger.ts';
+import { actionSite } from '../plugins/site.ts';
 import { WatermarkStore, type StampResult, type WatermarkDeps } from './render.ts';
 import { stampable } from './watermark.ts';
 import {
@@ -362,8 +363,9 @@ ${error}
       // `consumeUse` is seen as a continuation and spends nothing. `iat`, `exp` and `cexp`
       // are re-stamped every mint: the authority to mint is the **code**, never the token.
       const jti = this.#reusableJti(db, row.id, row.asset_id as number, iph, uah, atMs, grace);
+      const tokenJti = jti ?? randomBytes(16).toString('hex');
       const token = mintToken(this.#deps.env.downloadTokenKey, {
-        jti: jti ?? randomBytes(16).toString('hex'),
+        jti: tokenJti,
         cid: row.id,
         aid: row.asset_id as number,
         iat: nowS,
@@ -377,6 +379,18 @@ ${error}
 
       // E-26: `Max-Age = cexp − iat`. The cookie lives as long as the *narrower*
       // permission; it is the authorisation inside it that dies in ten minutes.
+      //
+      // §13.3.4, `download.redeemed` — an **action**, `{tenant, codeId, assetKey, jti}`,
+      // dispatched after the code verified and before the redirect. Observe only: there is no
+      // `download.authorize` and no return value here that could grant a download, which is
+      // the absence that stops a plugin bug becoming a revenue leak.
+      const assetKey = (db.prepare('SELECT key FROM cms_asset WHERE id = ?').get(row.asset_id) as { key: string } | undefined)?.key ?? '';
+      await actionSite('download.redeemed', tenantKey, {
+        tenant: tenantKey,
+        codeId: row.id,
+        assetKey,
+        jti: tokenJti,
+      });
       reply.header('set-cookie', cookieHeader(tenantKey, token, Math.max(grace, TOKEN_TTL_S)));
       reply.header('cache-control', 'no-store');
       reply.code(303).header('location', `/d/${encodeURIComponent(tenantKey)}/file`).send();

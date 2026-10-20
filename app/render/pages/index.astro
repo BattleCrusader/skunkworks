@@ -6,7 +6,9 @@ interface Locals {
   tenantKey: string;
   path: string;
   page: { title: string; bodyHtml: string; bodyCss: string; path: string };
+  /** §13.3.4 `page.head`: passed through from the app, never assembled here. */
+  head?: string;
 }
-const { tenantKey, page } = Astro.locals as unknown as Locals;
+const { tenantKey, page, head } = Astro.locals as unknown as Locals;
 ---
-<PageShell page={page} tenantKey={tenantKey} />
+<PageShell page={page} tenantKey={tenantKey} head={head} />

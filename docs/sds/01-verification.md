@@ -9,7 +9,7 @@ Command: `make test` (→ `verify-gitignore`, `verify-schema`, `verify-claims`, 
 ```
 PASS  13 must-ignore + 7 must-keep = 20 paths behave as intended
 control.sql: v2, 8 tables, 69 columns
-site.sql:    v3, 27 tables, 228 columns
+site.sql:    v4, 27 tables, 229 columns
 png:         docs/debate/diagrams/r1-data-model.png (183466 bytes)
 png:         docs/sds/diagrams/er-data-model.png (183466 bytes)
 control.db: v2, 8 tables, 8 explicit indexes, 5 FK clauses, 0 triggers, integrity=ok, fk_check=0 violations, journal=wal, app_id=0x534b5700
@@ -146,7 +146,7 @@ PASS  16 export projection is the reproducible unit            27/27 tables clas
 PASS  17 argon2 parameter cost on this box                     m=19456,t=2,p=1 min=23.3 med=24.1ms; m=65536,t=3,p=1 min=128.7 med=171.5ms (7.1x)
 PASS  18 an unanchored audit chain proves nothing              tamper row 2 + recompute chain -> unanchored chain verifies (True); anchored head mismatches (7885b109.. -> c57f64d3..)
 PASS  19 delete-guard cost, indexed vs not                     200k referencing rows, unreferenced delete: no index 7.92 ms, indexed 0.023 ms (n=5 each)
-PASS  20 migration chain v1->v3 converges on site.sql          27 tables / 5 triggers identical on both paths; user_version 3; codes-in-file -> REJECTED (legacy_12_char_codes_have_no_v3_selector)
+PASS  20 migration chain v1->v4 converges on site.sql          27 tables / 5 triggers identical on both paths; user_version 4 (E-31 item 5: activation_seq); codes-in-file -> REJECTED (legacy_12_char_codes_have_no_v3_selector)
 PASS  21 selector seek + argon2 verifier (C-6)                 5000 issued, 8 selector collisions resolved by retry; seek p50=5.42us (plan SEARCH, 1000 lookups); argon2 m=19456,t=2 real=24.7ms dummy=24.5ms; duplicate -> UNIQUE constraint failed: cms_download_code.code_selector
 PASS  22 redemption on the v3 tables (C-7)                     24 concurrent threads, one jti -> uses=1, first rows=1; cap 2 reached -> J3 outcome=denied_quota uses=2 (0 rows updated); Range row writes=1, uses=2
 PASS  23 export projection is a union over the live DB (C-5)   29/29 live tables classified (core 27, u_ 1, p_ 1); modes used=['empty', 'filtered', 'rows']; manifest without export -> SKW_E_PL_NO_EXPORT_CLASS for ['p_contact_message']
@@ -178,7 +178,7 @@ PASS the SDS quotes the register
 | Quantity | Value |
 |---|---|
 | Entities in `er-data-model.puml` == `CREATE TABLE` in both `.sql` files | 35 |
-| `site.sql` (v3) | 27 tables, 228 columns |
+| `site.sql` (v4) | 27 tables, 229 columns |
 | `control.sql` (v2) | 8 tables, 69 columns |
 | Parity mechanism | one spec (`scripts/model/gen_schema.py`) emits both DDL files and both `.puml` files; check 1 compares the entity set against the `CREATE TABLE` set and fails on any difference |
 | Column-level parity | same spec, so a column cannot exist in one artefact only; the migration chain is separately proved to converge on the target (check 20) |

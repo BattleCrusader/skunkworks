@@ -374,7 +374,16 @@ function d4() {
   } finally {
     site.close();
   }
-  assert(version === 3, `tenants/acme/site.db is at user_version ${version}, expected 3`);
+  // The expected version is the DDL the image ships, not a number copied into this file: a
+  // schema bump that forgot this gate would otherwise read as a build failure rather than as
+  // the drift it is. `schema/` is not emitted by `tsc` (the DDL is not TypeScript), so this is
+  // the same `schema/site.sql` the migrate child resolves through `findProjectRoot()`.
+  const ddl = readFileSync(join(REPO, 'schema', 'site.sql'), 'utf8');
+  const expected = Number(/PRAGMA user_version = (\d+);/.exec(ddl)?.[1]);
+  assert(
+    version === expected,
+    `tenants/acme/site.db is at user_version ${version}, expected ${expected} (dist/schema/site.sql)`,
+  );
   return `--tenant all exit 0, tenants/acme/site.db at user_version ${version}`;
 }
 

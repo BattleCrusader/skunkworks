@@ -117,10 +117,16 @@ export class PluginRegistry {
    * The next activation number for a (tenant, plugin). Read *before* the import so the URL
    * carries the number the entry will be stored with: the cache key and the row must agree,
    * or "re-enable got a new module instance" would be a claim about two different counters.
+   *
+   * `floor` is the durable half (E-31 item 5 — `cms_plugin_installed.activation_seq`). A new
+   * process starts with an empty map; without the floor it would hand `import()` the URL the
+   * previous process used and get the already-evaluated namespace back. The number is
+   * `max(process, row) + 1`, so two facts can never disagree: the row is never behind the
+   * process, and a restart never repeats a number.
    */
-  nextActivation(tenant: string, pluginId: string): number {
+  nextActivation(tenant: string, pluginId: string, floor = 0): number {
     const key = `${tenant}\u0000${pluginId}`;
-    const next = (SEQUENCES.get(key) ?? 0) + 1;
+    const next = Math.max(SEQUENCES.get(key) ?? 0, floor) + 1;
     SEQUENCES.set(key, next);
     return next;
   }

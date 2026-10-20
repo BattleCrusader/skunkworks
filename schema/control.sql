@@ -12,7 +12,7 @@ CREATE TABLE tenant (
   mode TEXT NOT NULL CHECK(mode IN ('production','demo','internal')),
   status TEXT NOT NULL DEFAULT 'provisioning' CHECK(status IN ('provisioning','active','suspended','archived')),
   display_name TEXT NOT NULL CHECK(length(display_name) BETWEEN 1 AND 120),
-  db_version INTEGER NOT NULL DEFAULT 3 CHECK(db_version >= 1),
+  db_version INTEGER NOT NULL DEFAULT 4 CHECK(db_version >= 1),
   storage_quota_bytes INTEGER NOT NULL DEFAULT 1073741824 CHECK(storage_quota_bytes > 0),
   request_budget_per_min INTEGER NOT NULL DEFAULT 600 CHECK(request_budget_per_min > 0),
   demo_expires_at TEXT,

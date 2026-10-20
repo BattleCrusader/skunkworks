@@ -319,6 +319,9 @@ V1_SITE = os.path.join(ROOT, "schema/history/v1-baseline.sql")
 V1_CONTROL = os.path.join(ROOT, "schema/history/v1-control-baseline.sql")
 AMENDMENTS = os.path.join(ROOT, "schema/r2-amendments.sql")
 AMENDMENTS3 = os.path.join(ROOT, "schema/r3-amendments.sql")
+# E-31 item 5: v4 adds `cms_plugin_installed.activation_seq`. The chain has to reach it or this
+# check would compare a v3 chain against a v4 DDL and call the difference "convergence".
+AMENDMENTS4 = os.path.join(ROOT, "schema/r4-amendments.sql")
 CONTROL_R2 = os.path.join(ROOT, "schema/control-r2.sql")
 CONTROL_R3 = os.path.join(ROOT, "schema/control-r3.sql")
 CONTROL_R4 = os.path.join(ROOT, "schema/control-r4.sql")
@@ -897,16 +900,16 @@ def compare_planes(chain, fresh, label):
 
 
 def migration_chain_converges():
-    """C-6..C-23 + E-3/E-6/E-14: v1 -> r2 -> r3 lands on exactly the schema site.sql generates,
-    on both planes, compared by table text (CHECKs) and trigger body, not by name; a v2 file with
-    an access code refuses to migrate, and the refusal names its reason."""
+    """C-6..C-23 + E-3/E-6/E-14 + E-31: v1 -> r2 -> r3 -> r4 lands on exactly the schema site.sql
+    generates, on both planes, compared by table text (CHECKs) and trigger body, not by name; a v2
+    file with an access code refuses to migrate, and the refusal names its reason."""
     chain, _ = fresh("conv_chain.db")
-    for sc in (V1_SITE, AMENDMENTS, AMENDMENTS3):
+    for sc in (V1_SITE, AMENDMENTS, AMENDMENTS3, AMENDMENTS4):
         apply_chain(chain, sc)
     fresh_db, _ = fresh("conv_fresh.db")
     apply_chain(fresh_db, SITE_SQL)
-    assert chain.execute("PRAGMA user_version").fetchone()[0] == 3
-    assert fresh_db.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert chain.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert fresh_db.execute("PRAGMA user_version").fetchone()[0] == 4
     n_tables, n_triggers = compare_planes(chain, fresh_db, "site.db")
     assert chain.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -1435,7 +1438,7 @@ CHECKS = [
     ("18 an unanchored audit chain proves nothing", audit_chain_needs_an_anchor),
     ("19 delete-guard cost, indexed vs not", asset_guard_cost),
     # ---- R3 (register v3) ----
-    ("20 migration chain v1->v3 converges on site.sql", migration_chain_converges),
+    ("20 migration chain v1->v4 converges on site.sql", migration_chain_converges),
     ("21 selector seek + argon2 verifier (C-6)", selector_lookup_and_argon2),
     ("22 redemption on the v3 tables (C-7)", redemption_on_real_schema),
     ("23 export projection is a union over the live DB (C-5)", projection_union_over_live_db),

@@ -67,6 +67,8 @@ export interface PluginRow {
   status: string | null;
   signature_state: string;
   test_report_sha: string | null;
+  /** E-31 item 5: the durable half of the cache-buster. `0` = never activated here. */
+  activation_seq: number;
 }
 
 export interface PluginNotice {
@@ -188,9 +190,12 @@ export class PluginRuntime {
     if (table === undefined) return undefined;
     const columns = (db.pragma('table_info(cms_plugin_installed)') as { name: string }[]).map((c) => c.name);
     const status = columns.includes('status') ? 'status' : `'enabled' AS status`;
+    // v4 carries `activation_seq`; a v3 database that has not migrated yet reads 0, which is
+    // the truthful answer ("never activated on this file") and not a reason to refuse to load.
+    const seq = columns.includes('activation_seq') ? 'activation_seq' : '0 AS activation_seq';
     return db
       .prepare(
-        `SELECT plugin_id, version, manifest_json, root_hash, enabled, signature_state, test_report_sha, ${status}
+        `SELECT plugin_id, version, manifest_json, root_hash, enabled, signature_state, test_report_sha, ${seq}, ${status}
          FROM cms_plugin_installed WHERE plugin_id = ?`,
       )
       .get(pluginId) as PluginRow | undefined;
@@ -228,7 +233,9 @@ export class PluginRuntime {
         };
       }
 
-      const activationSeq = this.registry.nextActivation(tenant, pluginId);
+      // The floor is the row's durable counter (E-31 item 5): a restart must not re-issue a
+      // number the ESM cache has already seen for this package.
+      const activationSeq = this.registry.nextActivation(tenant, pluginId, Number(row.activation_seq ?? 0));
       const result = await this.load(db, tenant, row, activationSeq);
       this.failed.delete(`${tenant}\u0000${pluginId}`);
       return result;
@@ -353,13 +360,28 @@ export class PluginRuntime {
       this.hooks.reset(tenant, pluginId);
 
       // 10. the row, and an audit line that names the activation (not just the enable).
-      db.prepare(`UPDATE cms_plugin_installed SET enabled = 1, enabled_at = COALESCE(enabled_at, ?) WHERE plugin_id = ?`).run(
-        this.nowIso(),
-        pluginId,
-      );
+      // Step 10 writes the number the URL carried, in the same statement that enables the row.
+      // The counter is consumed even by an activation whose hooks are all removed later: it is
+      // a cache key, not an audit of success, and a repeated URL is the one thing it must never
+      // hand out.
+      db.prepare(
+        `UPDATE cms_plugin_installed
+            SET enabled = 1, enabled_at = COALESCE(enabled_at, ?), activation_seq = ?
+          WHERE plugin_id = ?`,
+      ).run(this.nowIso(), activationSeq, pluginId);
       this.options.audit?.('plugin.enable', pluginId, { tenant, version: manifest.version, activation_seq: activationSeq });
 
       const entryRegs = this.registry.get(tenant, pluginId) as RegistryEntry;
+      // §13.3.4's `plugin.enabled` action — the twelfth name, and the only one whose payload
+      // is the tenant alone. Dispatched **after** the commit and the row, so a callback that
+      // reads `cms_plugin_installed` sees `enabled = 1` and the hooks it is being told about
+      // are the ones that are live. Bounded by the same dispatch as every other action.
+      await this.hooks.dispatchAction(
+        'plugin.enabled',
+        tenant,
+        { tenant },
+        (entryRegs.hooks.get('plugin.enabled') ?? []).map((fn) => ({ pluginId, fn })),
+      );
       return {
         plugin: pluginId,
         version: manifest.version,
@@ -375,7 +397,12 @@ export class PluginRuntime {
       this.registry.remove(tenant, pluginId);
       this.namespaces.delete(`${tenant}\u0000${pluginId}`);
       const message = err instanceof Error ? err.message : String(err);
-      const failureCode = code(message);
+      // The code is the refusal's own when there is one. `code()` parses a message that
+      // begins with `SKW_E_…`, and an `AppError`'s message is prose — reading only the message
+      // turned every load-time refusal into `SKW_E_PL_LOAD` on the notice screen, which is the
+      // half of the notice an operator acts on (a revocation and a broken module are not the
+      // same problem and do not have the same fix).
+      const failureCode = err instanceof AppError ? err.code : code(message);
       this.markFailed(db, pluginId, failureCode, message, tenant);
       const e = err instanceof AppError ? err : new AppError(failureCode, message, { plugin: pluginId });
       throw e;
@@ -481,9 +508,10 @@ export class PluginRuntime {
       if (table === undefined) return [];
       const columns = (db.pragma('table_info(cms_plugin_installed)') as { name: string }[]).map((c) => c.name);
       const status = columns.includes('status') ? 'status' : `'enabled' AS status`;
+      const seq = columns.includes('activation_seq') ? 'activation_seq' : '0 AS activation_seq';
       return db
         .prepare(
-          `SELECT plugin_id, version, manifest_json, root_hash, enabled, signature_state, test_report_sha, ${status}
+          `SELECT plugin_id, version, manifest_json, root_hash, enabled, signature_state, test_report_sha, ${seq}, ${status}
            FROM cms_plugin_installed WHERE enabled = 1 ORDER BY id`,
         )
         .all() as PluginRow[];

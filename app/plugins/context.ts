@@ -49,6 +49,7 @@ import type Database from 'better-sqlite3';
 
 import { AppError } from '../errors.ts';
 import { hostOp } from './ops.ts';
+import { filterSite } from './site.ts';
 import type { Manifest } from './manifest.ts';
 import type { HookCall } from './registry.ts';
 
@@ -281,9 +282,24 @@ export function makePluginContext(deps: PluginContextDeps): PluginContext {
     assertCapability('assets.resolve');
     return op('assets.resolve', { key });
   };
-  facade['mail.send'] = (args: Record<string, unknown> = {}): unknown => {
+  facade['mail.send'] = async (args: Record<string, unknown> = {}): Promise<unknown> => {
     assertCapability('mail.send');
     noTenantArgument(args, 'mail.send', deps.plugin, deps.audit);
+    // §13.3.4, `mail.template`: `{tenant, template, vars} → vars`, dispatched **inside** the
+    // host's own send path — the only mail path this product has — so a plugin may add or
+    // change template variables and cannot address the message: `to` is checked by
+    // `hostOp('mail.send')` after this returns and is not in the filter's signature.
+    const template = typeof args.template === 'string' ? args.template : '';
+    const vars = args.vars;
+    if (template !== '' && typeof vars === 'object' && vars !== null && !Array.isArray(vars)) {
+      const hooked = await filterSite<Record<string, unknown>>(
+        'mail.template',
+        deps.tenant,
+        { tenant: deps.tenant, template, vars: { ...(vars as Record<string, unknown>) } },
+        vars as Record<string, unknown>,
+      );
+      return op('mail.send', { ...args, vars: hooked });
+    }
     return op('mail.send', args);
   };
   facade['log.write'] = (line: unknown): void => {

@@ -15,15 +15,22 @@ interface PageLike {
 interface Props {
   page: PageLike;
   tenantKey: string;
+  /**
+   * §13.3.4's `page.head` filter: the markup a plugin may add to `<head>`, already
+   * length-checked (≤ 4 KiB) and already known to be a string. It is **only** markup —
+   * the filter has no parameter for the body, the status or a header, and the shell
+   * interpolates it inside `<head>` and nowhere else.
+   */
+  head?: string;
 }
-const { page, tenantKey } = Astro.props as Props;
+const { page, tenantKey, head } = Astro.props as Props;
 ---
 <!doctype html>
 <html lang="en" data-tenant={tenantKey}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{page.title}</title>
+    <title>{page.title}</title>{head ? <Fragment set:html={head} /> : null}
     {page.bodyCss ? <style set:html={page.bodyCss} /> : null}
   </head>
   <body data-page-path={page.path}>

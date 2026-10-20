@@ -352,8 +352,8 @@ list, and a boot log line that names a deferred step is the requirement, not a g
 The DDL is generated from one spec (`scripts/model/gen_schema.py`), and both ER diagrams are emitted
 from the same spec, so **ER ↔ DDL parity is mechanical**: `make test` check 1 compares the set of
 `entity` names in each `.puml` against the set of `CREATE TABLE` names in both `.sql` files and fails
-on any difference. Today: **35 entities == 35 CREATE TABLE**, 297 columns across both files
-(27 tables / 228 columns in `site.db`, 8 / 69 in `control.db`), 16 FK clauses in `site.db` and 5 in
+on any difference. Today: **35 entities == 35 CREATE TABLE**, 298 columns across both files
+(27 tables / 229 columns in `site.db`, 8 / 69 in `control.db`), 16 FK clauses in `site.db` and 5 in
 `control.db`, 21 explicit indexes and 5 triggers in `site.db`.
 
 Files: `docs/sds/diagrams/er-data-model.puml` + `.png` (the SDS copy) and
@@ -1046,6 +1046,8 @@ and the source cannot change it — the checksum is the view's equivalent of tho
 
 ### 6.2 The `query` grammar
 
+> Amended by 02-errata.md E-24.
+
 ```json
 {
   "table": "u_posts",
@@ -1258,6 +1260,8 @@ bypass, not a fix.
 
 ### 7.4 The token, and the two columns that tell the truth (C-14)
 
+> Amended by 02-errata.md E-26.
+
 ```
 v1.<base64url(payload)>.<base64url(HMAC-SHA256(SKW_DOWNLOAD_TOKEN_KEY, "v1." + payload))>
 payload = {"jti":"<128-bit hex>","cid":<code id>,"aid":<asset id>,"iat":<unix s>,"exp":<unix s>,
@@ -1293,6 +1297,8 @@ lets a 1 GiB download finish under `limit_rate 1m` (1,024 s) without spending a 
 leaked token buys one asset for at most six hours on one IP/UA pair.
 
 ### 7.5 Watermarking (C-16)
+
+> Amended by 02-errata.md E-27.
 
 > Watermark stamping runs in a worker with a 2000 ms wall-clock budget and returns
 > `503 SKW_E_SEC_WATERMARK_FAILED` on timeout, renderer error or unencodable text after cp1252 sanitisation; a
@@ -1453,6 +1459,8 @@ They are not absent from the process, and §13.3.7 says so in the same words the
 
 ### 8.4 Containment: there is none (C-8 withdrawn by D36)
 
+> Amended by 02-errata.md E-30.
+
 > `docker-compose.yml` has three services — `nginx`, `app`, `acme` — and no `plugin-runner`: there is no
 > `network_mode: none`, no `node --permission` child, no per-package cgroup, no `run/plugin.sock` and no
 > operation enum, because a plugin is a module imported into the `app` process and shares that process's
@@ -1504,6 +1512,8 @@ whether the package is first-party; and the test report's timestamp and digest. 
 decision, and it is reversible.
 
 ### 8.6 Disable, degrade, uninstall
+
+> Amended by 02-errata.md E-32.
 
 > **Replaced by §13.3.8.** The table below is the *old* contract and is kept for one reason: three of its
 > sentences are now false in the opposite direction, and a Builder who reads them will build the wrong
@@ -2290,6 +2300,8 @@ tenant's file, so one locked file at 03:00 must not stop 199 healthy sites from 
 
 ### 12.5 TLS
 
+> Amended by 02-errata.md E-29.
+
 Per-host HTTP-01 certificates, no wildcard (D7): a wildcard needs DNS-01 plus registrar API credentials;
 HTTP-01 needs one A record. Let's Encrypt allows 50 certificates per registered domain per week, far more
 than a sales pipeline of demos. The certificate never gates an install: a bundle that cannot yet obtain one
@@ -2415,6 +2427,8 @@ Stating this is not modesty; it is the difference between a spec a Builder can t
 collapses on the first phone.
 
 ### 13.3 The in-process plugin model (D36)
+
+> Amended by 02-errata.md E-31, E-32.
 
 A plugin is a module imported into the app process that registers hooks, endpoints, admin screens and
 owned tables. There is no `plugin-runner`, no socket, no second container, no RPC enum. This is the
@@ -2810,10 +2824,12 @@ corpus** (a debate paper's run, cited because the SDS depends on it). "Fast" is 
 | audit storage | 32.1 KB per tenant-year | register C-21 |
 | asset delete guard, 200k references | 7.1–7.8 ms unindexed vs 0.021–0.024 ms indexed | check 19 |
 | empty `control.db` / `site.db` after VACUUM | 110,592 B / 319,488 B | `validate_schema.py` |
-| schema size | 35 tables, 297 columns, 21 FK clauses, 26 explicit indexes, 5 triggers | `validate_schema.py` |
+| schema size | 35 tables, 298 columns, 21 FK clauses, 26 explicit indexes, 5 triggers | `validate_schema.py` |
 | `make test` wall clock | 27 checks, one run | `01-verification.md` |
 
 ### 15.2 Measured in the corpus, and what depends on it
+
+> Amended by 02-errata.md E-32.
 
 | Quantity | Value | What it decides |
 |---|---|---|
@@ -2846,7 +2862,7 @@ corpus** (a debate paper's run, cited because the SDS depends on it). "Fast" is 
 
 ## 16. Delivery slices
 
-> Amended by 02-errata.md E-15, E-2, E-8.
+> Amended by 02-errata.md E-15, E-2, E-8, E-25, E-28.
 
 Four slices, each with acceptance criteria and the gate that proves it. A slice is done when its gate
 is green in CI, not when its code is written.

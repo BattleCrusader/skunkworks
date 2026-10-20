@@ -21,6 +21,17 @@ import { attr, type ElementNode, elements, parseHtml, serialize, setAttr } from 
 export interface RenderOptions {
   /** Overrides the per-asset `alt` when the body already carries one. */
   keepAlt?: boolean;
+  /**
+   * §13.3.4's `asset.url` filter, applied to the URL this render would emit for one key.
+   *
+   * It is a **function**, not a map, because the filter is a decision about one asset and
+   * the caller already has the key: a map keyed by URL would need the URL computed twice
+   * and would silently miss a second key that resolves to the same bytes. The dispatch that
+   * builds this closure is asynchronous; the render is not, so `serveNotFound` runs the
+   * filter once per key **before** the render and hands the answer in (§13.3.4, asset.url).
+   * Returning `null` means "no change" — the same rule the bus applies to `undefined`.
+   */
+  urlFor?: ((key: string, url: string) => string | null) | undefined;
 }
 
 /** `/d/<key>` — the redeem page, for an asset that has no public URL. */
@@ -41,7 +52,8 @@ function applyAsset(db: Database.Database, el: ElementNode, key: string, options
       // path into an <img> would serve HTML where bytes belong.
       throw new AppError('SKW_E_RT_ASSET_MISSING', 'a gated asset cannot be an <img src>', { key, reason: 'gated' });
     }
-    setAttr(el, 'src', asset.url);
+    const url = options.urlFor?.(key, asset.url) ?? asset.url;
+    setAttr(el, 'src', url);
     if (asset.srcset !== '') setAttr(el, 'srcset', asset.srcset);
     if (asset.width !== null) setAttr(el, 'width', String(asset.width));
     if (asset.height !== null) setAttr(el, 'height', String(asset.height));
@@ -49,7 +61,7 @@ function applyAsset(db: Database.Database, el: ElementNode, key: string, options
     return;
   }
   // A link: public bytes get the farm URL, gated bytes get the redeem path.
-  setAttr(el, 'href', asset.url ?? redeemPath(key));
+  setAttr(el, 'href', asset.url === null ? redeemPath(key) : (options.urlFor?.(key, asset.url) ?? asset.url));
 }
 
 /** Render a stored body: every `data-asset-key` becomes the URL the row implies. */

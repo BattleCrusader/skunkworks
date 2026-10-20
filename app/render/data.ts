@@ -33,6 +33,11 @@ export interface RenderDataOptions {
   tenantKey: string;
   audience?: ResolveAudience;
   cache?: SourceCache;
+  /**
+   * §13.3.4's `asset.url` answer per key, resolved **before** the render because the filter
+   * is async and a template accessor is not. A key with no entry is the row's URL.
+   */
+  assetUrls?: ReadonlyMap<string, string> | undefined;
 }
 
 export interface RenderData {
@@ -48,7 +53,9 @@ export function createRenderData(db: Database.Database, opts: RenderDataOptions)
       return resolveSource(db, key, { tenantKey: opts.tenantKey, params, audience, cache });
     },
     asset(key: string): SiteAsset {
-      return siteAsset(db, key);
+      const asset = siteAsset(db, key);
+      const hooked = opts.assetUrls?.get(key);
+      return hooked === undefined || asset.url === null ? asset : { ...asset, url: hooked };
     },
   };
 }

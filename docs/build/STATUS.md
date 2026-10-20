@@ -34,7 +34,7 @@ mtimes pinned; at +1 h only `EXPORT-NOTES.md` + declared `export_now` differ.
 
 **Watermark failure policy** — forced renderer error and forced 2 s overrun each → 503, `denied_watermark`, **no** `X-Accel-Redirect`, **no** `Content-Disposition`, `uses=0`. Concurrency: 24 concurrent across 4 tenants → peak 8 in flight (was 32), 0 served after 2000 ms. False refusals: **0%** at 10/20/40 buyers per minute; **28-42%** at 32-48 *simultaneous* (D34: retryable, `Retry-After` computed, `uses` never lost).
 
-**Plugin containment** — a real third-party package (`notes`) installs, is capability-granted, and under `--network none` gets **`ENETUNREACH`** on TCP while still getting host answers over the socket. Undeclared op → `PL_REJECTED`; foreign table → `PL_NO_TABLE`.
+**Plugins (D36 — in-process, WordPress-style)** — a plugin is a module imported into the app process; there is no runner service, no socket and no boundary. 2,908 lines of containment were deleted on 2026-10-21. What remains: signatures and publisher keys (author identity and tamper detection, **not containment**), a per-request frozen facade with `render-read`/`admin-write` handles bound to the tenant, `ATTACH` unexpressible plus a `database_list=main` assert, and 12 named hooks. Revocation is read from `revoked.json` **and** `cms_plugin_revoked` at install **and at enable**, so a plugin is revocable without uninstalling. A revoked root: install exit 1 `SKW_E_PL_REVOKED`; enable throws with the row left `enabled=0`. Unsigned packages record `publisher='unsigned'` with any claimed name quarantined. A synchronously hanging plugin **cannot be timed out in-process** — accepted cost, stated in the spec.
 
 ---
 

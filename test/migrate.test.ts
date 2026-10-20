@@ -47,7 +47,7 @@ test('migrate creates every missing site.db from site.sql and reports per tenant
       assert.equal(t.ok, t.key !== 'broken', `tenant ${t.key}: ${t.error ?? ''}`);
       if (t.key !== 'broken') {
         assert.equal(t.action, 'created');
-        assert.equal(t.to, 3, `tenant ${t.key} at v3`);
+        assert.equal(t.to, 4, `tenant ${t.key} at v4 (E-31 item 5: activation_seq)`);
       }
     }
     assert.deepEqual(report.migrated.sort(), ['acme', 'beta', 'demo-acme']);
@@ -76,11 +76,11 @@ test('control.db is created when absent, and a second run is a no-op', () => {
   }
 });
 
-test('a v1 site.db is migrated through the frozen chain to v3', () => {
+test('a v1 site.db is migrated through the frozen chain to v4', () => {
   const fixture = makeFixture({ specs: [{ key: 'legacy', hosts: ['legacy.test'], displayName: 'Legacy' }] });
   try {
     const file = fixture.sitePath('legacy');
-    // Replace the v3 file with a real database built from the frozen v1 baseline.
+    // Replace the v4 file with a real database built from the frozen v1 baseline.
     for (const suffix of ['', '-wal', '-shm']) rmSync(`${file}${suffix}`, { force: true });
     const v1 = new Database(file);
     v1.exec(readFileSync(join(REPO, 'schema', 'history', 'v1-baseline.sql'), 'utf8'));
@@ -92,7 +92,7 @@ test('a v1 site.db is migrated through the frozen chain to v3', () => {
     assert.equal(legacy?.ok, true, JSON.stringify(legacy));
     assert.equal(legacy?.action, 'migrated');
     assert.equal(legacy?.from, 1);
-    assert.equal(legacy?.to, 3);
+    assert.equal(legacy?.to, 4);
 
     // The chain has to land on the shipped target shape, not merely on a version number.
     // §4.5 (E-14): the comparison is the table text (CHECKs), the trigger bodies and the
@@ -102,7 +102,7 @@ test('a v1 site.db is migrated through the frozen chain to v3', () => {
     const fresh = new Database(freshPath);
     fresh.exec(readFileSync(join(REPO, 'schema', 'site.sql'), 'utf8'));
     try {
-      comparePlanes(migrated, fresh, 'site.db v1->v3');
+      comparePlanes(migrated, fresh, 'site.db v1->v4');
     } finally {
       migrated.close();
       fresh.close();

@@ -135,6 +135,7 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
   const ddl = join(schemaDir, 'site.sql');
   const r2 = join(schemaDir, 'r2-amendments.sql');
   const r3 = join(schemaDir, 'r3-amendments.sql');
+  const r4 = join(schemaDir, 'r4-amendments.sql');
   const target = targetVersion(ddl);
   const rel = join('tenants', siteKey, 'site.db');
   const base = { key: siteKey, path: rel };
@@ -174,6 +175,11 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
     }
     if (at === 2) {
       applyDdl(db, r3);
+      at = userVersion(db);
+    }
+    if (at === 3) {
+      // E-31 item 5: the durable activation counter. One ADD COLUMN, no rebuild.
+      applyDdl(db, r4);
       at = userVersion(db);
     }
     if (at !== target) {

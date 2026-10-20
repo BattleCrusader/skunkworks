@@ -12,7 +12,7 @@ skinparam class {
   ArrowColor #444444
 }
 
-title Skunkworks schema v3  (generated from one spec)
+title Skunkworks schema v4  (generated from one spec)
 
 package "control.db  (global, never exported, user_version 4)" {
   entity tenant as "tenant" <<control>> {
@@ -111,7 +111,7 @@ package "control.db  (global, never exported, user_version 4)" {
   }
 }
 
-package "tenants/<key>/site.db  (one file per tenant, user_version 3)" {
+package "tenants/<key>/site.db  (one file per tenant, user_version 4)" {
   entity cms_settings as "cms_settings" <<site>> {
     key : TEXT <<PK>>
     value_json : TEXT <<NN>>
@@ -368,6 +368,7 @@ package "tenants/<key>/site.db  (one file per tenant, user_version 3)" {
     runner_image_digest : TEXT
     installed_at : TEXT <<NN>>
     enabled_at : TEXT
+    activation_seq : INTEGER <<NN>>
   }
   entity cms_plugin_migration as "cms_plugin_migration" <<site>> {
     id : INTEGER <<PK>>

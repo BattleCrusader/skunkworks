@@ -50,6 +50,10 @@ import { seedSettings } from './download/code.ts';
 import { DownloadPlane, RETRY_ATTEMPTS } from './download/plane.ts';
 import { PluginRuntime } from './plugins/runtime.ts';
 import { matchEndpoint, runEndpoint } from './plugins/endpoint.ts';
+import { attachPluginRuntime, filterSite, actionSite } from './plugins/site.ts';
+import { FormLimiter, submitCoreForm } from './forms/intake.ts';
+import { clientHash } from './download/token.ts';
+import { assetUrlsIn } from './editor/render.ts';
 import type { WatermarkDeps, WatermarkStore } from './download/render.ts';
 
 // §9.1 (E-2) lives in tenancy/listener.ts so the admin router shares one rule;
@@ -246,6 +250,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     log: opts.logger === true ? (line: string) => process.stdout.write(`plugins: ${line}\n`) : undefined,
   });
   const booted = await plugins.boot();
+  // The call-site door (app/plugins/site.ts): from here every host module that dispatches a
+  // hook finds the same runtime, and a box with no plugins pays one `null` check.
+  attachPluginRuntime(plugins);
+  // The admin surface was built before step 6 (it needs the control plane, not the registry),
+  // so it is handed the runtime here rather than constructed with it.
+  admin.attachPlugins(plugins);
   const loadedOk = booted.filter((b) => b.ok);
   process.stdout.write(
     `plugins: in-process, ${loadedOk.length} package(s) activated` +
@@ -505,6 +515,52 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     });
   });
 
+  // --- core form intake (§8.6 O-30) ----------------------------------------
+  // `POST /f/<key>` on the tenant's own host. The tenant comes from the Host (§5.3), never
+  // from the path; the form key names a `cms_form` row in that tenant's own database. This
+  // is the call site of `form.validate` and `form.submitted` (§13.3.4) — a hook with no
+  // intake to run inside would be a hook the spec claims and the product never calls.
+  const formLimiter = new FormLimiter();
+  app.register(async (scope) => {
+    scope.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => done(null, body));
+    scope.post('/f/:key', async (req: FastifyRequest, reply: FastifyReply) => {
+      const ctx = resolveRequest(req);
+      if (ctx.listener !== 'public') {
+        await serveNotFound(req, reply);
+        return;
+      }
+      const key = String((req.params as { key?: string }).key ?? '');
+      const raw = typeof req.body === 'string' ? req.body : '';
+      const fields: Record<string, string> = {};
+      for (const [k, v] of new URLSearchParams(raw)) fields[k] = v;
+      const db = openAdminWrite(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+      try {
+        // §13.3.8: `skwctl plugin enable|disable` writes the row in another process, and this
+        // request is where the app notices — one SELECT, before the first dispatch.
+        await plugins.sync(ctx.tenant.key);
+        plugins.enter(ctx.tenant.key);
+        try {
+          const result = await submitCoreForm({
+            db,
+            tenant: ctx.tenant.key,
+            key,
+            raw: fields,
+            ipHash: clientHash(env.ipHashKey, req.socket.remoteAddress ?? ''),
+            sessionKey: env.sessionKey,
+            atMs: Date.now(),
+            limiter: formLimiter,
+          });
+          reply.header('cache-control', 'no-store').code(result.status).type('application/json; charset=utf-8');
+          reply.send(result.body);
+        } finally {
+          plugins.leave(ctx.tenant.key);
+        }
+      } finally {
+        db.close();
+      }
+    });
+  });
+
   // §7.6's third channel. The JSON body is kept as the raw string because the HMAC is
   // over the bytes the store signed, not over a re-serialisation of them.
   app.register(async (scope) => {
@@ -541,13 +597,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       sessionKey: env.sessionKey,
     });
     if (loaded.page === null) throw pageMiss();
+    const stored = loaded.page;
     // §10.3/§11.2: the stored bytes are a fragment that names **keys**; `renderStoredBody`
     // unwraps a legacy row and derives every asset URL. It is the same function the three
     // exporters call, so a page cannot render one way here and another way in a bundle —
     // and an export gate that breaks this line breaks the served page too (S4b's mutation
     // proof). Before S4b the serve path never called it, and a live page shipped
     // `<img data-asset-key="work/one">` with no `src` (D17).
-    const page = { ...loaded.page, bodyHtml: renderStoredBody(db, loaded.page.bodyHtml) };
     // §13.3.4: `content.render.html` is a **filter that runs inside the render call**. Its
     // return value replaces the body html and nothing else — there is no response object in the
     // dispatch and no parameter for status, headers, cookies or the route. A throw is caught at
@@ -557,39 +613,57 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     // is the request that notices (§13.3.8 — no restart).
     const startedAt = Date.now();
     plugins.enter(ctx.tenant.key);
+    let head = '';
+    let page = { ...stored, bodyHtml: stored.bodyHtml };
+    const assetUrls = new Map<string, string>();
     try {
       await plugins.sync(ctx.tenant.key);
-      const bodyCallbacks = plugins.registry.hooksFor(ctx.tenant.key, 'content.render.html');
-      if (bodyCallbacks.length > 0) {
-        page.bodyHtml = await plugins.hooks.dispatchFilter(
-          'content.render.html',
-          ctx.tenant.key,
-          { tenant: ctx.tenant.key, path, page: { title: page.title, template: page.template } },
-          page.bodyHtml,
-          bodyCallbacks,
-        );
+      // §13.3.4, `asset.url`: one dispatch per asset this page names, **before** the render,
+      // because the filter is async and the render is not. `assetUrlsIn` is the export
+      // pre-flight's own view of the body, so the set of keys the hook sees is the set of
+      // keys the render will emit — no second parser and no drift.
+      for (const asset of assetUrlsIn(db, stored.bodyHtml)) {
+        if (asset.url === null) continue; // gated: there is no URL to hand a filter
+        const hooked = await filterSite<string>('asset.url', ctx.tenant.key, { tenant: ctx.tenant.key, key: asset.key, url: asset.url }, asset.url);
+        if (hooked !== asset.url) assetUrls.set(asset.key, hooked);
       }
+      page = { ...stored, bodyHtml: renderStoredBody(db, stored.bodyHtml, { urlFor: (key) => assetUrls.get(key) ?? null }) };
+      page.bodyHtml = await filterSite<string>(
+        'content.render.html',
+        ctx.tenant.key,
+        { tenant: ctx.tenant.key, path, page: { title: page.title, template: page.template } },
+        page.bodyHtml,
+      );
+      // §13.3.4, `page.head`: extra `<meta>`/`<link>` markup in `<head>`, ≤ 4 KiB, and
+      // nothing else — the shell interpolates the returned string inside `<head>` and the
+      // filter has no parameter for the body, the status or a header.
+      head = await filterSite<string>('page.head', ctx.tenant.key, { tenant: ctx.tenant.key, path }, '');
     } finally {
       plugins.leave(ctx.tenant.key);
     }
     // §6: templates receive resolved data through one accessor and never a handle.
-    const data = createRenderData(db, { tenantKey: ctx.tenant.key, cache: sources, audience: loaded.preview ? 'preview' : 'render' });
+    const data = createRenderData(db, {
+      tenantKey: ctx.tenant.key,
+      cache: sources,
+      audience: loaded.preview ? 'preview' : 'render',
+      assetUrls,
+    });
     const handler = await astroHandler();
     reply.raw.setHeader('cache-control', 'no-store');
     // §10.5 (C-12): the page path hands the socket to Astro, so the policy has to be on the
     // raw response before the hijack — the `onSend` hook above never sees this reply.
     reply.raw.setHeader(CSP_HEADER, cspPolicy());
     reply.hijack();
-    await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page, preview: loaded.preview, data });
+    await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page, preview: loaded.preview, data, head });
     // `page.rendered` is an **action**: the return value is discarded and the payload is
     // observation only — `{tenant, path, status, ms}`. A throw here is caught by the dispatch
     // and counted; the response has already been written either way.
-    await plugins.hooks.dispatchAction('page.rendered', ctx.tenant.key, {
+    await actionSite('page.rendered', ctx.tenant.key, {
       tenant: ctx.tenant.key,
       path,
       status: 200,
       ms: Date.now() - startedAt,
-    }, plugins.registry.hooksFor(ctx.tenant.key, 'page.rendered'));
+    });
   }
 
   app.setNotFoundHandler(async (req, reply) => {

@@ -29,7 +29,7 @@
 import type Database from 'better-sqlite3';
 
 import { unwrapBody } from '../editor/canon.ts';
-import { renderBody } from '../editor/render.ts';
+import { renderBody, type RenderOptions } from '../editor/render.ts';
 import { AppError } from '../errors.ts';
 
 /** `/<body` anywhere after the unwrap — a document the shell cannot hold. */
@@ -44,7 +44,7 @@ const BODY_DOCUMENT = /<body[\s>]/i;
  * key and the page; the site keeps the render code, because a page that cannot render
  * is a render failure there).
  */
-export function renderStoredBody(db: Database.Database, storedHtml: string): string {
+export function renderStoredBody(db: Database.Database, storedHtml: string, options: RenderOptions = {}): string {
   // `trim()` after the unwrap, and it is not cosmetic: `unwrapBody()` returns the body's
   // children *serialised*, so a wrapped row comes back with the wrapper's own indentation
   // (`\n  …\n`) attached. A post-fix row has no such padding, and the exported `<main>`
@@ -57,5 +57,5 @@ export function renderStoredBody(db: Database.Database, storedHtml: string): str
     });
   }
   if (document === '') return '';
-  return renderBody(db, document);
+  return renderBody(db, document, options);
 }

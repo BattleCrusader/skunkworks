@@ -29,7 +29,10 @@ v3 deltas applied from docs/sds/00-adjudication.md (the register is the authorit
 import os, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SCHEMA_VERSION = 3
+# E-31 item 5: v4 adds `cms_plugin_installed.activation_seq`, the durable half of the ESM
+# cache-buster. The counter has to survive a restart or a new process re-imports the same URL
+# and gets the previous module namespace back — the exact failure the counter exists to prevent.
+SCHEMA_VERSION = 4
 # E-20 (02-errata §8): the control plane moves to v4 — `audit_seal` is a day segment, not a
 # cumulative snapshot — and `schema/control-r4.sql` is the v3 -> v4 delta.
 CONTROL_VERSION = 4
@@ -62,7 +65,9 @@ CONTROL = {
  ("mode","TEXT","NOT NULL CHECK(mode IN ('production','demo','internal'))"),
  ("status","TEXT","NOT NULL DEFAULT 'provisioning' CHECK(status IN ('provisioning','active','suspended','archived'))"),
  ("display_name","TEXT","NOT NULL CHECK(length(display_name) BETWEEN 1 AND 120)"),
- ("db_version","INTEGER","NOT NULL DEFAULT 3 CHECK(db_version >= 1)"),
+ # E-31 item 5: the site schema a new tenant is created at — v4 adds the durable
+ # `cms_plugin_installed.activation_seq`. A tenant row below this is migrated lazily (§2.3 step 4).
+ ("db_version","INTEGER","NOT NULL DEFAULT 4 CHECK(db_version >= 1)"),
  ("storage_quota_bytes","INTEGER","NOT NULL DEFAULT 1073741824 CHECK(storage_quota_bytes > 0)"),
  ("request_budget_per_min","INTEGER","NOT NULL DEFAULT 600 CHECK(request_budget_per_min > 0)"),
  ("demo_expires_at","TEXT",None),
@@ -441,6 +446,10 @@ SITE = {
  ("runner_image_digest","TEXT",None),
  ("installed_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
  ("enabled_at","TEXT",None),
+ # E-31 item 5: the counter the ESM cache-buster reads, durable across a restart. Monotonic
+ # per package; written by the enable transaction, never reset by a disable (a disable→enable
+ # cycle must produce a *new* module instance, §13.3.2).
+ ("activation_seq","INTEGER","NOT NULL DEFAULT 0 CHECK(activation_seq >= 0)"),
 ], checks=[
  "CHECK(publisher_key_fingerprint IS NULL OR length(publisher_key_fingerprint) BETWEEN 16 AND 128)",
  "CHECK(enabled = 0 OR test_report_sha IS NOT NULL)",

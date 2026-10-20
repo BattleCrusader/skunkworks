@@ -79,6 +79,8 @@ import {
   type TableInfo,
 } from './crud.ts';
 import { openAdminWrite, openRenderRead } from '../db/classes.ts';
+import { actionSite, filterSite, screenHref } from '../plugins/site.ts';
+import type { PluginRuntime } from '../plugins/runtime.ts';
 import { DEFAULT_CONTENT_ROOT } from '../assets/store.ts';
 import { handleCodes } from '../download/adminCodes.ts';
 import type { Env } from '../env.ts';
@@ -212,6 +214,23 @@ function page(title: string, body: string): string {
 <body><main>${body}</main></body></html>`;
 }
 
+/** A query value, decoded; `undefined` when absent or empty. */
+function queryValue(url: string, name: string): string | undefined {
+  const q = url.indexOf('?');
+  if (q === -1) return undefined;
+  const value = new URLSearchParams(url.slice(q + 1)).get(name);
+  return value === null || value === '' ? undefined : value;
+}
+
+/** The screens the tenant's loaded plugins registered: `href → title`, for the menu and the screen. */
+function declaredScreenLinks(runtime: PluginRuntime, tenant: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const entry of runtime.registry.plugins(tenant)) {
+    for (const screen of entry.screens.values()) out.set(screenHref(tenant, screen.path), screen.title);
+  }
+  return out;
+}
+
 /** A pending TOTP enrolment: in memory, single-use, ten minutes. */
 interface PendingEnrolment {
   secret: string;
@@ -245,6 +264,13 @@ export class AdminSurface {
   readonly #contentRoot: string;
   /** Where `schema/` is; the editor reads the component registry from it (S4a). */
   readonly #schemaDir: string;
+  /**
+   * The plugin runtime (§13.3), attached by `buildApp` after step 6 — the surface was
+   * constructed before the registry existed. `null` means "this box has no plugin model in
+   * this process", and every plugin row below then renders as "unknown" rather than as an
+   * empty list that would read as "nothing installed".
+   */
+  #plugins: PluginRuntime | null = null;
 
   constructor(opts: AdminOptions) {
     this.#env = opts.env;
@@ -272,6 +298,11 @@ export class AdminSurface {
 
   get idleMs(): number {
     return this.#idleMs;
+  }
+
+  /** `buildApp`'s step 6 finishes after this surface exists; this is how it tells us. */
+  attachPlugins(runtime: PluginRuntime): void {
+    this.#plugins = runtime;
   }
 
   /** §9.1 rule 1: this is the only gate on cookie parsing. */
@@ -462,6 +493,13 @@ ${items}
       targetId: session.id,
       ip: req.socket.remoteAddress ?? '',
     });
+    // §13.3.4, `admin.login` — an **action**, post-authentication, `{tenant, operatorId}`.
+    // The return value is discarded by `actionSite`'s signature: a hook that could change an
+    // authentication outcome would be a hook that changes who is signed in, which is why this
+    // is the action and `admin.session` is absent by decision.
+    if (tenant !== undefined) {
+      await actionSite('admin.login', tenant.key, { tenant: tenant.key, operatorId: result.user.id });
+    }
     reply.header('set-cookie', this.sessions.cookieHeader(this.sessions.sign(session.id)));
     reply.send({
       ok: true,
@@ -544,7 +582,7 @@ ${items}
       this.#requireMethod(req, 'GET');
       const session = this.#requireSession(req);
       this.#assertTenantMatches(session, tenant);
-      this.#tenantHome(reply, tenant, session);
+      await this.#tenantHome(reply, tenant, session);
       return;
     }
 
@@ -558,6 +596,16 @@ ${items}
     const session = this.#requireSession(req);
     this.#assertTenantMatches(session, tenant);
 
+    if (action === 'plugins' && req.method === 'GET') {
+      this.#pluginsScreen(reply, tenant, session, queryValue(req.url, 'result'));
+      return;
+    }
+    if (action === 'plugins/enable' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      await this.#pluginEnable(req, reply, tenant);
+      return;
+    }
     if (action === 'session' && req.method === 'GET') {
       this.#sessionInfo(reply, session, tenant);
       return;
@@ -706,25 +754,180 @@ ${items}
     throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
   }
 
-  #tenantHome(reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+  async #tenantHome(reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
     const user = this.auth.userById(session.userId);
     const who = user === null ? `user ${session.userId}` : `${esc(user.email)} (${esc(user.role)})`;
+    // §13.3.4, `admin.menu`: `{tenant, items} → items`. Core's menu is built first and the
+    // filter may **add** an entry; an entry pointing anywhere but a screen a loaded plugin
+    // actually registered is dropped by the dispatch (the bus's `declaredScreens` rule), so
+    // a plugin cannot link to a route that does not exist or to core's own pages.
+    const core: { href: string; label: string }[] = [
+      { href: '/admin', label: 'All tenants' },
+      { href: `/admin/t/${tenant.key}/pages`, label: 'Pages' },
+      { href: `/admin/t/${tenant.key}/media`, label: 'Media' },
+      { href: `/admin/t/${tenant.key}/tables`, label: 'Tables' },
+      { href: `/admin/t/${tenant.key}/sources`, label: 'Data sources' },
+      ...(this.#env.schemaEdit === 'on' ? [{ href: `/admin/t/${tenant.key}/builder`, label: 'Table builder' }] : []),
+      { href: `/admin/t/${tenant.key}/session`, label: 'Session' },
+    ];
+    const items = await filterSite<{ href: string; label: string }[]>(
+      'admin.menu',
+      tenant.key,
+      { tenant: tenant.key, items: core.map((i) => ({ ...i })) },
+      core,
+    );
+    // Notices are a core entry, always, and not a plugin's: an operator who cannot see that a
+    // plugin was disabled is the defect this screen exists for (§13.3.6).
+    const notices = this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length;
+    const nav = [
+      ...items,
+      { href: `/admin/t/${tenant.key}/plugins`, label: `Plugins${notices === 0 ? '' : ` (${notices})`}` },
+    ]
+      .filter((item) => typeof item.href === 'string' && typeof item.label === 'string')
+      .map((item) => `  <a href="${esc(item.href)}">${esc(item.label)}</a>`)
+      .join('\n');
     reply.type('text/html; charset=utf-8').send(
       page(
         `Skunkworks — ${tenant.key}`,
         `<h1>${esc(tenant.key)}</h1>
 <p>${who}</p>
 <nav>
-  <a href="/admin">All tenants</a>
-  <a href="/admin/t/${esc(tenant.key)}/pages">Pages</a>
-  <a href="/admin/t/${esc(tenant.key)}/media">Media</a>
-  <a href="/admin/t/${esc(tenant.key)}/tables">Tables</a>
-  <a href="/admin/t/${esc(tenant.key)}/sources">Data sources</a>
-  ${this.#env.schemaEdit === 'on' ? `<a href="/admin/t/${esc(tenant.key)}/builder">Table builder</a>` : ''}
-  <a href="/admin/t/${esc(tenant.key)}/session">Session</a>
+${nav}
 </nav>`,
       ),
     );
+  }
+
+  /**
+   * §13.3.6's notice surface. Until this screen existed the data was asserted and invisible:
+   * a plugin could be marked `failed`, auto-disabled after three failures in 60 s, or refused
+   * at enable because its root was revoked, and the only witness was a log line an operator
+   * needed shell access to read.
+   *
+   * It shows three things side by side, because they answer three different questions:
+   *
+   *   - **notices** — what went wrong, with the code and the message the runtime recorded;
+   *   - **loaded** — what is in the registry in *this* process right now;
+   *   - **installed** — what the rows say, including `activation_seq`, so "the row says
+   *     enabled but nothing is loaded" (a failed enable since boot) is visible as a difference
+   *     rather than as a mystery.
+   *
+   * The re-enable form is a POST with the session's CSRF token, never a link: an action that
+   * starts code running is not something a prefetcher gets to do.
+   */
+  #pluginsScreen(reply: FastifyReply, tenant: Tenant, session: SessionRecord, flash?: string): void {
+    const runtime = this.#plugins;
+    const db = this.#siteDb(tenant.key);
+    let installed: { plugin_id: string; version: string; enabled: number; activation_seq: number }[] = [];
+    try {
+      const table = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_plugin_installed'`).get();
+      if (table !== undefined) {
+        const columns = (db.pragma('table_info(cms_plugin_installed)') as { name: string }[]).map((c) => c.name);
+        const seq = columns.includes('activation_seq') ? 'activation_seq' : '0 AS activation_seq';
+        installed = db
+          .prepare(`SELECT plugin_id, version, enabled, ${seq} FROM cms_plugin_installed ORDER BY plugin_id`)
+          .all() as typeof installed;
+      }
+    } finally {
+      db.close();
+    }
+
+    const notices = runtime === null ? [] : runtime.noticesFor(tenant.key);
+    const loaded = runtime === null ? [] : runtime.registry.plugins(tenant.key);
+    const loadedIds = new Set(loaded.map((entry) => entry.pluginId));
+    const csrf = this.sessions.csrfToken(session);
+
+    const noticeRows =
+      notices.length === 0
+        ? '<tr><td colspan="4">No notices: nothing has failed and nothing has been disabled since boot.</td></tr>'
+        : notices
+            .map(
+              (n) =>
+                `<tr data-notice="${esc(n.plugin)}"><td>${esc(n.plugin)}</td><td><code>${esc(n.code)}</code></td><td>${esc(n.message)}</td><td>${esc(n.at)}</td></tr>`,
+            )
+            .join('\n');
+
+    const installedRows =
+      installed.length === 0
+        ? '<tr><td colspan="5">Nothing installed for this tenant.</td></tr>'
+        : installed
+            .map((row) => {
+              const isLoaded = loadedIds.has(row.plugin_id);
+              const state = row.enabled === 1 && isLoaded ? 'enabled, loaded' : row.enabled === 1 ? 'enabled, NOT loaded — failed since boot' : 'disabled';
+              const action =
+                row.enabled === 1 && isLoaded
+                  ? ''
+                  : `<form method="post" action="/admin/t/${esc(tenant.key)}/plugins/enable">
+  <input type="hidden" name="plugin" value="${esc(row.plugin_id)}">
+  <input type="hidden" name="csrf" value="${esc(csrf)}">
+  <button type="submit">Retry and enable</button>
+</form>`;
+              return `<tr data-plugin="${esc(row.plugin_id)}"><td>${esc(row.plugin_id)}</td><td>${esc(row.version)}</td><td>${esc(state)}</td><td>${row.activation_seq}</td><td>${action}</td></tr>`;
+            })
+            .join('\n');
+
+    const loadedLine =
+      loaded.length === 0
+        ? '<p>No plugin is loaded in this process for this tenant.</p>'
+        : `<ul>${loaded
+            .map((entry) => `<li>${esc(entry.pluginId)}@${esc(entry.version)} — act ${entry.activationSeq} — hooks: ${esc([...entry.hooks.keys()].sort().join(', ') || 'none')}</li>`)
+            .join('')}</ul>`;
+
+    const pluginHrefs =
+      runtime === null
+        ? ''
+        : [...declaredScreenLinks(runtime, tenant.key)]
+            .map(([path, title]) => `<li><a href="${esc(path)}">${esc(title)}</a></li>`)
+            .join('');
+
+    reply.type('text/html; charset=utf-8').send(
+      page(
+        `Skunkworks — ${tenant.key} — plugins`,
+        `<h1>Plugins — ${esc(tenant.key)}</h1>
+${flash === undefined ? '' : `<p role="status">${esc(flash)}</p>`}
+<h2>Notices</h2>
+<p>A notice is recorded when a package fails to load, fails three times in 60 s and is disabled, or is refused because its root is revoked. A notice is not a warning: the plugin is not running.</p>
+<table>
+<thead><tr><th>Plugin</th><th>Code</th><th>What happened</th><th>When</th></tr></thead>
+<tbody>
+${noticeRows}
+</tbody>
+</table>
+<h2>Loaded now</h2>
+${loadedLine}
+<h2>Installed</h2>
+<table>
+<thead><tr><th>Plugin</th><th>Version</th><th>State</th><th>activation_seq</th><th>Action</th></tr></thead>
+<tbody>
+${installedRows}
+</tbody>
+</table>
+<h2>Plugin screens</h2>
+${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pluginHrefs}</ul>`}
+<p><a href="/admin/t/${esc(tenant.key)}/">Back</a></p>`,
+      ),
+    );
+  }
+
+  /** `POST /admin/t/<key>/plugins/enable` — the operator's ack, then a normal activation. */
+  async #pluginEnable(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): Promise<void> {
+    const runtime = this.#plugins;
+    if (runtime === null) throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'the plugin runtime is not attached to this process');
+    const id = fieldsOf(req.body).plugin;
+    if (id === undefined || !/^[a-z][a-z0-9]{1,19}$/.test(id)) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'name a plugin id');
+    }
+    let flash: string;
+    try {
+      // `ackFailed`: the operator has read the notice and asked for the retry, which is the
+      // one thing §13.3.6 says is required before a `failed` row may be retried.
+      const result = await runtime.enable(tenant.key, id, { ackFailed: true });
+      flash = `${id} enabled (activation ${result.activationSeq}, hooks: ${result.hooks.join(', ') || 'none'}).`;
+    } catch (err) {
+      flash = `${id} was not enabled: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    reply.code(303).header('location', `/admin/t/${encodeURIComponent(tenant.key)}/plugins?result=${encodeURIComponent(flash)}`);
+    reply.send();
   }
 
   // --- session scoping ---------------------------------------------------
@@ -762,7 +965,12 @@ ${items}
   }
 
   #assertCsrf(req: FastifyRequest, session: SessionRecord): void {
-    if (!this.sessions.verifyCsrf(session, header(req, CSRF_HEADER) ?? null)) {
+    // The header is the mechanism (§9.1 names no header; `session.ts` fixes `X-CSRF-Token`).
+    // A plain HTML form cannot set one, and the admin surface is JS-free by design, so the
+    // same session-bound token is also accepted from the `csrf` body field. The token is
+    // still an HMAC of this session id and the request still has to pass `#assertOrigin`.
+    const token = header(req, CSRF_HEADER) ?? fieldsOf(req.body).csrf;
+    if (!this.sessions.verifyCsrf(session, token ?? null)) {
       throw new AppError('SKW_E_SEC_CSRF', 'missing or invalid CSRF token');
     }
   }

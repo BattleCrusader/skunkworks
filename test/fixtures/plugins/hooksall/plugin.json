@@ -1,0 +1,32 @@
+{
+  "id": "hooksall",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "main": "index.mjs",
+  "description": "S5 hook-wiring package: declares all twelve hooks, one table, one declarative screen, one setting. Its callbacks append a trace line per dispatch so a gate can assert the ARGUMENTS, and each filter returns a value that is visibly different from the one it was handed so the gate can assert the RETURN-VALUE EFFECT at the real call site.",
+  "hooks": [
+    "content.render.html",
+    "page.head",
+    "asset.url",
+    "form.validate",
+    "admin.menu",
+    "mail.template",
+    "page.rendered",
+    "form.submitted",
+    "download.redeemed",
+    "admin.login",
+    "plugin.enabled",
+    "plugin.disabled"
+  ],
+  "capabilities": ["store.query", "store.insert", "log.write", "mail.send"],
+  "tables": [
+    {
+      "name": "p_hooksall_message",
+      "export": "rows",
+      "columns": [{ "name": "body", "type": "TEXT", "indexed": true }]
+    }
+  ],
+  "settings": [{ "key": "label", "type": "string", "max": 80 }],
+  "endpoints": [{ "name": "trace", "method": "GET" }],
+  "tests": { "entry": "index.mjs", "timeout_s": 5 }
+}

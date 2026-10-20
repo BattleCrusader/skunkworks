@@ -214,8 +214,13 @@ S2_REQUIRED = (
     "a day sealed on the 20th still verifies after the chain grows on the 21st",
     "a `view` source is anchored to its definition",
 )
-# every item that must have landed a pointer line in SDS.md — the whole list, not this section's four
-POINTERS = tuple(f"E-{n}" for n in range(1, 24))
+# Every item that must have landed a pointer line in SDS.md — the whole list, not this section's four.
+#
+# E-29's item 5 asked for `range(1, 31)` and E-31's item 7 for `range(1, 34)`. The range is raised
+# **with** the pointer lines in the same pass (S5 item 3): E-24 → §6.2, E-25/E-28 → §16, E-26 → §7.4,
+# E-27 → §7.5, E-29 → §12.5, E-30 → §8.4, E-31 → §3 and §13.3, E-32 → §8.6, §13.3 and §15.2,
+# E-33 → §13.1a. A range raised without the lines is a gate made worse to look more complete.
+POINTERS = tuple(f"E-{n}" for n in range(1, 34))
 
 
 def s2_section_text():

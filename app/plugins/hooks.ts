@@ -248,9 +248,18 @@ export class HookBus {
       }
       // "An entry pointing anywhere else is dropped." Dropped, not a failure: the plugin may
       // legitimately build a menu for screens it declared, and a stray entry is not an attack.
+      //
+      // The rule applies to what the filter **added**. Core's own entries were not the filter's
+      // to justify and are kept by identity (an href it was handed), or the first plugin to
+      // implement `admin.menu` would silently delete the operator's whole menu — which is the
+      // failure mode this row exists to prevent, not to cause.
+      const wasHanded = new Set<string>(
+        Array.isArray(current) ? (current as unknown[]).flatMap((e) => (isPlainObject(e) && typeof e.href === 'string' ? [e.href] : [])) : [],
+      );
       const kept = result.filter((entry) => {
         if (!isPlainObject(entry)) return false;
         const href = typeof entry.href === 'string' ? entry.href : '';
+        if (wasHanded.has(href)) return true;
         if (context?.declaredScreens === undefined) return false;
         return context.declaredScreens(href);
       });
