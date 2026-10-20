@@ -1,15 +1,23 @@
 /**
  * Real GrapesJS, headless, over jsdom — the only way the round-trip gate means anything.
  *
- * The gate this exists for (§10.3) is
+ * The gate this exists for (§10.3 / §13 D21) is
  *
- *     canon(load(save(load(page)))) == canon(load(page))
+ *     stored(load(stored(load(page)))) == stored(load(page))
  *
  * and every word of that sentence is a GrapesJS behaviour: `load` normalises (8 of 9
  * hand-authored fixtures differ from the input at pass 1), `save` re-serialises from the
  * model, and a component whose model omits `data-gjs-type` in its defaults loses the lock
  * even though it is registered (measured 110 B vs 135 B). A stub editor would agree with
  * whatever we asserted.
+ *
+ * **What `document()` is, and why it is raw.** It is `editor.getHtml()` byte for byte —
+ * the canvas's `<body>…</body>` wrapper included — plus `getCss()` and the component
+ * inventory the model believes it holds. That is exactly what `window.skwSave` posts
+ * (`app/admin/editor.ts`). This helper used to strip the wrapper with `unwrapBody()`
+ * before returning, which is how S4a F1 hid: the product stored a wrapped document while
+ * the gate measured an unwrapped one. A helper that pre-processes the document is a
+ * second implementation of the save path, and the first one is the only one that ships.
  *
  * One jsdom per process: GrapesJS reaches for `document` at module scope, so the globals
  * have to be installed before the dynamic `import()`, and only once.
@@ -18,11 +26,18 @@ import { JSDOM } from 'jsdom';
 
 import type { Registry } from '../../app/editor/registry.ts';
 import { typeDefinitions } from '../../app/editor/registry.ts';
-import { unwrapBody } from '../../app/editor/canon.ts';
+
+interface GjsComponent {
+  get(name: string): unknown;
+  components(): { forEach(cb: (child: GjsComponent) => void): void };
+}
 
 interface GjsEditor {
+  Components: { addType(name: string, def: unknown): void };
   setComponents(html: string): void;
   getHtml(): string;
+  getCss(): string;
+  getWrapper(): GjsComponent;
   destroy(): void;
 }
 
@@ -44,11 +59,22 @@ function installDom(): void {
   installed = true;
 }
 
+/**
+ * What the canvas would post: the document, its CSS, and the inventory of registered
+ * component types the model holds (F2's belt and braces — the server compares it with
+ * the locks in the bytes it is about to store).
+ */
+export interface CanvasDocument {
+  html: string;
+  css: string;
+  components: string[];
+}
+
 export interface EditorSession {
   /** `setComponents`, i.e. the editor's load. */
   load(html: string): void;
-  /** `getHtml`, unwrapped from the canvas's `<body>`. */
-  save(): string;
+  /** `getHtml()` / `getCss()` / the model's inventory, unmodified. */
+  document(): CanvasDocument;
   destroy(): void;
 }
 
@@ -81,23 +107,27 @@ export async function openEditor(registry: Registry, options: EditorOptions = {}
     storageManager: false,
     // No canvas iframe: headless mode parses into the model without painting, which is
     // exactly the half of the editor the gate is about.
-  }) as unknown as {
-    Components: { addType(name: string, def: unknown): void };
-    setComponents(html: string): void;
-    getHtml(): string;
-    destroy(): void;
-  };
+  }) as unknown as GjsEditor;
 
-  for (const def of options.types ?? typeDefinitions(registry)) {
+  const defs = options.types ?? typeDefinitions(registry);
+  for (const def of defs) {
     editor.Components.addType(def.type, { isComponent: def.isComponent, model: def.model });
   }
+  const known = new Set(defs.map((def) => def.type));
 
   const session: EditorSession = {
     load(html: string): void {
       editor.setComponents(html);
     },
-    save(): string {
-      return unwrapBody(editor.getHtml());
+    document(): CanvasDocument {
+      const inventory: string[] = [];
+      const walk = (component: GjsComponent): void => {
+        const type = component.get('type');
+        if (typeof type === 'string' && known.has(type)) inventory.push(type);
+        component.components().forEach(walk);
+      };
+      editor.getWrapper().components().forEach(walk);
+      return { html: editor.getHtml(), css: editor.getCss(), components: inventory };
     },
     destroy(): void {
       editor.destroy();
@@ -107,7 +137,7 @@ export async function openEditor(registry: Registry, options: EditorOptions = {}
   return session;
 }
 
-/** Load, save, load the output, save again — the two documents the gate compares. */
+/** Load, save, load the output, save again — the two documents the canvas produces. */
 export async function twoPasses(
   registry: Registry,
   html: string,
@@ -116,9 +146,9 @@ export async function twoPasses(
   const editor = await openEditor(registry, options);
   try {
     editor.load(html);
-    const pass1 = editor.save();
+    const pass1 = editor.document().html;
     editor.load(pass1);
-    const pass2 = editor.save();
+    const pass2 = editor.document().html;
     return { pass1, pass2 };
   } finally {
     editor.destroy();

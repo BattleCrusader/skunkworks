@@ -1,0 +1,14 @@
+{
+  "markup": {
+    "inRte": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"ih2v\">Write the paragraph here.</p></div></body>",
+    "afterEditingEnded": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"ih2v\">Write the paragraph here.slides</p></div></body>",
+    "changedByInsertion": true,
+    "bodyText": "Write the paragraph here.slides"
+  },
+  "text": {
+    "inRte": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"irgc\">Write the paragraph here.</p></div></body>",
+    "afterEditingEnded": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"irgc\">Write the paragraph here.Hello from the clipboard</p></div></body>",
+    "changedByInsertion": true,
+    "bodyText": "Write the paragraph here.Hello from the clipboard"
+  }
+}

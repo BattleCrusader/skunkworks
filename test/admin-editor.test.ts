@@ -253,5 +253,103 @@ test('E7 — every fixture page saves over HTTP and reloads to the same bytes', 
       body: JSON.stringify({ path: `/corpus/${page.replace('.html', '')}`, title: page, template: 'page', html }),
     });
     assert.equal(res.status, 200, `${page}: ${res.body}`);
+    // The stored bytes are a fragment: the save path strips the canvas wrapper, and this
+    // route is where the product's editor posts it (S4a F1). E4's input is already a
+    // fragment, so only a route-level assertion on the corpus can see the difference.
+    const bodyHtml = (res.json as { bodyHtml: string }).bodyHtml;
+    assert.ok(!/<body[\s>]/i.test(bodyHtml), `${page}: the stored bytes carry the canvas <body> wrapper`);
+  }
+});
+
+/**
+ * F2(b) — the belt and braces. The save request carries the component inventory the canvas
+ * believed it had; the server refuses when the locks in the bytes it is about to store do
+ * not match it.
+ *
+ * This is **redundant with F2(a) for the paste vector** — after the paste gate nothing
+ * unregistered ever reaches the canvas — and it is kept for the complementary case: a lock
+ * the canvas *does* hold going missing between the model and the bytes (a serialiser bug, a
+ * stale tab, a different client sending a stripped document). (a) cannot see that by
+ * construction, because it inspects the clipboard and not the document.
+ */
+test('E8 — the save refuses bytes whose locks disagree with the inventory the canvas sent', async () => {
+  const canvas =
+    '<section data-gjs-type="hero"><h1 data-prop="title">Hi</h1></section>\n' +
+    '<div data-gjs-type="prose"><p data-prop="body">Body</p></div>';
+  const send = (html: string, components?: string[]): Promise<Res> =>
+    admin('/admin/t/acme/editor/save', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: ADMIN_ORIGIN, 'x-csrf-token': session.csrfToken },
+      body: JSON.stringify({
+        path: `/inventory/${String(components?.length ?? 'none')}-${html.length}`,
+        title: 'Inventory',
+        template: 'page',
+        html,
+        ...(components === undefined ? {} : { components }),
+      }),
+    });
+
+  // The honest payload: the inventory and the bytes agree, so the save is a 200.
+  const ok = await send(canvas, ['hero', 'prose']);
+  assert.equal(ok.status, 200, ok.body);
+
+  // A lock removed by another route — the document is rewritten between the canvas and the
+  // server, and the inventory still names the hero the canvas held.
+  const stripped = canvas.replace(' data-gjs-type="hero"', '');
+  const missing = await send(stripped, ['hero', 'prose']);
+  assert.equal(missing.status, 422, missing.body);
+  assert.equal(codeOf(missing), 'SKW_E_RT_COMPONENT_INVENTORY');
+  const detail = (missing.json as { error: { detail: Record<string, unknown> } }).error.detail;
+  assert.deepEqual(detail['missing'], ['hero'], 'the refusal names what went missing');
+  assert.deepEqual(detail['unexpected'], []);
+
+  // The other direction: the bytes hold a component the canvas said it did not have.
+  const unexpected = await send(canvas, ['prose']);
+  assert.equal(unexpected.status, 422, unexpected.body);
+  assert.deepEqual((unexpected.json as { error: { detail: Record<string, unknown> } }).error.detail['unexpected'], ['hero']);
+
+  // A client that sends no inventory is not refused for it: the field is the editor's
+  // second pair of eyes, not a new required field on an API other surfaces already post to.
+  const without = await send(canvas);
+  assert.equal(without.status, 200, without.body);
+
+  const db = openAdminWrite(fixture.sitePath('acme'));
+  try {
+    const rows = db.prepare("SELECT count(*) AS n FROM cms_page WHERE path LIKE '/inventory/%'").get() as { n: number };
+    assert.equal(rows.n, 2, 'only the two payloads that agreed with their inventory were written');
+  } finally {
+    db.close();
+  }
+});
+
+/**
+ * F2 at the last possible moment: the bytes GrapesJS produces from an unregistered paste.
+ *
+ * S4a §7.3 measured this exact document being stored with a **200**. The paste gate (a)
+ * stops it being created; this asserts that the shape it produces — content, no lock —
+ * cannot be written even if it arrives by another road (a stale tab, a second client, a
+ * future import that forgets the gate).
+ */
+test('E9 — component-less bytes (what a degraded paste looks like) are refused, not stored with a 200', async () => {
+  const res = await admin('/admin/t/acme/editor/save', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: ADMIN_ORIGIN, 'x-csrf-token': session.csrfToken },
+    body: JSON.stringify({
+      path: '/degraded',
+      title: 'Degraded',
+      template: 'page',
+      html: '<body>\n  <div><p>slides</p></div>\n</body>',
+      components: [],
+    }),
+  });
+  assert.equal(res.status, 422, res.body);
+  assert.equal(codeOf(res), 'SKW_E_RT_BODY_FORBIDDEN');
+  assert.equal((res.json as { error: { detail: Record<string, unknown> } }).error.detail['rule'], 'no-component');
+  const db = openAdminWrite(fixture.sitePath('acme'));
+  try {
+    const count = db.prepare("SELECT count(*) AS n FROM cms_page WHERE path = '/degraded'").get() as { n: number };
+    assert.equal(count.n, 0);
+  } finally {
+    db.close();
   }
 });

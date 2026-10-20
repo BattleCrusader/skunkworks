@@ -103,6 +103,10 @@ export const HTTP: Record<string, number> = {
   // hand-managed page opens read-only, and the save path says so rather than re-serialising.
   SKW_E_RT_COMPONENT_UNKNOWN: 422,
   SKW_E_RT_COMPONENT_NESTING: 422,
+  // S4a F2(b): the save request carries the inventory of component types the canvas model
+  // held. The locks in the bytes about to be stored must be the same multiset; a missing
+  // one is a block that has degraded to a div between the model and the row.
+  SKW_E_RT_COMPONENT_INVENTORY: 422,
   SKW_E_RT_PAGE_READONLY: 409,
   // §10.3/§10.5 and §6.3's render half: the four the JSON has always frozen and the app
   // map did not carry. `test/error-codes.test.ts` now asserts the mirror **both ways**, so

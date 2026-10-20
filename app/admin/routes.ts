@@ -1056,9 +1056,19 @@ ${items}
     // `html` and `id` are read from the body rather than `fieldsOf`: that helper keeps only
     // strings, and the boot script sends `id` as a number. Reading it as a string silently
     // turned every re-save into a create, which the UNIQUE on `cms_page.path` then refused.
-    const body = (req.body ?? {}) as { html?: unknown; id?: unknown };
+    const body = (req.body ?? {}) as { html?: unknown; id?: unknown; components?: unknown };
     const html = body.html;
     if (typeof html !== 'string') throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'html is required');
+    // F2(b): the component inventory the canvas held. Absent is allowed (a client that does
+    // not run the canvas is not asked to invent one); present it must be type names, because
+    // the save path compares it with the locks in the bytes.
+    const components = body.components;
+    if (
+      components !== undefined &&
+      (!Array.isArray(components) || components.some((entry) => typeof entry !== 'string'))
+    ) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'components must be an array of component type names');
+    }
     const path = fields.path ?? '/';
     const title = fields.title ?? 'Untitled';
     const rawId = typeof body.id === 'number' ? String(body.id) : body.id;
@@ -1077,6 +1087,7 @@ ${items}
         template: fields.template ?? 'page',
         status: fields.status ?? 'draft',
         html,
+        ...(Array.isArray(components) ? { components: components as string[] } : {}),
         css: fields.css ?? '',
         actorId: session.userId,
       });

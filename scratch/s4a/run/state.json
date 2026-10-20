@@ -1,13 +1,13 @@
 {
-  "port": 52776,
-  "base": "http://localhost:52776",
-  "dir": "/Volumes/Backup/Development/skunkworks/scratch/s4a/skw-s1-rSPzUz",
-  "siteDb": "/Volumes/Backup/Development/skunkworks/scratch/s4a/skw-s1-rSPzUz/tenants/acme/site.db",
-  "controlDb": "/Volumes/Backup/Development/skunkworks/scratch/s4a/skw-s1-rSPzUz/control.db",
+  "port": 62870,
+  "base": "http://localhost:62870",
+  "dir": "/Volumes/Backup/Development/skunkworks/scratch/s4a/skw-s1-tTY5uR",
+  "siteDb": "/Volumes/Backup/Development/skunkworks/scratch/s4a/skw-s1-tTY5uR/tenants/acme/site.db",
+  "controlDb": "/Volumes/Backup/Development/skunkworks/scratch/s4a/skw-s1-tTY5uR/control.db",
   "email": "owner@acme.test",
   "password": "correct-horse-battery-staple",
   "totpSecret": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
-  "csrf": "1ygN8vRVTSfyMBz6u045NPzgrP7ZDfwuBsFqppig1BE",
+  "csrf": "9F6-zU8aY-4IuImqnyTJ873JQtbbvalwsLHIRG0MGuU",
   "palette": [
     {
       "type": "hero",

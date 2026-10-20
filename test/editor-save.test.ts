@@ -23,7 +23,7 @@ import { after, before, test } from 'node:test';
 import type Database from 'better-sqlite3';
 
 import { openAdminWrite } from '../app/db/classes.ts';
-import { assetKeysIn, reloadListItems } from '../app/editor/model.ts';
+import { analyseBody, assetKeysIn, reloadListItems } from '../app/editor/model.ts';
 import { applyPick } from '../app/editor/media.ts';
 import { loadRegistry } from '../app/editor/registry.ts';
 import { renderBody } from '../app/editor/render.ts';
@@ -372,6 +372,112 @@ test('S7 — §10.6: a hand-managed page is read-only, and the refusal says so',
     // A hand page still *opens* (read-only in the canvas), which is what the route renders.
     const opened = loadForEditor(handle, registry, id);
     assert.equal(opened.managedBy, 'hand');
+  } finally {
+    handle.close();
+  }
+});
+
+/**
+ * S4a F1 — the wrapper is stripped by **this** path, not by the caller.
+ *
+ * The product's editor posts `editor.getHtml()`, which is a `<body>…</body>` document; a
+ * page's `body_html` is a fragment. Until this case existed, the only code that stripped
+ * it was the round-trip gate's test helper, so `make test` was green while every page the
+ * editor wrote began with `<body>` (11/11 rows in the browser run).
+ */
+test('S8 — a canvas document is stored as a fragment, and a document that is not one is refused', async () => {
+  const handle = db();
+  const wrapped = '<body>\n  <div class="prose" data-gjs-type="prose"><p data-prop="body">Wrapped.</p></div>\n</body>';
+  try {
+    // A row written before this fix is a wrapped document. It still *opens*: the load path
+    // must not brick the pages the old save path wrote (S4b has to assume both shapes in
+    // the table it inherits), and the next save is what normalises it.
+    const legacy = analyseBody({ html: wrapped, registry });
+    assert.deepEqual(
+      legacy.components.map((component) => component.type),
+      ['prose'],
+      'a wrapped stored body must still load',
+    );
+
+    const saved = await savePage({
+      db: handle,
+      registry,
+      path: '/wrapped',
+      slug: 'wrapped',
+      title: 'Wrapped',
+      template: 'page',
+      html: wrapped,
+    });
+    assert.ok(!/<body[\s>]/i.test(saved.bodyHtml), `the stored bytes carry the wrapper: ${saved.bodyHtml}`);
+    assert.ok(saved.bodyHtml.startsWith('<div data-gjs-type="prose"'), saved.bodyHtml);
+    // `body_sha` covers the fragment, and the bytes are already canonical: a second save of
+    // what was returned changes nothing (the fixpoint, at the module level).
+    assert.match(saved.bodySha, /^[0-9a-f]{64}$/);
+    const again = await savePage({
+      db: handle,
+      registry,
+      pageId: saved.id,
+      path: '/wrapped',
+      slug: 'wrapped',
+      title: 'Wrapped',
+      template: 'page',
+      html: saved.bodyHtml,
+    });
+    assert.equal(again.bodyHtml, saved.bodyHtml);
+    assert.equal(again.rev, 1);
+    assert.equal(again.bodySha, saved.bodySha);
+
+    // A document that is not one `<body>` at the root is not a canvas document, and it is
+    // not a fragment: storing it would put a second body inside the shell's `<main>`.
+    await assert.rejects(
+      savePage({
+        db: handle,
+        registry,
+        path: '/document',
+        slug: 'document',
+        title: 'Document',
+        template: 'page',
+        html: '<html><body><div data-gjs-type="prose"><p data-prop="body">x</p></div></body></html>',
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.code, 'SKW_E_RT_BODY_FORBIDDEN');
+        assert.equal(detailOf(err)['rule'], 'body-document');
+        return true;
+      },
+    );
+  } finally {
+    handle.close();
+  }
+});
+
+/**
+ * S4a F2 — the last-moment refusal. (a) refuses the paste in the canvas; this is what
+ * happens if the degraded document arrives by another road. S4a §7.3 stored exactly this
+ * shape with a 200 (49 B in, 37 B stored, no lock).
+ */
+test('S9 — a body with content and no registered component is refused, not written', async () => {
+  const handle = db();
+  try {
+    await assert.rejects(
+      savePage({
+        db: handle,
+        registry,
+        path: '/degraded',
+        slug: 'degraded',
+        title: 'Degraded',
+        template: 'page',
+        html: '<body>\n  <div><p>slides</p></div>\n</body>',
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof AppError);
+        assert.equal(err.code, 'SKW_E_RT_BODY_FORBIDDEN');
+        assert.equal(detailOf(err)['rule'], 'no-component');
+        return true;
+      },
+    );
+    const row = handle.prepare("SELECT count(*) AS n FROM cms_page WHERE path = '/degraded'").get() as { n: number };
+    assert.equal(row.n, 0);
   } finally {
     handle.close();
   }

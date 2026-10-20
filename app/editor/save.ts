@@ -18,7 +18,7 @@ import type Database from 'better-sqlite3';
 
 import { AppError } from '../errors.ts';
 import { syncPageLinks } from '../assets/links.ts';
-import { canon } from './canon.ts';
+import { canon, unwrapBody } from './canon.ts';
 import { type ListItem, analyseBody, bodySha } from './model.ts';
 import { type Registry, registryCss } from './registry.ts';
 
@@ -35,6 +35,12 @@ export interface SaveInput {
   managedBy?: string;
   /** The editor's document (a fragment, wrapper or not). */
   html: string;
+  /**
+   * The component inventory the canvas believed it had (`data-gjs-type` values in document
+   * order). Optional: a client that does not run the canvas is not asked to invent one, but
+   * the editor always sends it, and then the stored locks must match (S4a F2b).
+   */
+  components?: string[];
   /** Defaults to the registry's concatenated rules when empty. */
   css?: string;
   note?: string;
@@ -61,7 +67,22 @@ interface PageRow {
 
 export async function savePage(input: SaveInput): Promise<SaveResult> {
   const { db, registry } = input;
-  const analysing = analyseBody({ html: input.html, registry });
+  // The canvas answers `editor.getHtml()`, which is a `<body>…</body>` document, and a
+  // page's `body_html` is a fragment. This is the **only** place the wrapper is stripped:
+  // the fixpoint gate posts to this function's route, so it sees whatever this line
+  // produces. A test helper with its own copy of this rule is how S4a F1 stayed green for
+  // three slices (11/11 stored rows began with `<body>`).
+  const document = unwrapBody(input.html);
+  if (/<body[\s>]/i.test(document)) {
+    // `unwrapBody` only strips a document that *is* one `<body>` at the root. Anything
+    // else that still carries a `<body>` is not a canvas document and is not a fragment,
+    // and storing it would put a second body inside the shell's `<main>`.
+    throw new AppError('SKW_E_RT_BODY_FORBIDDEN', 'a page body must be a fragment, not a document', {
+      page: input.path,
+      rule: 'body-document',
+    });
+  }
+  const analysing = analyseBody({ html: document, registry });
   const canonical = await canon(analysing.html);
 
   // The stored bytes are validated with the same function the editor loads through, and
@@ -76,6 +97,31 @@ export async function savePage(input: SaveInput): Promise<SaveResult> {
     });
   }
 
+  // F2(b): the inventory the canvas sent is compared with the locks in the bytes about to
+  // be written. (a) refuses an unregistered paste in the canvas, so this cannot see that
+  // vector; what it sees is the complementary one — a lock the canvas *held* going missing
+  // between the model and the bytes (a stale tab, a different client, a serialiser that
+  // drops the attribute). It is a multiset comparison: two `hero` blocks and one is not a
+  // match for one.
+  if (input.components !== undefined) {
+    const declared = [...input.components].sort();
+    const actual = stored.components.map((component) => component.type).sort();
+    const pool = [...actual];
+    const missing: string[] = [];
+    for (const type of declared) {
+      const at = pool.indexOf(type);
+      if (at === -1) missing.push(type);
+      else pool.splice(at, 1);
+    }
+    if (missing.length > 0 || pool.length > 0) {
+      throw new AppError(
+        'SKW_E_RT_COMPONENT_INVENTORY',
+        'the canvas and the bytes to be stored disagree about which components the page has',
+        { page: input.path, missing, unexpected: pool, canvas: declared, stored: actual },
+      );
+    }
+  }
+
   const css = input.css !== undefined && input.css.trim() !== '' ? input.css : registryCss(registry);
   const sha = bodySha(canonical);
   const status = input.status ?? 'draft';
@@ -86,6 +132,18 @@ export async function savePage(input: SaveInput): Promise<SaveResult> {
     // the model and lose the hand edit silently.
     throw new AppError('SKW_E_RT_PAGE_READONLY', 'a hand-managed page is not editable in the canvas', {
       page: input.path,
+    });
+  }
+
+  // The shape a degraded paste leaves behind (S4a F2, §7.3): content with no lock, because
+  // GrapesJS dropped the `data-gjs-type` it had no definition for. (a) refuses the paste in
+  // the canvas; this refuses to write the result if it arrives another way. An **empty** body
+  // is not that shape — the admin's create-then-open flow and the browser harness both write
+  // one — so it is still allowed; what is refused is content no component claims.
+  if (stored.html.trim() !== '' && stored.components.length === 0) {
+    throw new AppError('SKW_E_RT_BODY_FORBIDDEN', 'a page body with content must carry a registered component', {
+      page: input.path,
+      rule: 'no-component',
     });
   }
 

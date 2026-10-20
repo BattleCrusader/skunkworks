@@ -1,0 +1,167 @@
+{
+  "payload": "<div data-gjs-type=\"carousel\"><p>slides</p></div>",
+  "payloadBytes": 49,
+  "engine": "chromium 151.0.7922.34",
+  "saveBefore": {
+    "status": 200,
+    "id": 3,
+    "storedBytes": 96,
+    "startsWithBody": false,
+    "startsWithComponent": true,
+    "bodyHtml": "<div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\">Write the paragraph here.</p></div>"
+  },
+  "pasteRefused": {
+    "dispatch": {
+      "defaultPrevented": true,
+      "dispatchReturned": false,
+      "target": "P",
+      "clipboardBytes": 49
+    },
+    "notice": {
+      "hidden": false,
+      "text": "Paste refused (SKW_E_RT_COMPONENT_UNKNOWN): no component is registered for data-gjs-type=\"carousel\". Nothing was inserted.",
+      "code": "SKW_E_RT_COMPONENT_UNKNOWN",
+      "type": "carousel"
+    },
+    "canvasBefore": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"itat\">Write the paragraph here.</p></div></body>",
+    "canvasAfterDispatch": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"itat\">Write the paragraph here.</p></div></body>",
+    "canvasAfterEditingEnded": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"itat\">Write the paragraph here.</p></div></body>",
+    "unchanged": true,
+    "slidesInCanvas": false,
+    "saveAfter": {
+      "status": 200,
+      "bodyHtml": "<div data-gjs-type=\"prose\" class=\"prose\">\n  <p data-prop=\"body\" id=\"itat\">Write the paragraph here.</p>\n</div>",
+      "rev": 1
+    },
+    "storedAfter": "<div data-gjs-type=\"prose\" class=\"prose\">\n  <p data-prop=\"body\" id=\"itat\">Write the paragraph here.</p>\n</div>",
+    "storedUnchanged": false,
+    "rowsForPath": true
+  },
+  "degradedSave": {
+    "submitted": "<div><p>slides</p></div>",
+    "status": 422,
+    "code": "SKW_E_RT_BODY_FORBIDDEN",
+    "detail": {
+      "page": "/degraded-from-canvas",
+      "rule": "no-component"
+    },
+    "rowsWritten": 0
+  },
+  "importDamaged": {
+    "inBytes": 49,
+    "outBytes": 37,
+    "out": "<body><div><p>slides</p></div></body>"
+  },
+  "benignPaste": {
+    "dispatch": {
+      "defaultPrevented": false,
+      "dispatchReturned": true,
+      "target": "P",
+      "clipboardBytes": 24
+    },
+    "notice": {
+      "hidden": true,
+      "text": "",
+      "code": null,
+      "type": null
+    },
+    "stored": "<div data-gjs-type=\"prose\" class=\"prose\">\n  <p data-prop=\"body\" id=\"itat\">Write the paragraph here.Hello from the clipboard</p>\n</div>",
+    "storedHasText": true,
+    "rev": 2
+  },
+  "inventory": {
+    "canvasHtml": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"itat\">Write the paragraph here.Hello from the clipboard</p></div></body>",
+    "submittedHtml": "<body><div class=\"prose\"><p data-prop=\"body\" id=\"itat\">Write the paragraph here.Hello from the clipboard</p></div></body>",
+    "inventory": [
+      "prose"
+    ],
+    "status": 422,
+    "code": "SKW_E_RT_COMPONENT_INVENTORY",
+    "detail": {
+      "page": "/new",
+      "missing": [
+        "prose"
+      ],
+      "unexpected": [],
+      "canvas": [
+        "prose"
+      ],
+      "stored": []
+    }
+  },
+  "console": [
+    "error: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)",
+    "warning: Component type 'carousel' not found {attrs: Object, options: Object, level: warning}",
+    "error: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"
+  ],
+  "responses": [
+    [
+      "/editor/grapesjs.css",
+      200
+    ],
+    [
+      "/editor/editor.js",
+      200
+    ],
+    [
+      "/editor/grapesjs.js",
+      200
+    ],
+    [
+      "/editor/save",
+      200
+    ],
+    [
+      "/editor/grapesjs.css",
+      200
+    ],
+    [
+      "/editor/grapesjs.js",
+      200
+    ],
+    [
+      "/editor/editor.js",
+      200
+    ],
+    [
+      "/editor/save",
+      200
+    ],
+    [
+      "/editor/save",
+      422
+    ],
+    [
+      "/editor/grapesjs.css",
+      200
+    ],
+    [
+      "/editor/grapesjs.js",
+      200
+    ],
+    [
+      "/editor/editor.js",
+      200
+    ],
+    [
+      "/editor/grapesjs.css",
+      200
+    ],
+    [
+      "/editor/grapesjs.js",
+      200
+    ],
+    [
+      "/editor/editor.js",
+      200
+    ],
+    [
+      "/editor/save",
+      200
+    ],
+    [
+      "/editor/save",
+      422
+    ]
+  ]
+}

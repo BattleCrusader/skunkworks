@@ -1,0 +1,20 @@
+{
+  "seeded": "<div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\">Write the paragraph here.</p></div>",
+  "rounds": [
+    {
+      "round": 1,
+      "stored": "<div data-gjs-type=\"prose\" class=\"prose\">\n  <p data-prop=\"body\" id=\"ipl3\">Write the paragraph here.</p>\n</div>",
+      "save": {
+        "rev": 1
+      }
+    },
+    {
+      "round": 2,
+      "stored": "<div data-gjs-type=\"prose\" class=\"prose\">\n  <p data-prop=\"body\" id=\"ipl3\">Write the paragraph here.</p>\n</div>",
+      "save": {
+        "rev": 2
+      }
+    }
+  ],
+  "stable": false
+}

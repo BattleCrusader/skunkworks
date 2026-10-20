@@ -25,6 +25,7 @@ import { join } from 'node:path';
 
 import type { PaletteItem, Registry } from '../editor/registry.ts';
 import { palette, paletteCategories, typeDefinitions } from '../editor/registry.ts';
+import { DATA_GJS_TYPE_PATTERN } from '../editor/paste.ts';
 
 export interface EditorPageInput {
   tenant: string;
@@ -105,9 +106,12 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 #skw-blocks button{display:block;width:100%;text-align:left;margin:.15rem 0;padding:.35rem .5rem;cursor:grab}
 #skw-settings .field{margin:.5rem 0}
 #skw-settings img{max-width:100%}
+#skw-notice{margin:0;padding:.6rem .8rem;background:#fdecec;border-bottom:1px solid #d9a3a3;color:#8a1c1c;font-weight:600}
+#skw-notice[hidden]{display:none}
 [data-skw-readonly="1"] #skw-canvas{opacity:.7}
 </style></head>
 <body data-skw-readonly="${readonly ? '1' : '0'}">
+<p id="skw-notice" role="alert" hidden></p>
 <div id="skw-layout">
   <aside id="skw-blocks" aria-label="Blocks"></aside>
   <div id="skw-canvas"><div id="gjs"></div></div>
@@ -127,8 +131,13 @@ function escapeHtml(value: string): string {
  * The boot script, as a constant rather than a file: `tsc` copies `.ts` to `dist/`, and a
  * `.js` beside it would be a file that exists in the repo and not in the image — the exact
  * class of defect E-28's dist gate exists to catch. It is served byte-for-byte.
+ *
+ * One thing is injected: the `data-gjs-type` pattern the paste gate scans for, from
+ * `app/editor/paste.ts`. The browser cannot import a server module, so what is shared is the
+ * pattern's **source text** — a second regex literal here would be a second registry reader,
+ * and the two would drift exactly the way S4a F1's two unwrappers did.
  */
-export const EDITOR_BOOT_JS = String.raw`
+const BOOT_SCRIPT = String.raw`
 (function () {
   'use strict';
   var boot = JSON.parse(document.getElementById('skw-editor-boot').textContent);
@@ -163,6 +172,100 @@ export const EDITOR_BOOT_JS = String.raw`
     });
   });
 
+  var KNOWN_TYPES = Object.create(null);
+  boot.types.forEach(function (t) { KNOWN_TYPES[t.type] = true; });
+
+  // 0. THE PASTE GATE (S4a F2a). GrapesJS strips a data-gjs-type it has no definition for
+  //    *while parsing*, so a pasted block arrives at the save route as a bare div with no
+  //    lock — the server cannot tell it from prose, and S4a measured exactly that: 49 B in,
+  //    37 B stored, HTTP 200. The evidence does not survive the parse, so the refusal runs
+  //    on the clipboard's bytes: capture phase, on the canvas document, before GrapesJS's
+  //    own handler and before the browser inserts anything. One unregistered type refuses
+  //    the WHOLE paste — a partial insert is the defect, not the mitigation.
+  var TYPE_RE = new RegExp(__SKW_PASTE_TYPE_PATTERN__, 'gi');
+  var notice = document.getElementById('skw-notice');
+
+  function clearNotice() {
+    if (!notice) return;
+    notice.hidden = true;
+    notice.textContent = '';
+    notice.removeAttribute('data-code');
+    notice.removeAttribute('data-type');
+  }
+
+  function refuse(type, what) {
+    if (!notice) return;
+    notice.textContent = what + ' refused (SKW_E_RT_COMPONENT_UNKNOWN): no component is registered for ' +
+      'data-gjs-type="' + type + '". Nothing was inserted.';
+    notice.setAttribute('data-code', 'SKW_E_RT_COMPONENT_UNKNOWN');
+    notice.setAttribute('data-type', type);
+    notice.hidden = false;
+  }
+
+  function pastedTypes(html) {
+    var found = [];
+    var m;
+    TYPE_RE.lastIndex = 0;
+    while ((m = TYPE_RE.exec(html)) !== null) {
+      var value = m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : (m[3] !== undefined ? m[3] : ''));
+      if (found.indexOf(value) === -1) found.push(value);
+    }
+    // A bare data-gjs-type names no registered type either: refuse, do not guess.
+    if (found.length === 0 && /data-gjs-type/i.test(html)) found.push('');
+    return found;
+  }
+
+  function unregisteredIn(html) {
+    if (!html) return null;
+    var types = pastedTypes(html);
+    for (var i = 0; i < types.length; i += 1) {
+      if (!KNOWN_TYPES[types[i]]) return types[i];
+    }
+    return null;
+  }
+
+  function onPaste(ev) {
+    var cd = ev.clipboardData;
+    if (!cd) return;
+    // text/plain is scanned too: GrapesJS's rich-text paste handler inserts plain text
+    // through insertHTML, so in that element plain text *is* markup.
+    var bad = unregisteredIn(cd.getData('text/html') || '');
+    if (bad === null) bad = unregisteredIn(cd.getData('text/plain') || '');
+    if (bad === null) { clearNotice(); return; }
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    refuse(bad, 'Paste');
+  }
+
+  // THE IMPORT CHOKEPOINT. Two documents enter this canvas without a paste: the stored body
+  // the server validated (load) and the picker's answer, which is the client's own bytes
+  // echoed back after one attribute changed (applyPick does not re-validate the document).
+  // Both go through the scan, so GrapesJS is never handed a type it will silently strip.
+  function applyDocument(html) {
+    var bad = unregisteredIn(html || '');
+    if (bad !== null) { refuse(bad, 'Document'); return false; }
+    clearNotice();
+    editor.setComponents(html || '');
+    return true;
+  }
+
+  function gatePaste(doc) {
+    if (!doc || doc.__skwPasteGate) return;
+    doc.__skwPasteGate = true;
+    doc.addEventListener('paste', onPaste, true);
+  }
+
+  function attachPasteGate() {
+    try { gatePaste(editor.Canvas.getDocument()); } catch (e) { /* the frame is not up yet */ }
+  }
+
+  // The canvas is an iframe: its document is replaced when the frame reloads, so the gate is
+  // attached again on every frame event rather than once at boot.
+  attachPasteGate();
+  editor.on('canvas:frame:load', attachPasteGate);
+  editor.on('canvas:frame:load:body', attachPasteGate);
+  editor.on('load', attachPasteGate);
+
   // 2. The palette, generated. One button per registry entry, grouped by category.
   var blocks = document.getElementById('skw-blocks');
   var byCategory = {};
@@ -192,7 +295,7 @@ export const EDITOR_BOOT_JS = String.raw`
 
   // 3. The document. page.bodyHtml is what the server validated; a hand-managed page is
   //    read-only in the canvas (§10.6) because the next drag would re-serialise it.
-  editor.setComponents(boot.page.bodyHtml || '');
+  applyDocument(boot.page.bodyHtml || '');
   if (readonly) {
     editor.Canvas.getBody().setAttribute('contenteditable', 'false');
     editor.on('component:selected', function (c) { editor.selectRemove(c); });
@@ -256,13 +359,29 @@ export const EDITOR_BOOT_JS = String.raw`
       .then(function (r) { return r && r.json(); })
       .then(function (out) {
         if (!out || !out.html) return;
-        editor.setComponents(out.html);
+        // The picker's answer is the client's document with one key changed: it takes the
+        // same scan as a paste, because it is the same import (see applyDocument).
+        if (!applyDocument(out.html)) return;
         button.textContent = out.key;
       });
   }
 
   // 6. Save. The server canonicalises, validates again and writes the row; the answer is
   //    the stored bytes, so the textarea below the canvas shows exactly what was kept.
+  //    html is editor.getHtml() verbatim — the canvas's <body> document, which the save
+  //    path unwraps (S4a F1) — and components is the inventory the canvas believes it
+  //    holds, which the server checks against the locks it is about to store (F2b).
+  function inventory() {
+    var out = [];
+    var walk = function (component) {
+      var type = component.get('type');
+      if (KNOWN_TYPES[type]) out.push(type);
+      component.components().forEach(walk);
+    };
+    editor.getWrapper().components().forEach(walk);
+    return out;
+  }
+
   window.skwSave = function () {
     var body = {
       id: boot.page.id === null ? undefined : boot.page.id,
@@ -271,6 +390,7 @@ export const EDITOR_BOOT_JS = String.raw`
       template: boot.page.template,
       html: editor.getHtml(),
       css: editor.getCss() || '',
+      components: inventory(),
     };
     return fetch('/admin/t/' + encodeURIComponent(boot.tenant) + '/editor/save', {
       method: 'POST',
@@ -281,6 +401,13 @@ export const EDITOR_BOOT_JS = String.raw`
   };
 })();
 `;
+
+/**
+ * The served script. The pattern is injected as a JSON string literal — `JSON.stringify`
+ * handles the quoting and the backslashes, so the browser builds the same `RegExp` the
+ * server's `pastedTypes()` builds from the same constant.
+ */
+export const EDITOR_BOOT_JS = BOOT_SCRIPT.replace('__SKW_PASTE_TYPE_PATTERN__', JSON.stringify(DATA_GJS_TYPE_PATTERN));
 
 /** The vendored GrapesJS bundle, read once. Served from the admin origin, never a CDN. */
 let cachedGrapes: string | null = null;

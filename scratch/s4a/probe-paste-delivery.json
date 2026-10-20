@@ -1,0 +1,20 @@
+{
+  "keyboard": {
+    "before": "Write the paragraph here.",
+    "after": "Write the paragraph here.",
+    "inserted": false,
+    "html": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"ixhg\">Write the paragraph here.</p></div></body>"
+  },
+  "cdp-commands": {
+    "before": "Write the paragraph here.",
+    "after": "Write the paragraph here.",
+    "inserted": false,
+    "html": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"ia8j\">Write the paragraph here.</p></div></body>"
+  },
+  "execCommand-insertHTML": {
+    "before": "Write the paragraph here.",
+    "after": "Write the paragraph here.slides",
+    "inserted": true,
+    "html": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"i756\">Write the paragraph here.</p></div></body>"
+  }
+}

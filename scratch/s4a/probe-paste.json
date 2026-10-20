@@ -1,0 +1,54 @@
+{
+  "before": {
+    "bodyEditable": false,
+    "bodyAttr": null,
+    "html": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\">Write the paragraph here.</p></div></body>",
+    "frames": 2
+  },
+  "frames": [
+    {
+      "url": "about:blank",
+      "cls": "frame",
+      "w": 0,
+      "h": 0,
+      "bodyEditable": false,
+      "bodyAttr": null,
+      "hasProse": false
+    },
+    {
+      "url": "about:blank",
+      "cls": "gjs-frame",
+      "w": 731,
+      "h": 860,
+      "bodyEditable": false,
+      "bodyAttr": null,
+      "hasProse": true
+    }
+  ],
+  "rteBefore": {
+    "editing": false
+  },
+  "rteAfterDoubleClick": {
+    "editing": true,
+    "activeTag": "P",
+    "contentEditable": true,
+    "docActive": "P"
+  },
+  "clipboardReadBack": "<div data-gjs-type=\"carousel\"><p>slides</p></div>",
+  "afterKeystroke": {
+    "html": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"i31l\">Write the paragraph here.</p></div></body>",
+    "types": [
+      "prose",
+      "text",
+      "textnode"
+    ],
+    "bodyText": "Write the paragraph here."
+  },
+  "syntheticPaste": {
+    "defaultPrevented": true,
+    "dispatchReturned": false,
+    "clipboardBytes": 49
+  },
+  "afterSynthetic": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\" id=\"i31l\">Write the paragraph here.</p></div></body>",
+  "console": []
+}
