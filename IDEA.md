@@ -56,6 +56,9 @@ source of truth — see §5.1 for the capability matrix and the pre-flight check
 - A plugin hooks into the **admin UI** and may provide its own management forms. Forms are optional:
   some plugins have nothing to administer.
 - Plugins must be exportable with the site: a bundle carries the plugin, its schema and its data.
+- **Plugins may be written by third parties and built entirely outside our source tree.** They are
+  installed into a running CMS, not compiled into it. That makes every plugin untrusted code by
+  default, and the containment mechanism is a first-class part of the design, not a policy note.
 
 ### 1.3 Asset and digital-goods intent (added 2026-10-20)
 
@@ -96,6 +99,8 @@ source of truth — see §5.1 for the capability matrix and the pre-flight check
 | D23 | **Watermark text is sanitised to cp1252, not flattened to ASCII** — preserve everything WinAnsi can render; transliterate common symbols; `?` for the rest | Measured: pdf-lib's WinAnsi accepts the full cp1252 set (€ “ – … ¥ £ © ° ÷ all encode). Stripping accents would have mangled `München` and `Øyvind` for no reason. Only CJK/emoji-class characters actually fail. |
 | D24 | **Astro export ships a runnable, editable project** (not pre-built SSG with source stripped) | The client bought the code, so they get the code. Stripped source would turn every future change into a rebuild request to us. |
 | D25 | **Plugins are a first-class extension surface**, not a folder of scripts: a manifest, owned tables, declared admin forms, declared public endpoints | One contract means a plugin is installable, exportable, disableable and auditable in the same way everywhere. The contract's details are being decided by the debate (§12). |
+| D26 | **Third-party plugins are supported, so plugins are untrusted by default** — loaded at runtime from outside the source tree, contained, and granted capabilities through a declared contract | First-party trust would make the plugin system a marketing claim rather than a feature. The moment someone else's code runs inside the CMS, containment stops being optional, and the design must show the boundary rather than assert it. |
+| D27 | **No publisher CA in v1.** First-party plugins are signed with a key baked into the image and verify automatically; third-party plugins require the tenant owner to import the publisher's public key (fingerprint shown) before enable | Running a CA means vouching for someone else's code and carrying the liability when it misbehaves. Importing a key is a trust decision the tenant makes, visibly, and it costs us no support economics. Reversible if we ever want to publish plugins ourselves. |
 
 ---
 
@@ -644,6 +649,11 @@ Numbered last because it arrived last. The Architect folds it into §6 (schema o
 - Admin integration: the plugin appears in the admin UI and *may* ship management forms.
 - Export: the plugin travels with the site — code, schema, settings, data.
 
+**Constraint fixed by the CEO on 2026-10-20:** a plugin may be authored by a third party and built
+outside this repository. It is installed into a running instance. Every plugin is therefore
+untrusted code, and §12.6, §12.7 and §12.11 below are no longer open questions about *whether* —
+only about *which mechanism*, at what cost.
+
 **What the debate must settle (seeded, not decided):**
 
 1. **Table ownership and naming.** `cms_*` is protected core, `u_*` is user-created. Plugin tables
@@ -679,6 +689,16 @@ Numbered last because it arrived last. The Architect folds it into §6 (schema o
    discipline as §5.1.
 10. **Version compatibility.** Plugin × CMS version matrix, and what the CMS does at boot when a
     plugin demands a version it does not have: refuse to start, or run degraded?
-11. **Where plugin code lives.** In-tree (`plugins/<id>/`) compiled with the app, or loaded at
-    runtime from a tenant directory? The first is safe and simple; the second is a remote-code-
-    execution decision dressed as a feature.
+11. **Where plugin code lives.** Fixed by D26: runtime-loaded from a plugin directory, not compiled
+    into the image. What remains open is discovery, dependency resolution (a plugin's own
+    `node_modules` must not poison the host's), and boot behaviour when a plugin fails to load.
+12. **Supply chain.** Package format, publisher identity, signature verification at install,
+    CMS-version compatibility refusal, revocation, and what the admin UI shows a non-developer
+    before they enable somebody else's code. **Trust root fixed by D27:** no CA — our key ships in
+    the image for first-party plugins; a third-party publisher's key is imported by the tenant owner
+    and its fingerprint is displayed beside every capability the plugin requests.
+13. **Migration authority for untrusted code.** If a third-party plugin may not send SQL, who
+    creates its `p_*` tables and applies its schema changes — and what happens on upgrade or
+    downgrade of a plugin we did not write?
+14. **Degradation contract.** A plugin process that hangs or dies must not take the site down:
+    timeout, circuit breaker, and what the public endpoint returns while it is broken.
