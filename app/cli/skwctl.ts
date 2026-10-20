@@ -53,8 +53,9 @@ import { fileURLToPath } from 'node:url';
 import { ARGON2_OPTIONS, Semaphore } from '../admin/auth.ts';
 import { appendAudit, verifyChain, verifyAgainstSeal } from '../audit/chain.ts';
 import { AppError } from '../errors.ts';
-import { installPlugin, inspectPackage, installedPlugins, uninstallPlugin } from '../plugins/install.ts';
-import { importPublisherKey, readTrustStore, type InstallScreen } from '../plugins/trust.ts';
+import { assertNotRevoked, installPlugin, inspectPackage, installedPlugins, uninstallPlugin } from '../plugins/install.ts';
+import { revocationPath, revokeRoot } from '../plugins/revocation.ts';
+import { importPublisherKey, readTrustStore, trustDirFor, type InstallScreen } from '../plugins/trust.ts';
 import { healGaps, lastEndedDay, sealDay, sealStatus } from '../audit/scheduler.ts';
 import { SESSION_ABSOLUTE_MS } from '../admin/session.ts';
 import { TOTP_PARAMETERS, groupOf, newPassword, newSecret, otpauthUri } from '../admin/totp.ts';
@@ -876,6 +877,53 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
     throw new Refusal('USAGE', 'usage: skwctl plugin trust (import <key.pem> --publisher <id> [--replace] | list) --tenant <key>');
   }
 
+  if (verb === 'revoke') {
+    // `skwctl plugin revoke <id> [--root <sha256>] [--reason <text>] --tenant <key>`
+    //
+    // The verb that did not exist. Without it nothing in the product wrote `cms_plugin_revoked`
+    // — only a test did — while `data/trust/revoked.json` was named by §8.5 and had no writer at
+    // all, so a hand-written file entry installed cleanly. Both are written here, and every read
+    // consults both (`app/plugins/revocation.ts`).
+    const id = args.command[2];
+    if (id === undefined) throw new Refusal('USAGE', 'plugin revoke needs a plugin id (or --root <sha256>)');
+    const rootFlag = typeof args.flags.get('root') === 'string' ? (args.flags.get('root') as string) : undefined;
+    const reason = typeof args.flags.get('reason') === 'string' ? (args.flags.get('reason') as string) : undefined;
+    const db = openAdminWrite(siteDb, ctx.env.dbBusyTimeoutMs);
+    try {
+      const row = db.prepare('SELECT root_hash, version FROM cms_plugin_installed WHERE plugin_id = ?').get(id) as
+        | { root_hash: string; version: string }
+        | undefined;
+      const root = rootFlag ?? row?.root_hash;
+      if (root === undefined) {
+        throw new Refusal('PLUGIN_UNKNOWN', `no cms_plugin_installed row for ${id} and no --root given; nothing to revoke`);
+      }
+      const result = revokeRoot({
+        trustDir: trustDirFor(siteDb),
+        db,
+        rootHash: root,
+        pluginId: id,
+        ...(reason === undefined ? {} : { reason }),
+        operatorId: actor.userId ?? null,
+      });
+      appendAudit(db, actor, 'plugin.revoke', 'cms_plugin_revoked', root, null, {
+        plugin: id,
+        reason: reason ?? null,
+        table_written: result.table_written,
+        file_written: result.file_written,
+      });
+      // A revoked package that is enabled is stopped here, not left running until the next
+      // process restart: the row says `enabled=0`, and the running app prunes it on its next
+      // request because it reconciles against the rows (`runtime.sync`).
+      const stopped = (db.prepare('UPDATE cms_plugin_installed SET enabled = 0 WHERE plugin_id = ? AND enabled = 1').run(id)).changes;
+      ctx.stdout(`plugin: revoked id=${id} root=${root}${row === undefined ? '' : ` version=${row.version}`}`);
+      ctx.stdout(`plugin: table=${result.table_written ? 'written' : 'already present'} file=${result.file_written ? 'written' : 'already present'} (${revocationPath(trustDirFor(siteDb))})`);
+      if (stopped > 0) ctx.stdout(`plugin: ${id} was enabled and is now disabled; the running app drops its hooks on the next request`);
+      return EXIT_OK;
+    } finally {
+      db.close();
+    }
+  }
+
   if (verb === 'enable' || verb === 'disable') {
     const id = args.command[2];
     if (id === undefined) throw new Refusal('USAGE', `plugin ${verb} needs a plugin id`);
@@ -896,6 +944,15 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
         }
         if (!existsSync(join(pluginsRoot, id, 'plugin.json'))) {
           throw new Refusal('PLUGIN_REFUSED', `no package at ${join(pluginsRoot, id)}; install it before enabling it`);
+        }
+        // §8.5/§13.3.6: revocation is checked **at enable**, not only at install. Under D36
+        // enable is when the code starts running, so a root revoked after install has to be
+        // stoppable without uninstalling the package — otherwise the only lever is destructive.
+        try {
+          assertNotRevoked(db, id, trustDirFor(siteDb));
+        } catch (err) {
+          const code = (err as { code?: string }).code;
+          throw new Refusal('PLUGIN_REFUSED', `${code === undefined ? '' : `${code}: `}${err instanceof Error ? err.message : String(err)}`);
         }
       }
       const at = new Date().toISOString();
@@ -976,7 +1033,7 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
 
   throw new Refusal(
     'USAGE',
-    'usage: skwctl plugin (install <dir> [--signature <file>] [--allow-unsigned] [--test-report <path>] [--runner-digest <sha>] [--enable] | trust (import <key.pem> --publisher <id> [--replace] | list) | enable <id> | disable <id> | uninstall <id> [--archive-dir <dir>] | list) --tenant <key>',
+    'usage: skwctl plugin (install <dir> [--signature <file>] [--allow-unsigned] [--test-report <path>] [--runner-digest <sha>] [--enable] | trust (import <key.pem> --publisher <id> [--replace] | list) | enable <id> | disable <id> | revoke <id> [--root <sha256>] [--reason <text>] | uninstall <id> [--archive-dir <dir>] | list) --tenant <key>',
   );
 }
 
@@ -984,7 +1041,7 @@ export async function run(argv: readonly string[], ctx: CliContext): Promise<num
   if (argv.length === 0) {
     throw new Refusal(
       'USAGE',
-      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N] | plugin (install <dir> | trust (import <key.pem> --publisher <id> | list) | enable <id> | disable <id> | uninstall <id> | list) --tenant <key>>',
+      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N] | plugin (install <dir> | trust (import <key.pem> --publisher <id> | list) | enable <id> | disable <id> | revoke <id> | uninstall <id> | list) --tenant <key>>',
     );
   }
   const args = parseArgs(argv);

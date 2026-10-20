@@ -1,6 +1,11 @@
 /**
- * §16 S1 gate: "compose has exactly 4 services; app publishes no port —
- * docker compose config assertion" (§12.1, C-8, C-11).
+ * §16 S1 gate (E-31/D36): "compose has exactly **3** services — `nginx`, `app`, `acme` —
+ * and `app` publishes no port — `docker compose config` assertion" (§12.1, §13.3.9).
+ *
+ * The old row — "compose has exactly 4 services" — is **withdrawn, not passed**: there is
+ * no fourth container to run. The assertion that used to count `plugin-runner` now asserts
+ * its *absence* by name, because a service that comes back is the regression this row exists
+ * to catch, and `deepEqual` on a three-name list catches it only as "4 != 3".
  */
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -31,22 +36,22 @@ test('docker compose config parses the file', () => {
   assert.equal(typeof result.json, 'object');
 });
 
-test('exactly four services, named as the SDS names them', () => {
-  assert.deepEqual(Object.keys(result.json.services).sort(), ['acme', 'app', 'nginx', 'plugin-runner']);
+test('exactly three services — nginx, app, acme — and plugin-runner is absent by name', () => {
+  assert.deepEqual(Object.keys(result.json.services).sort(), ['acme', 'app', 'nginx']);
+  // E-31: the fourth service is deleted, not renamed, not "deferred". A compose file that
+  // reintroduces it fails here even if the count still happened to read 3 (a removal plus an
+  // addition), which the list comparison alone could not see.
+  assert.equal(
+    result.json.services['plugin-runner'],
+    undefined,
+    'plugin-runner must not exist: D36 removed the process boundary (§13.3.9)',
+  );
 });
 
 test('app publishes no port', () => {
   const app = result.json.services.app;
   assert.equal(app.ports, undefined, 'app must not publish a port (C-11)');
   assert.deepEqual(app.expose, ['3000']);
-});
-
-test('plugin-runner has no network and drops every capability', () => {
-  const runner = result.json.services['plugin-runner'];
-  assert.equal(runner.network_mode, 'none');
-  assert.equal(runner.read_only, true);
-  assert.deepEqual(runner.cap_drop, ['ALL']);
-  assert.equal(runner.pids_limit, 64);
 });
 
 test('nginx is the only service with published ports, and it publishes 80 and 443', () => {
@@ -60,12 +65,15 @@ test('nginx is the only service with published ports, and it publishes 80 and 44
   );
 });
 
-test('app runs read-only with a tmpfs /tmp and the three volumes (§12.2)', () => {
+test('app runs read-only with a tmpfs /tmp and two volumes (§12.2, E-31)', () => {
   const app = result.json.services.app;
   assert.equal(app.read_only, true);
   assert.ok(Array.isArray(app.tmpfs) && app.tmpfs.some((t: string) => t.startsWith('/tmp')));
   const targets = app.volumes.map((v: any) => v.target).sort();
-  assert.deepEqual(targets, ['/srv/content', '/srv/data', '/srv/run']);
+  // `/srv/run` held `plugin.sock`. With the socket deleted (§13.3.9) the mount is deleted
+  // too: a directory mounted for a file that is never created is a place a future builder
+  // puts a second boundary without noticing this design has none.
+  assert.deepEqual(targets, ['/srv/content', '/srv/data']);
 });
 
 test('app gets SKW_DATA_DIR and UV_THREADPOOL_SIZE=8, and no legacy prefix', () => {

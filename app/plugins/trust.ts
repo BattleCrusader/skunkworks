@@ -24,7 +24,7 @@
  * What the signature covers, and why it is the *file list* and not only the root:
  *
  *   - the publisher id and the key fingerprint (so neither can be swapped for another),
- *   - the sha256 of `plugin.json` (the manifest is the grant — see `protocol.ts`),
+ *   - the sha256 of `plugin.json` (the manifest is the grant — see `manifest.ts`),
  *   - the path and sha256 of **every file in the package**, and
  *   - the root hash over that list.
  *
@@ -37,8 +37,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 
 import { AppError } from '../errors.ts';
-import type { Manifest } from './protocol.ts';
-import { packageRootHash } from './protocol.ts';
+import type { Manifest } from './manifest.ts';
+import { packageRootHash } from './manifest.ts';
 
 /** The publisher id the image's own key signs under. */
 export const FIRST_PARTY_PUBLISHER = 'skunkworks';
@@ -107,12 +107,23 @@ export type SignatureState = 'first_party' | 'imported' | 'unsigned';
 
 export interface VerifiedPackage {
   state: SignatureState;
-  /** The publisher the screen and the row name. `unsigned` when nobody claims it. */
+  /** The publisher the screen and the row name. `unsigned` when nobody signed it. */
   publisher: string;
   fingerprint: string | null;
   /** Where the key came from — the screen says which, because it changes the decision. */
   key_source: 'image' | 'imported' | 'none';
   signature: SignatureFile | null;
+  /**
+   * What the *package* said its publisher was, when nothing signed that claim.
+   *
+   * Quarantined, not honoured: an unsigned package is `publisher='unsigned'` and this field is
+   * the only place its self-declared name may appear. Before this field existed, an unsigned
+   * package that wrote `"publisher": {"id": "acme-labs"}` landed in `cms_plugin_installed` and
+   * in the audit chain as `publisher=acme-labs` with a null fingerprint — a package naming its
+   * own trustworthiness. A name is a claim a **key** makes (§13.3.7); without a key there is no
+   * claim, and this is where the claim is kept so an operator can see it was tried.
+   */
+  claimed_publisher: string | null;
 }
 
 function refuse(message: string, detail: Record<string, unknown> = {}): never {
@@ -254,7 +265,20 @@ export interface VerifyRequest {
  */
 export function verifyPackageSignature(req: VerifyRequest): VerifiedPackage {
   if (req.signaturePath === undefined) {
-    return { state: 'unsigned', publisher: req.manifest.publisher?.id ?? 'unsigned', fingerprint: null, key_source: 'none', signature: null };
+    // **Unsigned is a state, not a claim.** The package may say `"publisher": {"id":"acme-labs"}`
+    // in plugin.json; with no signature that sentence has no author, so it is quarantined in
+    // `claimed_publisher` and the publisher the row records is the literal `unsigned`. A null
+    // fingerprint beside a real-looking publisher name is exactly the row an operator would
+    // misread, and this is the branch that used to produce it.
+    const claimed = typeof req.manifest.publisher?.id === 'string' ? req.manifest.publisher.id : null;
+    return {
+      state: 'unsigned',
+      publisher: 'unsigned',
+      fingerprint: null,
+      key_source: 'none',
+      signature: null,
+      claimed_publisher: claimed,
+    };
   }
   if (!existsSync(req.signaturePath)) {
     // The caller asked for a specific signature and there is none. That is not "unsigned":
@@ -379,6 +403,9 @@ export function verifyPackageSignature(req: VerifyRequest): VerifiedPackage {
     fingerprint: raw.key_id,
     key_source: match.source,
     signature: raw,
+    // A signed package's publisher is the key's, and there is nothing quarantined: the manifest's
+    // claim was already required to agree with the signature above.
+    claimed_publisher: null,
   };
 }
 
@@ -420,6 +447,12 @@ export interface InstallScreen {
   root_hash: string;
   /** Loud, and repeated in the audit row. */
   unsigned: boolean;
+  /**
+   * What an unsigned package called itself, shown *as a rejected claim* beside
+   * `publisher: "unsigned"`. Never merged into the publisher field: the screen a human decides
+   * on must not contain a publisher name that no key vouched for.
+   */
+  claimed_publisher: string | null;
 }
 
 export interface ScreenRequest {
@@ -455,6 +488,7 @@ export function installScreen(req: ScreenRequest): InstallScreen {
     test_report: req.report,
     root_hash: req.root,
     unsigned: verified.state === 'unsigned',
+    claimed_publisher: verified.claimed_publisher,
   };
 }
 

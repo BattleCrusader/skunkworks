@@ -73,8 +73,14 @@ export interface CmsOptions {
   pluginPackages?: PluginPackage[];
   adminHost?: string;
   demosHost?: string;
-  /** `{app_digest, runner_digest}`; read from the compose file when absent. */
-  image?: { appDigest: string; runnerDigest: string };
+  /**
+   * `{app_digest}` — the **one** image a bundle is cut from.
+   *
+   * `runner_digest` is gone with the runner (E-31, §11.5/§12.6): there is one container, one
+   * image, one digest, and a bundle that carried a second one would be a bundle describing a
+   * service the compose file no longer has.
+   */
+  image?: { appDigest: string };
   origin?: string;
 }
 
@@ -263,17 +269,15 @@ function seedFor(tenant: TenantSpec, repoRoot: string): string {
  * carries a placeholder digest (`sha256:000…`) because a source tree has no release; a
  * bundle's does, and shipping the placeholder would be a bundle that pulls nothing.
  */
-function composeFor(repoRoot: string, image: { appDigest: string; runnerDigest: string }): string {
+function composeFor(repoRoot: string, image: { appDigest: string }): string {
   const source = readFileSync(join(repoRoot, 'docker-compose.yml'), 'utf8');
-  return source
-    .replace(/(ghcr\.io\/skunkworks\/app@sha256:)[0-9a-f]{64}/, `$1${image.appDigest}`)
-    .replace(/(ghcr\.io\/skunkworks\/runner@sha256:)[0-9a-f]{64}/, `$1${image.runnerDigest}`);
+  return source.replace(/(ghcr\.io\/skunkworks\/app@sha256:)[0-9a-f]{64}/, `$1${image.appDigest}`);
 }
 
-function digestFromCompose(repoRoot: string, service: 'app' | 'runner'): string {
+function digestFromCompose(repoRoot: string): string {
   const text = readFileSync(join(repoRoot, 'docker-compose.yml'), 'utf8');
-  const match = new RegExp(`ghcr\\.io/skunkworks/${service}@sha256:([0-9a-f]{64})`).exec(text);
-  if (match?.[1] === undefined) throw new Error(`docker-compose.yml names no ${service} digest`);
+  const match = /ghcr\.io\/skunkworks\/app@sha256:([0-9a-f]{64})/.exec(text);
+  if (match?.[1] === undefined) throw new Error('docker-compose.yml names no app digest');
   return match[1];
 }
 
@@ -289,10 +293,7 @@ export function planCms(options: CmsOptions): CmsPlan {
   const repoRoot = options.repoRoot;
   const adminHost = options.adminHost ?? 'admin.skw.test';
   const demosHost = options.demosHost ?? 'demos.skw.test';
-  const image = options.image ?? {
-    appDigest: digestFromCompose(repoRoot, 'app'),
-    runnerDigest: digestFromCompose(repoRoot, 'runner'),
-  };
+  const image = options.image ?? { appDigest: digestFromCompose(repoRoot) };
   const files: TreeFile[] = [];
 
   // --- 1. the snapshot ------------------------------------------------------------
@@ -420,7 +421,7 @@ export function planCms(options: CmsOptions): CmsPlan {
     export_now: projection.exportNow,
     tenant: { key: tenant.key, mode: tenant.mode, db_version: tenant.dbVersion },
     hosts: tenant.hosts.map((h) => h.host),
-    image: { app_digest: image.appDigest, runner_digest: image.runnerDigest },
+    image: { app_digest: image.appDigest },
     projection_version: projection.version,
     projection_sha: projection.projectionSha,
     source_counts: inside,

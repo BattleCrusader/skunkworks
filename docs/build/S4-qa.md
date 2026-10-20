@@ -437,44 +437,98 @@ untracked `docs/build/STATUS.md` and this scratch directory.
 
 # S4 QA — Round 2
 
-**Verdict: NO-GO**, narrowly. **All five round-1 blockers are genuinely closed** — I reproduced each
-one, and every gate I broke went red and the file came back byte-identical. The trust surface is
-real and resisted **7 of 7** attacks, including a genuine fingerprint-prefix collision. The 566-test
-gate is green three times, `verify-dist` is 6/6, and the leak audit is clean.
+**Scope change, mid-run.** After this review began, the product decision changed: plugins run
+**in-process inside the website container**, WordPress-style. The separate runner service, the
+`plugin.sock` protocol and the no-network containment model are being replaced. Everything below
+that exists only to prove that model is marked **WITHDRAWN — NOT APPLICABLE**; it is **not a pass**,
+and it is **not coverage** for the new model, which has no evidence yet. The withdrawn rows:
+runner memory bound (R2-2.3), composed plugin invocation over the socket (R2-2.2), the two-layer
+runner/host capability independence (R2-4), and round 1's §4.2/§4.3/§4.4/§4.8 containment
+measurements (that section stands as history; its subject is being removed).
 
-The two things that stop a GO are both in the **newest** work, and both are claims of closure that
-do not survive being used:
+**Two verdicts, stated separately.**
+
+- **Plugin execution model: NO-GO, separately** — by the ruling above. It is being rewritten; nothing
+  in this section is evidence for the replacement, and the in-process isolation question (a package
+  as a same-process module with the app's own privileges) is unmeasured.
+- **Everything else — the retained S4 scope: NO-GO, narrowly** — on §8.5's revocation control, which
+  is independent of the execution model and silently does nothing, plus E-29 still owing its
+  application to the spec of record. The retained round-1 blockers **are** closed, properly: cold
+  first boot over HTTPS with an honest `cert_state`, the two-repeat validator, and uninstall leaving
+  a clean tenant. The gate was green four times at 566/566 with a clean typecheck on the reviewed
+  code, `verify-dist` is 6/6, the leak audit is clean, and the install-time signature verifier
+  refused **7 of 7** attacks — which now matters more, not less.
+
+What stops a GO on the retained scope:
 
 1. **§8.5's revocation clause has no implementation of the action.** The spec names
    `data/trust/revoked.json`; nothing reads it, nothing writes it, and `skwctl` has no `revoke`
    verb. The table the code does read (`cms_plugin_revoked`) has exactly one writer in the tree —
    `test/plugin-host.test.ts:217`, a gate. An operator who revokes a package root, exactly as §8.5
    instructs, gets a silent no-op and the revoked build **installs**.
-2. **E-29/E-30 are drafted, not applied.** `docs/sds/02-errata.md` §13 is written and good; the
-   builder items that amend `docs/sds/SDS.md` have not run — the file has not changed since
-   `18bb785` — so the specification of record still states the rule that produced round 1's dead
-   first boot (§12.5/:2220/:2222/:2256), still says a package "cannot starve the host"
-   (§8.4/:1443, §13.3/:2354), carries no `Amended by 02-errata.md E-29/E-30` pointer, and
-   `POINTERS` is still `range(1, 24)` (`scripts/model/check_frozen.py:206`). The final report's
-   table cites `make verify-frozen` as the gate for this, and `verify-frozen` does not check it.
+2. **E-29 is still owed on the spec of record.** `docs/sds/02-errata.md` §13 is written and good;
+   the builder items that amend `docs/sds/SDS.md` had not run at the reviewed commit — the file had
+   not changed since `18bb785` — so §12.5 still states the rule that produced round 1's dead first
+   boot (`:2220`, `:2222`, `:2256`), §12.3 still points at it, there is no
+   `Amended by 02-errata.md E-29` pointer, and `POINTERS` is still `range(1, 24)`
+   (`scripts/model/check_frozen.py:206`). `make verify-frozen` cannot see an unapplied errata, so
+   the final report's "closed … `verify-frozen` green" is not evidence for what it claims.
+   **E-30 is now being *withdrawn* by the in-process rewrite rather than applied** — the right call
+   (there is no runner cgroup to bound), and the working tree already says so; but a
+   withdrawal-only errata is still owed before the sentence can be retired.
 
-**Tree:** `ccedc82`. `git status --short` after every mutation and restore: `?? scratch/s4-qa2/` —
-**no tracked file modified**, nothing committed.
-**Date:** 2026-10-21, 06:48–07:10 AEDT. **Box:** macOS 15.7.4, 8 CPUs, Docker 29.7.2 (1.54 GB VM),
+**Tree state.** Every number in this section was measured at `ccedc82`, and `git status` was clean of
+tracked changes throughout my runs. During the review the ruling itself was committed as
+**`3c4bea0` "D36: plugins run in-process inside the website container"** (07:06), which also
+committed an earlier draft of this section. The D36 amendment that followed is **uncommitted**
+(`SDS.md` + `02-errata.md` + `check_frozen.py` + two diagrams, plus a new `13-plugin-model-delta.md`).
+
+Mid-edit, that amendment briefly turned `make verify-frozen` red — it deleted the frozen C-8
+containment sentence before any errata superseded it (`MISSING C-8 … FAIL the SDS paraphrases the
+register`). I did not edit `SDS.md` and did not fix it. By 07:19 the concurrent work had reconciled
+it **the right way**: `E-31` (errata §14) supersedes C-8, and `check_frozen.py` now asserts the
+retired text is **absent**, the replacement is **present verbatim**, and the marker exists —
+`make verify-frozen` → `PASS the SDS quotes the register`, `pointers: 23/23`. Recorded because the
+sequence matters: a frozen contract was retired by an errata the checker knows about, not by
+deleting a sentence.
+
+One environment caveat on "green": a re-run of the suite while the D36 work and my own probes were
+both loading the box (load 33–50) **cancelled** `test/export-resilience.test.ts` at the file-level
+40 s budget. The file is unmodified and passes **5/5 in 43.08 s** with a 180 s budget
+(`scratch/s4-qa2/export-resilience-180s.log`), so that is contention, not a defect — but it means
+`make test` is only green on a box that is not being hammered, exactly as `make test-perf` insists.
+
+Verification snapshot on the **current uncommitted tree**, for completeness: `npm run typecheck`
+exit 0; `make verify-dist` 6/6; `make verify-frozen` PASS (`pointers: 23/23`); `make verify-s1`
+561/562 with the one file-level timeout above. A fresh full-suite green is **not obtainable while I
+write this** — the box is at load 95.69 (the D36 diagram regeneration is running), so I am reporting
+the snapshot rather than a number I could not produce.
+
+**Date:** 2026-10-21, 06:48–07:12 AEDT. **Box:** macOS 15.7.4, 8 CPUs, Docker 29.7.2 (1.54 GB VM),
 node 22.23.1. Load average 11–36 throughout; every timing below is labelled with that.
 
 ---
 
-## R2-1. The gate, three times — plus `verify-dist` alone and the perf guard
+## R2-1. The gate, four times — plus `verify-dist` alone and the perf guard
 
-`/usr/bin/time -p make test`, full output captured. Logs `scratch/s4-qa2/make-test-{1,2,3}.log`;
-exit codes in `scratch/s4-qa2/exits.txt`. Counts are the TAP summary, not a grep of `ok` lines.
+All four runs were at the reviewed commit `ccedc82`, with a clean tree apart from this report.
+A later re-run on the current (uncommitted) D36 tree passed `verify-frozen` but was cancelled on a
+40 s file budget under load 33–50 — see the tree-state note; the file passes 5/5 in 43 s with a
+larger budget, so the count below is the one the reviewed code earned.
+
+`/usr/bin/time -p make test`, full output captured. Logs `scratch/s4-qa2/make-test-{1,2,3}.log` and
+`make-test-4-final.log`; exit codes in `scratch/s4-qa2/exits.txt`. Counts are the TAP summary, not a
+grep of `ok` lines.
 
 | run | tests | pass | fail | skipped | exit | wall |
 |---|---|---|---|---|---|---|
 | 1 | 566 | 566 | 0 | 0 | **0** | 218.55 s |
 | 2 | 566 | 566 | 0 | 0 | **0** | 183.15 s |
 | 3 | 566 | 566 | 0 | 0 | **0** | 203.51 s |
+| 4 (final tree state, with this round's harnesses on disk) | 566 | 566 | 0 | 0 | **0** | 227.12 s |
+
+`npm run typecheck` on the same tree: **exit 0, 5.22 s** — the QA harnesses under `scratch/s4-qa2/`
+are not in the tsconfig scope and do not perturb the gate.
 
 `make verify-dist` alone: **6/6, exit 0, 6.06 s** (`scratch/s4-qa2/verify-dist.log`), D1–D6 each
 printing what it executed (boot, page, download, migrate, skwctl, nginx_gen).
@@ -492,20 +546,24 @@ So the perf gate **did not run** and none of its numbers can be quoted as a pass
 and the builder's own §10.5 lists it as still needing an idle box. `SKW_ALLOW_SKIP` and
 `SKW_SKIP_DOCKER` were never set; a skip is a failure in this suite and none was reported.
 
-**Count claim checked:** 566, three times, matching the final report. (§10.6's artifact note calls
+**Count claim checked:** 566, four times, matching the final report. (§10.6's artifact note calls
 `scratch/s4f/make-test.log` "the 565 run" — a stale filename, not a claim about this tree.)
 
 ---
 
-## R2-2. The five round-1 blockers — each reproduced, not read
+## R2-2. The five round-1 blockers — what survives the execution-model change
 
 | # | round-1 blocker | how I verified it this round | result |
 |---|---|---|---|
 | 1 | a cold install's nginx cannot start; `cert_state` claims `issued` | cut a CMS bundle from a tenant whose control plane said `issued`; installed into an empty dir; `docker compose up` four services; HTTPS GET through nginx; `openssl s_client` for the peer; read `cert_state` from the installed control.db | **CLOSED** |
-| 2 | no product code calls a plugin | `test/plugin-composed.test.ts` alone: 4/4, 7.34 s; C2 is a real `GET /_plugin/notes/list` answered 200 with the row the host read from `site.db` inside the container | **CLOSED** |
-| 3 | the runner has no memory cap | my own container, shipped flags, 4 GiB hoard | **CLOSED** |
+| 2 | no product code calls a plugin | `test/plugin-composed.test.ts` alone: 4/4, 7.34 s; C2 is a real `GET /_plugin/notes/list` answered 200 with the row the host read from `site.db` inside the container | **WITHDRAWN — NOT APPLICABLE** (proves the socket model; that model is being replaced) |
+| 3 | the runner has no memory cap | my own container, shipped flags, 4 GiB hoard | **WITHDRAWN — NOT APPLICABLE** (no separate runner cgroup in the new model) |
 | 4 | §16 S4 row 2: two `[data-repeat]` children accepted | production `savePage()` on a two-child document, and on a one-child control | **CLOSED** |
 | 5 | no uninstall / no clean tenant | data-bearing uninstall through `skwctl`, then a full tenant census | **CLOSED** |
+
+Three of the five survive the redesign and are closed; two are withdrawn rather than passed. The
+plugin-invocation requirement does not disappear — it becomes *in-process* invocation — but the
+evidence above cannot be carried over to it, and I did not re-test it under the new model.
 
 ### 2.1 First boot over HTTPS, honest `cert_state` — `scratch/s4-qa2/transcript.log`
 
@@ -534,7 +592,10 @@ successful*. Independently, the suite's T1–T5 passed in all three runs, includ
 **One defect this surfaced, minor and uncovered** — see R2-6.6: the *generated conf's comment* still
 says `# certificate: issued` on a bundle whose seed says `none`.
 
-### 2.2 A plugin through the composed stack
+### 2.2 A plugin through the composed stack — **WITHDRAWN, NOT APPLICABLE**
+
+Withdrawn with the execution model: the evidence is real (below) but it proves the socket path that
+is being removed, so it is not a pass for the replacement and is not counted.
 
 `test/plugin-composed.test.ts` alone: `4/4 pass`, 7.34 s. C1 asserts the two-container shape and the
 bound socket; C2 is an HTTP request to the app container answered `200 application/json` with
@@ -542,7 +603,10 @@ bound socket; C2 is an HTTP request to the app container answered `200 applicati
 tenant database inside the invoke the HTTP request started; C3 is a POST that writes through the
 host and is then found in `site.db`; C4 is the 404 after uninstall.
 
-### 2.3 The runner memory bound, by hand — `scratch/s4-qa2/memhoard-probe.sh`
+### 2.3 The runner memory bound — **WITHDRAWN, NOT APPLICABLE**
+
+Withdrawn: there is no separate runner cgroup in the new model, so this bound is about to stop
+existing. Recorded for the history of the old model only — it was measured, not read:
 
 Own container, flags copied from `docker-compose.yml`, `skw-runner` built from `runner/`:
 
@@ -594,6 +658,12 @@ Tenant census after: `installed 0, registry 0, migration 0, settings 0, p_* tabl
 
 ## R2-3. The trust surface, attacked seven ways — `scratch/s4-qa2/trust-attacks.{mts,log}`
 
+**Retained in full under the new model.** None of these seven attacks touches the runner, the
+socket, or the network: every one is an **install-time** decision made by `skwctl` over files and
+the trust store. They survive the in-process rewrite unchanged — and they matter *more* now, because
+plugin code will run with the app's own privileges, so the signature check at install is the only
+place a package's provenance is decided.
+
 Every attack is driven through the shipped `skwctl` and the shipped `tools/plugin_sign.ts`; nothing
 re-implements the verifier. Each row snapshots the tenant (installed row, plugin tables, audit count,
 `publishers.json` sha256, plugin tree hash) before and after; *state* = that whole snapshot is
@@ -634,7 +704,13 @@ unsigned)" plus the banner); the row is not. See R2-6.4.
 
 ---
 
-## R2-4. Two capability layers — disabled one at a time
+## R2-4. Two capability layers — **WITHDRAWN, NOT APPLICABLE**
+
+Withdrawn with the execution model: with one process there is no runner layer and no host/runner
+boundary for two layers to be independent *of*. The measurements below are recorded as the history of
+the model being replaced, not as coverage. The question they answered — "can a package reach an op
+its manifest did not grant?" — does not go away; it moves inside one process and **has no evidence
+yet**. That is part of the separate execution-model NO-GO.
 
 `scratch/s4-qa2/capability-mutations.sh`, `test/plugin-capability.test.ts` after each edit, restore by
 hash. Baseline 5/5 green.
@@ -676,7 +752,7 @@ as two independent authorities.
 
 | property | round 1 | round 2 | evidence |
 |---|---|---|---|
-| `make test` | 534/534 ×4 | **566/566 ×3**, exit 0 | R2-1 |
+| `make test` | 534/534 ×4 | **566/566 ×4**, exit 0 | R2-1 |
 | `make verify-dist` | 6/6, 5.66 s | **6/6, 6.06 s** | R2-1 |
 | leak audit | clean | **clean** (`before: 0/0`, negative control red, `after: 0/0`) | run logs |
 | export determinism, same clock | identical | **identical** — static `1d276222…`, astro `28440950…`, cms `5cccfeb9…` for both exports | `scratch/s4-qa2/det` |
@@ -718,32 +794,36 @@ and does nothing is worse than an absent one: the operator believes the build is
 not. §10.5 names the file as "no writer" and grades it *minor*, framing it as a duplicate source of
 truth — the file is not a second source of truth, it is not a source at all.
 
-**2. Major (specification, evidence) — E-29/E-30 are drafted, not applied, and the closure claim
-cites a gate that does not check them.** `docs/sds/02-errata.md` §13 exists and is good. Its own
-builder items 1–4 say *paste the drop-ins into `docs/sds/SDS.md`*. `git log 18bb785..HEAD --
-docs/sds/SDS.md` is **empty**; the retired clauses are still there:
+**2. Major (specification, evidence) — E-29 was never applied, and the closure claim cites a gate
+that does not check it.** `docs/sds/02-errata.md` §13 exists and is good. Its own builder items 1–4
+say *paste the drop-ins into `docs/sds/SDS.md`*. At the reviewed commit, `git log 18bb785..HEAD --
+docs/sds/SDS.md` was **empty** and E-29's retired clauses were still there:
 
 ```
-1443  … It cannot starve the host and it cannot affect a page (§13.3).      # E-30, unamended
-2354  … it cannot starve the host, and it cannot affect a page …            # E-30, unamended
 2220  is on every block because §12.5 promises a host serves on 80 while …   # E-29, unamended
 2222  `domain.cert_state = 'issued'` — a block that listens on 443 … fails
 2256  reports `certificate: pending` and serves on 80.                       # E-29, unamended
 ```
 
-No `> Amended by 02-errata.md E-29/E-30.` pointer (the established convention — E-20…E-23 all have
-one), and `POINTERS = tuple(f"E-{n}" for n in range(1, 24))` at `scripts/model/check_frozen.py:206`,
-i.e. still `23/23`. The errata's item 5 is acknowledged as owed; items 1–4 are not. `verify-frozen`
+No `> Amended by 02-errata.md E-29.` pointer (the established convention — E-20…E-23 all have one),
+and `POINTERS = tuple(f"E-{n}" for n in range(1, 24))` at `scripts/model/check_frozen.py:206`, i.e.
+still `23/23`. The errata's item 5 is acknowledged as owed; items 1–4 are not. `verify-frozen`
 asserts that the SDS quotes the *frozen register* — it cannot see an unapplied errata, so
-§10's "**closed** … `make verify-frozen` green" is not evidence for what it claims. This matters
-in the direction the errata itself warns about (line 2923): *"an errata that only re-worded the
-sentence would leave the next Builder free to 'fix' the code back to the text"* — here even the
-sentence was not re-worded.
+§10's "**closed** … `make verify-frozen` green" is not evidence for what it claims. This matters in
+the direction the errata itself warns about (line 2923): *"an errata that only re-worded the sentence
+would leave the next Builder free to 'fix' the code back to the text"* — here even the sentence was
+not re-worded.
 
-Also in that section, a citation error: builder item 3 says §16's S4 row 12 still says *"serves on
-80 while pending"*. §16's S4 row 12 actually reads *"install on a clean host: ≤ 5 min with images
-present, `certificate: pending` allowed"* — it never mentions 80 or 443, so no change is owed there;
-the phrase the errata wants to retire lives in §12.5/:2256.
+**E-30 is a different story now and should not be "applied":** the in-process rewrite removes the
+runner cgroup the sentence describes, so the working tree is **withdrawing** it (`E-30 withdrawn by
+E-31`, "`SKW_E_PL_OOM` is withdrawn") — the right call. Its two sentences at `:1443` and `:2354` were
+still unamended at the reviewed commit, and the withdrawal needs its own errata before they can be
+retired.
+
+Also in §13, a citation error: builder item 3 says §16's S4 row 12 still says *"serves on 80 while
+pending"*. §16's S4 row 12 actually reads *"install on a clean host: ≤ 5 min with images present,
+`certificate: pending` allowed"* — it never mentions 80 or 443, so no change is owed there; the
+phrase the errata wants to retire lives in §12.5/:2256.
 
 **3. Major (operator surface) — the only upgrade path §8.2 defines fails with `INTERNAL:`.**
 `SKW_E_PL_SCHEMA` is not in `schema/error-codes.json`'s `http` map. `AppError`'s constructor *throws*
@@ -795,7 +875,8 @@ round 1's blocker 1, in the last place it was left. It is a comment only: `nginx
 site serves. One-line fix; no gate asserts it (`T1` checks the seed, not the comment).
 
 **7. Minor (evidence) — the builder's end-to-end transcript no longer reproduces what §9 cites it
-for.** `bash scratch/s4e-transcript.sh` exits 0 but its steps 7–10 now fail:
+for.** Narrowed by the execution-model change: its plugin half is moot, but the *evidence* problem
+stands. `bash scratch/s4e-transcript.sh` exits 0 while printing refusals it never asserts:
 
 ```
 ### 7. a plugin, through the product's public endpoint (D25)
@@ -806,19 +887,24 @@ GET /_plugin/notes/list  -> {"code":"SKW_E_RT_PAGE_NOT_FOUND"}      # never inst
 ```
 
 The script predates S4f's signature requirement and the `granted` wire field, and `set -uo pipefail`
-without `-e` means it exits 0 while printing refusals it never asserts. §9's
-`bash scratch/s4e-transcript.sh  # the transcript quoted above` therefore does not reproduce §2.3 or
-§3.3. The *gates* for those steps are sound (I ran them); the transcript is evidence that has rotted.
+without `-e` lets it exit 0. §9's `bash scratch/s4e-transcript.sh  # the transcript quoted above`
+therefore does not reproduce §2.3 or §3.3 — steps whose subject is now being replaced anyway. The
+lesson that survives: the report's reproducing commands are not run by any gate, and at least one had
+already rotted before the slice was called green.
 
 **8. Cosmetic — `install.sh` still writes one thing into the verified bundle: an empty `run/`
 directory** (34 → 35 entries; `bundle_verify` passes because it ignores extra paths). It is the
-socket mount point and is created next to the compose file, so this is understandable, but "the
-verified artefact is the installed artefact" is still not quite true.
+socket mount point; under in-process execution it should disappear, which removes the cosmetic
+defect as a side effect.
 
 ---
 
 ## R2-7. What is NOT COVERED
 
+- **The replacement execution model — in-process packages.** No evidence at all: not who loads a
+  package, not what it can reach once loaded, not whether a package fault takes the app with it, not
+  whether the manifest is still the grant. This is the separate execution-model NO-GO, and it is the
+  largest uncovered area in the slice.
 - **The composed install end-to-end as a customer does it** — image pull from a registry, bundle
   transfer, real DNS, a real CA. The registry digests do not exist on this box; the transcript and
   the gates use locally built images (`skw-app:s4d`, `skw-acme:s4e`, `skw-runner:s4e`). The first
@@ -839,59 +925,91 @@ verified artefact is the installed artefact" is still not quite true.
 |---|---|---|---|
 | 1 | per-tenant trust is not modelled (`publishers.json` is one file per install, "§8.5's own path") | **Acceptable** | §8.5 names that exact path, so it is conformant to the letter. With one operator account per install the "tenant owner" is the box operator; the screen says where the key came from. It becomes a cross-tenant trust bleed only when tenants are unrelated customers — a v2 decision, correctly named. Not a violation. |
 | 2 | the image's first-party key is a placeholder with no retained private half, so first-party packages cannot be signed | **Spec violation** (fails closed) | §8.5: *"the image carries our public key and verifies first-party packages against it."* The image carries a key that can verify nothing, and no signer exists, so **every** vendor package must be installed with `--allow-unsigned` and is audited as unsigned. The control is not bypassed — it is unusable on its primary path, and the workaround trains operators to type the flag that exists to be rare. A release-pipeline step, but the shipped artefact does not meet the sentence. |
-| 3 | `data/trust/revoked.json` is named by §8.5 and has no writer — "revocation is `cms_plugin_revoked` today" | **Spec violation, and the highest-severity item** | The file has no **reader** either, and the table has no operator writer (one test only). Revocation is not "the table today"; it is nothing an operator can do. The builder's framing (a duplicate source of truth) understates a control that silently no-ops. |
+| 3 | `data/trust/revoked.json` is named by §8.5 and has no writer — "revocation is `cms_plugin_revoked` today" | **Spec violation, and the highest-severity retained item** | The file has no **reader** either, and the table has no operator writer (one test only). Revocation is not "the table today"; it is nothing an operator can do. The builder's framing (a duplicate source of truth) understates a control that silently no-ops. Unaffected by the execution-model change: revocation is an install-time trust action. |
 | 4 | a signature does not travel in an export; the bundle's root and `BUNDLE.json` are the integrity claim | **Acceptable** | §8.5 does not promise bundle provenance, and the two artefacts it does name are checked by `bundle_verify`. The distinction that matters — integrity of the bytes vs. who published them — is stated rather than implied. |
-| 5 | the runner holds its package list from boot, so install/uninstall say "restart the runner service" | **Acceptable with real friction** | Not a spec violation: the CLI says it, and the app reconnects on demand. But it is the limit a customer meets **first** — install succeeds, the endpoint 404s, and the fix is the last line of output. A `reload` verb on the socket (the runner already owns the scan) would remove it. |
+| 5 | the runner holds its package list from boot, so install/uninstall say "restart the runner service" | **WITHDRAWN — NOT APPLICABLE** | There is no runner to restart in the new model. The underlying requirement (an install becomes effective without a second manual step) survives and should be re-judged against the in-process design; it is not evidence either way today. |
 
-**Which would hurt a customer first:** #2 and #5, on day one — #2 because the vendor's own packages
-need `--allow-unsigned`, #5 because "install → enable → it works" needs a restart the customer will
-not read. **Which would hurt worst:** #3, on the day they need it — an incident where a bad build must
-be blocked, and the revocation they perform does nothing.
+**Which would hurt a customer first:** #2, on day one — the vendor's own packages need
+`--allow-unsigned`, which trains operators to type the flag that exists to make unsigned installs
+rare. **Which would hurt worst:** #3, on the day they need it — an incident where a bad build must be
+blocked, and the revocation they perform does nothing.
 
 ---
 
 ## R2-9. Reproducing
 
 ```
-make test                                            # 566/566/0/0, exit 0, ×3
+make test                                            # 566/566/0/0, exit 0, ×4
+npm run typecheck                                    # exit 0
 make verify-dist                                     # 6/6, exit 0
 make test-perf                                       # refused at load 11.73/8 cpus, exit 2
 
+# retained (execution-model independent)
 node scratch/s4-qa2/trust-attacks.mts                # the seven attacks
 node scratch/s4-qa2/revoke-probe.mts                 # the revocation probe
-bash scratch/s4-qa2/capability-mutations.sh          # M1/M2 + byte-identical restore
-bash scratch/s4-qa2/memhoard-probe.sh                # the 4 GiB hoard against 384 MiB
 node scratch/s4-qa2/two-repeat.mts                   # row 2, refused
-bash scratch/s4e-transcript.sh                       # first boot (steps 7–10 are stale, R2-6.7)
+bash scratch/s4e-transcript.sh                       # first boot (steps 7–10 stale, R2-6.7)
 node scratch/s4-qa2/treehash.py <dir>…               # independent tree hash
+
+# WITHDRAWN with the execution model — kept for the old model's history only
+bash scratch/s4-qa2/capability-mutations.sh          # M1/M2 (NOT APPLICABLE)
+bash scratch/s4-qa2/memhoard-probe.sh                # 384 MiB cgroup (NOT APPLICABLE)
 ```
 
-Artifacts: `scratch/s4-qa2/` — `make-test-{1,2,3}.log`, `verify-dist.log`, `test-perf.log`,
+Artifacts: `scratch/s4-qa2/` — `make-test-{1,2,3,4-final}.log`, `verify-dist.log`, `test-perf.log`,
 `trust-attacks.{mts,log}` and `trust/attacks.json`, `revoke-probe.mts`, `cap/`,
 `memhoard-probe.sh`, `det/` (three targets × three exports), `bundle/`, `cold/`, `install-{1,2}.log`,
 `transcript.log`, `csp-wire.txt`, `treehash.py`, and the mutation backups. No product file is
-modified; `git status --short` is `?? scratch/s4-qa2/` only, and every mutated file's sha256 is
-identical to its backup (R2-2.4, R2-4).
+modified; `git status --short` is `M docs/build/S4-qa.md` (this section) and `?? scratch/s4-qa2/`,
+and every mutated product file's sha256 is identical to its backup (R2-2.4, R2-4).
 
 ---
 
 ## R2-10. Verdict
 
-**NO-GO**, on one security control and one unapplied amendment — not on the five blockers, all of
-which are closed and were closed properly.
+**Two verdicts, because the change splits the slice in two.**
 
-What is genuinely good, and should not be redone: the first boot serves HTTPS with a certificate
-whose bytes exist and a `cert_state` that does not lie; a plugin answers through two containers and a
-unix socket; the memory ceiling is a real cgroup at 384 MiB with no swap escape and a surviving
-container; a two-child `list` is refused by name; uninstall archives the data, redacts the secret and
-leaves a clean tenant; and the signature verifier refused all seven attacks, including a real
-fingerprint-prefix collision and a forged `key_id`. The capability split is two real controls in two
-processes.
+**1. Plugin execution model — NO-GO, separately.** It is being replaced, by ruling, and nothing in
+this section is evidence for the replacement. The in-process design has no measured isolation at all
+(R2-7): who loads a package, what it can reach with the app's own privileges, whether a package
+fault takes the site down, and whether the manifest is still the grant are all open. That is a
+rewrite-sized question, not a defect list.
 
-**Highest-severity remaining item:** §8.5's revocation control is unimplemented as an operator
-action — `data/trust/revoked.json` is neither read nor written, `skwctl` has no `revoke` verb, and
+**2. Everything else — the retained S4 scope: NO-GO, narrowly.** The retained blockers are closed
+and were closed properly: the first boot serves HTTPS with a certificate whose bytes exist and a
+`cert_state` that does not lie; a two-child `list` is refused by name and writes no row; uninstall
+archives the data, redacts the secret, and leaves a clean tenant. The gate is green four times at
+566/566 with a clean typecheck, `verify-dist` 6/6, the leak audit clean, determinism holds (one
+hash per target at one clock, only `EXPORT-NOTES.md`/`BUNDLE.json` at +1 h), install is 1.15 s
+machine plus the 20 s human allowance, the CSP header is byte-identical on the wire, and the
+install-time signature verifier refused all seven attacks — the two edits, the added file, the two
+signature swaps, the unsigned path with its audit row, the silent key replacement, and a real
+16-bit fingerprint-prefix collision plus a forged `key_id`.
+
+What stops a GO on the retained scope:
+
+- **§8.5's revocation control has no implementation of the action** — the file the spec names is
+  neither read nor written, there is no `revoke` verb, and the table the code reads is written only
+  by a gate, so a root an operator believes they revoked still installs.
+- **E-29 is unapplied** — at the reviewed commit `SDS.md` had not changed, the retired clauses
+  stood, there was no pointer line, `POINTERS` was still `range(1, 24)`, and `verify-frozen` cannot
+  see any of that. **E-30 is being withdrawn** rather than applied, which is correct for the new
+  model; the withdrawal is owed as an errata before its two sentences can be retired.
+- **`SKW_E_PL_SCHEMA` is unmapped**, so the upgrade path's refusal surfaces as
+  `INTERNAL: no HTTP mapping …`.
+- **Audit attribution**: an unsigned package can put a trusted publisher id in
+  `cms_plugin_installed` and `cms_audit` with a null fingerprint.
+
+One caveat on "green": the reviewed commit was green; the current uncommitted D36 tree passes
+`verify-frozen` and `verify-dist` but a suite re-run at load 33–50 cancelled `export-resilience` on
+the file-level 40 s budget (the file passes 5/5 in 43.08 s with 180 s). That is contention, not a
+retained-scope defect — but the D36 rewrite still has to be verified on a box that is not also
+running an in-process migration.
+
+**Highest-severity retained item:** §8.5's revocation control is unimplemented as an operator action
+— `data/trust/revoked.json` is neither read nor written, `skwctl` has no `revoke` verb, and
 `cms_plugin_revoked` is written only by a gate, so a package root an operator believes they have
 revoked still installs. Fix that (a reader for the file *or* a `revoke` verb that writes the table,
 plus a gate that revokes through the operator surface and then asserts the refusal), apply E-29/E-30
 to `docs/sds/SDS.md` with their pointer lines and the `POINTERS` range, and map `SKW_E_PL_SCHEMA` —
-then this slice is a GO.
+then the retained scope is a GO, leaving only the execution-model rewrite.

@@ -141,10 +141,24 @@ export const HTTP: Record<string, number> = {
   SKW_E_PL_TESTS_STALE: 409,
   SKW_E_PL_NO_EXPORT_CLASS: 409,
   SKW_E_PL_UNAVAILABLE: 503,
-  // S4e (F4): the runner's cgroup ceiling was reached and the kernel killed the plugin's
-  // child. 503 is the honest status — the endpoint exists, this package cannot answer it —
-  // and the message names the limit so an operator can tell a hoard from a crash.
-  SKW_E_PL_OOM: 503,
+  // S5/D36. These six were named by `areas.PL` in the frozen taxonomy and had **no HTTP
+  // status**, so `AppError` threw "no HTTP mapping for SKW_E_PL_SCHEMA" at the moment the
+  // refusal was constructed — the upgrade refusal of §8.2 surfaced as a 500 about the error
+  // mapper. A code that can reach a response needs a status; the ones that cannot
+  // (`ROW`, `QUERY`, `NO_TABLE`, `MAIL`, `SETTING_INVALID`, `TOO_MANY`) stay out on purpose.
+  //
+  // 409 for the three refusals about the package's *state* relative to this install, 403 for
+  // a capability the facade will not answer, 500 for the two that mean "the host failed to do
+  // its own job" (a package that would not load; a context called after its request ended).
+  SKW_E_PL_SCHEMA: 409,
+  SKW_E_PL_DESTRUCTIVE_UPGRADE: 409,
+  SKW_E_PL_REJECTED: 403,
+  SKW_E_PL_BUSY: 409,
+  SKW_E_PL_LOAD: 500,
+  SKW_E_PL_CONTEXT_ENDED: 500,
+  // `SKW_E_PL_OOM` is **withdrawn**, not deprecated: it named a per-package cgroup that D36
+  // deleted with the runner (§13.3.9). A status left here would be a control an operator could
+  // still look for in a log.
 };
 
 /**

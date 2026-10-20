@@ -26,7 +26,7 @@
  *       issues a certificate, writes it over the self-signed pair, sets `cert_state = 'issued'`,
  *       and HUPs nginx — the connection's issuer changes and nginx was never restarted.
  *
- * The images are local: `skw-runner:s4e`, `skw-acme:s4e` and the existing `skw-app:s4d` with
+ * The images are local: `skw-acme:s4e` and the existing `skw-app:s4d` with
  * this tree's `dist/` mounted over it. The published digests do not exist here and nothing in
  * this file claims they were pulled.
  */
@@ -214,8 +214,6 @@ before(async () => {
       '    user: "${HOST_UID}:${HOST_GID}"',
       '    volumes:',
       `      - ${join(REPO, 'dist')}:/srv/app/dist:ro`,
-      '  plugin-runner:',
-      '    image: skw-runner:s4e',
       '  acme:',
       '    image: skw-acme:s4e',
     ].join('\n'),
@@ -227,14 +225,13 @@ before(async () => {
   // a silent fallback to the host.
   // Compose names are deterministic; record them **before** `compose up` so a hook that
   // throws mid-boot still leaves nothing behind (the leak audit runs after the suite).
-  for (const service of ['nginx', 'app', 'plugin-runner', 'acme']) trackContainer(`${PROJECT}-${service}-1`);
+  // E-31: three services. The fourth had no image left to build once `runner/**` was deleted,
+  // and this gate was the last thing still asking for one.
+  for (const service of ['nginx', 'app', 'acme']) trackContainer(`${PROJECT}-${service}-1`);
 
   const appImage = sh('docker', ['image', 'inspect', 'skw-app:s4d']);
   assert.equal(appImage.status, 0, 'no skw-app:s4d image on this box (and the registry is unreachable): the composed gate cannot run');
-  for (const [tag, file, context] of [
-    ['skw-runner:s4e', 'runner/Dockerfile', 'runner'],
-    ['skw-acme:s4e', 'acme/Dockerfile', '.'],
-  ] as const) {
+  for (const [tag, file, context] of [['skw-acme:s4e', 'acme/Dockerfile', '.']] as const) {
     const built = sh('docker', ['build', '-t', tag, '-f', file, context]);
     assert.equal(built.status, 0, `could not build ${tag}:\n${built.stderr}`);
   }
@@ -262,7 +259,7 @@ after(() => {
   // the leak gate named it).
   sh('docker', ['rm', '-f', PEBBLE]);
   compose(['down', '-v', '--remove-orphans'], {});
-  for (const service of ['nginx', 'app', 'plugin-runner', 'acme']) removeContainer(`${PROJECT}-${service}-1`);
+  for (const service of ['nginx', 'app', 'acme']) removeContainer(`${PROJECT}-${service}-1`);
   sh('docker', ['network', 'rm', `${PROJECT}_default`]);
   fixture?.cleanup();
 });

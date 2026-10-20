@@ -64,7 +64,12 @@
     "SKW_E_RT_COMPONENT_INVENTORY": 422,
     "SKW_E_RT_PAGE_READONLY": 409,
     "SKW_E_RT_REPEAT_INVALID": 422,
-    "SKW_E_PL_OOM": 503
+    "SKW_E_PL_SCHEMA": 409,
+    "SKW_E_PL_DESTRUCTIVE_UPGRADE": 409,
+    "SKW_E_PL_REJECTED": 403,
+    "SKW_E_PL_BUSY": 409,
+    "SKW_E_PL_LOAD": 500,
+    "SKW_E_PL_CONTEXT_ENDED": 500
   },
   "retry_after": {
     "SKW_E_DM_SCHEMA_STALE": 5,
@@ -153,7 +158,6 @@
       "QUOTA",
       "PLUGIN_ERROR",
       "UNAVAILABLE",
-      "OOM",
       "DOWNGRADE",
       "DESTRUCTIVE_UPGRADE",
       "ARCHIVE_FAILED",
@@ -164,7 +168,10 @@
       "EXPORT_REFUSE",
       "EXPORT_FORWARD_NO_TARGET",
       "EXPORT_SNAPSHOT",
-      "EXPORT_PACKAGE_MISSING"
+      "EXPORT_PACKAGE_MISSING",
+      "LOAD",
+      "BUSY",
+      "CONTEXT_ENDED"
     ]
   },
   "deleted": {

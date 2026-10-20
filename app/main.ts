@@ -8,7 +8,11 @@
  *   3. open control.db; if it cannot be opened or migrated, exit 15 naming it
  *   4. run `migrate --tenant all`; app starts regardless (C-10)
  *   5. upsert the component registry into each tenant's cms_component_registry
- *   6. bind run/plugin.sock and spawn one child per package  <- NOT S1 (S4)
+ *   6. load the plugins the tenant rows say are enabled, in this process (D36, §13.3.2)
+ *
+ * Step 6 is not a socket and not a child: since D36 a plugin is a module `import()`ed into this
+ * process, and there is nothing to bind. A package whose code throws or whose `activate` fails is
+ * marked failed and disabled, and the site keeps serving (§13.3.6).
  */
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type Database from 'better-sqlite3';
@@ -44,7 +48,7 @@ import { DEFAULT_CONTENT_ROOT } from './assets/store.ts';
 import { Semaphore } from './admin/auth.ts';
 import { seedSettings } from './download/code.ts';
 import { DownloadPlane, RETRY_ATTEMPTS } from './download/plane.ts';
-import { PluginHost } from './plugins/host.ts';
+import { PluginRuntime } from './plugins/runtime.ts';
 import { matchEndpoint, runEndpoint } from './plugins/endpoint.ts';
 import type { WatermarkDeps, WatermarkStore } from './download/render.ts';
 
@@ -83,11 +87,10 @@ export interface AppHandle {
    * The daily seal job (§9.6); stopped by `close()`. */
   seals: SealSchedulerHandle;
   /**
-   * The app's end of `run/plugin.sock` (S4d). Present even when the socket could not be
-   * bound: `plugins.isConnected` is then false and every call refuses PL_UNAVAILABLE,
-   * which is the shape a host-only install has always had.
+   * The in-process plugin runtime (D36 §13.3.2–§13.3.8): the registry, the load path, the hook
+   * bus and the failure counter. There is no socket, no runner and no second process.
    */
-  plugins: PluginHost;
+  plugins: PluginRuntime;
   /**
    * The watermark render cache (§7.5), so a gate can sweep at a fixed instant without
    * waiting for the tick. Nothing outside the download plane writes to it.
@@ -131,13 +134,6 @@ export interface BuildAppOptions {
    * and the only honest witness to "reached the app" is the app's own log.
    */
   accessLogPath?: string;
-  /**
-   * `run/plugin.sock`. Derived from the data directory (`<data>/../run/plugin.sock`), which
-   * is compose's `/srv/run/plugin.sock` for `SKW_DATA_DIR=/srv/data`; a gate passes a temp
-   * path instead. Not an environment name: §4.3 stays at its frozen list, and the socket
-   * is a deployment layout, not a knob.
-   */
-  pluginSocket?: string;
 }
 
 /**
@@ -239,33 +235,23 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     }
   }
 
-  // --- step 6: the plugin runner's socket (§2.3 step 6, §8.3, S4d) -----------------
-  // One connection, one tenant binding per invoke. A missing socket is not a boot failure:
-  // a host install serves pages without a runner, and every plugin call then refuses
-  // PL_UNAVAILABLE naming the path. What must not happen is a silent "bound" that answers
-  // from a second data path, which is why the host ops are answered by *this* process and
-  // the runner owns no database handle.
-  const pluginSocketPath = opts.pluginSocket ?? join(dirname(dataDir), 'run', 'plugin.sock');
-  const plugins = new PluginHost({
-    socketPath: pluginSocketPath,
+  // --- step 6: the plugins this box already had enabled (§2.3 step 6, §13.3.2) -----
+  // Nothing is bound and nothing is spawned. Each tenant's `cms_plugin_installed` rows are the
+  // only statement of what runs; a row that says `enabled=0` is never imported, which is the
+  // recovery path §13.3.6 item 3 depends on. A package that throws at import is marked failed
+  // and disabled here, and boot continues: a bad plugin costs its own hooks, not the site.
+  const plugins = new PluginRuntime({
     dataDir,
     emailMode: env.emailMode,
     log: opts.logger === true ? (line: string) => process.stdout.write(`plugins: ${line}\n`) : undefined,
   });
-  const pluginBound = await plugins.connect();
-  if (pluginBound) {
-    let loaded: { id: string; version: string; ready: boolean }[] = [];
-    try {
-      loaded = await plugins.list();
-    } catch (err) {
-      process.stderr.write(`plugin.sock: bound but the registry did not answer (${describe(err)})\n`);
-    }
-    process.stdout.write(
-      `plugin.sock: bound at ${pluginSocketPath} (${loaded.length} package(s): ${loaded.map((p) => `${p.id}@${p.version}${p.ready ? '' : ' (not ready)'}`).join(', ') || 'none'})\n`,
-    );
-  } else {
-    process.stdout.write(`plugin.sock: not bound (no runner at ${pluginSocketPath}); plugin calls will refuse PL_UNAVAILABLE\n`);
-  }
+  const booted = await plugins.boot();
+  const loadedOk = booted.filter((b) => b.ok);
+  process.stdout.write(
+    `plugins: in-process, ${loadedOk.length} package(s) activated` +
+      `${loadedOk.length === 0 ? '' : `: ${loadedOk.map((b) => `${b.plugin}@${b.tenant}`).join(', ')}`}` +
+      `${booted.length === loadedOk.length ? '' : `; ${booted.length - loadedOk.length} failed (see the admin notice)`}\n`,
+  );
 
   const app = Fastify({
     logger: opts.logger ?? false,
@@ -456,12 +442,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     }
   });
 
-  // --- S4e: the declared public endpoint surface (D25) ---------------------
-  // The first caller of `plugins.invoke()` in the product. One path, one shape:
+  // --- S4e/D36: the declared public endpoint surface (D25) ------------------
   // `/_plugin/<id>/<endpoint>` on the tenant's own host. The tenant comes from the Host
-  // (§5.3), the endpoint must be declared in the installed manifest, and anything else is
-  // the tenant's ordinary 404 — byte-identical to a path with no page, so the surface does
-  // not tell a scanner which packages a site has.
+  // (§5.3), the endpoint must be declared in the installed manifest **and** registered at
+  // activation, and anything else is the tenant's ordinary 404 — byte-identical to a path with
+  // no page, so the surface does not tell a scanner which packages a site has.
   app.register(async (scope) => {
     scope.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => done(null, body));
     scope.all('/_plugin/*', async (req: FastifyRequest, reply: FastifyReply) => {
@@ -471,9 +456,14 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
         await serveNotFound(req, reply);
         return;
       }
-      const db = openAdminWrite(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+      // §13.3.8: `skwctl plugin enable|disable` runs in another process, so this one looks at
+      // the rows once per plugin request. It is also where a package enabled since the last
+      // request is *imported* — which is the moment revocation and the byte check run again.
+      plugins.enter(ctx.tenant.key);
       let result: unknown;
+      const db = openAdminWrite(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
       try {
+        await plugins.sync(ctx.tenant.key);
         result = await runEndpoint(plugins, {
           db,
           tenant: ctx.tenant.key,
@@ -493,22 +483,18 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
         // "the next request is the 404 it should be"; a genuine failure still surfaces.
         if (!isTransientSqlite(err)) throw err;
         await new Promise((resolve) => setTimeout(resolve, 50));
-        const retryDb = openAdminWrite(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
-        try {
-          result = await runEndpoint(plugins, {
-            db: retryDb,
-            tenant: ctx.tenant.key,
-            plugin: match.plugin,
-            endpoint: match.endpoint,
-            method: req.method,
-            url: req.url,
-            body: typeof req.body === 'string' ? req.body : '',
-          });
-        } finally {
-          retryDb.close();
-        }
+        result = await runEndpoint(plugins, {
+          db,
+          tenant: ctx.tenant.key,
+          plugin: match.plugin,
+          endpoint: match.endpoint,
+          method: req.method,
+          url: req.url,
+          body: typeof req.body === 'string' ? req.body : '',
+        });
       } finally {
         db.close();
+        plugins.leave(ctx.tenant.key);
       }
       if (result === null) {
         await serveNotFound(req, reply);
@@ -562,6 +548,30 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     // proof). Before S4b the serve path never called it, and a live page shipped
     // `<img data-asset-key="work/one">` with no `src` (D17).
     const page = { ...loaded.page, bodyHtml: renderStoredBody(db, loaded.page.bodyHtml) };
+    // §13.3.4: `content.render.html` is a **filter that runs inside the render call**. Its
+    // return value replaces the body html and nothing else — there is no response object in the
+    // dispatch and no parameter for status, headers, cookies or the route. A throw is caught at
+    // the dispatch site, so a page never 500s because a plugin filter did (§13.3.6).
+    //
+    // `sync` first: `skwctl plugin enable|disable` writes the row in another process, and this
+    // is the request that notices (§13.3.8 — no restart).
+    const startedAt = Date.now();
+    plugins.enter(ctx.tenant.key);
+    try {
+      await plugins.sync(ctx.tenant.key);
+      const bodyCallbacks = plugins.registry.hooksFor(ctx.tenant.key, 'content.render.html');
+      if (bodyCallbacks.length > 0) {
+        page.bodyHtml = await plugins.hooks.dispatchFilter(
+          'content.render.html',
+          ctx.tenant.key,
+          { tenant: ctx.tenant.key, path, page: { title: page.title, template: page.template } },
+          page.bodyHtml,
+          bodyCallbacks,
+        );
+      }
+    } finally {
+      plugins.leave(ctx.tenant.key);
+    }
     // §6: templates receive resolved data through one accessor and never a handle.
     const data = createRenderData(db, { tenantKey: ctx.tenant.key, cache: sources, audience: loaded.preview ? 'preview' : 'render' });
     const handler = await astroHandler();
@@ -571,6 +581,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     reply.raw.setHeader(CSP_HEADER, cspPolicy());
     reply.hijack();
     await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page, preview: loaded.preview, data });
+    // `page.rendered` is an **action**: the return value is discarded and the payload is
+    // observation only — `{tenant, path, status, ms}`. A throw here is caught by the dispatch
+    // and counted; the response has already been written either way.
+    await plugins.hooks.dispatchAction('page.rendered', ctx.tenant.key, {
+      tenant: ctx.tenant.key,
+      path,
+      status: 200,
+      ms: Date.now() - startedAt,
+    }, plugins.registry.hooksFor(ctx.tenant.key, 'page.rendered'));
   }
 
   app.setNotFoundHandler(async (req, reply) => {
@@ -687,7 +706,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   async function close(): Promise<void> {
     clearInterval(sweepTimer);
     seals.stop();
-    plugins.close();
+    // No `plugins.close()`: there is no socket to end and no child to reap. The registry and
+    // its closures die with the process, which is the whole shape of D36.
     pool.close();
     tenants.close();
     await app.close();

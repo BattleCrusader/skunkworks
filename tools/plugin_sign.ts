@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
-import { readManifest, packageRootHash } from '../app/plugins/protocol.ts';
+import { readManifest, packageRootHash } from '../app/plugins/manifest.ts';
 import { FIRST_PARTY_PUBLISHER, PUBLISHER_ID, SIGNATURE_FORMAT, fingerprintOf, statement, type SignatureFile } from '../app/plugins/trust.ts';
 
 function fail(message: string): never {

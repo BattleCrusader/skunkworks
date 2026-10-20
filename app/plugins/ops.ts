@@ -13,7 +13,7 @@
 import type Database from 'better-sqlite3';
 
 import { assetUrl } from '../assets/url.ts';
-import type { HostOp, Manifest, SettingSpec, TableSpec } from './protocol.ts';
+import type { HostOp, Manifest, SettingSpec, TableSpec } from './manifest.ts';
 
 export interface HostCall {
   tenant: string;

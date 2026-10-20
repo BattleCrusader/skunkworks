@@ -4,7 +4,7 @@
 **Owns:** packaging, containers, nginx, TLS, backups, upgrades and the measured install promise.
 
 ## Mandate
-Keep `docker-compose.yml` (four services: `nginx`, `app`, `plugin-runner`, `acme`), the image build,
+Keep `docker-compose.yml` (three services: `nginx`, `app`, `acme` — there is no `plugin-runner` since D36/E-31; plugins load in-process), the image build,
 the nginx templates, the certificate flow and the export/install path working — and keep them
 measurable. The 5-minute promise in SDS §5.1 is a measurement, not a slogan.
 

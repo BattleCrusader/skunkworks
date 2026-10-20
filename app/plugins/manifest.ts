@@ -1,21 +1,30 @@
 /**
- * The plugin contract, host side (§8.1–§8.3, C-5, C-9).
+ * The plugin contract — **the manifest grammar** (§8.1–§8.3, C-5, C-9; D36 §13.3.1).
  *
- * A package is a directory with `plugin.json` and one entry module. The manifest is the
- * only statement of what a package may do: it names the 14-op subset it is granted, the
- * `p_<id>_*` tables it owns, and (optionally) those tables' columns. Nothing in the
- * package is read by the app except through this validator, and nothing the package
- * sends is SQL — the host emits every statement from the validated manifest.
+ * This file used to be `protocol.ts`, and it was named for a wire: JSON lines over
+ * `run/plugin.sock`, `{id, op, plugin, tenant, args}` out and `{type:'host.call'}` back. That
+ * wire is deleted with the runner (§13.3.9), and the name went with it — a file called
+ * `protocol.ts` in a tree that has no protocol is an invitation to build one. What survives
+ * verbatim is everything below: the manifest grammar, the 14 operations, the package root
+ * hash, and the host-emitted DDL.
  *
- * The same file is the exporter's source of truth too: `BUNDLE.json.plugins[]` and
- * `tools/bundle_verify.mjs` compare the row's `root_hash` with the bytes on disk, so a
- * package edited after install is refused at the next install rather than on a form.
+ * A package is a directory with `plugin.json` and one entry module. The manifest is the only
+ * statement of what a package may do: it names the operations it is granted, the
+ * `p_<id>_*` tables it owns, the hooks it may register, and the entry file `import()` loads.
+ * Nothing in the package is read by the app except through this validator, and nothing the
+ * package sends is SQL — the host emits every statement from the validated manifest.
+ *
+ * Two fields are D36's addition (§13.3.1): `main` (what to `import()`) and `hooks` (what the
+ * package may register). `main` defaults to `entry` — every package built before D36 names
+ * its entry that way — and `hooks` defaults to `[]`: a package that registers nothing is a
+ * package with no hooks, not a malformed one. An undeclared `ctx.on()` is refused at
+ * activation with `SKW_E_PL_REJECTED`, which is a contract check and not containment.
  */
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
-/** §8.3's 14 operations, frozen. The runner answers four; the host answers ten. */
+/** §8.3's 14 operations, frozen. Under D36 they are facade methods, not socket ops. */
 export const LOCAL_OPS = ['util.now', 'util.random', 'util.hash', 'log.write'] as const;
 export const HOST_OPS = [
   'store.insert',
@@ -31,6 +40,53 @@ export const HOST_OPS = [
 ] as const;
 export type HostOp = (typeof HOST_OPS)[number];
 export const ALL_OPS: readonly string[] = [...LOCAL_OPS, ...HOST_OPS];
+
+/**
+ * §13.3.4 — **the twelve hooks, frozen.** Six filters, whose return value replaces only the
+ * value they were handed, and six actions, whose return value is discarded. A hook not on
+ * this list does not exist: `ctx.on()` refuses it and `parseManifest` refuses a manifest that
+ * declares it, so the install screen can list what a package touches and be right.
+ *
+ * The absences are decisions, not omissions (§13.3.4): `download.authorize`, `download.issue`
+ * and `route.resolve` are absent because each would change an outcome the host owns;
+ * `admin.render.html` because no plugin markup reaches the admin origin; `db.*`, `fs.*`,
+ * `net.*`, `http.*`, `fetch`, `env`, `cron`, `worker`, `spawn`, `stream` because in-process
+ * they would be theatre — a plugin can `import('node:fs')` itself (§13.3.7).
+ */
+export const FILTER_HOOKS = [
+  'content.render.html',
+  'page.head',
+  'asset.url',
+  'form.validate',
+  'admin.menu',
+  'mail.template',
+] as const;
+
+export const ACTION_HOOKS = [
+  'page.rendered',
+  'form.submitted',
+  'download.redeemed',
+  'admin.login',
+  'plugin.enabled',
+  'plugin.disabled',
+] as const;
+
+export const HOOK_NAMES: readonly string[] = [...FILTER_HOOKS, ...ACTION_HOOKS];
+export type FilterHook = (typeof FILTER_HOOKS)[number];
+export type ActionHook = (typeof ACTION_HOOKS)[number];
+export type HookName = FilterHook | ActionHook;
+export type HookKind = 'filter' | 'action';
+
+/** `null` for a name that is not one of the twelve: the caller refuses it by that fact. */
+export function hookKind(name: string): HookKind | null {
+  if ((FILTER_HOOKS as readonly string[]).includes(name)) return 'filter';
+  if ((ACTION_HOOKS as readonly string[]).includes(name)) return 'action';
+  return null;
+}
+
+/** The largest value a filter may hand back for the two string hooks with a stated cap. */
+export const HOOK_HTML_MAX = 4 * 1024;
+
 
 export const PLUGIN_ID = /^[a-z][a-z0-9]{1,19}$/;
 /** §8.2: `p_<id>_<name>`, and the id prefix must be the package's own. */
@@ -87,7 +143,12 @@ const ENDPOINT_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 export interface Manifest {
   id: string;
   version: string;
+  /** The pre-D36 name for the entry file. Kept so existing packages parse; `main` wins. */
   entry: string;
+  /** §13.3.1 (D36): the file `import()` loads, relative to the package root. */
+  main: string;
+  /** §13.3.1 (D36): the hooks this package may register. Registration of anything else is refused. */
+  hooks: HookName[];
   description?: string;
   /**
    * §8.1's `publisher` block, *if the package makes one*. It is a claim, not a grant: the
@@ -120,8 +181,12 @@ export function parseManifest(raw: unknown): Manifest {
   const id = typeof r.id === 'string' ? r.id : '';
   if (!PLUGIN_ID.test(id)) bad(JSON.stringify(id), `plugin id is not ${PLUGIN_ID}`);
   if (typeof r.version !== 'string' || !/^\d+\.\d+\.\d+$/.test(r.version)) bad(id, 'version is not semver');
-  if (typeof r.entry !== 'string' || r.entry === '' || r.entry.includes('..') || r.entry.startsWith('/')) {
-    bad(id, `entry ${JSON.stringify(r.entry)} is not a relative path inside the package`);
+  // §13.3.1 (D36): `main` is the field a package must name; `entry` is what every package built
+  // before D36 calls it. Either one satisfies the "there is an entry file inside the package"
+  // rule, and the rule itself is unchanged — a path outside the root is refused.
+  const entryRaw = r.entry ?? r.main;
+  if (typeof entryRaw !== 'string' || entryRaw === '' || entryRaw.includes('..') || entryRaw.startsWith('/')) {
+    bad(id, `entry ${JSON.stringify(entryRaw)} is not a relative path inside the package`);
   }
   const capabilities = Array.isArray(r.capabilities) ? r.capabilities.map(String) : [];
   for (const op of capabilities) {
@@ -180,7 +245,29 @@ export function parseManifest(raw: unknown): Manifest {
     settings.push({ key, type: type as SettingSpec['type'], ...(typeof s.max === 'number' ? { max: s.max } : {}) });
   }
 
-  const manifest: Manifest = { id, version: r.version, entry: r.entry, capabilities, tables, settings };
+  const manifest: Manifest = { id, version: r.version, entry: entryRaw, main: '', hooks: [], capabilities, tables, settings };
+  // §13.3.1 (D36): `main` is what `import()` loads. A package that predates D36 names its
+  // entry `entry`; the value is validated with the same rule either way, because the one
+  // thing that must not happen is a package naming a path outside its own root.
+  const mainRaw = r.main ?? r.entry;
+  if (typeof mainRaw !== 'string' || mainRaw === '' || mainRaw.includes('..') || mainRaw.startsWith('/')) {
+    bad(id, `main ${JSON.stringify(mainRaw)} is not a relative path inside the package`);
+  }
+  manifest.main = mainRaw;
+  // §13.3.4: a declared hook that is not one of the twelve is a refused package, not a
+  // registration that silently does nothing. `ctx.on()` refuses it at activation too — this
+  // is the half an operator can read before installing.
+  if (r.hooks !== undefined) {
+    if (!Array.isArray(r.hooks)) bad(id, 'hooks must be an array of hook names');
+    const hooks: HookName[] = [];
+    for (const raw of r.hooks) {
+      const name = typeof raw === 'string' ? raw : '';
+      if (hookKind(name) === null) bad(id, `hook ${JSON.stringify(raw)} is not one of the twelve (§13.3.4)`);
+      hooks.push(name as HookName);
+    }
+    if (new Set(hooks).size !== hooks.length) bad(id, 'a hook is declared twice');
+    manifest.hooks = hooks;
+  }
   if (typeof r.description === 'string') manifest.description = r.description;
   // §8.1's publisher block. Optional — a package that makes no claim is unsigned — but a
   // malformed one is a refused package rather than a field nobody validated.

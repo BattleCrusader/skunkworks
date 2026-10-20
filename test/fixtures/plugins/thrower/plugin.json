@@ -1,0 +1,10 @@
+{
+  "id": "thrower",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "hooks": ["content.render.html", "page.head"],
+  "description": "A filter that throws and a filter that returns the wrong type. Both must leave the page rendering with the value passed in, and both must count toward auto-disable.",
+  "capabilities": ["util.now"],
+  "tables": [],
+  "settings": []
+}

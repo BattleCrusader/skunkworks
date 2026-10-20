@@ -68,11 +68,56 @@ test('the codes S1 raises are all mapped, and the four E-4 additions are part of
   // tenant, and a plugin row whose package the bundle does not carry.
   // S4e: 80 -> 82 — RT REPEAT_INVALID (a `list` with two `[data-repeat]` children) and
   // PL OOM (the runner cgroup killed a package's child).
+  // S5/D36 (E-31): 82 -> 84 — PL OOM leaves with the runner (a code for a cgroup that no
+  // longer exists), and PL LOAD, BUSY and CONTEXT_ENDED join the area. PL SCHEMA,
+  // DESTRUCTIVE_UPGRADE and REJECTED were already named by this list and had no HTTP status,
+  // which is the defect the mapping case below now holds.
   const total = Object.values(codes.areas).reduce((n, names) => n + names.length, 0);
-  assert.equal(total, 82, `the taxonomy holds ${total} codes, expected 82 (S4e: RT REPEAT_INVALID, PL OOM)`);
+  assert.equal(total, 84, `the taxonomy holds ${total} codes, expected 84 (S5: +LOAD/BUSY/CONTEXT_ENDED, −OOM)`);
   for (const code of ['SKW_E_RT_PAGE_NOT_FOUND', 'SKW_E_PLT_INTERNAL', 'SKW_E_PLT_REQUEST_INVALID', 'SKW_E_PLT_BODY_TOO_LARGE']) {
     assert.equal(codes.retry_after?.[code], undefined, `${code} must not carry Retry-After`);
   }
+});
+
+test('S5: every PL refusal that can reach a response is mapped — SKW_E_PL_SCHEMA included', () => {
+  // The defect this case exists for: §8.2's upgrade refusal raised `SKW_E_PL_SCHEMA`, the code
+  // was absent from `HTTP`, and `AppError` therefore threw `INTERNAL: no HTTP mapping` at the
+  // moment it was constructed — so a plain "this package needs a newer schema" became a 500
+  // named after the error mapper. Measured in the S5 QA, reproduced here.
+  const schema = new AppError('SKW_E_PL_SCHEMA', 'notes needs site.db >= 4; this tenant is 3');
+  assert.equal(schema.status, 409, 'SKW_E_PL_SCHEMA must be a 409, not an unmapped INTERNAL');
+  assert.equal(errorBody(schema, 'r').error.code, 'SKW_E_PL_SCHEMA');
+  assert.equal(codes.http['SKW_E_PL_SCHEMA'], 409);
+
+  // The codes this slice introduced or re-pointed, each constructible and each with a status.
+  const added: [string, number][] = [
+    ['SKW_E_PL_SCHEMA', 409],
+    ['SKW_E_PL_DESTRUCTIVE_UPGRADE', 409],
+    ['SKW_E_PL_REJECTED', 403],
+    ['SKW_E_PL_BUSY', 409],
+    ['SKW_E_PL_LOAD', 500],
+    ['SKW_E_PL_CONTEXT_ENDED', 500],
+  ];
+  for (const [code, status] of added) {
+    assert.equal(HTTP[code], status, `${code} is not mapped to ${status}`);
+    assert.equal(codes.http[code], status, `${code} disagrees with schema/error-codes.json`);
+    assert.equal(new AppError(code, 'x').status, status, `${code} cannot be constructed without throwing`);
+  }
+
+  // A PL code that does not become a response stays out of the map, and says why: these are
+  // raised as plain `Error` by `ops.ts` and travel to the *plugin*, not to a browser.
+  for (const code of ['SKW_E_PL_ROW', 'SKW_E_PL_QUERY', 'SKW_E_PL_NO_TABLE', 'SKW_E_PL_MAIL']) {
+    assert.equal(HTTP[code], undefined, `${code} is plugin-facing and must not have an HTTP status`);
+  }
+});
+
+test('S5: SKW_E_PL_OOM is withdrawn from the taxonomy with the runner (§13.3.9)', () => {
+  // E-31 withdrew it: it named a per-package cgroup that no longer exists. A code left in the
+  // map is a status for a mechanism nobody can reach, which reads as a control that is still
+  // there. Absence is the assertion.
+  assert.equal(HTTP['SKW_E_PL_OOM'], undefined, 'SKW_E_PL_OOM must be gone from the app map');
+  assert.equal(codes.http['SKW_E_PL_OOM'], undefined, 'SKW_E_PL_OOM must be gone from the frozen taxonomy');
+  assert.equal(codes.areas.PL?.includes('OOM'), false, 'OOM must be gone from areas.PL');
 });
 
 test('E-16: a credential login failure has its own code, 401, and no Retry-After', () => {

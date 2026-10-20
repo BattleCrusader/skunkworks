@@ -1,0 +1,10 @@
+{
+  "id": "badshape",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "hooks": [],
+  "description": "Exports no activate(). Loading it must refuse SKW_E_PL_LOAD and leave the site serving.",
+  "capabilities": ["util.now"],
+  "tables": [],
+  "settings": []
+}

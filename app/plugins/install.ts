@@ -37,7 +37,8 @@ import {
   readManifest,
   tableStatements,
   type Manifest,
-} from './protocol.ts';
+} from './manifest.ts';
+import { revokedRoot } from './revocation.ts';
 import {
   installScreen,
   trustDirFor,
@@ -200,12 +201,21 @@ export function inspectPackage(input: InstallRequest): InspectedPackage {
 
   const db = openAdminWrite(input.siteDb, 5000);
   try {
-    // 2. revocation.
-    const revoked = db.prepare('SELECT plugin_id, reason FROM cms_plugin_revoked WHERE root_hash = ?').get(root) as
-      | { plugin_id: string; reason: string | null }
-      | undefined;
-    if (revoked !== undefined) {
-      refuse('SKW_E_PL_REVOKED', `package root ${root} is revoked on this install`, { plugin: revoked.plugin_id, reason: revoked.reason });
+    // 2. revocation — **both sources**, in the order §8.5 states it. The table is the tenant's
+    //    own statement and `data/trust/revoked.json` is the install's; reading only the table is
+    //    what let a hand-written file entry install cleanly (S5 QA, measured), so a root in
+    //    either one refuses here, by name and by source.
+    const revoked = revokedRoot(input.trustDir ?? trustDirFor(input.siteDb), db, root);
+    if (revoked !== null) {
+      refuse(
+        'SKW_E_PL_REVOKED',
+        `${source.id} (package root ${root}) is revoked on this install (${revoked.source}${revoked.reason === null ? '' : `: ${revoked.reason}`})`,
+        {
+          plugin: revoked.plugin_id === '(unnamed)' ? source.id : revoked.plugin_id,
+          reason: revoked.reason,
+          source: revoked.source,
+        },
+      );
     }
 
     // 3. the test report.
@@ -428,6 +438,30 @@ export function assertEnabled(db: Database.Database, plugin: string): InstalledP
     throw new AppError('SKW_E_PL_TESTS_STALE', `plugin ${plugin} has no test report and cannot be granted`, { plugin });
   }
   return row;
+}
+
+/**
+ * Revocation, at the moment a package would be switched on (§8.5, §13.3.6).
+ *
+ * `enable` is the interesting moment under D36: install may happen while a root is still
+ * trusted, and a revocation that lands afterwards has to be able to stop the code from running
+ * without the operator uninstalling the package first. `runtime.load()` calls `revokedRoot`
+ * directly; this function is the CLI's copy of the same question, so `skwctl plugin enable`
+ * answers with a refusal instead of exiting 0 and letting the app fail on the next request.
+ */
+export function assertNotRevoked(db: Database.Database, plugin: string, trustDir: string): void {
+  const row = db.prepare('SELECT root_hash FROM cms_plugin_installed WHERE plugin_id = ?').get(plugin) as
+    | { root_hash: string }
+    | undefined;
+  if (row === undefined) return;
+  const revoked = revokedRoot(trustDir, db, String(row.root_hash));
+  if (revoked !== null) {
+    throw new AppError(
+      'SKW_E_PL_REVOKED',
+      `package root ${row.root_hash} is revoked on this install (${revoked.source}${revoked.reason === null ? '' : `: ${revoked.reason}`}); ${plugin} cannot be enabled`,
+      { plugin, root_hash: row.root_hash, source: revoked.source },
+    );
+  }
 }
 
 /**

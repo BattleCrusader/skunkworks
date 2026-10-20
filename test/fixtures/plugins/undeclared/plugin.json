@@ -1,0 +1,10 @@
+{
+  "id": "undeclared",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "hooks": [],
+  "description": "Registers a hook that is not on the twelve, and one it did not declare. Both are SKW_E_PL_REJECTED at activation.",
+  "capabilities": ["util.now"],
+  "tables": [],
+  "settings": []
+}

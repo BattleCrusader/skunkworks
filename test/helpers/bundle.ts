@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { openAdminWrite } from '../../app/db/classes.ts';
-import { packageRootHash } from '../../app/plugins/protocol.ts';
+import { packageRootHash } from '../../app/plugins/manifest.ts';
 import { runExport } from '../../app/export/index.ts';
 import { REPO, makeFixture, type Fixture } from './fixture.ts';
 

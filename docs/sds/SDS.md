@@ -55,7 +55,7 @@ the operative list — a Builder implements *this* column, not the older text in
 
 | # | Constraint (operative text) | State |
 |---|---|---|
-| D1 | TypeScript on Node 22 for the whole stack; one *app* process. **One process in the app, not one process in the deployment** — the plugin runner is a fourth container (C-8) | clarified |
+| D1 | TypeScript on Node 22 for the whole stack; one *app* process. **One process in the app, and since D36 one process in the deployment too** — plugins are modules in `app`, and there is no runner container | **amended** |
 | D2 | One SQLite file per tenant + a global `control.db`. Never a shared schema. Not reopened by any paper | unchanged |
 | D3 | Drizzle owns `cms_*` and `control.db`; Kysely owns `u_*`. The boundary is enforced by module exports and a lint rule, not by convention | unchanged |
 | D4 | No raw SQL from the browser, ever. Data reaches templates through named Data Sources only | unchanged |
@@ -80,14 +80,14 @@ the operative list — a Builder implements *this* column, not the older text in
 | D23 | Watermark text is sanitised to cp1252, not flattened to ASCII; `?` for the rest. Applying it to filenames is new (O-07) | unchanged |
 | D24 | The Astro export ships a runnable, editable project, with the lockfile it resolved (O-24) | unchanged |
 | D25 | Plugins are a first-class extension surface: a manifest, owned tables, declared admin forms, declared public endpoints | unchanged |
-| D26 | **Third-party plugins are untrusted by default and run in a separate `plugin-runner` container with no network, no native addons, no filesystem write and no database handle, reached over a 14-operation RPC enum** (C-8) | **amended** |
-| D27 | **No publisher CA in v1.** Our key verifies first-party packages; a third-party publisher's key is imported by the tenant owner, fingerprint shown beside every capability; revocation is local to the install (C-9) | unchanged (reaffirmed) |
+| D26 | **Superseded by D36.** Third-party plugins are supported and untrusted, and they run **in-process** inside `app` as imported modules registering hooks, endpoints and admin screens; the signature and the publisher key establish who wrote the code, a per-request per-tenant facade scopes what the API will answer, and no containment is claimed (C-8 withdrawn) | **superseded** |
+| D27 | **No publisher CA in v1.** Our key verifies first-party packages; a third-party publisher's key is imported by the tenant owner, fingerprint shown beside every capability; revocation is local to the install (C-9). Under D36 the fingerprint buys identity and tamper detection, **not containment** (§13.3.7) | **reaffirmed**, meaning narrowed |
 
 ### 1.2 Section-level statements that changed
 
 | Was | Now |
 |---|---|
-| §3 "Services in `docker-compose.yml`: `nginx`, `app`, `acme`. Nothing else." | Four services: `nginx`, `app`, `plugin-runner`, `acme` (C-8). |
+| §3 "Services in `docker-compose.yml`: `nginx`, `app`, `acme`. Nothing else." | Three services: `nginx`, `app`, `acme`. The fourth service C-8 added was deleted by D36; plugin code runs inside `app` (E-31). |
 | §6 lists `cms_page_blocks`, omits seven tables the DDL has | Drizzle owns the 27 tables in §4.1; there is no block table — the stored body is the editor's document (C-4). |
 | §5 "Export has nothing to filter" | True **across** tenants, false **inside** one: a demo carries prospects' submissions, buyers' codes and per-purchaser watermarked files. §11 and `schema/export-projection.json` apply. |
 | §5.1 "Target install time ≤ 5 min (measured)" | ≤ 5 minutes from a Docker host (≥ 2 vCPU / 2 GB / Compose ≥ 2.20) whose images are pullable or supplied with `--offline`, an A record already pointing at the box, and TCP/80 reachable. Our part: **18.2 s warm, 29.8 s cold-pull, 7.5 s re-run, +16.0 s for TLS** once DNS and port 80 are correct. Bundle transfer is excluded and capped. |
@@ -110,8 +110,9 @@ Recorded here so a Builder is not surprised by a document that appears to contra
 
 ## 2. Architecture overview
 
-One Node process serves every public page, the admin API and the gated-download endpoints. Four
-containers, one cgroup each, and exactly four trust boundaries. `docs/sds/diagrams/components.png`
+One Node process serves every public page, the admin API, the gated-download endpoints **and, since D36,
+every enabled plugin's hooks**. Three containers, and three trust boundaries plus the plugin code that now
+runs inside the first one — which §13.3.7 refuses to call a boundary. `docs/sds/diagrams/components.png`
 is the picture; this section is the prose that a Builder can act on.
 
 ```
@@ -121,7 +122,7 @@ is the picture; this section is the prose that a Builder can act on.
               ▼
         app ──► control.db        (tenant map, users, sessions, audit_log, audit_seal)
             ──► tenants/<k>/site.db  (render-read: readonly + query_only=1)
-            ──► plugin-runner        (unix socket, network_mode: none)
+            ──► data/plugins/<id>/   (import() into this process, §13.3.2 — no runner, no socket)
 ```
 
 ### 2.1 Processes and what each one may touch
@@ -129,9 +130,14 @@ is the picture; this section is the prose that a Builder can act on.
 | Process | May | May not | Why the boundary is here |
 |---|---|---|---|
 | `nginx` | terminate TLS, choose the tenant by `Host` or `/demo/<key>/`, serve `/media/` and `/__protected/` bytes, rate-limit | open a database, run a template | It already knows the tenant in order to route, so it is the only component that strips a prefix (C-2) |
-| `app` | open `control.db` and every tenant `site.db`, render, issue codes, write plugin rows through the host | be handed SQL text on a pooled connection; `import()` from a tenant tree; publish a port | It holds the keys; the three paths that can break tenancy are named in §13.1 |
-| `plugin-runner` | run plugin code in a `node --permission` child, answer 14 RPC operations | reach the network, load a native addon, spawn, write a file, open a database | Third-party code is the one thing that must not share an address space with every tenant's handle (C-8) |
+| `app` | open `control.db` and every tenant `site.db`, render, issue codes, `import()` a signed plugin package from `data/plugins/<id>` into its own process and run its hooks | be handed SQL text on a pooled connection; hand a plugin a `Database`, the `control.db` handle, or SQL text; publish a port | It holds the keys. Since D36 it also runs third-party code, which is a **named path** in §13.1, not a boundary |
 | `acme` | obtain and renew per-host certificates | gate an install | A certificate that is not ready is `certificate: pending`, not a failed deploy (§12.5) |
+
+**There is no fifth process and no fourth container.** D36 deleted `plugin-runner`, so the row that used to sit
+here — "run plugin code in a `node --permission` child … may not reach the network, load a native addon,
+spawn, write a file, open a database" — described both a container that no longer exists and a guarantee
+that no longer holds. Plugin code now shares `app`'s network namespace, filesystem, memory and handles, and
+§13.3.7 is the paragraph that says so without softening it.
 
 ### 2.2 The three connection classes (C-15)
 
@@ -183,20 +189,23 @@ backup then needs the grant back, reopening the hole (register X9).
    request.
 5. Upsert the image's component registry (`schema/component-registry.json`) into each tenant's
    `cms_component_registry` inside one transaction.
-6. Bind `run/plugin.sock`, spawn one permission child per enabled package.
+6. Load the enabled plugins into the per-tenant registry (§13.3.2). Load is **not** part of the boot gate:
+   a package that fails to import, activate or verify is marked `failed`, gets an admin notice, and boot
+   continues. A package that hangs the loop synchronously during load cannot be timed out here either —
+   `skwctl plugin disable <id> --tenant <key>` from a shell is the recovery path, and it works because the
+   flag is read from the database at this step (§13.3.6).
 
 ---
 
 ## 3. Module and file layout
 
-Every path a Builder creates. `app/` is the Node service; `runner/` is the plugin container. A file
-not listed here is either generated (marked) or does not exist in v1.
+Every path a Builder creates. `app/` is the Node service, and since D36 it is also where plugin code
+runs; there is no `runner/`. A file not listed here is either generated (marked) or does not exist in v1.
 
 ```
 skunkworks/
-├── docker-compose.yml                 4 services: nginx, app, plugin-runner, acme (C-8)
+├── docker-compose.yml                 3 services: nginx, app, acme (D36 deleted plugin-runner)
 ├── Dockerfile.app                     multi-stage; ends on node:22-bookworm-slim, non-root uid 10001
-├── Dockerfile.runner                  same base; ENTRYPOINT the supervisor, no network tools
 ├── .env.example                       every SKW_ name from §4.3 and nothing else
 ├── Makefile                           test / verify / verify-schema / verify-claims / verify-gitignore
 ├── package.json                       workspace root; scripts: build, test, lint, roundtrip
@@ -284,12 +293,14 @@ skunkworks/
 │   │   ├── bundle.ts                  BUNDLE.json (schema skunkworks/site-bundle/v3)
 │   │   └── quiescence.ts              producer-side counting (O-19)
 │   ├── plugins/
-│   │   ├── manifest.ts                plugin.json parse + validate; capabilities
+│   │   ├── manifest.ts                plugin.json parse + validate; main, hooks, capabilities (§13.3.1)
 │   │   ├── verify.ts                  first-party key in the image | imported publisher key | revoked
 │   │   ├── install.ts                 signature → tests → migrations → registry rows
 │   │   ├── migrate.ts                 the host executor: 4 ops, no drop_table/rename/drop_column
-│   │   ├── rpc.ts                     the 14-operation enum + bounds (§8.3)
-│   │   └── client.ts                  2 s timeout, circuit breaker, tenant bound to the channel
+│   │   ├── runtime.ts                 load/activate/deactivate: import() + cache-buster (§13.3.2)
+│   │   ├── registry.ts                per-tenant hooks/endpoints/screens; prune on disable (§13.3.3)
+│   │   ├── context.ts                 the per-request facade + the one capability check (§13.3.5)
+│   │   └── hooks.ts                   the twelve named hooks and their return-type rules (§13.3.4)
 │   ├── cli/
 │   │   └── skwctl.ts                  admin bootstrap / reset-totp / reset-password (§11.6a)
 │   └── security/
@@ -297,10 +308,6 @@ skunkworks/
 │       ├── csp.ts                     the one header string (§10.5)
 │       ├── limits.ts                  per-IP, per-code, per-tenant buckets
 │       └── audit.ts                   chain append + daily seal
-│
-├── runner/
-│   ├── supervisor.ts                  one child per package, unix socket, no network
-│   └── child.ts                       the permission-scoped entry point inside each package
 │
 ├── plugins/                           first-party packages we ship (each with plugin.json + tests)
 │   └── contact/                       the reference plugin: one table, one form, one setting
@@ -316,13 +323,13 @@ skunkworks/
     └── debate/    (history; not authoritative)
 ```
 
-> Amended by 02-errata.md E-10, E-19.
+> Amended by 02-errata.md E-10, E-19, **E-31** (`Dockerfile.runner` and `runner/**` are deleted, not
+> deferred: a Builder that finds them in a branch is looking at code D36 retired).
 
 §3 lists every path in the build, across all four slices; **§16's `Contains` list is the per-slice
-authority** for who creates a path in which slice. `Dockerfile.runner`, `runner/**` and
-`app/plugins/**` are **S4** (plugin install, enable, RPC). A builder creates neither a stub nor a
-placeholder for a path outside its slice's `Contains` list, and a boot log line that names a deferred
-step is the requirement, not a gap.
+authority** for who creates a path in which slice. `app/plugins/**` is **S4** (plugin install, enable, hook
+dispatch). A builder creates neither a stub nor a placeholder for a path outside its slice's `Contains`
+list, and a boot log line that names a deferred step is the requirement, not a gap.
 
 ### 3.1 The five rules that keep the layout honest
 
@@ -1340,6 +1347,11 @@ email contains the code and a link to the *form*.
 
 ## 8. Plugins
 
+> **Read §13.3 before this section.** D36 moved plugins in-process: §8.3 and §8.4 below are rewritten
+> (the RPC wire and the runner are deleted; the operation grammar survives as facade methods), and §8.6's
+> failure table is replaced by §13.3.8. §8.1, §8.2 and §8.5 are the install-time contract and stand as
+> written, with the two manifest fields E-31 adds. Where §8 and §13.3 disagree, §13.3 wins.
+
 ### 8.1 The manifest is the contract
 
 `plugin.json`, validated at install, stored verbatim in `cms_plugin_installed.manifest_json`:
@@ -1348,9 +1360,11 @@ email contains the code and a link to the *form*.
 {
   "id": "contact", "version": "1.4.0", "cms": ">=3.0.0 <4",
   "publisher": {"id": "acme-labs", "key_id": "spki-sha256:…"},
+  "main": "index.mjs",
+  "hooks": ["content.render.html", "form.validate", "form.submitted"],
   "tables": [{"name": "p_contact_message", "columns": [...], "indexes": [...], "export": "rows"}],
   "settings": [{"key": "recipient", "type": "string"}, {"key": "smtp_password", "type": "secret"}],
-  "admin": [{"path": "messages", "form": "message-list"}],
+  "admin": [{"path": "messages", "form": "message-list", "table": "p_contact_message"}],
   "public": [{"path": "contact", "methods": ["POST"]}],
   "capabilities": ["store.insert", "store.query", "mail.send", "settings.get"],
   "tests": {"entry": "tests/run.js", "timeout_s": 30},
@@ -1358,9 +1372,17 @@ email contains the code and a link to the *form*.
 }
 ```
 
-What is not in the manifest cannot be done at runtime. `"cron": "none"` is the only legal value in v1
-(O-43 DEFERRED). A table without an `export` class is refused at install with
-`SKW_E_PL_NO_EXPORT_CLASS`, because a table nobody classified cannot be sold.
+`main` and `hooks` are D36's two additions (§13.3.1): the app has to be told which file to `import()` and
+which hooks the package intends to register, because there is no supervisor to discover either. A
+manifest without `main` is refused at install (`SKW_E_PL_LOAD`); a `ctx.on()` for a hook not in `hooks`
+is refused at activation (`SKW_E_PL_REJECTED`).
+
+What is not in the manifest cannot be done **through the facade**, and the distinction matters: in-process,
+a plugin can do anything the process can, declared or not (§13.3.7). `"cron": "none"` is the only legal
+value in v1 (O-43 DEFERRED). A table without an `export` class is refused at install with
+`SKW_E_PL_NO_EXPORT_CLASS`, because a table nobody classified cannot be sold. `capabilities` is
+**disclosure**: it is what the install screen shows the operator, and what the facade checks before
+answering a method — not a limit on the code.
 
 ### 8.2 Tables, migrations, and who may create what
 
@@ -1390,17 +1412,20 @@ data (§8.6).
 the plugin's rows and tables. The consequence is stated, not hidden: restoring that archive rolls back
 every other change made since (O-40 DEFERRED — a table-scoped format is a v2 experiment).
 
-### 8.3 The RPC surface (14 operations, frozen)
+### 8.3 The facade grammar (the 14 operations survive as methods; the wire does not)
 
-One unix socket, `run/plugin.sock`, JSON lines, request/response only (no server-initiated messages). The
-host binds `(tenant, plugin)` to the channel; a tenant field in a payload is ignored and logged. Every op
-has a stable refusal code; an unknown op is `SKW_E_PL_REJECTED` and closes the channel.
+> **Rewritten by D36 and 02-errata.md E-31.** There is no socket and no message envelope. The operations
+> below survive as **methods on the per-request facade** (§13.3.5); the bounds survive with them, because a
+> bound is a property of the operation and not of the transport. What is deleted is the transport: the
+> `plugin.invoke` frame, the `granted[]` array in the envelope, the host-op callback frames, the 2 s op
+> timeout and the `SKW_E_PL_UNAVAILABLE`-when-the-socket-is-absent path. The enforcement point is the facade
+> in `app/plugins/context.ts`, and §13.3.7 states exactly what that single layer does and does not prove.
 
-| Op | Shape | Bound | Refusal |
+| Method | Shape | Bound | Refusal |
 |---|---|---|---|
 | `store.insert` | `(table, row)` | row ≤ 32 KiB, ≤ 24 columns, declared columns only, types coerced and checked | `PL_ROW`, `PL_NO_TABLE` |
 | `store.update` | `(table, id, patch)` | ≤ 24 columns, exactly one row | `PL_ROW` |
-| `store.delete` | `(table, id)` | exactly one row; `delete_all` is an admin action, not an op | `PL_ROW` |
+| `store.delete` | `(table, id)` | exactly one row; `delete_all` is an admin action, not a method | `PL_ROW` |
 | `store.query` | `(table, where, order, limit, offset)` | `limit ≤ 500`, `offset ≤ 10000`, ops ∈ `{=,!=,<,<=,>,>=,in,like_prefix}`, `order` on declared **and indexed** columns, response ≤ 256 KiB | `PL_QUERY`, `PL_TOO_MANY` |
 | `store.count` | `(table, where)` | same `where` grammar; declared+indexed columns only | `PL_QUERY` |
 | `settings.get` | `(key)` | declared key; `secret: true` → `null` | `PL_NO_SETTING` |
@@ -1413,37 +1438,45 @@ has a stable refusal code; an unknown op is `SKW_E_PL_REJECTED` and closes the c
 | `util.random` | `(n)` | `n ≤ 32` bytes, CSPRNG | `PL_ROW` |
 | `util.hash` | `(algo, data)` | `sha256`/`sha512`, data ≤ 1 KiB (idempotency keys, not crypto) | `PL_ROW` |
 
-Absent by decision, each absence a control: `sql`, `exec`, `prepare`, `db`, `attach`, `fs.*`, `net.*`,
-`http.*`, `fetch`, `env`, `require`/`import` outside the package, `worker`, `spawn`, `assets.write`,
-`assets.upload`, `mail.raw`, `tenant.*`, `cms.*`, `store.raw`, `store.join`, `cron`, `stream`.
+Every method takes a `table` that must be in the manifest and resolves its connection from the context, so
+there is no tenant argument anywhere: the tenant is closed over (§13.3.5). A call made after the response
+ended refuses `SKW_E_PL_CONTEXT_ENDED` rather than reaching a recycled connection.
 
 **Why the host writes the row.** `store.insert` is a *host* operation. The plugin describes the row; the
-host validates it against the manifest and writes it with its own `admin-write` connection. A plugin that
+host validates it against the manifest and writes it with its own connection for that tenant. A plugin that
 cannot name a table it did not declare cannot name a tenant either.
 
-### 8.4 Containment (C-8)
+**Absent by decision**, each absence a control at the facade: `sql`, `exec`, `prepare`, `db`, `attach`,
+`pragma`, `fs.*`, `net.*`, `http.*`, `fetch`, `env`, `assets.write`, `assets.upload`, `mail.raw`,
+`tenant.*`, `cms.*`, `store.raw`, `store.join`, `cron`, `stream`. These are absent **from the facade**.
+They are not absent from the process, and §13.3.7 says so in the same words the install screen uses.
 
-> `docker-compose.yml` has four services — `nginx`, `app`, `plugin-runner`, `acme` — and `plugin-runner` runs
-> with `network_mode: none`, `read_only: true`, `cap_drop: [ALL]`, `pids_limit: 64` and one
-> `node --permission` child per installed package with `--allow-fs-read` limited to that package and its
-> scratch directory and with no `--allow-addons`, `--allow-child-process` or `--allow-worker`; the app reaches
-> it only over the unix socket `run/plugin.sock`, and the protocol is the operation enum in §4.3.
+### 8.4 Containment: there is none (C-8 withdrawn by D36)
 
-(§4.3 of the register is §8.3 of this document — the same 14 operations.)
+> `docker-compose.yml` has three services — `nginx`, `app`, `acme` — and no `plugin-runner`: there is no
+> `network_mode: none`, no `node --permission` child, no per-package cgroup, no `run/plugin.sock` and no
+> operation enum, because a plugin is a module imported into the `app` process and shares that process's
+> network namespace, filesystem, memory and database handles. **Nothing in this design contains a plugin.**
+> What it does instead is authenticate it (a signature and a publisher key, §8.5), scope the *API* it is
+> given (§13.3.5), and isolate its failures well enough that a plugin that throws does not take a page down
+> (§13.3.6).
 
-Node's permission model does **not** cover the network: measured twice, `fetch('http://127.0.0.1:…')`
-returned 200 and `net.connect` delivered a body with the flag on; `ENETUNREACH` only with
-`--network none`. So the containment is the netns plus the absent addon: with `--allow-addons` off,
-`new Database()` fails `ERR_DLOPEN_DISABLED`; with addons on, `ATTACH` to a sibling tenant **succeeds**
-even though `fs.readFileSync` of the same path is denied. The runner is the smallest configuration in
-which a plugin cannot name a file, a socket, or a tenant.
+The measurements that produced C-8 are kept here as history, because they are why the alternative was
+rejected rather than unconsidered: a process per tenant is 49.8 MB and 34 ms cold start, which is 10.0 GB
+at 200 tenants; the runner container itself was 47.4–48.0 MB idle and 22 µs per IPC hop. D36 does not
+dispute those numbers; it decides the product does not need the boundary they buy, and that the 384 MiB
+cgroup E-30 added to the runner is a cost with no remaining purpose.
 
-**Cost, accepted:** 47.4–48.0 MB idle, 0.19 s cold start, 38.2–42.8 MB per child, 22 µs IPC. One cgroup
-for all plugins means per-plugin memory is **not** enforceable — a hostile plugin can starve its
-co-tenants inside the runner. It cannot starve the host and it cannot affect a page (§13.3).
+**The one honest sentence.** A plugin can read every tenant's database, open a socket, write a file, or
+block the event loop until the box is restarted. No capability, manifest field or signature changes that.
+What the operator is buying is a plugin ecosystem at WordPress economics; what they are giving up is the
+process boundary that would have made the opposite true. The install screen says this before enable
+(§13.3.7), and §13.3.6 states the hang as an accepted cost rather than a mitigated one.
 
-**Rejected alternative:** a process per tenant (49.8 MB peak, 34 ms cold start). ~10.0 GB at 200 tenants is
-arithmetic, not an opinion.
+**Rejected alternatives, unchanged:** a process per tenant (10.0 GB at 200), a per-plugin worker thread
+(no timeout that can interrupt a synchronous loop, and V8 workers do not isolate the filesystem), and
+`vm.Script` (`node:vm` is not a security boundary and its timeout does not preempt a running script
+reliably). None of them would have survived the same honesty test the chosen model now has to pass.
 
 ### 8.5 Supply chain: no publisher CA (C-9, D27)
 
@@ -1458,10 +1491,12 @@ Install refuses, in this order: an unknown signature (`SKW_E_PL_SIGNATURE`), a r
 declared range (`SKW_E_PL_SCHEMA`), a table with no export class (`SKW_E_PL_NO_EXPORT_CLASS`), a
 destructive migration (`SKW_E_PL_DESTRUCTIVE_UPGRADE`).
 
-`plugin.json.tests = {entry, timeout_s}`: the packager runs it inside the runner image against a scratch
-`site.db` and writes `test-report.json` with `runner_image_digest`. A report whose digest does not match
-the running image is stale, and a stale report is a refusal — a plugin can therefore not ship untested and
-be discovered by a client's contact form.
+`plugin.json.tests = {entry, timeout_s}`: the packager runs it **in the app image** (there is no runner
+image after E-31) against a scratch `site.db` and writes `test-report.json` with `app_image_digest`. A
+report whose digest does not match the running image is stale, and a stale report is a refusal — a plugin
+can therefore not ship untested and be discovered by a client's contact form. The report is also the only
+place a package's load-time behaviour is exercised before an operator enables it: `L1`–`L4` run the same
+suite in CI.
 
 **What the install screen shows a non-developer**, in this order: publisher id and key fingerprint;
 every declared capability in plain words; every table it will create and whether that table exports;
@@ -1470,14 +1505,22 @@ decision, and it is reversible.
 
 ### 8.6 Disable, degrade, uninstall
 
-| Action | Data | Code | Public endpoint |
-|---|---|---|---|
-| Disable | untouched | not loaded | 503 `SKW_E_PL_UNAVAILABLE` on its endpoints; every page that does not call it renders normally |
-| Crash / hang | untouched | circuit breaker opens after 3 failures | 503 on that endpoint only, 2 s per-op timeout |
-| Uninstall | whole-file archive first, then its tables and rows dropped | removed | 503, then 404 once uninstalled |
+> **Replaced by §13.3.8.** The table below is the *old* contract and is kept for one reason: three of its
+> sentences are now false in the opposite direction, and a Builder who reads them will build the wrong
+> thing. The row that said "no plugin code is on the render path" is exactly backwards — a plugin's hooks
+> run inside the render call. The 2 s per-op timeout no longer exists (there is no per-op boundary to time
+> out) and the circuit breaker is a failure counter with no half-open state.
 
-No plugin code is on the render path. That is the property that makes every row of this table true: a
-broken plugin cannot take a page down, because a page never waits for one.
+| Action | Data | Code | Public endpoint | Now |
+|---|---|---|---|---|
+| Disable | untouched | not loaded | 503 `SKW_E_PL_UNAVAILABLE` | true, and *removed* from the registry rather than "not loaded" (§13.3.8) |
+| Crash / hang | untouched | no timeout; a throw is caught and counted | 503 on that endpoint; a page that does not call it renders normally | a **synchronous hang stops the whole box** — §13.3.6, accepted cost, no mitigation |
+| Uninstall | whole-file archive first, then its tables and rows dropped | removed | 404 once uninstalled | true, plus a 5 s drain and `SKW_E_PL_BUSY` |
+
+**Not true any more, and must not be written again:** "no plugin code is on the render path", "2 s per-op
+timeout", "circuit breaker opens after 3 failures" (it is a 3-in-60 s auto-disable with operator
+recovery), and "a broken plugin cannot take a page down" — a plugin that throws cannot, a plugin that
+blocks can.
 
 **Coexistence with core forms** is decided (register §7.2): a plugin form and a `cms_form` can both exist
 on one page, and the static SKU depends on core forms for its only form story. Core form intake uses the
@@ -1933,7 +1976,7 @@ Three SKUs, one content model, one generator. The picture is `docs/sds/diagrams/
 | Runtime on the client box | `docker compose up` | `npm ci && npm run build` | none — copy files |
 | Target install time | ≤ 5 min (bracketed, §1.2) | ≤ 3 min | ≤ 1 min |
 
-**CMS bundle file list:** `docker-compose.yml` (4 services, pinned digests) · `.env` (generated secrets,
+**CMS bundle file list:** `docker-compose.yml` (3 services, pinned digests) · `.env` (generated secrets,
 **not** populated in the bundle — `install.sh` writes it) · `data/site.db` · `data/control.seed.json` ·
 `content/media/**` · `content/public/**` (relative symlinks) · `plugins/**` (installed packages) ·
 `install.sh` · `BUNDLE.json` · `EXPORT-NOTES.md`.
@@ -2002,7 +2045,7 @@ cannot detect the loss; only a number the producer wrote before the copy can.
   "export_now": "2026-10-20T12:00:00.000Z",
   "tenant": {"key": "acme", "mode": "production", "db_version": 3},
   "hosts": ["acme.com", "www.acme.com"],
-  "image": {"app_digest": "sha256:…", "runner_digest": "sha256:…"},
+  "image": {"app_digest": "sha256:…"},
   "projection_version": 2,
   "source_counts": {"cms_page": 241, "cms_page_revision": 501, "u_product": 10, "p_contact_message": 0},
   "files": [{"path": "data/site.db", "bytes": 372736, "sha256": "…", "class": "db"}],
@@ -2120,21 +2163,19 @@ services:
                   expose: ["3000"]                            # no published port (C-11)
                   read_only: true
                   tmpfs: [/tmp]
-                  volumes: [./data:/srv/data, ./content:/srv/content, ./run:/srv/run]
+                  mem_limit: 1024m                            # the only ceiling a plugin has (§13.3.6)
+                  volumes: [./data:/srv/data, ./content:/srv/content]
                   environment: [SKW_DATA_DIR=/srv/data, …]    # §4.3, and nothing else
-  plugin-runner:  image: ghcr.io/skunkworks/runner@sha256:…
-                  network_mode: none
-                  read_only: true
-                  cap_drop: [ALL]
-                  pids_limit: 64
-                  volumes: [./data/plugins:/srv/plugins:ro, ./run:/srv/run, ./data/scratch:/srv/scratch]
   acme:           image: nginxproxy/acme-companion
                   volumes: [./certs:/etc/nginx/certs, /var/run/docker.sock:/var/run/docker.sock:ro]
 ```
 
-Four services. `IDEA.md` §3 said three; C-8 records why the fourth exists and CEO-1 records that it was a
-CEO decision. There is no `migrate` service: `app` runs the migration itself and reports per tenant (§2.3),
-because a one-shot gate makes one tenant's corruption a fleet-wide outage.
+**Three services.** `IDEA.md` §3 said three, C-8 added a fourth (`plugin-runner`), and D36 deleted it
+again: plugins are modules inside `app` (§13.3), so there is nothing for a runner to run and no socket to
+bind. `mem_limit: 1024m` on `app` is now the only memory ceiling any plugin has — an OOM kill of `app` takes
+every tenant down, which is why §13.3.6 states the absence of a per-plugin ceiling rather than implying one.
+There is no `migrate` service: `app` runs the migration itself and reports per tenant (§2.3), because a
+one-shot gate makes one tenant's corruption a fleet-wide outage.
 
 ### 12.2 Volumes
 
@@ -2142,8 +2183,7 @@ because a one-shot gate makes one tenant's corruption a fleet-wide outage.
 |---|---|---|---|
 | `./data` | `/srv/data` | rw | `control.db`, `tenants/`, `backups/`, `plugins/`, `trust/`, `logs/` |
 | `./content` | `/srv/content` | rw | the one byte tree (§7.1) |
-| `./run` | `/srv/run` | rw | `plugin.sock` |
-| `./data/plugins` | `/srv/plugins` | **ro** in the runner | plugin code is never writable by the plugin |
+| `./data/plugins` | — | not mounted separately | inside `./data`; the app reads a package and never writes it after install, and the load path re-checks the root hash (§13.3.2) |
 | `./certs` | `/etc/nginx/certs` | ro in nginx | acme-companion writes it |
 | root filesystem | — | **read_only: true** + `tmpfs /tmp` | nothing the app runs needs to write outside the two volumes |
 
@@ -2262,7 +2302,10 @@ hosts.
 
 ### 12.6 Upgrade
 
-`/healthz` reports `SKW_BUILD_ID`; `BUNDLE.json` carries `image.app_digest` and `image.runner_digest`.
+`/healthz` reports `SKW_BUILD_ID`; `BUNDLE.json` carries `image.app_digest`. The `runner_digest` field is
+**deleted** with the runner (E-31): a second image digest is a second thing to pin, and there is no second
+image. A bundle written before the change is refused by `bundle_verify.ts` with `SKW_E_EXP_*` naming the
+unknown key rather than ignored.
 `install.sh --upgrade` pulls the new digest, runs `migrate`, and restarts; a second run is a no-op
 (measured 7.5 s). A CVE *notification* channel, a version endpoint for clients, and automatic rollback are
 **deferred** with a named experiment (§18.1).
@@ -2271,36 +2314,54 @@ hosts.
 
 ---
 
-## 13. Security model
+## 13. Security model, and the in-process plugin boundary
 
-The honest promise, in one paragraph: **tenant isolation is a permission boundary inside one Node process,
-not a construction.** A construction would be a process or a syscall per tenant; we do not have that, and
-saying "no cross-tenant query path exists by construction" was falsified four times in the debate — a
-readonly handle can `ATTACH` a sibling and `VACUUM INTO` the public tree. What we do have is four
-permissions, each tested, and three named paths that can break them.
+The honest promise, in one paragraph: **tenant isolation is a permission boundary inside one Node
+process, not a construction — and since D36 that same process also runs third-party plugin code.** A
+construction would be a process or a syscall per tenant; we do not have that, and saying "no
+cross-tenant query path exists by construction" was falsified four times in the debate — a readonly
+handle can `ATTACH` a sibling and `VACUUM INTO` the public tree. What we do have is five permissions,
+each tested, and four named paths that can break them. One of those paths is now the feature: a plugin
+is a module imported into the app process, so the sentence "no code we did not ship runs in the
+process" is false by design and P3 has been rewritten to say what actually holds — a signature, which
+buys *identity* and *tamper detection*, not containment.
 
-### 13.1 P1–P4: what is actually enforced
+### 13.1 P1–P5: what is actually enforced
 
 | # | Permission | Enforced by | Break it and you have | Tested by |
 |---|---|---|---|---|
 | **P1** | No statement that names a file | `render-read` is never handed SQL text; only `exportSnapshot()` opens an `exporter` connection | `ATTACH` from a pooled handle — `query_only` does **not** close it (measured: `main,temp,other`) | check 27 |
 | **P2** | No write outside the tenant directory | `readonly: true` **and** `PRAGMA query_only=1` on every render handle, asserted on checkout | `VACUUM INTO` into `content/public/` — measured to publish a tenant's database under the web root | checks 2, 27 |
-| **P3** | No code we did not ship runs in the process | no `import()` of a tenant file exists in v1; `function` data sources are unrepresentable; plugins run in another container | one `import()` of `content/sources/*.js` and the process holds every tenant's handle | validate (kind), §6.1, §8.4 |
-| **P4** | No caller-controlled path segment | a tenant key never becomes a path: the file path is `tenants/<key>/site.db` with `<key>` from a `control.db` row that matched `^[a-z0-9][a-z0-9-]{0,62}$`; asset bytes are addressed by `sha256` | a key or a `storage_path` reaching `fs` — which is why `storage_path` is generated (check 11) | checks 11, 12 |
+| **P3** | **The only third-party code in the process is code whose bytes a key we trust signed** | signature verified over the package root at install **and again at load**; root hash recorded in `cms_plugin_installed.root_hash`; a package whose bytes moved refuses to load with `SKW_E_PL_SIGNATURE` | an unsigned or mutated package running with the app's own privileges — which is every plugin anyway, once loaded (§13.3.7) | signature matrix; `test/plugin-load.test.ts` L1–L4 |
+| **P4** | No caller-controlled path segment | a tenant key never becomes a path: the file path is `tenants/<key>/site.db` with `<key>` from a `control.db` row that matched `^[a-z0-9][a-z0-9-]{0,62}$`; asset bytes are addressed by `sha256`; a plugin id is matched against `^[a-z][a-z0-9]{1,19}$` before it becomes `data/plugins/<id>` | a key, a `storage_path` or a plugin id reaching `fs` — which is why `storage_path` is generated (check 11) | checks 11, 12; `L2` |
+| **P5** | **No plugin is handed a `Database`, the control-plane handle, or SQL text** | the per-request context (§13.3.5) is built per request from a facade whose method set has no `exec`, `prepare`, `attach`, `pragma` or `db`; `control.db` is opened in `app/main.ts` and appears in no plugin context; every plugin-originated statement is compiled from the declared grammar, and the connection it runs on is asserted to have exactly one attached database | a plugin holding a raw handle can `ATTACH` a sibling tenant's file, or `VACUUM INTO` one — the two measured escapes behind P1 and P2 | `test/plugin-scope.test.ts` S1–S6 |
 
-The three paths that can break P1–P4, named so a reviewer can look for them:
+**P3 used to read "no code we did not ship runs in the process."** D36 deleted that sentence, not by
+weakening it but by deciding the product needs plugins more than it needs the sentence. What is left is
+an *identity* permission: we can say whose code it is and that it has not changed since they signed it.
+We cannot say what it will do. §13.3.7 is the paragraph a security reviewer should read first.
+
+The four paths that can break P1–P5, named so a reviewer can look for them:
 
 1. **The DDL runner.** It emits SQL from a template and runs it on `admin-write`. A new operation, or a
    caller-supplied reference object, is a new SQL-executing extension point (register R1).
 2. **Any `ATTACH`-capable handle.** `query_only` does not stop `ATTACH`. The only defence is that no
    render handle receives text; a dependency that opens its own handle to `site.db` defeats it entirely.
-3. **Any `import()` from a tenant-writable tree.** It does not exist in v1 and must not be added without
-   moving the renderer into its own process.
+3. **Any `import()` of a plugin package — which now exists, deliberately.** The path is
+   `data/plugins/<id>/` (D26: runtime-loaded, never compiled into the image); the package root is
+   hashed and the `realpath` of the entry point must stay under that root, both checked at load, so the
+   bytes we import are the bytes that were signed. What that check does **not** do is bound what the
+   code may reach once it runs: in-process, `node:fs`, `node:child_process`, `node:net` and a fresh
+   `better-sqlite3` handle to `data/control.db` are all one `import` away. §13.3.6 states the cost.
+4. **A dependency of the app that opens its own handle** to `site.db` or `control.db`. Nothing in this
+   design detects it; the answer would be a process boundary whose cost (10 GB at 200 tenants) we have
+   already declined (C-8).
 
-**What this is not.** It is not protection against a hostile *dependency*, against a root operator, or
-against a filesystem-level bug in SQLite. A dependency that opens its own handle to `site.db` makes P2
-decorative, and the answer would be a process boundary whose cost (10 GB at 200 tenants) we have already
-declined (C-8).
+**What this is not.** It is not protection against a hostile *plugin* — there is no such protection in
+this model, and §13.3.7 says so on the install screen in those words. It is not protection against a
+hostile dependency, against a root operator, or against a filesystem-level bug in SQLite. A dependency
+that opens its own handle to `site.db` makes P2 decorative, and the answer would be a process boundary
+whose cost we have already declined (C-8).
 
 ### 13.1a An exclusive witness for every security gate
 
@@ -2328,7 +2389,16 @@ gate the build report records the mutation applied (the exact edited expression)
 the gate that stayed green, and the file's SHA-256 before and after. This is the method `S2-qa.md` §3 used;
 it becomes the Builder's obligation rather than the reviewer's discovery.
 
-> Amended by 02-errata.md E-22.
+**The rule this section now has to carry alone.** Two gates used to be two witnesses for one claim: the
+runner refused an operation outside the grant *before* the host was asked, and the host validated the
+operation against the manifest. With one process there is one check, so "defence in depth" is not a
+property of §13.3.7 and must not be written as one. What replaces the second layer is a **mutation of the
+first**: delete the capability comparison in `app/plugins/context.ts` and `test/plugin-scope.test.ts` S3
+must go red with the undeclared table named, while S1–S2 (which test the tenant binding) stay green. A
+single layer with an exclusive witness is a gate; a single layer with a test that would pass either way is
+a comment.
+
+> Amended by 02-errata.md E-22, E-33.
 
 ### 13.2 The browser half, which is not proven here
 
@@ -2344,35 +2414,331 @@ compensating server-side test that is real:
 Stating this is not modesty; it is the difference between a spec a Builder can trust and a claim that
 collapses on the first phone.
 
-### 13.3 Plugin trust, stated as a limitation
+### 13.3 The in-process plugin model (D36)
 
-A third-party plugin is untrusted code from outside our source tree, installed into a running instance. The
-containment (§8.4) is real: no network namespace, no native addon, no child process, no worker, no
-database handle, a read-only package mount, and a 14-operation RPC surface. What it does **not** give:
+A plugin is a module imported into the app process that registers hooks, endpoints, admin screens and
+owned tables. There is no `plugin-runner`, no socket, no second container, no RPC enum. This is the
+WordPress model, chosen deliberately: it is the only plugin architecture that fits a box we sell, because
+a process boundary costs 49.8 MB and 34 ms per tenant (C-8) and a per-instance boundary costs more than
+the product. The cost is stated in §13.3.6 and repeated nowhere else: **a synchronously hanging plugin
+cannot be timed out in-process.**
 
-- **No per-plugin memory ceiling.** One cgroup for all plugins. A hostile plugin can starve its co-tenants
-  inside the runner; it cannot starve the host, and it cannot affect a page, because no plugin code is on
-  the render path.
-- **No confidentiality between plugins.** Two plugins in one container share a cgroup and a filesystem
-  view of their own packages. A plugin cannot read another's tables (the host mediates every read), but it
-  can read another's *package files* if the mount allows it — the supervisor mounts each package read-only
-  and runs each child with `--allow-fs-read` limited to that package.
-- **No protection against a plugin that is simply wrong.** It can return garbage, loop, or crash; the
-  circuit breaker bounds the damage to the endpoint that called it.
+#### 13.3.1 What survives from the manifest, and what a capability now means
 
-A client who installs ten plugins on a 1 GB box is outside the design (register R2), and the install screen
-says so.
+`plugin.json` is still the contract (§8.1), validated at install and stored verbatim in
+`cms_plugin_installed.manifest_json`. Fields and their status under D36:
+
+| Field | Status | What it does at runtime |
+|---|---|---|
+| `id`, `version`, `publisher {id, key_id}` | survives | identifies the package and the key that signed it; `id` must match `^[a-z][a-z0-9]{1,19}$` before it becomes a path segment |
+| `cms` (range) | survives | checked at install **and** at load: a module whose declared range excludes the running build refuses to load (`SKW_E_PL_SCHEMA`), because an in-process ABI mismatch is a 500 on a page, not a 503 on an endpoint |
+| `main` | **new, required** | the entry file, relative to the package root, `index.mjs` by default; this is what `import()` loads. A manifest without `main` is refused at install — under the runner the supervisor knew where the code was; the app must be told |
+| `hooks` | **new, required** | the hook names the plugin intends to register (§13.3.4). A plugin may register only a declared hook; an undeclared `ctx.on()` is refused at activation with `SKW_E_PL_REJECTED`. This is a contract check, not containment: it makes the install screen able to list what the plugin touches |
+| `tables` + `export` class | survives | created by the host executor (§8.2); the only tables the facade will name |
+| `settings` | survives | typed, `secret` write-only; read through the facade, never from `process.env` |
+| `admin` | survives, **declarative only** | a declared screen (list/form against a declared table). No plugin markup in the admin origin — the escape hatch is a data hook, not HTML (§13.3.4) |
+| `public` | survives | declared paths and methods; mounted in the app router; body cap and spam controls are core, not plugin-supplied (§8.6) |
+| `capabilities` | survives **as disclosure** | listed on the install screen, in plain words, beside the key fingerprint. They gate the facade methods a plugin may call (§13.3.7) and nothing else. They are not a sandbox and the UI says so |
+| `tests {entry, timeout_s}` | survives, re-based | runs at package time against a scratch `site.db` **in the app image**, and the report records the app image digest; a report from another digest is `SKW_E_PL_TESTS_STALE` (§8.5) |
+| `cron` | survives as `"none"` | the only legal value in v1 (O-43 deferred). There is no scheduler to register with |
+
+A table without an `export` class is still refused at install (`SKW_E_PL_NO_EXPORT_CLASS`). What is gone
+from the manifest's meaning: the old `capabilities` array was the *grant* the runner enforced; it is now
+the list of facade methods the host will answer, and the difference is the whole of §13.3.7.
+
+#### 13.3.2 The load path
+
+```
+enable(tenant, id):
+  1. read the installed row; refuse if status='failed' without an operator ack
+  2. re-verify the signature over the package root; refuse SKW_E_PL_SIGNATURE if the bytes moved
+  3. check manifest.cms against the running build; refuse SKW_E_PL_SCHEMA
+  4. entry = realpath(data/plugins/<id>/<manifest.main>); refuse unless it is under the package root
+  5. namespace = await import(pathToFileURL(entry).href
+                              + '?tenant=' + encodeURIComponent(tenant)
+                              + '&act='    + String(row.activation_seq + 1))
+  6. assert typeof namespace.activate === 'function'; refuse SKW_E_PL_LOAD otherwise
+  7. ctx = makeContext(tenant, id, row.manifest, {activationOpen: true})
+  8. await namespace.activate(ctx)                     # registration happens here, and only here
+  9. ctx.closeActivation(); registry.commit(tenant, id, ctx.registrations)
+ 10. status='enabled', activation_seq += 1, audit row
+```
+
+**Why the cache-buster is not optional.** Node's ESM cache is keyed by URL. Without `?act=`, a
+disable→enable cycle returns the *previous* module namespace: module-level state survives, a top-level
+`setInterval` from the first activation still runs, and "not loaded" is a lie the admin UI tells. The
+activation counter is monotonic per (tenant, plugin) and is the only thing that changes between loads.
+
+**Why the tenant is in the URL.** One module instance per (tenant, plugin, activation) means a
+module-level variable cannot carry a value from tenant A to tenant B by accident. WordPress is
+single-tenant and never faces this; we do. The cost is one module instance per enabled (tenant, plugin)
+pair — small for a normal package, and the number to *measure* at S4 rather than assume (§13.4 item 6).
+A plugin can still reach `globalThis` deliberately, so this is an accident-preventer, not a boundary.
+
+**State.** Module-level state does not survive disable/enable, by design: the second activation is a new
+module instance with an empty scope. Settings (`cms_plugin_settings`) and `p_*` rows are the only durable
+state, which is exactly what export carries (§11.1).
+
+#### 13.3.3 The registry, and why it is per tenant
+
+One registry in the app process:
+
+```
+registry: Map<tenantKey, Map<pluginId, {
+  hooks:     Map<hookName, HookFn[]>,
+  endpoints: Map<'METHOD /path', Handler>,
+  screens:   Map<screenPath, DeclarativeScreen>,
+  activationSeq: number
+}>>
+```
+
+- **Per tenant** because a plugin is enabled per tenant (§8.6): tenant A enabling `contact` must not
+  make it run on tenant B, and a dispatch must never have to ask "which tenant is this for" — the key
+  already answered.
+- **Prunable** because disable is `registry.delete(tenant, id)` in one operation. There is no partial
+  unregistration and no path where a disabled plugin's hook still fires: dispatch reads the map, and a
+  map that has no entry has no callbacks.
+- **Snapshot on dispatch.** A render takes `snapshot(tenant)` once, at the top, and iterates a frozen
+  array. A disable that lands mid-render therefore cannot mutate the array being iterated; the request
+  finishes on the callbacks it started with, which is the honest boundary of "disable takes effect
+  immediately" (§13.3.8).
+- **Registration is closed after activation.** `ctx.on()` refuses once `closeActivation()` has run, so a
+  hook cannot be added later from a timer or a promise callback. That is what makes pruning complete
+  rather than best-effort.
+- **Cost.** One `Map.get` per dispatch (two for the plugin). Measured at S4; it is a lookup, not an
+  allocation, and the snapshot is one `Array.of` per hook per request.
+
+#### 13.3.4 The hook surface, and what a return value may change
+
+Twelve hooks, frozen. Six filters (the return value replaces the value handed in) and six actions (the
+return value is discarded). A hook not on this list does not exist; `ctx.on()` refuses it.
+
+| Hook | Kind | Signature | What a return value may change |
+|---|---|---|---|
+| `content.render.html` | filter | `{tenant, path, page} → html` | the page body html, and only that. It cannot change status, headers, cookies or the resolved route; there is no parameter for them |
+| `page.head` | filter | `{tenant, path} → html` | extra `<meta>`/`<link>` markup in `<head>`, string ≤ 4 KiB |
+| `asset.url` | filter | `{tenant, key, url} → url` | the URL emitted for one asset; must be root-relative or `https://` absolute, else the original is used and the hook counts as failed |
+| `form.validate` | filter | `{tenant, form, values} → {ok:true} \| {ok:false, errors[]}` | may **refuse** a submission that core accepted. May not accept one core refused: core's own rules run first and `ok:true` cannot resurrect them |
+| `admin.menu` | filter | `{tenant, items} → items` | may add an entry pointing at a **declared** admin screen; an entry pointing anywhere else is dropped |
+| `mail.template` | filter | `{tenant, template, vars} → vars` | may add or change template variables. Not the recipient: `mail.send`'s `to` rule (§8.3, retained) still decides who receives |
+| `page.rendered` | action | `{tenant, path, status, ms}` | nothing — return ignored |
+| `form.submitted` | action | `{tenant, form, submissionId}` | nothing — runs after commit, side effects only |
+| `download.redeemed` | action | `{tenant, codeId, assetKey, jti}` | nothing. Observe only: a plugin can never grant a download |
+| `admin.login` | action | `{tenant, operatorId}` | nothing — post-authentication |
+| `plugin.enabled` | action | `{tenant}` | nothing — the plugin's own lifecycle |
+| `plugin.disabled` | action | `{tenant}` | nothing |
+
+**The rules that make a filter a filter.**
+
+1. A filter's return value replaces **only the named value**. Status, headers, `Set-Cookie`, redirects and
+   the route are not in the signature and cannot be produced by returning something clever. This is why
+   `download.authorize` is absent: a hook that could grant a paid download is a hook that turns a plugin
+   bug into a revenue leak.
+2. `undefined`/`null` means "no change" — pass the original through. It never means "delete", and it never
+   means "empty string": a plugin that wants to empty a value returns `''`.
+3. A wrong type is a **failure**, not a coercion: the original value is used, the hook is skipped for this
+   dispatch, and the failure counts toward auto-disable (§13.3.6). A filter that returns a `Promise` of the
+   wrong type is the same failure.
+4. A throw is caught at the dispatch site; the request continues with the value passed in. A page never
+   500s because a plugin filter did.
+5. Hooks run in registration order, one after another, awaited. A hook may not call another hook
+   re-entrantly (same tenant, same hook, already on the stack): the inner call is refused and counted, so a
+   filter cannot recurse the render path into a stack overflow.
+
+**Absent by decision**, each absence a control: `download.authorize`, `download.issue`, `route.resolve`
+(a plugin may not shadow a tenant's path), `admin.render.html` (no plugin markup in the admin origin),
+`admin.session`, `db.*`, `sql`, `fs.*`, `net.*`, `http.*`, `fetch`, `env`, `tenant.*`, `cms.*`,
+`cron` (O-43), `worker`, `spawn`, `stream`. The first three are absent because they would each be a way to
+change an outcome the host owns; the rest are absent because in-process they would be theatre — a plugin
+can `import('node:fs')` itself, and §13.3.7 says so.
+
+#### 13.3.5 The per-request scope: which handle, bound to what
+
+A context object is built **per request**, frozen, and contains no `Database`, no `control` handle, no
+filesystem path and no `process.env`:
+
+| Context | Facade given | Connection behind it | Write? |
+|---|---|---|---|
+| render (a page, block or island) | `store.read`, `settings.get`, `assets.resolve`, `mail.send`, `log.write`, `util.*` | `render-read` for the tenant resolved by this request (`readonly:true`, `PRAGMA query_only=1`) | **no.** `store.write` is absent from the object, not disabled on it |
+| public endpoint | the render facade **plus** `store.write` | `admin-write` for that tenant | only `INSERT` into declared `p_*` tables, through the declared-column grammar |
+| admin screen | the render facade plus `store.write`, `store.update`, `store.delete` | `admin-write` for the session's tenant | declared `p_*` tables only; **no DDL** — migrations are the host executor at install (§8.2), never a runtime call |
+| activation / deactivation | `settings.get`, `log.write`, `util.*`, declared-table reads | `admin-write` (the install transaction already holds it) | no writes at activation: a plugin that needs a row writes it on first use |
+
+**Bound to the current tenant, and only that.** The tenant is closed over by the facade; there is no
+tenant parameter in any method. A call that passes one is refused `SKW_E_PL_REJECTED` and audited, because
+the attempt is the signal. The tenant comes from `resolveTenant()` (host-routed) or `resolveAdminTenant()`
+(session only) — never from a header, a body or a query string — so the plugin inherits the same binding
+the page did.
+
+**`ATTACH` is refused, and the refusal is structural.** The facade has no method that takes SQL, so
+`ATTACH`, `DETACH` and `PRAGMA` are not expressible through it. On top of that, the connection a plugin
+call runs on is asserted to have exactly one attached database (`PRAGMA database_list` = `main`) before the
+statement is issued; a second entry refuses the call with `SKW_E_PL_REJECTED` and disables the plugin,
+because the only way it can appear is a path we did not write. The facade never exposes the connection
+object, and the context is frozen, so a plugin cannot reach through it.
+
+**Never the control plane.** `control.db` is opened in `app/main.ts`; it is not a field of any context and
+not reachable from one. `tenants/<other>/site.db` is likewise not reachable *through the facade* — the
+facade's connection is already open on one file. A plugin that opens its own handle by path can read
+anything the process can (§13.3.7); that is the cost of the model, not a gap in this paragraph.
+
+**Lifetime is the request.** The facade closes over a request-scoped connection and a `closed` flag; both
+are released on response end. A plugin that stashes the object and calls it later gets
+`SKW_E_PL_CONTEXT_ENDED` rather than a handle into a reused connection — the one failure mode that would
+otherwise turn a cache into a cross-tenant read.
+
+#### 13.3.6 The failure model, and the hang that cannot be timed out
+
+**Load time.** Steps 2–9 of §13.3.2 run inside one `try/catch`. A package that throws at import, whose
+`activate` throws, or whose export shape is wrong is marked `status='failed'`, `enabled=0`, and an admin
+notice names the code and the plugin. The site keeps serving: the registry never received its hooks.
+
+**Per request.** Every dispatch and every endpoint call is `try/catch` plus an `await Promise.race` against
+`SKW_PLUGIN_HOOK_TIMEOUT_MS` (default 2000). That race catches **a promise that never settles** — an
+async hang costs one request and the timeout reclaims it. It does **not** catch a synchronous infinite
+loop, because the timer needs the event loop that the loop is blocking.
+
+> **The synchronously hanging plugin cannot be timed out in-process. This is the accepted cost of the
+> model and nothing in this design mitigates it at runtime.** A `while (true)` in a hook stops every
+> tenant on the box, not just the one that installed it. There is no watchdog, no worker thread, no
+> `vm.Script` timeout, and no signal that can interrupt a running function in the same thread. A document
+> that implies otherwise is lying to the operator who has to explain the outage.
+
+Three things reduce the *frequency*, and none of them is a timeout:
+
+1. **The install gate.** `manifest.tests` must pass in the app image, against a scratch `site.db`, with the
+   report's digest matching the running image (§8.5). A package that hangs its own test suite is refused
+   before it is installed.
+2. **The publisher gate.** A third-party package needs a key the tenant owner imported, with the
+   fingerprint shown beside every capability (§8.5, D27). That is a human trust decision, made once.
+3. **The recovery path, which is a separate process.** `skwctl plugin disable <id> --tenant <key>` writes
+   the flag; boot reads it and never imports the module. So a box that will not finish booting is
+   recoverable from a shell without a working app — this is the only reason the flag is read from the
+   database at load time rather than from memory.
+
+**Failure counting.** Three failures within 60 s for one (tenant, plugin) — a throw, a wrong-type return,
+a hook timeout, an undeclared capability call — set `status='failed'`, `enabled=0`, prune the registry,
+and raise an admin notice. This is a counter, not a circuit breaker with a half-open state: recovery is an
+operator action (`skwctl plugin enable`, or the admin screen's "retry"), because a plugin that failed
+three times in a minute is not entitled to a fourth attempt on its own schedule.
+
+**What a broken plugin looks like from outside.**
+
+| State | Its endpoints | A page that calls its hooks |
+|---|---|---|
+| `disabled` | `503 SKW_E_PL_UNAVAILABLE` | renders normally; the hooks are not in the snapshot |
+| `failed` | `503 SKW_E_PL_UNAVAILABLE` | renders normally; the failing hook is skipped and the value passed in is used |
+| mid-request failure | the current request finishes on the snapshot it started with | 200, with core behaviour for that hook |
+| uninstalled | `404` | renders normally |
+
+**Memory.** There is no per-plugin ceiling, because there is no cgroup per plugin: every plugin shares the
+app container's memory. `mem_limit` on `app` is the only ceiling, and an OOM kill takes the whole site
+down, not one package. `SKW_E_PL_OOM` is **withdrawn** — it named a per-package cgroup that no longer
+exists. An operator sizes the box for the plugins they install, and the install screen says so.
+
+#### 13.3.7 What replaces the two-layer capability proof, and what a signature does not buy
+
+**The old proof, for the record.** Two layers: the runner refused an operation outside `binding.granted`
+*before* the host was asked (`runner/server.mjs:421`), and the host validated the operation against the
+manifest (`app/plugins/ops.ts`). The comment in `app/plugins/endpoint.ts:97–99` said the quiet part out
+loud — "the two layers see one value and the second one does not depend on the first." That is what
+defence in depth means, and it is gone.
+
+**What replaces it is one enforced layer and one witness.**
+
+- **The layer.** Every capability crossing is a facade method. Its first act is to read the grant from
+  `cms_plugin_installed.manifest_json` **inside the current request** — not from a manifest object the
+  plugin holds, not from a value the plugin passes — and compare it to the method being called. A miss is
+  `SKW_E_PL_REJECTED`, raised before the connection is touched. The check is in one place
+  (`app/plugins/context.ts`), and the facade is the only way to reach a tenant's data, so "one place" is
+  not a hope: there is no second door to leave unlocked.
+- **The witness.** Because there is no second layer to catch a bypass, the gate must be a mutation of the
+  check, not an observation of the plugin: delete the comparison, and `test/plugin-scope.test.ts` S3 must
+  go red naming the undeclared table, while S1–S2 (tenant binding) stay green. A test that passes because
+  the plugin happens not to try is not a witness (§13.1a).
+- **What the layer is for.** It stops accidents, contract violations and a compromised *package* that
+  only uses the API. It does not stop a hostile plugin, because a hostile plugin does not use the API. That
+  is the single sentence the install screen must not blur.
+
+**Capabilities are disclosure.** The manifest's `capabilities` array is shown to the operator in plain
+words, beside the publisher fingerprint, before enable. It is not a sandbox and the screen says so, in
+these words:
+
+> Capabilities describe what this plugin asks the CMS for. They do not limit what its code can do: a
+> plugin runs inside the site's process, with the site's own access to its files and databases.
+
+**A signature buys author identity and tamper detection. It does not buy containment — not even a
+little.** What it gives:
+
+| Claim | True? | Why |
+|---|---|---|
+| these bytes were signed by the holder of this key | **yes** | Ed25519 over the package root and file list (`app/plugins/trust.ts`); verified at install and again at load, so a package edited on disk refuses to load |
+| the package has not changed since it was signed | **yes** | root hash recorded and re-checked at every load |
+| this plugin will not read another tenant's database | **no** | it is in the process; `import('better-sqlite3')` and a path are all it takes |
+| this plugin will not block the event loop | **no** | there is no timeout that can interrupt it (§13.3.6) |
+| this plugin will only use the capabilities it declared | **no** | the facade enforces the declaration; the code can ignore the facade |
+
+A signed plugin and an unsigned one have identical power at runtime. The difference is that we can say
+who wrote it, and that nobody else has modified it since.
+
+#### 13.3.8 Enable, disable, uninstall, without a restart
+
+No restart, no compose change, no socket to rebind. Every row below is a database write plus a registry
+operation in the running process.
+
+| Action | Mechanism | Data | In-flight requests | Public endpoint |
+|---|---|---|---|---|
+| **Enable** | §13.3.2 steps 1–10, all-or-nothing: any failure rolls the registry back and sets `failed` | untouched | the next request sees the hooks; requests already rendering do not | live on the next request |
+| **Disable** | `plugin.disabled` action (bounded, `try/catch`) → `registry.delete(tenant, id)` → drop the namespace reference → `status='disabled'` | untouched | finish on the snapshot they started with | `503 SKW_E_PL_UNAVAILABLE` |
+| **Uninstall** | drain → disable → `VACUUM INTO` the whole-tenant archive (§8.2) → drop `p_*` tables, registry rows, package dir | archived first, then dropped; the archive is whole-file, so restoring it rolls back every other change since (O-40) | drain waits for the tenant's in-flight count to reach 0, bounded at 5 s, then refuses `SKW_E_PL_BUSY` rather than drop a table under a live request | `404` |
+| **Upgrade** | uninstall-then-install only (no downgrade, §8.2) | archive first | as uninstall | as install |
+
+Two semantics worth stating because they are easy to get wrong:
+
+- **Disable is not "the hooks are skipped".** They are *removed*. There is no branch that checks
+  `enabled` and returns early, because that branch is one refactor away from being inverted. The map has no
+  entry.
+- **Module-level state dies on disable.** The next enable is a new module instance with a new cache key
+  (§13.3.2). A plugin that needs to survive its own disable writes a row.
+
+#### 13.3.9 The retirement list
+
+What D36 deletes, and what happens to the gate that used to prove it. The full reader-facing version is
+`docs/sds/13-plugin-model-delta.md`; this table is the operative one.
+
+| Artefact | What it was | Disposition | Gate |
+|---|---|---|---|
+| `plugin-runner` service (`docker-compose.yml`) | fourth container, `network_mode:none`, `read_only`, `cap_drop`, `pids_limit:64`, `mem_limit:384m` | **deleted** — three services again | §16 S1 "compose has exactly 4 services" is **withdrawn**, replaced by "exactly 3; `app` publishes no port" |
+| `runner/server.mjs` (638 lines) | socket server, supervisor, per-child spawn, op timeout, OOM classification | **deleted** | `test/runner-memory.test.ts` M1–M4 **withdrawn**: there is no per-package cgroup to assert |
+| `runner/child.mjs` (127 lines) | `node --permission` entry point per package, local ops, bound host channel | **deleted** | replaced by `test/plugin-load.test.ts` L1–L4 (import, shape, signature, context) |
+| `runner/Dockerfile`, `runner/package.json` | the runner image | **deleted** | image build gate loses this target |
+| `run/plugin.sock`, the JSON-lines frame protocol (`plugin.invoke`, `granted[]`, host-op callbacks) | the wire between app and runner | **deleted** — `protocol.ts` keeps the manifest grammar and loses the frame types | protocol round-trip tests **withdrawn**; nothing crosses a process |
+| Runner-side capability enforcement (`runner/server.mjs:421`, `binding.granted`) | the first of two layers | **deleted** — see §13.3.7 | the gate is re-pointed to a mutation of the *remaining* check; the "two layers see one value" comment is deleted with `endpoint.ts`'s socket error-lifting block |
+| `app/plugins/host.ts` (262 lines) | socket client, 2 s per-op timeout, cross-process circuit breaker, `PL_UNAVAILABLE` when the socket is absent | **deleted**, replaced by `runtime.ts` (load/activate), `registry.ts` (per-tenant maps), `context.ts` (facade + capability check) | new: `test/plugin-scope.test.ts` S1–S6; `test/plugin-load.test.ts` L1–L4 |
+| `SKW_E_PL_OOM` | a package killed at its own cgroup | **withdrawn** from the taxonomy | no gate: the mechanism is gone |
+| `§13.4` item 2, "the composed plugin path across two containers" | an unmeasured 37 µs sum | **withdrawn**; the composed path is now one process and is measured directly | — |
+
+**Gate accounting, stated plainly:** three gates are withdrawn rather than passed — the four-service
+compose assertion, the per-package memory assertions M1–M4, and the two-container composed-path claim.
+Two are re-pointed (the `asset_key` delete guard and the test-report digest, which now names the app
+image). Nothing is claimed green that has not run.
 
 ### 13.4 What is not proven anywhere in this document
 
 1. **ACME against a production CA.** Measured against Pebble with validation short-circuited only.
-2. **The composed plugin path across two containers.** The unix-socket hop (15 µs p50) and the child IPC hop
-   (22 µs p50) are measured separately; their sum (~37 µs) is arithmetic.
-3. **A 1 GiB bundle transfer.** 6.8 min at 20 Mbps is arithmetic over a measured bundle size, not a link
+2. **A 1 GiB bundle transfer.** 6.8 min at 20 Mbps is arithmetic over a measured bundle size, not a link
    test. The promise excludes transfer and caps the bundle.
-4. **Browser behaviours** (§13.2).
-5. **PII retention after a demo expires.** O-31 sets the 30-day soft delete and the final archive; how long
+3. **Browser behaviours** (§13.2).
+4. **PII retention after a demo expires.** O-31 sets the 30-day soft delete and the final archive; how long
    the archive is kept is a legal decision, not an SDS contract.
+5. **The absence of containment.** There is no measurement of a boundary because there is no boundary. A
+   plugin that reads `data/control.db` is five lines; we have not written it as a test, because a test that
+   demonstrates the absence of a control is a demonstration, not a gate. A reviewer should treat §13.3.7 as
+   the statement of record, not as a proof by omission.
+6. **The memory cost of one module instance per enabled (tenant, plugin) pair.** It is a budget to
+   measure at S4, not a number this document knows. It is the price of the per-tenant cache key in
+   §13.3.2, and if it is wrong the alternative is one instance per plugin with a documented rule that
+   module-level state must not be tenant-specific — a rule no test can enforce.
 
 ---
 
@@ -2386,7 +2752,9 @@ failure mode with no detector is a rumour.
 | **F1** | A missing farm symlink for a *gated* asset, so `/media/<key>` serves paid bytes | the mandatory link-absence test on every bundle: `find content/public -lname "*<gated sha>*"` empty, `GET /media/<key>` 404, direct `/__protected/…` 404 | `/__protected/` is `internal` with a 64-hex guard; the farm regenerator refuses a gated row; the test runs per bundle, not once | C-17 |
 | **F2** | An exporter path that is not `exportSnapshot()`, so a bundle is built from a live file | `BUNDLE.json.source_counts` compared by `install.sh`; a `-wal` in the tree is a build failure | quiescence counts before/after/in-snapshot; `VACUUM INTO` is the only copy primitive; the exporter is the only caller of the `exporter` class | O-18, O-19 |
 | **F3** | A fourth SQL-executing extension point (or a dependency with its own handle), breaking P1/P2 | code review plus the `no-restricted-imports` rule; a runtime assert on pool checkout that `query_only=1` is set | three classes, one factory module, no SQL text on a pooled handle | C-15, R1 |
-| **F4** | A hostile plugin starving its co-tenants | runner RSS and cgroup throttling in the operator dashboard; circuit breaker per plugin | `pids_limit: 64`, 2 s per-op timeout, one cgroup — **no per-plugin ceiling** is claimed | C-8, R2 |
+| **F4** | A plugin — hostile or merely wrong — blocking the event loop, so every tenant's pages stop | **nothing at runtime**: the app stops answering `/health`, request latency alerts fire, and the operator has no in-process signal that distinguishes a plugin from a slow query | the install test gate and the publisher key reduce the frequency; recovery is `skwctl plugin disable <id> --tenant <key>` from a shell, and boot reads the flag from the database. **No timeout, watchdog or worker exists** — this is the accepted cost of D36, stated in §13.3.6 | D36, §13.3.6 |
+| **F4a** | A plugin reading another tenant's database, or `control.db`, through its own handle | **nothing**: it is the same process with the same credentials | none — no containment is claimed. The facade (§13.3.5) closes the accidental path; the deliberate one is out of scope by decision | D36, §13.3.7 |
+| **F4b** | A plugin holding the app's memory until the kernel kills `app` | the container's `mem_limit`, and the OOM kill in `docker events` | one ceiling for the whole app: an OOM takes every tenant down. `SKW_E_PL_OOM` is withdrawn — there is no per-package cgroup to name | E-30 **withdrawn by E-31**, §13.3.6 |
 | **F5** | A demo page escalating to admin on a shared origin | the admin listener's `421` for a demo `Host`; the separate demo hostname | C-25's separate host; CSRF bound to the session; `Origin` exact match | C-25 |
 | **F6** | A code redeemed 4× because `Range` requests each spend a use | reconciliation: `count(kind='first')` vs `uses` per code; an alert when they disagree | insert-first, one `jti` per redemption, partial unique index | C-7 |
 | **F7** | One tenant's migration failure taking the fleet down at 03:00 | `migrate`'s per-tenant JSON report; `/admin/api/tenants/<key>/health` | split gate: control-plane failure exits 15, tenant failure 503s that tenant only | C-10 |
@@ -2404,8 +2772,8 @@ failure mode with no detector is a rumour.
 
 | # | Survives because | What would make it a problem |
 |---|---|---|
-| R1 | Isolation is a **permission** boundary in one process (P1–P4) | a fourth SQL-executing extension point, or a dependency opening its own handle |
-| R2 | Third-party plugins need a fourth service and one shared cgroup; per-plugin memory is unenforceable | a plugin that must DoS for a living, or ten plugins on a 1 GB box |
+| R1 | Isolation is a **permission** boundary in one process (P1–P5), and P5 is a facade rather than a construction | a fourth SQL-executing extension point, a dependency opening its own handle, or a plugin that bypasses the facade with its own `better-sqlite3` handle — which is five lines and explicitly out of scope (D36) |
+| R2 | **No containment at all is claimed**: a plugin runs in the app process, and a plugin that blocks the loop or reads another tenant's file is not defended against | a plugin that must DoS for a living, ten plugins on a 1 GB box, or one plugin with a `while (true)` — §13.3.6, accepted cost |
 | R3 | "Fully drag-and-droppable on day one" is now "fully draggable **within the shipped registry**" | the first client asks for a widget we did not ship |
 | R4 | Export correctness rests on a **producer** rule (quiescence counts), not a verifier | any exporter path that is not `exportSnapshot()` |
 | R5 | Access codes are 16 characters, not 12, because the selector removed the only fleet-wide secret | a client refuses a 16-character code — the fallback is a pepper and a rotation runbook |
@@ -2451,7 +2819,7 @@ corpus** (a debate paper's run, cited because the SDS depends on it). "Fast" is 
 |---|---|---|
 | four-source page throughput, 2.3 ms page, 50 connections | 192 r/s (p50 148 ms, p99 2,710 ms) | `SKW_BOX_RPS` default and the derived per-tenant rate (C-20) |
 | page render, 83 KB body | 0.13 ms; a render-time CSP hash would add 0.044 ms (+34 %) | no hash, no nonce (C-12) |
-| plugin runner idle / per child / IPC | 47.4–48.0 MB / 38.2–42.8 MB / 22 µs | one runner for all plugins (C-8) |
+| ~~plugin runner idle / per child / IPC~~ **withdrawn (E-31)** | ~~47.4–48.0 MB / 38.2–42.8 MB / 22 µs~~ | there is no runner; these numbers are history, kept in §8.4 as the price the model declined to pay |
 | per-tenant process (rejected) | 49.8 MB peak, 34 ms cold start → ~10.0 GB at 200 tenants | why there is no process per tenant |
 | watermark, 40-page PDF | 51.9 ms cold / 23.4 ms warm, +60 % bytes | 2000 ms budget, off-loop (C-16) |
 | `count(*)` over 90 k rows | 1,990 µs indexed / 4,374–5,020 µs unindexed | aggregate grammar + publish gate (C-18) |
@@ -2505,7 +2873,7 @@ nginx config generation, acme, compose, one hand-built page rendering, the boot 
 | a client-supplied `X-Skunkworks-Tenant` is inert on a host-routed location | same suite, cases 1–5 |
 | `/demo/<key>/whoami` returns `path=/whoami` and `tenant_header=<key>`, query preserved, slash-less form 301s | prefix test, including a **POST with a body** under `/demo/` |
 | a demo `Host` cannot reach the admin surface: `/admin/…` is `404` with the same body as an unknown path, and no admin route is mounted on a public listener | listener test, positive and negative |
-| compose has exactly 4 services; `app` publishes no port | `docker compose config` assertion |
+| compose has exactly **3** services (`nginx`, `app`, `acme`), `plugin-runner` is **absent by name**, and `app` publishes no port | `docker compose config` assertion (`test/compose.test.ts`): the three-name list, plus `services['plugin-runner'] === undefined` — **the old "exactly 4 services" row is withdrawn, not passed** (E-31) |
 | `migrate` exits 0 with a per-tenant report; a broken tenant 503s alone | migration test with one corrupt fixture |
 | boot refuses any `^SK_|^SKUNK_` env key, naming it, and the gate cannot hang | env test: `spawnSync` with `{timeout: 5000, killSignal: 'SIGKILL'}`; `ETIMEDOUT` is a named failure ("the process booted instead of refusing: <key>"), never a wait; the suite also runs under `node --test --test-timeout=15000`, so a regression is red in under 20 s; the child's stdout must not contain "listening" |
 | `make test` stays green | the same command |
@@ -2557,7 +2925,7 @@ spec + render worker + fail-closed, the access-code reissue path.
 
 **Contains:** GrapesJS integration, the registry, page/slug management, the `list` component and the SSR
 loop, `roundtrip.test.ts`, the three exporters with preflight refusals, `install.sh`, the measured install
-proofs, plugin install/enable/RPC, the bundle verifier.
+proofs, plugin install / enable / hook dispatch (§13.3), the bundle verifier.
 
 | Acceptance criterion | Gate |
 |---|---|
@@ -2570,11 +2938,17 @@ proofs, plugin install/enable/RPC, the bundle verifier.
 | a `free` parameter in a link refuses with exit 22 | preflight test |
 | a `cp`-built bundle fails `--verify` and a `VACUUM INTO` one passes | verifier test, both fixtures |
 | no bundle contains `control.db`, `-wal`, `-shm`, `content/protected/wm/`, `content/sources/` | tar listing assertion |
-| a third-party plugin with no test report is refused; with a stale digest, refused | install matrix |
-| a plugin `asset_key` delete is blocked with `foreign_keys=OFF` | runner integration test |
+| a third-party plugin with no test report is refused; with a stale digest, refused (digest = the **app** image, E-31) | install matrix |
+| a plugin `asset_key` delete is blocked with `foreign_keys=OFF` | in-process integration test; the guard trigger is created by the host executor (§8.2), so the test no longer needs a runner |
+| a hook that throws does not 500 the page: the value passed in is used, the failure is counted, and the third failure in 60 s disables the plugin with an admin notice | `test/plugin-load.test.ts` L5–L7 |
+| a disabled plugin's hook does not run, and re-enabling it produces a **new module instance** (a module-level counter starts at 0) | `L8`–`L9`, the cache-buster's exclusive witness |
+| a plugin calling a facade method for a table it did not declare is refused `SKW_E_PL_REJECTED` before the connection is touched; deleting the capability comparison turns this row red and leaves the tenant-binding rows green | `test/plugin-scope.test.ts` S3, mutated per §13.1a |
 | install on a clean host: ≤ 5 min with images present, `certificate: pending` allowed | measured install, recorded in CI |
 
-### S5 — the deferred four (after the first client box)
+**Withdrawn from this slice by D36 (E-31), so no Builder inherits them as work:** the four-service compose
+assertion in S1 (replaced by three), the runner memory assertions M1–M4 in `test/runner-memory.test.ts`
+(no per-package cgroup exists), and the two-container composed-path claim that was `§13.4` item 2. They are
+withdrawn rather than passed: there is nothing to run. — the deferred four (after the first client box)
 
 O-27 (upgrade channel), O-39 (public upload intake), O-40 (table-scoped uninstall archive), O-43 (scheduled
 plugin work). Each has a named experiment in §18 and none of them ships before S4's release gate.
@@ -2599,7 +2973,7 @@ proves it. `MT` = proved by `make test` today. `S1–S4` = the slice's acceptanc
 | C-5 | projection is a union over the live DB | §11.2, §4.1 | MT check 23 |
 | C-6 | selector + argon2, 16 chars, `m=19456,t=2,p=1`, semaphore 4 | §7.2, §4.5 | MT checks 21, 7, 17 |
 | C-7 | the redemption (`jti`) is the unit, insert-first | §7.3 | MT checks 14, 22 |
-| C-8 | a fourth service, 48 MB once | §8.4, §12.1 | S4 (compose + runner probe) |
+| C-8 | **withdrawn by D36** — the fourth service bought a process boundary the product does not need at 200 tenants; plugins run in-process and containment is not claimed | §8.4, §13.3.6 | §16 S1 (three services) — the runner probe is deleted with the runner |
 | C-9 | no publisher CA (D27) | §8.5 | S4 (signature matrix) |
 | C-10 | split boot gate by plane | §12.4, §2.3 | S1 (migration report) |
 | C-11 | `/admin/t/<key>/…`, session only | §9.2 | S2 (resolver test) |

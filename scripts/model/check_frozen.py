@@ -31,6 +31,18 @@ ERRATA = open(os.path.join(ROOT, "docs/sds/02-errata.md")).read()
 # E-4 (§4.2 code lists) and E-13 (§4.2 body shape, scope only) touch text this check does not
 # quote: the pattern is still asserted, and the code lists were never a frozen block here.
 SUPERSEDED = {
+    # E-31 (02-errata §14) retires C-8's "sentence the SDS adopts". D36 deleted the fourth service, the
+    # socket and the RPC enum, so the sentence now describes a container that does not exist. Asserted the
+    # strongest way available: the retired text must be ABSENT from SDS.md, E-31's replacement must be
+    # PRESENT verbatim, and E-31 must carry the marker. C-8's *verdict* is withdrawn rather than rewritten
+    # (§17.1), and its arithmetic — 49.8 MB and 34 ms per tenant, 47.4–48.0 MB for the runner — is kept in
+    # §8.4 as the price the model declined to pay. Nothing here relaxes the check for any other artefact.
+    "C-8": dict(
+        item="E-31",
+        marker="SUPERSEDES 00-adjudication.md §2 C-8",
+        old="""`docker-compose.yml` has four services — `nginx`, `app`, `plugin-runner`, `acme` — and `plugin-runner` runs with `network_mode: none`, `read_only: true`, `cap_drop: [ALL]`, `pids_limit: 64` and one `node --permission` child per installed package with `--allow-fs-read` limited to that package and its scratch directory and with no `--allow-addons`, `--allow-child-process` or `--allow-worker`; the app reaches it only over the unix socket `run/plugin.sock`, and the protocol is the operation enum in §4.3.""",
+        new="""`docker-compose.yml` has three services — `nginx`, `app`, `acme` — and no `plugin-runner`: there is no `network_mode: none`, no `node --permission` child, no per-package cgroup, no `run/plugin.sock` and no operation enum, because a plugin is a module imported into the `app` process and shares that process's network namespace, filesystem, memory and database handles.""",
+    ),
     # E-20 (02-errata §8) retires C-21's "sentence the SDS adopts" and nothing else. C-21's verdict
     # — a per-day digest in the second file is what makes a chain tamper-evident — is untouched; what
     # changes is what a digest COVERS, because a whole-file digest cannot distinguish tamper from the

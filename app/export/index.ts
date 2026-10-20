@@ -25,7 +25,7 @@ import { planAstro } from './astro.ts';
 import { planCms, type PluginPackage, type TenantSpec } from './cms.ts';
 import { buildProjection, type ExportTarget, type Projection, type Refusal } from './project.ts';
 import { installedPlugins } from '../plugins/install.ts';
-import { packageRootHash } from '../plugins/protocol.ts';
+import { packageRootHash } from '../plugins/manifest.ts';
 import { planStatic } from './static.ts';
 import { DiskFullError, freeBytes, hashTree, writeTree, type TreeFile, type TreeHash } from './tree.ts';
 

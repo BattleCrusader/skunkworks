@@ -31,7 +31,7 @@ import { after, before, test } from 'node:test';
 
 import { AppError } from '../app/errors.ts';
 import { inspectPackage, installPlugin } from '../app/plugins/install.ts';
-import { packageRootHash } from '../app/plugins/protocol.ts';
+import { packageRootHash } from '../app/plugins/manifest.ts';
 import { FIRST_PARTY_PUBLISHER, FIRST_PARTY_SPKI_PEM, fingerprintOf, importPublisherKey } from '../app/plugins/trust.ts';
 import { openAdminWrite } from '../app/db/classes.ts';
 import { REPO, makeFixture, type Fixture } from './helpers/fixture.ts';

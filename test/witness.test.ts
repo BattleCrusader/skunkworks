@@ -150,6 +150,18 @@ export const WITNESSES: readonly Witness[] = [
     tests: ['W9'],
     refuses: 'a character a WinAnsi font cannot draw — preserved when cp1252 has it, transliterated next, `?` last',
   },
+  // §13.1a / §13.3.7 (D36): the capability check is now the *only* layer, so its witness is a
+  // mutation of the check itself. Delete the `grant.includes` comparison and S3 goes red naming
+  // the table the package was never granted, while S1–S2 (the tenant binding, which never
+  // consults the grant) stay green. The mutation is recorded in S5-inprocess-report.md §4.
+  {
+    mechanism: 'assertCapability',
+    source: 'app/plugins/context.ts',
+    file: 'test/plugin-scope.test.ts',
+    tests: ['S3'],
+    refuses:
+      'a facade method whose capability the installed row did not declare — before the operation touches the connection — while a declared capability on the same table succeeds',
+  },
 ];
 
 const WITNESS_LINE = /Exclusive witness: (\S+) ([A-Za-z0-9][A-Za-z0-9-]*(?:, ?[A-Za-z0-9][A-Za-z0-9-]*)*)/;

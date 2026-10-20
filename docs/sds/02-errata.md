@@ -3130,3 +3130,317 @@ because it requires every pointer line to exist.
 | **E-30** | §8.4 and §13.3 assert "it cannot starve the host" while `Memory=0`, `memory.max=max`, and a package held 256 MB in a 1.54 GB VM; per-plugin accounting is still absent and must stop being implied | `S4-final-report.md` §3.1 (the measurement), §3.2 (the fix), §3.3 (peak 384.0/384 MiB, `PL_OOM`, container alive), §7 item 2, §8; `SDS.md:1441–1443`, `:2353–2355`; `docker-compose.yml:105–106`; `runner/server.mjs:73–74`, `:215`, `:305`; `test/runner-memory.test.ts` M1–M4 | major (specification, containment) |
 | — | **carried, not separate items:** the pointer range and E-24..E-28's owed pointer lines (item 5); the §16 S4 row-12 wording (item 3) | E-29..E-30 | — |
 | — | **open, not closed here:** `data/trust/revoked.json` is named by §8.5 and has no writer in this tree — revocation is the `cms_plugin_revoked` table today, and the file is a second source of truth waiting to disagree with it. Needs its own item against §8.5, not E-29's | `docs/sds/SDS.md:1453`; `app/plugins/install.ts` (the `cms_plugin_revoked` read); the only occurrence under `app/` is the comment at `app/plugins/protocol.ts:251` | minor (specification) |
+
+## 14. Errata E-31..E-33 (post-S4, D36 — plugins run in-process)
+
+**Status:** amendment of record for `docs/sds/SDS.md`, issued after **D36** (`IDEA.md:115`) ruled that plugins
+load **in-process inside the website container, WordPress-style**, superseding D26 and the fourth-compose-service
+decision of 2026-10-20. Unlike §13, this section is not a wording repair: it deletes a service, a socket, a
+protocol and a claim of containment, and replaces them with a model whose cost is stated rather than mitigated.
+
+**Date:** 2026-10-21. **Author:** Architect. **Scope:** the specification. The three items below are one decision
+seen from three angles — what exists (§8.3, §8.4, §12.1, §2.1, §3), what happens when a plugin misbehaves
+(§8.6, §13.3, §14, §15.2), and what a signature proves (§13.1 P3, §13.3, the install screen). They are split
+because a single item would have to change three severities and two audiences, and because a Builder landing
+E-31 without E-33 would ship a model whose UI still implies a sandbox.
+
+**Numbering.** §13 above is E-29..E-30. This section is §14; E-31..E-33 are new and no citation above this line
+changes. The `POINTERS` range in `scripts/model/check_frozen.py:206` moves to `range(1, 34)` in **one** edit, not
+two: §13's item 5 already owes `range(1, 31)` and E-24..E-28's pointer lines, and a range fixed in two passes is
+a range fixed in three.
+
+**What this errata does not do.** It does not re-open C-8's arithmetic (49.8 MB and 34 ms per tenant, 47.4–48.0 MB
+for the runner). Those numbers are still true; D36 decides the product does not want what they buy. It does not
+re-open D27. It does not add a sandbox or imply one. And it does not claim a single gate green that has not run:
+three gates are **withdrawn** (§14.1) rather than passed, which is a different thing and is written as such.
+
+---
+
+### E-31 — §8.3, §8.4, §12.1, §2.1, §3 and §16 specify a `plugin-runner` container that D36 deleted
+
+**SUPERSEDES 00-adjudication.md §2 C-8.** C-8's adopted sentence is retired outright — the fourth service, the
+`node --permission` child, the per-package mount, `run/plugin.sock` and the operation enum it names are all
+deleted, not amended. `scripts/model/check_frozen.py` asserts the retired text is **absent** from `SDS.md`, the
+replacement below is **present verbatim**, and this marker exists — the strongest form of the same assertion, not
+a relaxation of it. C-8's numbers are not retired: 49.8 MB and 34 ms per tenant, 47.4–48.0 MB for the runner,
+22 µs per IPC hop, all kept in §8.4 as the price D36 declined to pay.
+
+**Defect.** Five places in the SDS describe a fourth compose service, a unix socket and a 14-operation RPC enum as
+the plugin runtime:
+
+- `SDS.md` §2.1 (**as issued**, `:133`): "`plugin-runner` | run plugin code in a `node --permission` child,
+  answer 14 RPC operations | reach the network, load a native addon, spawn, write a file, open a database".
+- `SDS.md` §2.3 step 6 (`:186`): "Bind `run/plugin.sock`, spawn one permission child per enabled package."
+- `SDS.md` §3 (`:197`, `:266–268`): `docker-compose.yml` "4 services: nginx, app, plugin-runner, acme", plus
+  `Dockerfile.runner`, `runner/supervisor.ts` and `runner/child.ts` as paths a Builder creates.
+- `SDS.md` §8.3 (`:1393–1422`) and §8.4 (`:1424–1446`): the RPC surface and the containment paragraph, including
+  `pids_limit: 64`, `network_mode: none` and the 384 MiB cgroup E-30 had just added.
+- `SDS.md` §12.1 (`:2111–2137`) and §12.2 (`:2139–2153`): the compose YAML and the `./run` → `/srv/run` volume
+  that existed only to carry `plugin.sock`.
+- `SDS.md` §16 S1 (`:2508`): "compose has exactly 4 services; `app` publishes no port | `docker compose config`
+  assertion".
+
+D36 (`IDEA.md:115`) rules: "a plugin is a module imported into the app process that registers hooks, endpoints,
+admin screens and owned tables. **No separate runner service, no socket protocol.**" A Builder implementing the
+SDS as issued builds a service the CEO has deleted, a Dockerfile that ships nothing, and a volume whose only
+content is a socket nobody binds. The gates in §16 would then *pass*, because they assert what the document says.
+
+**Corrected text — drop-in for `SDS.md` §8.4, replacing the whole subsection.** (§8.3 is replaced by the facade
+grammar in `SDS.md` §8.3 as of this errata — the 14 operations survive as methods, their bounds survive, the wire
+does not; the text is already in the file and is not repeated here. §12.1 becomes three services with
+`mem_limit: 1024m` on `app`; §2.1 loses its `plugin-runner` row and gains the "no fifth process" paragraph; §3
+loses `Dockerfile.runner` and `runner/**` and gains `runtime.ts`/`registry.ts`/`context.ts`/`hooks.ts` under
+`app/plugins/`.)
+
+```markdown
+### 8.4 Containment: there is none (C-8 withdrawn by D36)
+
+> `docker-compose.yml` has **three** services — `nginx`, `app`, `acme`. There is no `plugin-runner`, no
+> `network_mode: none`, no `node --permission` child, no per-package cgroup and no unix socket. A plugin is
+> a module imported into the app process (§13.3.2), which means it shares the app's network namespace, its
+> filesystem, its memory and its database handles. **Nothing in this design contains a plugin.** What it
+> does instead is authenticate it (a signature and a publisher key, §8.5), scope the *API* it is given
+> (§13.3.5), and isolate its failures well enough that a plugin that throws does not take a page down
+> (§13.3.6).
+```
+
+**Corrected text — drop-in for `SDS.md` §16 S1, replacing the four-service row.**
+
+```markdown
+| compose has exactly **3** services (`nginx`, `app`, `acme`) and `app` publishes no port | `docker compose config` assertion — **the old "exactly 4 services" row is withdrawn, not passed** (E-31) |
+```
+
+**Corrected text — drop-in for the retirement record, which belongs in the spec and not only in a commit
+message.** Already written as `SDS.md` §13.3.9; what it must contain, minimally, is this table:
+
+| Artefact | Disposition |
+|---|---|
+| `plugin-runner` (compose service) | deleted — three services |
+| `runner/server.mjs`, `runner/child.mjs`, `runner/Dockerfile`, `runner/package.json` | deleted |
+| `run/plugin.sock` + the JSON-lines frames (`plugin.invoke`, `granted[]`, host-op callbacks) | deleted; `app/plugins/protocol.ts` keeps the manifest grammar and loses the frame types |
+| runner-side capability enforcement (`runner/server.mjs:421`, `binding.granted`) | deleted — see E-33 |
+| `app/plugins/host.ts` (socket client, 2 s op timeout, cross-process breaker) | deleted; `runtime.ts` + `registry.ts` + `context.ts` replace it |
+| `SKW_E_PL_OOM` | withdrawn from the taxonomy |
+| `BUNDLE.json.image.runner_digest` | deleted — there is one image |
+
+**Test that must change.**
+
+1. **`test/runner-memory.test.ts` M1–M4 are withdrawn, not edited.** They assert `HostConfig.Memory`,
+   `memory.max` and `PL_OOM` for a container that no longer exists. A test that is deleted must be deleted from
+   `test/witness.test.ts`'s mechanism table in the same commit, or the suite fails on a witness for a mechanism
+   that is gone — which is the desired behaviour and the reason that table exists.
+2. **The compose assertion changes from 4 to 3** in `test/compose.test.ts` (or wherever `docker compose config`
+   is parsed), and it must assert the **absence** of `plugin-runner` as well as the count: a count of three with
+   a renamed runner service is the failure mode a count alone cannot see.
+3. **New: `test/plugin-load.test.ts` L1–L4** replace the runner probe — L1 imports a fixture package and asserts
+   the namespace shape; L2 asserts a package whose bytes changed after signing refuses to load with
+   `SKW_E_PL_SIGNATURE`; L3 asserts a manifest whose `cms` range excludes this build refuses with
+   `SKW_E_PL_SCHEMA`; L4 asserts an entry point whose `realpath` escapes the package root is refused before the
+   import is attempted.
+4. **`make verify-dist`** loses `Dockerfile.runner` from its artefact list and gains nothing: a deleted file is
+   not a generated file.
+
+**Recorded, not closed — the `run/` directory.** It was a bind mount for one socket. Nothing writes it after this
+errata; `install.sh` should stop creating it, and if it remains it is an empty directory that a future Builder
+will fill with a socket because it is there. Named here so the deletion is deliberate.
+
+**Severity: major (specification, architecture).** The document specified a service, an image, a volume and a
+protocol that the decision of record deletes, and §16's gates would have gone green on all of them.
+
+---
+
+### E-32 — §8.6, §13.3 and §15.2 promise a plugin cannot affect a page and cannot hang, in a model where both are false
+
+**Defect.** Three sentences assert a property that in-process plugins do not have:
+
+- `SDS.md` §8.6 (`:1479–1480`, as issued): "No plugin code is on the render path. That is the property that makes
+  every row of this table true: a broken plugin cannot take a page down, because a page never waits for one."
+- `SDS.md` §8.6 table (`:1476`): "Crash / hang | untouched | circuit breaker opens after 3 failures | 503 on that
+  endpoint only, 2 s per-op timeout".
+- `SDS.md` §13.3 (`:2353–2361`, as issued): "It cannot starve the host, and it cannot affect a page, because no
+  plugin code is on the render path"; and §13.4 item 2: "The composed plugin path across two containers … their
+  sum (~37 µs) is arithmetic."
+
+Under D36 a plugin's filter runs **inside** the render call, so "no plugin code on the render path" is not a
+stale detail — it is the exact negation of the model. The 2 s per-op timeout measured a socket round trip; there
+is no socket and no per-operation boundary to time out. A `while (true)` in a `content.render.html` filter blocks
+the event loop, and **no timer, watchdog, worker or signal in the same thread can interrupt it**: the race that
+would enforce a timeout needs the loop the plugin is holding. E-30's 384 MiB cgroup bounded the runner; the app
+container's `mem_limit` now bounds the whole site, and `SKW_E_PL_OOM` names a per-package ceiling that no longer
+exists.
+
+This is the item that decides whether the SDS is honest. A model whose cost is "a plugin can stop the box" is
+defensible; a model that says so while carrying three sentences from a different architecture is not, because the
+operator who reads them will size the box and set expectations on a guarantee nobody implements.
+
+**Corrected text — drop-in for `SDS.md` §8.6, replacing the section.**
+
+```markdown
+### 8.6 Disable, degrade, uninstall
+
+> **Replaced by §13.3.8.** The table below is the *old* contract and is kept for one reason: three of its
+> sentences are now false in the opposite direction, and a Builder who reads them will build the wrong
+> thing. The row that said "no plugin code is on the render path" is exactly backwards — a plugin's hooks
+> run inside the render call. The 2 s per-op timeout no longer exists (there is no per-op boundary to time
+> out) and the circuit breaker is a failure counter with no half-open state.
+
+| Action | Data | Code | Public endpoint | Now |
+|---|---|---|---|---|
+| Disable | untouched | not loaded | 503 `SKW_E_PL_UNAVAILABLE` | true, and *removed* from the registry rather than "not loaded" (§13.3.8) |
+| Crash / hang | untouched | no timeout; a throw is caught and counted | 503 on that endpoint; a page that does not call it renders normally | a **synchronous hang stops the whole box** — §13.3.6, accepted cost, no mitigation |
+| Uninstall | whole-file archive first, then its tables and rows dropped | removed | 404 once uninstalled | true, plus a 5 s drain and `SKW_E_PL_BUSY` |
+
+**Not true any more, and must not be written again:** "no plugin code is on the render path", "2 s per-op
+timeout", "circuit breaker opens after 3 failures" (it is a 3-in-60 s auto-disable with operator
+recovery), and "a broken plugin cannot take a page down" — a plugin that throws cannot, a plugin that
+blocks can.
+```
+
+**Corrected text — drop-in for `SDS.md` §13.3's closing bullets and §13.4 item 2.** §13.3 is now §13.3.6–§13.3.8
+in the rewritten section; the sentences that must appear verbatim, because they are the ones a reviewer will
+quote back:
+
+```markdown
+> **The synchronously hanging plugin cannot be timed out in-process. This is the accepted cost of the
+> model and nothing in this design mitigates it at runtime.** A `while (true)` in a hook stops every
+> tenant on the box, not just the one that installed it. There is no watchdog, no worker thread, no
+> `vm.Script` timeout, and no signal that can interrupt a running function in the same thread. A document
+> that implies otherwise is lying to the operator who has to explain the outage.
+```
+
+```markdown
+5. **The absence of containment.** There is no measurement of a boundary because there is no boundary. A
+   plugin that reads `data/control.db` is five lines; we have not written it as a test, because a test that
+   demonstrates the absence of a control is a demonstration, not a gate.
+```
+
+**Corrected text — drop-in for `SDS.md` §15.2's budget row.**
+
+```markdown
+| ~~plugin runner idle / per child / IPC~~ **withdrawn (E-31)** | ~~47.4–48.0 MB / 38.2–42.8 MB / 22 µs~~ | there is no runner; these numbers are history, kept in §8.4 as the price the model declined to pay |
+```
+
+**Test that must change.**
+
+1. **The failure path is tested by a throw, not by a timeout.** `test/plugin-load.test.ts` L5–L7: L5 a filter that
+   throws → the page is 200, the value passed in is used, one failure is counted; L6 a filter that returns the
+   wrong type → same, and the original value is what the page contains; L7 the third failure in 60 s → status
+   `failed`, registry pruned, an admin notice exists, and a *page that does not use the plugin* is still 200.
+2. **There is deliberately no test for a synchronous hang.** A test that hangs CI is not a gate, it is an outage
+   in the build. §13.4 item 5 states this as the reason, and the alternative — a `worker_threads` harness that
+   proves it *can* be killed — would prove the wrong model, because the plugin would then be in a worker.
+3. **The drain gets a gate.** `test/plugin-lifecycle.test.ts` U1–U3: U1 uninstall with an in-flight request waits
+   and succeeds; U2 uninstall with a request that will not finish within 5 s refuses `SKW_E_PL_BUSY` and leaves
+   the tables in place; U3 disable during a render lets that render finish and removes the hook for the next one.
+4. **`test/plugin-scope.test.ts` S4–S6** cover the handle: S4 a stashed facade called after the response ends
+   refuses `SKW_E_PL_CONTEXT_ENDED`; S5 a facade call from an admin context cannot name a `u_*` table; S6 a
+   connection with a second attached database refuses the call (the `database_list` assertion).
+
+**Recorded, not closed — one process, one event loop, and no supervision.** A supervisor that restarts a hung
+app is `docker`'s `restart: unless-stopped` plus the health check, and it restarts **every tenant** to recover one
+plugin. That is a worse trade than the hang itself for a single-tenant box and a better one for a shared box; it is
+not decided here because it is a deployment policy, not an SDS contract. What is decided: `skwctl plugin disable`
+is the recovery path, and it works without a running app.
+
+**Severity: major (specification, availability and honesty).** The sentences were true of the deleted
+architecture and false of the chosen one, in the direction that makes an operator stop worrying.
+
+---
+
+### E-33 — capability enforcement was two layers and is now one; §13.1 P3 and the install screen still read as containment
+
+**Defect.** The two-layer proof is real in the shipped code and is described correctly there:
+`app/plugins/endpoint.ts:97–99` says the grant is passed to the runner "so the two layers see one value and the
+second one does not depend on the first", and `runner/server.mjs:421` refuses any operation outside
+`binding.granted` **before** the host is asked. Layer 2 is `app/plugins/ops.ts`, which validates the operation
+against the manifest.
+
+D36 deletes layer 1. What remains is one check — and one check with a test that would pass either way is a
+comment. Meanwhile three sentences still read as though the array were a boundary: §13.1 **P3** ("No code we did
+not ship runs in the process"), §8.3's "Absent by decision, each absence a control" (true of the facade, false of
+the process), and the install screen's capability list, which a non-developer reads as "this plugin cannot do the
+other things". §13.3 as issued also said the containment "is real", which after D36 is the single most misleading
+sentence in the document.
+
+**Corrected text — drop-in for `SDS.md` §13.1 P3, replacing that row only.**
+
+```markdown
+| **P3** | **The only third-party code in the process is code whose bytes a key we trust signed** | signature verified over the package root at install **and again at load**; root hash recorded in `cms_plugin_installed.root_hash`; a package whose bytes moved refuses to load with `SKW_E_PL_SIGNATURE` | an unsigned or mutated package running with the app's own privileges — which is every plugin anyway, once loaded (§13.3.7) | signature matrix; `test/plugin-load.test.ts` L1–L4 |
+```
+
+**Corrected text — drop-in for `SDS.md` §13.3, replacing "The containment (§8.4) is real" and the three bullets
+that follow it.**
+
+```markdown
+**What replaces the two-layer capability proof is one enforced layer and one witness.** Every capability
+crossing is a facade method whose first act is to read the grant from `cms_plugin_installed` inside the
+current request — not from a manifest object the plugin holds, not from a value the plugin passes — and
+compare it to the method being called; a miss is `SKW_E_PL_REJECTED`, raised before the connection is
+touched. Because there is no second layer to catch a bypass, the gate must be a mutation of the check:
+delete the comparison and `test/plugin-scope.test.ts` S3 goes red naming the undeclared table, while the
+tenant-binding cases S1–S2 stay green. A single layer with an exclusive witness is a gate; a single layer
+with a test that would pass either way is a comment.
+
+**Capabilities are disclosure.** The manifest's `capabilities` array is shown to the operator in plain
+words, beside the publisher fingerprint, before enable. It is not a sandbox, and the screen says so in
+these words: *"Capabilities describe what this plugin asks the CMS for. They do not limit what its code
+can do: a plugin runs inside the site's process, with the site's own access to its files and databases."*
+
+**A signature buys author identity and tamper detection. It does not buy containment — not even a little.**
+It proves these bytes were signed by the holder of this key and have not changed since. It does not stop
+the plugin reading another tenant's database, opening a socket, or blocking the event loop, and a signed
+plugin has exactly the same power at runtime as an unsigned one.
+```
+
+**Test that must change.**
+
+1. **`test/plugin-scope.test.ts` S3 is the exclusive witness for the remaining layer.** It must fail for its own
+   reason: a package whose manifest omits `store.write` calls `store.write`, and the refusal names the table and
+   the method. The mutation record is the deletion of the comparison in `app/plugins/context.ts`; S1–S2 (tenant
+   binding) must stay green under that mutation, which is what makes S3 *exclusive* rather than merely red.
+2. **`test/plugin-install.test.ts`: the install screen's capability text is asserted verbatim.** A UI string that
+   says "cannot" where the model says "does not" is the defect this item exists to prevent, and it is a string
+   assertion, not a screenshot.
+3. **The signature matrix gains the load-time case.** Existing install-time refusals are unchanged; L2 adds
+   "signed, installed, then modified on disk → refuses to load", because before D36 the install-time check was
+   enough (the runner mounted the package read-only) and now the load is the last place the bytes can be checked.
+
+**Recorded, not closed — a hostile plugin is out of scope by decision, not by omission.** A plugin that opens
+`data/control.db` with its own `better-sqlite3` handle reads every tenant's data. The facade makes that
+unnecessary rather than impossible, and the install screen says so. If a future client needs containment, the
+answer is a process per plugin (or per tenant) and the arithmetic in §8.4 is the quote: 49.8 MB and 34 ms each.
+Nothing in this errata pretends there is a cheap middle.
+
+**Severity: major (specification, security).** A capability list that a reviewer reads as enforcement, in a model
+that removed the layer doing the enforcing, is how a security review passes something that has no boundary left.
+
+---
+
+### Builder items this section owes — ordered, each naming the file and the gate that proves it
+
+| # | Item | Files | Gate that proves it |
+|---|---|---|---|
+| 1 | **E-31** delete the runner: service, image, socket, volume, `runner/**` | `docker-compose.yml`, `Dockerfile.runner`, `runner/**`, `install.sh`, `.env.example` if it names a runner path | `docker compose config` names three services and no `plugin-runner`; `grep -r plugin-runner` over the tree returns only §13.3.9 and the delta doc |
+| 2 | **E-31** replace §8.3/§8.4 and the §2.1/§2.3/§3/§12.1/§12.2 text with the drop-ins; delete `BUNDLE.json.image.runner_digest` | `docs/sds/SDS.md` §§2.1, 2.3, 3, 8.3, 8.4, 12.1, 12.2, 13.3.9; `app/export/bundle.ts` | `make verify-frozen` green; `bundle_verify.ts` refuses a bundle carrying `runner_digest`; §16 S1 asserts three services |
+| 3 | **E-31** the code: `runtime.ts`, `registry.ts`, `context.ts`, `hooks.ts` replace `host.ts`; delete `protocol.ts`'s frame types | `app/plugins/**` | `test/plugin-load.test.ts` L1–L4 green; `test/witness.test.ts` has no row for a deleted mechanism |
+| 4 | **E-32** paste the §8.6 and §15.2 drop-ins and the §13.3.6 "accepted cost" block | `docs/sds/SDS.md` §§8.6, 13.3.6, 15.2 | `make verify-frozen`; L5–L7 and U1–U3 green |
+| 5 | **E-32** the lifecycle: drain-on-uninstall, prune-on-disable, activation counter | `app/plugins/runtime.ts`, `app/plugins/registry.ts`, migration adding `activation_seq` | `U1`–`U3`; `L8`–`L9` (re-enable is a new module instance) |
+| 6 | **E-33** paste the P3 row and the two §13.3 drop-ins; change the install screen's capability text to the quoted sentence | `docs/sds/SDS.md` §§13.1, 13.3.7; `app/plugins/trust.ts` (`CAPABILITY_TEXT`, `installScreen`) | `test/plugin-scope.test.ts` S3, with the mutation recorded; `test/plugin-install.test.ts` asserts the sentence verbatim |
+| 7 | **E-31..E-33** `POINTERS` → `range(1, 34)` in one edit, landing E-24..E-33's pointer lines (E-29's item 5 has not run; the check reports `pointers: 23/23`) | `scripts/model/check_frozen.py:206` | the pointer phase reports 34/34; renaming one pointer line turns it red |
+| 8 | **E-31..E-33** the negative controls, recorded as gates and not as claims: restore `plugin-runner` in compose (item 1 red), delete the capability comparison (S3 red), make a filter return the wrong type (L6 red) | `docker-compose.yml`, `app/plugins/context.ts`, a fixture package | each mutation red; each file restored byte-identical afterwards (SHA-256 before/after in the build report) |
+
+Items 1–3 are the deletion, 4–5 are the model, 6 is the honesty of the security claim; 7 is last because it
+requires every pointer line to exist, and 8 is the evidence that any of it is true.
+
+---
+
+### Traceability — E-31..E-33
+
+| E | Closes | Source (verified in this pass) | Severity |
+|---|---|---|---|
+| **E-31** | §2.1/§2.3/§3/§8.3/§8.4/§12.1/§12.2/§16 S1 specify a fourth service, a unix socket and a 14-op RPC enum that D36 deleted; `runner/**` and `Dockerfile.runner` are listed as paths a Builder creates | `IDEA.md:115` (D36, quoted); `docs/sds/SDS.md` §§2.1 (`:133`), 2.3 (`:186`), 3 (`:197`, `:266–268`), 8.3 (`:1393–1422`), 8.4 (`:1424–1446`), 12.1 (`:2111–2137`), 16 S1 (`:2508`) as issued; `docker-compose.yml`; `runner/server.mjs` (638 lines), `runner/child.mjs` (127), `runner/Dockerfile`; `app/plugins/host.ts` (262); `run/plugin.sock` | major (specification, architecture) |
+| **E-32** | §8.6 asserts "no plugin code is on the render path", a 2 s per-op timeout and a circuit breaker; §13.3 asserts a plugin "cannot affect a page"; §13.4 item 2 claims a two-container path; §15.2 budgets a runner that will not exist | `docs/sds/SDS.md` §§8.6 (`:1471–1480`), 13.3 (`:2347–2364`), 13.4 (`:2366–2375`), 15.2 (`:2824`) as issued; `app/plugins/endpoint.ts:97–99`; `runner/server.mjs:347`, `:356` (the 2 s op timeout), `:305` (`PL_OOM`); E-30's 384 MiB cgroup | major (specification, availability) |
+| **E-33** | §13.1 P3 ("no code we did not ship"), §8.3's "each absence a control" and the install screen's capability list read as containment after the runner — the layer that enforced them — was deleted; nothing states that signatures buy identity, not safety | `docs/sds/SDS.md` §§13.1 (`:2288`), 8.3 (`:1416–1418`), 13.3 (`:2349–2351`) as issued; `app/plugins/trust.ts` (`CAPABILITY_TEXT`, `installScreen`); `app/plugins/endpoint.ts:97–99`; `runner/server.mjs:421` (`binding.granted`) | major (specification, security) |
+| — | **carried, not separate items:** the `POINTERS` range and E-24..E-30's owed pointer lines (item 7); the `run/` directory's deletion in `install.sh` (E-31, "recorded not closed") | E-31..E-33 | — |
+| — | **open, not closed here:** `data/trust/revoked.json` is still named by §8.5 with no writer in this tree (`cms_plugin_revoked` is the real store) — carried forward from §13's traceability and still owed its own item | `docs/sds/SDS.md` §8.5; `app/plugins/install.ts`; `app/plugins/protocol.ts:251` | minor (specification) |
+| — | **decided, and it is the whole of D36:** plugins are not contained. §13.3.6 states the hang, §13.3.7 states the read, and the install screen states both in the operator's words. Any future sentence that says otherwise is a defect against this errata | `IDEA.md:115`; `docs/sds/SDS.md` §§13.3.6, 13.3.7 | — |

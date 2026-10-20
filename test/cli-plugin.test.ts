@@ -27,7 +27,7 @@ import { after, before, test } from 'node:test';
 import Database from 'better-sqlite3';
 
 import { openAdminWrite } from '../app/db/classes.ts';
-import { packageRootHash } from '../app/plugins/protocol.ts';
+import { packageRootHash } from '../app/plugins/manifest.ts';
 import { REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 
 interface Run {

@@ -1,0 +1,11 @@
+{
+  "id": "claimant",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "hooks": [],
+  "publisher": { "id": "acme-labs" },
+  "description": "An UNSIGNED package that calls itself acme-labs. It exists to prove that a package cannot name its own publisher: with no signature the claim is quarantined, the row says unsigned, and the audit row cannot be made to say otherwise.",
+  "capabilities": ["util.now"],
+  "tables": [],
+  "settings": []
+}

@@ -282,15 +282,16 @@ CERTS_DIR="$DATA_DIR/certs"
 mkdir -p "$CERTS_DIR"
 chmod 700 "$CERTS_DIR"
 
-# The three writable paths compose mounts, created here because the containers' uids are
-# fixed (app 10001, runner 65534) and Docker creates a missing bind-mount source as
-# root:root 0755. Measured while closing the first-boot blocker: `plugin-runner` died with
-# `listen EACCES: permission denied /srv/run/plugin.sock` on a cold install, so the composed
-# plugin path had never bound. 0777 on the two directories that must be written across uids
-# (the socket, the per-package scratch); 0755 on the ACME webroot, which only the acme
-# service writes.
-mkdir -p "$ROOT/run" "$DATA_DIR/scratch" "$DATA_DIR/acme"
-chmod 0777 "$ROOT/run" "$DATA_DIR/scratch"
+# The writable paths compose mounts, created here because the container's uid is fixed
+# (app 10001) and Docker creates a missing bind-mount source as root:root 0755. 0777 only on
+# the per-package scratch, which is written across uids; 0755 on the ACME webroot, which only
+# the acme service writes.
+#
+# `run/` is no longer created: it held `plugin.sock`, and there is no socket since D36
+# (E-31). A directory kept "just in case" is where the next builder puts a second boundary
+# this design does not have.
+mkdir -p "$DATA_DIR/scratch" "$DATA_DIR/acme"
+chmod 0777 "$DATA_DIR/scratch"
 chmod 0755 "$DATA_DIR/acme"
 
 # The app runs as 10001 and writes control.db (WAL), sessions, audit and plugin rows. A root

@@ -57,10 +57,10 @@ services:
 
   app:
     # D10: a digest, never a tag. install.sh pins the released digest.
-    # `SKW_APP_IMAGE` is the same escape hatch `plugin-runner` has: a gate (and only a
-    # gate) points compose at an image it has just built, so the compose path can be
-    # exercised without pretending the published digest exists here. A released bundle's
-    # compose sets neither variable, so production pulls the digest.
+    # `SKW_APP_IMAGE` is an escape hatch for a gate (and only a gate): it points compose at an
+    # image it has just built, so the compose path can be exercised without pretending the
+    # published digest exists here. A released bundle's compose sets nothing, so production
+    # pulls the digest.
     image: ${SKW_APP_IMAGE:-ghcr.io/skunkworks/app@sha256:0000000000000000000000000000000000000000000000000000000000000000}
     restart: unless-stopped
     expose:
@@ -72,9 +72,11 @@ services:
     security_opt:
       - no-new-privileges:true
     volumes:
+      # D36/E-31: three mounts, not four. `./data/plugins` no longer needs its own read-only
+      # mount for a second container, because the app imports the packages itself — they are
+      # already inside `./data`. `./run` is gone with the socket; nothing binds one now.
       - ./data:/srv/data
       - ./content:/srv/content
-      - ./run:/srv/run
     environment: *app-environment
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
@@ -82,34 +84,6 @@ services:
       timeout: 3s
       retries: 3
       start_period: 20s
-
-  plugin-runner:
-    # D10: a digest, never a tag. `SKW_RUNNER_IMAGE` exists so a gate can run the image it
-    # has just built (`test/runner-contain.test.ts`) without pretending the published digest
-    # exists locally; a released bundle's compose pins the digest and nothing sets the
-    # variable, so the published artefact is what production pulls.
-    image: ${SKW_RUNNER_IMAGE:-ghcr.io/skunkworks/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000}
-    restart: unless-stopped
-    network_mode: none
-    read_only: true
-    cap_drop:
-      - ALL
-    pids_limit: 64
-    # S4e (F4): the missing ceiling. §8.4 claimed "it cannot starve the host"; with no
-    # `mem_limit` the cgroup was unbounded and a package could hold the whole 1.54 GB Docker
-    # VM until the kernel killed the app or nginx with it (measured by the S4 QA: 256 MB held,
-    # `memory.max = max`). 384 MiB covers the parent (~48 MiB) plus four or five permission
-    # children (~45 MiB idle each) and is less than a quarter of the VM, so one runaway
-    # package dies in its own cgroup. `memswap_limit` equals `mem_limit` on purpose: with swap
-    # enabled a package would escape the ceiling by being paged out.
-    mem_limit: 384m
-    memswap_limit: 384m
-    security_opt:
-      - no-new-privileges:true
-    volumes:
-      - ./data/plugins:/srv/plugins:ro
-      - ./run:/srv/run
-      - ./data/scratch:/srv/scratch
 
   acme:
     # S4e: this used to be `nginxproxy/acme-companion`, which cannot run against this stack.
