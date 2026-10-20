@@ -1,0 +1,9 @@
+{
+  "id": "memhoard",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "description": "S4e's memory probe: holds as many MiB as the caller asks for, so a gate can measure the runner's cgroup ceiling and what a package sees when it reaches it.",
+  "capabilities": ["util.now"],
+  "tables": [],
+  "tests": { "entry": "index.mjs", "timeout_s": 5 }
+}

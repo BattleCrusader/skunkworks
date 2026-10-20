@@ -26,7 +26,11 @@ export async function handle(op, args = {}) {
       return { rows: rows.rows, count: rows.rows.length };
     }
     case 'sign': {
-      await skw.call('settings.set', { key: 'signature', value: String(args.value ?? '') });
+      // Reached two ways: the admin-side invoke passes `value`; the public POST endpoint
+      // (D25, `/_plugin/notes/sign`) passes the HTTP body. The package decides what its
+      // endpoint means — the host only routes and authorises.
+      const value = typeof args.value === 'string' ? args.value : typeof args.body === 'string' ? args.body : '';
+      await skw.call('settings.set', { key: 'signature', value });
       return { ok: true };
     }
     case 'peek': {

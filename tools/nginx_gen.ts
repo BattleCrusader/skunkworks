@@ -110,16 +110,33 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
 
   for (const [key, hosts] of byTenant) {
     out.push(`# tenant ${key}`);
+    // S4e: `certificate` is a comment, not a listener rule. Before S4e the block listened on
+    // 443 only when `domain.cert_state = 'issued'`, on the reasoning that a 443 block naming a
+    // certificate that does not exist fails `nginx -t`. That reasoning was right about the
+    // failure and wrong about the cause: a bundle exported from a tenant that *had* TLS said
+    // `issued`, shipped no key (it never can), and the first `compose up` on the client's box
+    // died at config parse. The install now mints a self-signed pair for every host before
+    // nginx starts, so 443 is safe for every block and the honest state is visible where an
+    // operator looks for it. A block that is `pending` serves the self-signed pair until ACME
+    // replaces the file and HUP-reloads nginx.
+    out.push(`# certificate: ${issued.has(key) ? 'issued' : 'pending (self-signed until ACME)'}`);
     out.push('server {');
-    // 80 always; 443 only when the certificate exists (§12.5, E-5).
-    out.push(issued.has(key) ? '    listen 80; listen 443 ssl;' : '    listen 80;');
+    out.push('    listen 80; listen 443 ssl;');
     out.push(`    server_name ${hosts.join(' ')};`);
-    if (issued.has(key)) {
-      // S4d: the block that listens on 443 must name a certificate. ACME writes
-      // `/etc/nginx/certs/<host>.crt|key` per host; the first host is the block's primary.
-      out.push(`    ssl_certificate     /etc/nginx/certs/${hosts[0]}.crt;`);
-      out.push(`    ssl_certificate_key /etc/nginx/certs/${hosts[0]}.key;`);
-    }
+    // S4d: the block that listens on 443 must name a certificate. ACME writes
+    // `/etc/nginx/certs/<host>.crt|key` per tenant (one certificate covering every host of the
+    // tenant); install.sh mints the same path so the first boot has a pair. The first host of
+    // the block names the file, and every host in `server_name` is in its SAN set.
+    out.push(`    ssl_certificate     /etc/nginx/certs/${hosts[0]}.crt;`);
+    out.push(`    ssl_certificate_key /etc/nginx/certs/${hosts[0]}.key;`);
+    out.push('');
+    // §12.5 (S4e): the http-01 challenge path, served from the webroot the `acme` service
+    // writes. `^~` so a regex location cannot shadow it; `root` + `try_files` so a token that
+    // is not there is a 404 and never a directory listing.
+    out.push('    location ^~ /.well-known/acme-challenge/ {');
+    out.push('        root /srv/acme;');
+    out.push('        try_files $uri =404;');
+    out.push('    }');
     out.push('');
     out.push('    location / {');
     out.push(`        limit_req zone=tenant burst=${burst} nodelay;`);

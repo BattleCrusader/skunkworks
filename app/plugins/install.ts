@@ -23,12 +23,14 @@
  */
 import { createHash, verify as verifySignature } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { AppError } from '../errors.ts';
 import { openAdminWrite } from '../db/classes.ts';
 import {
+  PLUGIN_TABLE,
+  isDirectory,
   packageDir,
   packageRootHash,
   parseManifest,
@@ -328,3 +330,167 @@ export function assertEnabled(db: Database.Database, plugin: string): InstalledP
   }
   return row;
 }
+
+/**
+ * Uninstall (§8.2, §8.6, F15) — the operator path that did not exist before S4e.
+ *
+ * §8.2 specified a **whole-file** `VACUUM INTO` archive first, then the plugin's rows and
+ * tables dropped, and named the consequence: restoring that archive rolls back every other
+ * change made since (O-40 DEFERRED, "a table-scoped format is a v2 experiment"). This is the
+ * table-scoped format, delivered: the archive holds only the rows, settings, registry and
+ * migration rows that belong to this package, so restoring it cannot resurrect a page
+ * somebody edited last Tuesday. A restore is therefore a real (if manual) v2 operation
+ * rather than an all-or-nothing file swap.
+ *
+ * Order, and why:
+ *   1. read the package's declared tables **from the installed manifest** and re-validate
+ *      every name against the plugin grammar — a hand-edited `manifest_json` must not be
+ *      able to make `DROP TABLE` name a core table;
+ *   2. write the archive atomically (tmp + rename, 0600: it is the tenant's data);
+ *   3. one transaction drops the asset-guard triggers, then the tables, then the registry,
+ *      migration, setting and installed rows. Triggers first: a guard trigger lives on
+ *      `cms_asset` and names the plugin table in its WHEN clause, so dropping the table
+ *      first would leave `cms_asset` deletes raising "no such table";
+ *   4. only after COMMIT, remove `<data>/plugins/<id>`.
+ *
+ * A package that is not installed is a refusal (`SKW_E_PL_UNAVAILABLE`), not a silent
+ * success: an operator who mistypes an id must not be told the box is clean.
+ */
+export interface UninstallRequest {
+  /** The tenant's `site.db`. */
+  siteDb: string;
+  /** `<data>/plugins`. */
+  pluginsRoot: string;
+  pluginId: string;
+  /** `<data>/plugin-archive` by default; created 0700 if absent. */
+  archiveDir?: string;
+  now?: string;
+}
+
+export interface UninstallResult {
+  plugin: string;
+  version: string;
+  root_hash: string;
+  archive_path: string;
+  tables: { name: string; rows: number }[];
+  settings: number;
+  package_removed: boolean;
+}
+
+export function uninstallPlugin(input: UninstallRequest): UninstallResult {
+  const db = openAdminWrite(input.siteDb, 5000);
+  try {
+    const row = installedPlugins(db).find((p) => p.plugin_id === input.pluginId);
+    if (row === undefined) {
+      throw new AppError('SKW_E_PL_UNAVAILABLE', `no plugin ${JSON.stringify(input.pluginId)} is installed for this tenant`, {
+        plugin: input.pluginId,
+      });
+    }
+    // The manifest is the row's own claim. Re-validate every table name against the frozen
+    // grammar and the package's namespace before it can reach a DROP.
+    for (const table of row.manifest.tables) {
+      const match = PLUGIN_TABLE.exec(table.name);
+      if (match === null || match[1] !== row.plugin_id) {
+        throw new AppError('SKW_E_PL_NO_EXPORT_CLASS', `refusing to drop ${JSON.stringify(table.name)}: it is not a table of ${row.plugin_id}`, {
+          plugin: row.plugin_id,
+          table: table.name,
+        });
+      }
+    }
+
+    const now = input.now ?? new Date().toISOString();
+    const archiveDir = input.archiveDir ?? join(dirname(input.siteDb), '..', '..', 'plugin-archive');
+    mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
+    const stamp = now.replace(/[:.]/g, '-');
+    const archivePath = join(archiveDir, `${row.plugin_id}-${row.version}-${stamp}.json`);
+
+    const tables: { name: string; rows: Record<string, unknown>[] }[] = [];
+    for (const table of row.manifest.tables) {
+      const exists = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table.name);
+      tables.push({ name: table.name, rows: exists === undefined ? [] : (db.prepare(`SELECT * FROM "${table.name}"`).all() as Record<string, unknown>[]) });
+    }
+    // §8.3: a `secret` setting is write-only. The archive records that the key existed and
+    // never its value — an archive an operator can read must not become the one place a
+    // secret is stored in the clear.
+    const settings = db
+      .prepare('SELECT key, value_json, type, secret FROM cms_plugin_setting WHERE plugin_id = ? ORDER BY key')
+      .all(row.plugin_id) as { key: string; value_json: string; type: string; secret: number }[];
+    const registry = db.prepare('SELECT * FROM cms_table_registry WHERE plugin_id = ?').all(row.plugin_id);
+    const migrations = db.prepare('SELECT * FROM cms_plugin_migration WHERE plugin_id = ?').all(row.plugin_id);
+    const triggers = db
+      .prepare(`SELECT * FROM cms_trigger_registry WHERE table_name IN (${tables.map(() => '?').join(',') || 'NULL'})`)
+      .all(...tables.map((t) => t.name));
+
+    const archive = {
+      format: 'skw-plugin-archive/1',
+      plugin: row.plugin_id,
+      version: row.version,
+      root_hash: row.root_hash,
+      uninstalled_at: now,
+      tables: tables.map((t) => ({ name: t.name, rows: t.rows })),
+      settings: settings.map((s) => ({ key: s.key, type: s.type, secret: s.secret === 1, value_json: s.secret === 1 ? null : s.value_json })),
+      registry,
+      migrations,
+      triggers,
+      installed: {
+        plugin_id: row.plugin_id,
+        version: row.version,
+        root_hash: row.root_hash,
+        manifest: row.manifest,
+        signature_state: row.signature_state,
+        test_report_sha: row.test_report_sha,
+        runner_image_digest: row.runner_image_digest,
+        enabled: row.enabled,
+      },
+    };
+    const staging = `${archivePath}.tmp-${process.pid}`;
+    writeFileSync(staging, `${JSON.stringify(archive, null, 2)}\n`, { mode: 0o600 });
+    renameSync(staging, archivePath);
+
+    const drop = db.transaction(() => {
+      for (const table of tables) {
+        db.exec(`DROP TRIGGER IF EXISTS "trg_asset_guard_${table.name}"`);
+        db.exec(`DROP TABLE IF EXISTS "${table.name}"`);
+      }
+      db.prepare(`DELETE FROM cms_trigger_registry WHERE table_name IN (${tables.map(() => '?').join(',') || 'NULL'})`).run(
+        ...tables.map((t) => t.name),
+      );
+      db.prepare('DELETE FROM cms_table_registry WHERE plugin_id = ?').run(row.plugin_id);
+      db.prepare('DELETE FROM cms_plugin_migration WHERE plugin_id = ?').run(row.plugin_id);
+      db.prepare('DELETE FROM cms_plugin_setting WHERE plugin_id = ?').run(row.plugin_id);
+      db.prepare('DELETE FROM cms_plugin_installed WHERE plugin_id = ?').run(row.plugin_id);
+    });
+    drop();
+
+    // Fold the WAL back into the main file before returning. The app is a **different
+    // process** holding its own `-shm` index; after a DDL commit it can serve one more request
+    // from a snapshot that predates the drop (measured through the composed gate: `200` on the
+    // URL that had just been uninstalled). A TRUNCATE checkpoint makes the new schema the one
+    // every reader opens next, and it is what a CLI should do anyway after a destructive
+    // change. A busy reader can refuse; that is not a reason to fail the uninstall.
+    try {
+      db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* a concurrent reader holds the WAL; the next checkpoint will do it */
+    }
+
+    // After COMMIT: a crash before this leaves a package tree with no row, which the next
+    // install replaces and the runner refuses to serve (no row ⇒ no endpoint).
+    const target = packageDir(input.pluginsRoot, row.plugin_id);
+    const packageRemoved = isDirectory(target);
+    if (packageRemoved) rmSync(target, { recursive: true, force: true });
+
+    return {
+      plugin: row.plugin_id,
+      version: row.version,
+      root_hash: row.root_hash,
+      archive_path: archivePath,
+      tables: tables.map((t) => ({ name: t.name, rows: t.rows.length })),
+      settings: settings.length,
+      package_removed: packageRemoved,
+    };
+  } finally {
+    db.close();
+  }
+}
+

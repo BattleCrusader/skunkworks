@@ -241,7 +241,18 @@ function seedFor(tenant: TenantSpec, repoRoot: string): string {
   first.display_name = tenant.displayName;
   first.mode = tenant.mode;
   first.status = tenant.status;
-  first.hosts = tenant.hosts.map((h) => ({ host: h.host, kind: h.kind, is_primary: h.isPrimary, cert_state: h.certState }));
+  first.hosts = tenant.hosts.map((h) => ({
+    host: h.host,
+    kind: h.kind,
+    is_primary: h.isPrimary,
+    // S4e: a bundle **never** carries a certificate. A private key is per-host state (its
+    // absence is why compose mounts `./certs` rather than shipping one), so a seed that said
+    // `issued` was a claim about the *source* box's filesystem travelling to a box that has
+    // none of it — the S4 QA's first-compose-up failure, verbatim: nginx refused to start
+    // because `acme.test.crt` did not exist. `issued` is written only by the `acme` service,
+    // after it has written the file on *this* host; the exporter's claim is `none`.
+    cert_state: 'none',
+  }));
   user.tenant = tenant.key;
   user.email = `owner@${tenant.hosts[0]?.host ?? `${tenant.key}.invalid`}`;
   return `${JSON.stringify(template, null, 2)}\n`;
@@ -337,6 +348,8 @@ export function planCms(options: CmsOptions): CmsPlan {
     'tools/bundle_verify.mjs',
     'tools/seed_control.mjs',
     'tools/control_db.mjs',
+    // S4e: the install mints a self-signed pair per host before nginx starts (§12.5).
+    'tools/install_certs.mjs',
   ]) {
     files.push({ path, bytes: readFileSync(join(repoRoot, path)) });
   }

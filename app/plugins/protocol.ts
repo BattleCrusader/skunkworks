@@ -63,6 +63,27 @@ export interface SettingSpec {
   max?: number;
 }
 
+/**
+ * D25's *declared public endpoints*, frozen at the shape the product serves (S4e).
+ *
+ * An endpoint is a name the package answers plus the HTTP method the edge will route to it.
+ * The name is the `op` the package's own `handle()` receives, so a package declares one
+ * function per URL and nothing else; the app owns the path (`/_plugin/<id>/<name>`), the
+ * tenant is resolved from the Host and never from the URL (§5.3, P4), and an endpoint that
+ * is not in this list is a 404 — the same body as any path the tenant does not have.
+ *
+ * `response` is deliberately absent: every endpoint answers JSON. A package returning HTML
+ * would be third-party markup on the tenant's own origin, and the CSP that makes that safe
+ * is a v2 decision (frame-src is `none` for every tenant in v1, §10.5).
+ */
+export interface EndpointSpec {
+  /** `[a-z][a-z0-9-]{0,31}`; the op name the package's handle() receives. */
+  name: string;
+  method: 'GET' | 'POST';
+}
+
+const ENDPOINT_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+
 export interface Manifest {
   id: string;
   version: string;
@@ -71,6 +92,8 @@ export interface Manifest {
   capabilities: string[];
   tables: TableSpec[];
   settings: SettingSpec[];
+  /** D25 (S4e): the public URLs this package answers, and with which method. */
+  endpoints?: EndpointSpec[];
   /** §8.5's `tests` block: the packager's report is bound to the image digest. */
   tests?: { entry: string; timeout_s: number };
   /** Optional declared site.db version range. */
@@ -153,6 +176,22 @@ export function parseManifest(raw: unknown): Manifest {
 
   const manifest: Manifest = { id, version: r.version, entry: r.entry, capabilities, tables, settings };
   if (typeof r.description === 'string') manifest.description = r.description;
+  // D25 (S4e): the public surface. Validated here, before an install writes anything, so a
+  // malformed endpoint is a refused package and not a 500 on the tenant's site.
+  if (r.endpoints !== undefined) {
+    if (!Array.isArray(r.endpoints)) bad(id, 'endpoints must be an array');
+    const endpoints: EndpointSpec[] = [];
+    for (const entry of r.endpoints) {
+      if (typeof entry !== 'object' || entry === null) bad(id, 'an endpoint is not an object');
+      const e = entry as Record<string, unknown>;
+      const name = typeof e.name === 'string' ? e.name : '';
+      if (!ENDPOINT_NAME.test(name)) bad(id, `endpoint ${JSON.stringify(name)} is not ${ENDPOINT_NAME}`);
+      if (e.method !== 'GET' && e.method !== 'POST') bad(id, `endpoint ${name}: method must be GET or POST`);
+      endpoints.push({ name, method: e.method });
+    }
+    if (new Set(endpoints.map((e) => e.name)).size !== endpoints.length) bad(id, 'an endpoint is declared twice');
+    manifest.endpoints = endpoints;
+  }
   if (typeof r.tests === 'object' && r.tests !== null) {
     const t = r.tests as Record<string, unknown>;
     if (typeof t.entry !== 'string' || typeof t.timeout_s !== 'number') bad(id, 'tests must be {entry, timeout_s}');

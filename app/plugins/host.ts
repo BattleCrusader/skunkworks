@@ -55,6 +55,8 @@ const UNAVAILABLE = 'SKW_E_PL_UNAVAILABLE';
 
 export class PluginHost {
   private socket: Socket | null = null;
+  /** The socket whose `close` handler is allowed to clear state (see `onClose`). */
+  private closing: Socket | null = null;
   private buffer = '';
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
@@ -92,6 +94,7 @@ export class PluginHost {
       socket.once('connect', () => {
         socket.removeListener('error', fail);
         this.socket = socket;
+        this.closing = socket;
         this.connected = true;
         socket.setEncoding('utf8');
         socket.on('data', (chunk: string) => this.onData(chunk));
@@ -103,6 +106,11 @@ export class PluginHost {
   }
 
   private onClose(err: Error): void {
+    // A socket that has already been replaced by a reconnect must not clear the new one: the
+    // runner is restarted by the operator after an install (`skwctl plugin install` says so),
+    // and the old channel's `close` arrives *after* the new one is bound.
+    if (this.closing !== null && this.socket !== this.closing) return;
+    this.closing = null;
     this.connected = false;
     this.socket = null;
     for (const [id, waiter] of this.pending) {
@@ -173,9 +181,16 @@ export class PluginHost {
     }
   }
 
-  private request(payload: Record<string, unknown>): Promise<unknown> {
+  private async request(payload: Record<string, unknown>): Promise<unknown> {
     if (this.socket === null || !this.connected) {
-      return Promise.reject(new Error(`${UNAVAILABLE}: the plugin runner is not bound (${this.options.socketPath})`));
+      // S4e: reconnect on demand. The runner is restarted whenever a package is installed or
+      // removed (`skwctl` says "restart the runner service to load …"), and an app that only
+      // connects at boot would answer PL_UNAVAILABLE for every plugin until *it* was
+      // restarted too — the "install → enable → it works" path, broken by one restart.
+      const bound = await this.connect();
+      if (!bound) {
+        throw new Error(`${UNAVAILABLE}: the plugin runner is not bound (${this.options.socketPath})`);
+      }
     }
     const id = this.nextId++;
     return new Promise<unknown>((resolve, reject) => {
@@ -202,6 +217,7 @@ export class PluginHost {
   }
 
   close(): void {
+    this.closing = null;
     this.socket?.end();
     this.socket = null;
     this.connected = false;

@@ -112,6 +112,9 @@ export const HTTP: Record<string, number> = {
   // map did not carry. `test/error-codes.test.ts` now asserts the mirror **both ways**, so
   // this list and `schema/error-codes.json` cannot drift again.
   SKW_E_RT_BODY_FORBIDDEN: 422,
+  // §16 S4 row 2 / C-4 (S4e): a `list` body with more than one `[data-repeat]` child. The
+  // loop contract is exactly one template; two used to be accepted and stored as two rows.
+  SKW_E_RT_REPEAT_INVALID: 422,
   SKW_E_RT_ROUNDTRIP_UNSTABLE: 422,
   SKW_E_RT_TEMPLATE_UNKNOWN: 422,
   SKW_E_RT_SOURCE_TIMEOUT: 504,
@@ -138,6 +141,10 @@ export const HTTP: Record<string, number> = {
   SKW_E_PL_TESTS_STALE: 409,
   SKW_E_PL_NO_EXPORT_CLASS: 409,
   SKW_E_PL_UNAVAILABLE: 503,
+  // S4e (F4): the runner's cgroup ceiling was reached and the kernel killed the plugin's
+  // child. 503 is the honest status — the endpoint exists, this package cannot answer it —
+  // and the message names the limit so an operator can tell a hoard from a crash.
+  SKW_E_PL_OOM: 503,
 };
 
 /**

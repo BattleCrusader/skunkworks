@@ -36,7 +36,7 @@
  */
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 
@@ -51,6 +51,41 @@ const RUNNER_HOME = process.env.SKW_RUNNER_HOME ?? '/srv/runner';
 const OP_TIMEOUT_MS = 2000;
 /** The child's own start-up (module graph + handshake), measured at 0.19 s cold per child. */
 const READY_TIMEOUT_MS = 10_000;
+/**
+ * S4e (F4): the two memory controls, in the order they bite.
+ *
+ *   - `--max-old-space-size` caps the child's **JS heap** so an object graph that grows
+ *     without bound dies inside V8 with a message rather than dragging the cgroup to its
+ *     ceiling. 64 MiB is ~1.4× the measured idle child (38–43 MiB) and leaves room for a
+ *     page-sized response.
+ *   - the **cgroup** (compose's `mem_limit: 384m`, mirrored by the gate's `--memory`) is the
+ *     backstop for memory V8 does not count — Buffers, ArrayBuffers, native strings. That is
+ *     the one that kills a hoard, and it kills only the hoarding child.
+ *
+ * Neither is a per-plugin accounting scheme (§13.3's honest limitation stands): one cgroup,
+ * shared. What changed in S4e is that the shared cgroup now has a ceiling and the failure is
+ * named.
+ */
+const CHILD_HEAP_MB = Number(process.env.SKW_CHILD_HEAP_MB ?? 64);
+const RUNNER_MEMORY_MB = Number(process.env.SKW_RUNNER_MEMORY_MB ?? 384);
+/** A package that dies is restarted; five deaths in a minute is a broken package, not a blip. */
+const RESTART_WINDOW_MS = 60_000;
+const RESTART_MAX = 5;
+
+/**
+ * The cgroup's OOM-kill counter, or null where there is no cgroup v2 (a host-side run).
+ * Reading the counter *before* the spawn and *after* the exit is what tells an OOM kill
+ * apart from the 2 s timeout, which also ends in SIGKILL.
+ */
+function cgroupOomKills() {
+  try {
+    const text = readFileSync('/sys/fs/cgroup/memory.events', 'utf8');
+    const match = /^oom_kill (\d+)$/m.exec(text);
+    return match === null ? null : Number(match[1]);
+  } catch {
+    return null;
+  }
+}
 
 /** The 14 operations of §8.3, split by who answers them. */
 const LOCAL_OPS = new Set(['util.now', 'util.random', 'util.hash', 'log.write']);
@@ -107,8 +142,10 @@ function readManifest(dir) {
   return { id: raw.id, version: raw.version, entry: raw.entry, capabilities, tables };
 }
 
-/** id -> { manifest, dir, child, ready, scratch, pending, hostPending, binding, queue, nextId, nextHostId } */
+/** id -> { manifest, dir, child, ready, scratch, pending, hostPending, binding, queue, nextId, nextHostId, oomBase, restarts, givenUp } */
 const packages = new Map();
+/** Set on SIGTERM/SIGINT: no child is restarted while the container is going down. */
+let shuttingDown = false;
 
 function load() {
   if (!existsSync(PLUGINS)) {
@@ -141,6 +178,11 @@ function load() {
       queue: Promise.resolve(),
       nextId: 1,
       nextHostId: 1,
+      /** The cgroup's oom_kill count at the moment this child was spawned. */
+      oomBase: cgroupOomKills(),
+      heapOom: false,
+      restarts: [],
+      givenUp: false,
     });
     log(`loaded ${manifest.id} ${manifest.version} (${manifest.capabilities.length} capabilit${manifest.capabilities.length === 1 ? 'y' : 'ies'})`);
   }
@@ -164,6 +206,9 @@ function startChild(pkg) {
     process.execPath,
     [
       '--permission',
+      // S4e: the child's JS heap ceiling. Absent this, V8 grows to the cgroup's OOM killer
+      // (or to the default ~4 GB on a host run) and the operator sees only "exited".
+      `--max-old-space-size=${CHILD_HEAP_MB}`,
       `--allow-fs-read=${realpathSync(join(RUNNER_HOME, 'child.mjs'))}`,
       `--allow-fs-read=${grantedDir}`,
       `--allow-fs-read=${grantedScratch}`,
@@ -173,6 +218,10 @@ function startChild(pkg) {
     { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin', NODE_ENV: 'production' } },
   );
   pkg.child = child;
+  pkg.oomBase = cgroupOomKills();
+  // The heap cap is a flag, and a flag nobody can read is a comment. One line names it, so a
+  // gate (and an operator reading `docker logs`) can see what the child was actually given.
+  log(`plugin ${pkg.manifest.id} child pid ${child.pid} heap=${CHILD_HEAP_MB}MiB permission=on`);
 
   const ready = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('handshake timed out')), READY_TIMEOUT_MS);
@@ -228,17 +277,52 @@ function startChild(pkg) {
   child.stderr.on('data', (chunk) => {
     // The plugin's stderr is not the operator's log by default (§8.3: `log.write` is the
     // channel, ≤ 1 KiB, ≤ 100 lines/min). Anything here is a hard failure worth seeing once.
-    log(`plugin ${pkg.manifest.id} stderr: ${chunk.trim().slice(0, 400)}`);
+    const text = chunk.trim();
+    // S4e: V8's own heap-limit abort is the other way a greedy plugin dies. It is not a
+    // cgroup OOM kill (the kernel never sees it), so the exit handler needs this flag to
+    // report `PL_OOM` rather than a bare `SIGABRT`.
+    if (/heap out of memory|Reached heap limit|Allocation failed/i.test(text)) pkg.heapOom = true;
+    log(`plugin ${pkg.manifest.id} stderr: ${text.slice(0, 400)}`);
   });
 
   child.on('exit', (code, signal) => {
+    // A superseded child (a restart already spawned a new one) must not touch the package.
+    if (pkg.child !== child) return;
     pkg.ready = false;
+    const now = cgroupOomKills();
+    const killedByOom = (now !== null && pkg.oomBase !== null && now > pkg.oomBase) || pkg.heapOom === true;
+    pkg.oomBase = now;
+    pkg.heapOom = false;
     for (const waiter of pkg.pending.values()) {
       clearTimeout(waiter.timer);
-      waiter.reject(new Error(`SKW_E_PL_UNAVAILABLE: plugin ${pkg.manifest.id} exited (${String(code ?? signal)})`));
+      waiter.reject(
+        new Error(
+          killedByOom
+            ? `SKW_E_PL_OOM: plugin ${pkg.manifest.id} was killed at the runner's ${RUNNER_MEMORY_MB} MiB cgroup while running ${waiter.op ?? 'an op'}`
+            : `SKW_E_PL_UNAVAILABLE: plugin ${pkg.manifest.id} exited (${String(code ?? signal)})`,
+        ),
+      );
     }
     pkg.pending.clear();
-    log(`plugin ${pkg.manifest.id} exited (${String(code ?? signal)})`);
+    log(
+      `plugin ${pkg.manifest.id} exited (${String(code ?? signal)})${killedByOom ? ` after an OOM kill at ${RUNNER_MEMORY_MB} MiB` : ''}`,
+    );
+    // §8.6's crash/hang row: a dead child is restarted, so one slow or greedy op does not
+    // disable the package until the container restarts (the S4 QA's §4.8). A package that
+    // dies five times in a minute is broken, not unlucky: after that it stays down and every
+    // call says so.
+    if (shuttingDown || pkg.givenUp) return;
+    const at = Date.now();
+    pkg.restarts = pkg.restarts.filter((t) => at - t < RESTART_WINDOW_MS);
+    if (pkg.restarts.length >= RESTART_MAX) {
+      pkg.givenUp = true;
+      log(`plugin ${pkg.manifest.id} died ${RESTART_MAX} times in ${RESTART_WINDOW_MS / 1000} s; not restarting again`);
+      return;
+    }
+    pkg.restarts.push(at);
+    setTimeout(() => {
+      if (!shuttingDown && pkg.child === child) startChild(pkg);
+    }, 250).unref();
   });
 
   ready.then(
@@ -267,7 +351,7 @@ function ask(pkg, op, args) {
       pkg.child?.kill('SIGKILL');
       reject(new Error(`SKW_E_PL_UNAVAILABLE: plugin ${pkg.manifest.id} exceeded ${OP_TIMEOUT_MS} ms on ${op}`));
     }, OP_TIMEOUT_MS);
-    pkg.pending.set(id, { resolve, reject, timer });
+    pkg.pending.set(id, { resolve, reject, timer, op });
     pkg.child?.stdin.write(`${JSON.stringify({ id, op, args })}\n`);
   });
 }
@@ -488,12 +572,27 @@ for (const pkg of packages.values()) startChild(pkg);
 if (existsSync(SOCKET)) rmSync(SOCKET, { force: true });
 mkdirSync(dirname(SOCKET), { recursive: true });
 const server = createServer(attach);
+// S4e: the app runs as uid 10001 and this process as 65534, so a socket created under the
+// image's umask (022 ⇒ 0755) is one the app can see and cannot connect to — a composed stack
+// in which `plugins.connect()` is always false. The mode is set at **creation** by a zero
+// umask rather than by `chmod` afterwards: on a bind mount that is not a Linux filesystem
+// (Docker Desktop's virtiofs returns EINVAL for `chmod` on a socket — measured), the
+// afterwards form silently leaves 0755. 0666 is the narrowest mode that works across two
+// uids: the file lives inside the `run/` volume both containers mount.
+const restoreUmask = process.umask(0o000);
 server.listen(SOCKET, () => {
+  process.umask(restoreUmask);
+  try {
+    chmodSync(SOCKET, 0o666);
+  } catch {
+    // virtiofs: the socket already has 0666 from the zero umask, and there is nothing to fix.
+  }
   log(`listening on ${SOCKET} (${packages.size} package(s), version ${process.env.SKW_RUNNER_VERSION ?? 'dev'})`);
 });
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => {
+    shuttingDown = true;
     log(`${signal}: closing`);
     for (const pkg of packages.values()) pkg.child?.kill('SIGKILL');
     server.close(() => {

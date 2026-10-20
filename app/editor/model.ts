@@ -173,6 +173,25 @@ export function listItems(node: ElementNode, entry: RegistryEntry): ListItem[] {
   const rows = node.children.filter(
     (child): child is ElementNode => child.type === 'element' && child.attrs.some(([k]) => k === marker),
   );
+  // §16 S4 row 2 / C-4: the loop contract is **exactly one** repeat child. One child is the
+  // template the renderer clones once per bound row; two are two templates, which has no
+  // meaning and used to be stored as two "items" (the S4 QA reproduced it through
+  // `savePage()`). Refused here rather than in `savePage()` because this is the one reader
+  // every path — save, load, render and reload — shares; a rule the load path skips is a
+  // rule a hand-edited row can bypass. Zero children is legal: a list with no template
+  // renders its `[data-empty]` child.
+  if (rows.length > 1) {
+    throw new AppError(
+      'SKW_E_RT_REPEAT_INVALID',
+      `a ${entry.name} has ${rows.length} ${entry.repeatChild ?? '[data-repeat]'} children; exactly one repeat template is allowed`,
+      {
+        rule: 'repeat-children',
+        component: entry.name,
+        marker: entry.repeatChild ?? '[data-repeat]',
+        count: rows.length,
+      },
+    );
+  }
   return rows.map((row, position) => {
     setAttr(row, 'data-item-position', String(position));
     return { position, html: serialize([row]) };

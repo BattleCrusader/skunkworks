@@ -1,0 +1,155 @@
+### 1. cut a CMS bundle from a tenant whose control plane says issued
+export: ok, bundle at /tmp/s4e-transcript.fnze/bundle
+
+### 2. the seed the bundle carries (the claim), and the certificates it ships
+[
+ {
+  "host": "acme.test",
+  "kind": "primary",
+  "is_primary": 1,
+  "cert_state": "none"
+ },
+ {
+  "host": "www.acme.test",
+  "kind": "alias",
+  "is_primary": 0,
+  "cert_state": "none"
+ }
+]
+cert files in the bundle: 0
+    listen 80; listen 443 ssl;
+    ssl_certificate     /etc/nginx/certs/acme.test.crt;
+    ssl_certificate_key /etc/nginx/certs/acme.test.key;
+    location ^~ /.well-known/acme-challenge/ {
+    listen 80; listen 443 ssl;
+    ssl_certificate     /etc/nginx/certs/default.crt;
+
+### 3. install.sh into an empty directory (no --no-compose path here; compose follows)
+install: verify: BUNDLE.json present, checking every sha256
+bundle_verify: 16 file(s) verified, no render tree, no render rows
+install: schema: control.sql applied to /tmp/s4e-transcript.fnze/site/data/control.db (v4)
+seed_control: 1 tenant(s), 1 claim marker(s), one transaction
+install: tenant: acme site.db installed from the bundle (production, active)
+install: env: /tmp/s4e-transcript.fnze/site/.env written (0600) with a fresh key per install
+install: runtime: /Volumes/Backup/Development/skunkworks
+enrolment written: /tmp/s4e-transcript.fnze/site/data/first-login.txt (0600, mode O_EXCL)
+login: https://admin.skw.test/admin/login
+email: owner@acme.test
+install: bootstrap: enrolment written to /tmp/s4e-transcript.fnze/site/data/first-login.txt (0600)
+install: note: not running as root; if the app container cannot write /tmp/s4e-transcript.fnze/site/data, run: chown -R 10001:10001 /tmp/s4e-transcript.fnze/site/data
+certificate: pending (self-signed) acme.test for acme.test,www.acme.test
+certificate: pending (self-signed) default for admin.skw.test,demos.skw.test
+certificates: 2 minted, 0 kept, in /tmp/s4e-transcript.fnze/site/data/certs
+install: certs: /tmp/s4e-transcript.fnze/site/data/certs (per-host self-signed; ACME replaces a pair and reloads nginx)
+install: compose: skipped (--no-compose)
+install: done. Sign in at https://admin.skw.test/admin/login, then delete /tmp/s4e-transcript.fnze/site/data/first-login.txt.
+
+### 4. the pairs install.sh wrote (the files nginx names)
+total 32
+-rw-r--r--  1 cyberdeth  wheel  1038 Oct 21 05:12 acme.test.crt
+-rw-------  1 cyberdeth  wheel  1704 Oct 21 05:12 acme.test.key
+-rw-r--r--  1 cyberdeth  wheel  1062 Oct 21 05:12 default.crt
+-rw-------  1 cyberdeth  wheel  1704 Oct 21 05:12 default.key
+
+### 5. docker compose up (no CA reachable: acme must claim nothing)
+ Container skw-s4e-demo-plugin-runner-1 Starting 
+ Container skw-s4e-demo-app-1 Starting 
+ Container skw-s4e-demo-plugin-runner-1 Started 
+ Container skw-s4e-demo-app-1 Started 
+ Container skw-s4e-demo-nginx-1 Starting 
+ Container skw-s4e-demo-nginx-1 Started 
+ Container skw-s4e-demo-acme-1 Starting 
+ Container skw-s4e-demo-acme-1 Started 
+compose ps:
+SERVICE         IMAGE               STATUS
+acme            skw-acme:s4e        Up 1 second
+app             skw-app:s4d         Up 1 second (health: starting)
+nginx           nginx:1.31-alpine   Up 1 second
+plugin-runner   skw-runner:s4e      Up 1 second
+
+### 6. HTTPS GET /pricing, and the certificate that answered
+HTTP/1.1 200 OK
+Server: nginx/1.31.7
+Date: Tue, 20 Oct 2026 18:12:55 GMT
+Content-Type: text/html
+Transfer-Encoding: chunked
+Connection: keep-alive
+--- body ---
+<!DOCTYPE html>
+<html lang="en" data-tenant="acme">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>acme pricing</title>
+    
+  </head>
+  <body data-page-path="/pricing">
+    <main><h1>acme pricing</h1></main>
+  </body>
+</html>--- certificate ---
+subject= /CN=acme.test
+issuer= /CN=acme.test
+notBefore=Oct 20 18:12:52 2026 GMT
+notAfter=Oct 17 18:12:52 2036 GMT
+SAN: DNS:acme.test,DNS:www.acme.test
+--- cert_state in the installed control plane ---
+[
+  [Object: null prototype] { host: 'acme.test', cert_state: 'none' },
+  [Object: null prototype] {
+    host: 'www.acme.test',
+    cert_state: 'none'
+  }
+]
+--- acme log ---
+acme-1  | (node:1) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+acme-1  | (Use `node --trace-warnings ...` to show where the warning was created)
+acme-1  | acme: pass failed: connect ECONNREFUSED 127.0.0.1:9
+
+### 7. a plugin, through the product's public endpoint (D25)
+plugin: installed id=notes version=1.0.0 root=cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96 enabled=yes package=/tmp/s4e-transcript.fnze/site/data/plugins/notes
+plugin: the runner scans /tmp/s4e-transcript.fnze/site/data/plugins at start; restart the runner service to load notes
+--- POST /_plugin/notes/sign (the package writes through the host) ---
+{"ok":true}
+--- GET /_plugin/notes/list (the host answers the package's store.query) ---
+{"rows":[],"count":0}
+--- the row the plugin wrote, read from site.db ---
+[
+  [Object: null prototype] {
+    key: 'signature',
+    value_json: '"signed-by-a-request"'
+  }
+]
+
+### 8. uninstall: archive, drop, and the URL that stops existing
+plugin: uninstalled id=notes version=1.0.0 root=cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96 tables=p_notes_note(0) settings=1
+plugin: archive /tmp/s4e-transcript.fnze/site/data/plugin-archive/notes-1.0.0-2026-10-20T18-13-01-805Z.json (0600; table-scoped, restore by hand)
+plugin: package removed; its endpoint is 404 from the next request
+plugin: restart the runner service to release the code for notes
+--- archive ---
+-rw-------  1 cyberdeth  wheel  2921 Oct 21 05:13 /tmp/s4e-transcript.fnze/site/data/plugin-archive/notes-1.0.0-2026-10-20T18-13-01-805Z.json
+format skw-plugin-archive/1 plugin notes tables [('p_notes_note', 0)] settings ['signature']
+--- rows left behind ---
+{ installed: 0, registry: 0, table: 0 }
+GET /_plugin/notes/list after uninstall: 404
+
+### 9. teardown
+W=/tmp/s4e-transcript.fnze (kept for inspection)
+
+### 10. runner memory: the ceiling, the peak, and the refusal
+-- docker inspect limits --
+Memory=402653184 MemorySwap=402653184 PidsLimit=64
+-- inside the container --
+memory.max=402653184
+
+-- idle RSS --
+20.11MiB / 384MiB (5.24%)
+-- a package asks for 4096 MiB --
+{"id":1,"ok":false,"plugin":"memhoard","code":"SKW_E_PL_OOM","message":"plugin memhoard was killed at the runner's 384 MiB cgroup while running hold"}
+-- peak after the kill --
+memory.peak=384.0 MiB
+-- container and host --
+Running=true OOMKilled(container)=true
+-- the same package answers again 250 ms later (restart) --
+{"id":2,"ok":true,"plugin":"memhoard","result":{"requested_mb":8,"held_mb":8,"rss_mb":49}}
+-- a JS-object hoard is stopped by the child's heap cap --
+{"id":3,"ok":false,"plugin":"memhoard","code":"SKW_E_PL_OOM","message":"plugin memhoard was killed at the runner's 384 MiB cgroup while running holdObjects"}

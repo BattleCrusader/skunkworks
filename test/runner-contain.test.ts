@@ -142,7 +142,9 @@ test('R2 — the packages load at runtime from outside the source tree, and repo
   assert.equal(list?.ok, true);
   assert.deepEqual(
     (list?.result ?? []).map((p) => `${p.id}@${p.version}:${p.ready}`).sort(),
-    ['echo@1.0.0:true', 'notes@1.0.0:true', 'probenet@1.0.0:true'],
+    // S4e adds `memhoard`, the memory probe. It lives here rather than in the memory gate's
+    // own tree so one container proves both the containment and the load path.
+    ['echo@1.0.0:true', 'memhoard@1.0.0:true', 'notes@1.0.0:true', 'probenet@1.0.0:true'],
   );
 });
 

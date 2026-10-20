@@ -19,7 +19,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -159,4 +159,98 @@ test('O3 — refusals are named and write nothing', () => {
   assert.equal(refused.status, 1, `${refused.stderr}\n${refused.stdout}`);
   assert.match(refused.stderr, /REFUSAL: PLUGIN_REFUSED: SKW_E_PL_TESTS_STALE: no test report/);
   assert.equal(existsSync(join(fixture.dir, 'plugins', 'untested')), false, 'a refused install copies nothing');
+});
+
+/**
+ * §8.6's uninstall row, and §8.2's archive. The point of the gate is that "uninstalled" is a
+ * state the box can prove: the row, the declared table, its registry entries and the package
+ * tree all go, the data is in an archive an operator can read, and a second uninstall refuses
+ * rather than pretending twice.
+ */
+function packageWithTable(dir: string, id: string, table: string): void {
+  mkdirSync(dir, { recursive: true });
+  const manifest = {
+    id,
+    version: '1.4.0',
+    entry: 'index.mjs',
+    capabilities: [],
+    tables: [{ name: table, export: 'rows', columns: [{ name: 'body', type: 'TEXT', indexed: true }] }],
+    settings: [{ key: 'signature', type: 'string', max: 120 }],
+  };
+  writeFileSync(join(dir, 'plugin.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(join(dir, 'index.mjs'), 'export default {};\n');
+  const root = packageRootHash(dir).root;
+  writeFileSync(
+    report,
+    `${JSON.stringify({ plugin: id, version: '1.4.0', root_hash: root, runner_image_digest: 'sha256:cli-test', ran_at: '2026-10-21T00:00:00.000Z' }, null, 2)}\n`,
+  );
+}
+
+test('O4 — install → uninstall archives the plugin’s rows, drops its tables, and leaves the box clean', () => {
+  const source = join(fixture.dir, 'packages', 'guestbook');
+  packageWithTable(source, 'guestbook', 'p_guestbook_note');
+  const installed = skwctl(['plugin', 'install', source, '--tenant', 'acme', '--test-report', report, '--runner-digest', 'sha256:cli-test', '--enable']);
+  assert.equal(installed.status, 0, `${installed.stderr}\n${installed.stdout}`);
+
+  // Two rows and a setting, written by the host (the only writer §8.3 allows).
+  const write = openAdminWrite(fixture.sitePath('acme'));
+  let archivePath = '';
+  try {
+    write.prepare("INSERT INTO p_guestbook_note (body) VALUES ('first note'), ('second note')").run();
+    write
+      .prepare("INSERT INTO cms_plugin_setting (plugin_id, key, value_json, type, secret) VALUES ('guestbook', 'signature', '\"hello\"', 'string', 0)")
+      .run();
+    const before = write.prepare('SELECT count(*) AS n FROM p_guestbook_note').get() as { n: number };
+    assert.equal(before.n, 2);
+  } finally {
+    write.close();
+  }
+
+  const archiveDir = join(fixture.dir, 'plugin-archive');
+  const removed = skwctl(['plugin', 'uninstall', 'guestbook', '--tenant', 'acme', '--archive-dir', archiveDir]);
+  assert.equal(removed.status, 0, `${removed.stderr}\n${removed.stdout}`);
+  assert.match(removed.stdout, /plugin: uninstalled id=guestbook version=1\.4\.0 .*tables=p_guestbook_note\(2\) settings=1/);
+  assert.match(removed.stdout, /plugin: restart the runner service to release the code for guestbook/);
+
+  // The archive is real, 0600, table-scoped, and contains the rows (the register's O-40
+  // "v2 experiment", delivered): restoring it cannot roll back unrelated tenant edits.
+  archivePath = /plugin: archive (\S+)/.exec(removed.stdout)?.[1] ?? '';
+  assert.notEqual(archivePath, '', 'the uninstall printed no archive path');
+  assert.equal(existsSync(archivePath), true, `no archive at ${archivePath}`);
+  const mode = (statSync(archivePath).mode & 0o777).toString(8);
+  assert.equal(mode, '600', `archive mode is ${mode}, not 600`);
+  const archive = JSON.parse(readFileSync(archivePath, 'utf8')) as {
+    format: string;
+    plugin: string;
+    tables: { name: string; rows: Record<string, unknown>[] }[];
+    settings: { key: string; value_json: string | null }[];
+  };
+  assert.equal(archive.format, 'skw-plugin-archive/1');
+  assert.equal(archive.plugin, 'guestbook');
+  assert.equal(archive.tables[0]?.name, 'p_guestbook_note');
+  assert.deepEqual(archive.tables[0]?.rows.map((r) => r.body), ['first note', 'second note']);
+  assert.equal(archive.settings[0]?.key, 'signature');
+
+  // Clean: the row, the table, its registry entries and the package tree are gone.
+  const after = openAdminWrite(fixture.sitePath('acme'));
+  try {
+    const exists = after.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='p_guestbook_note'").get();
+    assert.equal(exists, undefined, 'the plugin table survived the uninstall');
+    const rows = after.prepare("SELECT count(*) AS n FROM cms_plugin_installed WHERE plugin_id='guestbook'").get() as { n: number };
+    assert.equal(rows.n, 0, 'the cms_plugin_installed row survived');
+    const registry = after.prepare("SELECT count(*) AS n FROM cms_table_registry WHERE plugin_id='guestbook'").get() as { n: number };
+    assert.equal(registry.n, 0, 'the cms_table_registry row survived');
+    const settings = after.prepare("SELECT count(*) AS n FROM cms_plugin_setting WHERE plugin_id='guestbook'").get() as { n: number };
+    assert.equal(settings.n, 0, 'the cms_plugin_setting rows survived');
+    const triggers = after.prepare("SELECT count(*) AS n FROM cms_trigger_registry WHERE table_name='p_guestbook_note'").get() as { n: number };
+    assert.equal(triggers.n, 0, 'the cms_trigger_registry row survived');
+  } finally {
+    after.close();
+  }
+  assert.equal(existsSync(join(fixture.dir, 'plugins', 'guestbook')), false, 'the package tree survived the uninstall');
+
+  // A second uninstall is a refusal, not a second success.
+  const again = skwctl(['plugin', 'uninstall', 'guestbook', '--tenant', 'acme']);
+  assert.equal(again.status, 1, `${again.stderr}\n${again.stdout}`);
+  assert.match(again.stderr, /REFUSAL: PLUGIN_REFUSED: SKW_E_PL_UNAVAILABLE: no plugin "guestbook" is installed/);
 });

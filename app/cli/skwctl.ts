@@ -53,7 +53,7 @@ import { fileURLToPath } from 'node:url';
 import { ARGON2_OPTIONS, Semaphore } from '../admin/auth.ts';
 import { appendAudit, verifyChain, verifyAgainstSeal } from '../audit/chain.ts';
 import { AppError } from '../errors.ts';
-import { installPlugin, installedPlugins } from '../plugins/install.ts';
+import { installPlugin, installedPlugins, uninstallPlugin } from '../plugins/install.ts';
 import { healGaps, lastEndedDay, sealDay, sealStatus } from '../audit/scheduler.ts';
 import { SESSION_ABSOLUTE_MS } from '../admin/session.ts';
 import { TOTP_PARAMETERS, groupOf, newPassword, newSecret, otpauthUri } from '../admin/totp.ts';
@@ -777,6 +777,48 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
     }
   }
 
+  if (verb === 'uninstall') {
+    const id = args.command[2];
+    if (id === undefined) throw new Refusal('USAGE', 'plugin uninstall needs a plugin id');
+    const archiveFlag = args.flags.get('archive-dir');
+    let result;
+    try {
+      result = uninstallPlugin({
+        siteDb,
+        pluginsRoot,
+        pluginId: id,
+        ...(typeof archiveFlag === 'string' ? { archiveDir: archiveFlag } : {}),
+      });
+    } catch (err) {
+      if (err instanceof AppError) throw new Refusal('PLUGIN_REFUSED', `${err.code}: ${err.message}`);
+      throw err;
+    }
+    // The audit row is written after the uninstall committed (the same order as install: the
+    // transaction owns the rows, the audit follows on the same connection).
+    const db = openAdminWrite(siteDb, ctx.env.dbBusyTimeoutMs);
+    try {
+      appendAudit(db, actor, 'plugin.uninstall', 'cms_plugin_installed', result.plugin, {
+        version: result.version,
+        root_hash: result.root_hash,
+      }, { archive: result.archive_path, tables: result.tables.map((t) => t.name) });
+    } finally {
+      db.close();
+    }
+    ctx.stdout(
+      `plugin: uninstalled id=${result.plugin} version=${result.version} root=${result.root_hash} ` +
+        `tables=${result.tables.map((t) => `${t.name}(${t.rows})`).join(',') || 'none'} settings=${result.settings}`,
+    );
+    ctx.stdout(`plugin: archive ${result.archive_path} (0600; table-scoped, restore by hand)`);
+    ctx.stdout(
+      `plugin: package ${result.package_removed ? 'removed' : 'was already absent'}; its endpoint is 404 from the next request`,
+    );
+    // The runner holds the package list from its own start; a removed tree is refused at the
+    // next restart, and the host refuses the endpoint immediately (no row). Say which half is
+    // which, so "uninstalled" and "not loaded" cannot be confused.
+    ctx.stdout(`plugin: restart the runner service to release the code for ${result.plugin}`);
+    return EXIT_OK;
+  }
+
   if (verb === 'list') {
     const db = openAdminWrite(siteDb, ctx.env.dbBusyTimeoutMs);
     try {
@@ -800,7 +842,7 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
 
   throw new Refusal(
     'USAGE',
-    'usage: skwctl plugin (install <dir> [--test-report <path>] [--runner-digest <sha>] [--enable] | enable <id> | disable <id> | list) --tenant <key>',
+    'usage: skwctl plugin (install <dir> [--test-report <path>] [--runner-digest <sha>] [--enable] | enable <id> | disable <id> | uninstall <id> [--archive-dir <dir>] | list) --tenant <key>',
   );
 }
 
@@ -808,7 +850,7 @@ export async function run(argv: readonly string[], ctx: CliContext): Promise<num
   if (argv.length === 0) {
     throw new Refusal(
       'USAGE',
-      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N] | plugin (install <dir> | enable <id> | disable <id> | list) --tenant <key>>',
+      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N] | plugin (install <dir> | enable <id> | disable <id> | uninstall <id> | list) --tenant <key>>',
     );
   }
   const args = parseArgs(argv);

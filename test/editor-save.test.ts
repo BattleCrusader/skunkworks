@@ -303,7 +303,7 @@ test('S5 — D17: the picker writes a key, the body stores no URL, and the rende
   assert.match(rendered, /data-asset-key="work\/one"/);
 });
 
-test('S6 — a list component stores its items as rows and reloads in the same order', async () => {
+test('S6 — a list stores exactly one repeat template, and reloads it in order', async () => {
   const handle = db();
   try {
     const saved = await savePage({
@@ -317,30 +317,70 @@ test('S6 — a list component stores its items as rows and reloads in the same o
     });
     const items = saved.items['list'];
     assert.ok(items !== undefined, 'the list component produced no rows');
+    // §16 S4 row 2 / C-4: one `[data-repeat]` child is the loop TEMPLATE. Rows come from
+    // the bound source at render time, so a body that carries two templates has no
+    // meaning — and, before this gate, it silently produced two rows and stored both.
     assert.deepEqual(
       items.map((item) => item.position),
-      [0, 1],
+      [0],
     );
-    // The rows are discrete elements, stamped with their position, in the stored bytes.
     assert.match(saved.bodyHtml, /data-item-position="0"/);
-    assert.match(saved.bodyHtml, /data-item-position="1"/);
-    assert.ok(
-      saved.bodyHtml.indexOf('data-item-position="0"') < saved.bodyHtml.indexOf('data-item-position="1"'),
-      'rows are stored in document order',
-    );
-    // Reload from the row, not from the caller's object: the order is in the bytes.
+    assert.ok(!saved.bodyHtml.includes('data-item-position="1"'), 'only one repeat template may exist');
+
+    // Reload from the row, not from the caller's object: the template is in the bytes.
     const reloaded = reloadListItems(saved.bodyHtml, registry, 'list');
-    assert.equal(reloaded.length, 2);
-    assert.deepEqual(
-      reloaded.map((item) => item.position),
-      [0, 1],
-    );
+    assert.equal(reloaded.length, 1);
     assert.deepEqual(
       reloaded.map((item) => item.html),
       items.map((item) => item.html),
     );
     assert.match(reloaded[0]?.html ?? '', /Post title/);
-    assert.match(reloaded[1]?.html ?? '', /Second post/);
+  } finally {
+    handle.close();
+  }
+});
+
+test('S6b — a list with TWO [data-repeat] children is refused at save, by name, and writes nothing', async () => {
+  const handle = db();
+  try {
+    const page = (): number => Number((handle.prepare('SELECT count(*) AS n FROM cms_page').get() as { n: number }).n);
+    const before = page();
+    const two = corpus('index.html').replace(
+      '<p class="list__empty" data-empty>No posts yet.</p>',
+      '<article class="card" data-repeat><h3 class="card__title" data-bind-title="title">Second</h3></article>\n  <p class="list__empty" data-empty>No posts yet.</p>',
+    );
+    // The mutation is real: the fixture now has two repeat children.
+    assert.equal((two.match(/data-repeat/g) ?? []).length, 2, 'the test document must carry two [data-repeat] children');
+
+    let refused: unknown;
+    try {
+      await savePage({
+        db: handle,
+        registry,
+        path: '/two',
+        slug: 'two',
+        title: 'Two',
+        template: 'page',
+        html: two,
+      });
+    } catch (err) {
+      refused = err;
+    }
+    assert.ok(refused instanceof AppError, `the save must be refused, got ${String(refused)}`);
+    assert.equal(refused.code, 'SKW_E_RT_REPEAT_INVALID');
+    assert.equal(refused.status, HTTP['SKW_E_RT_REPEAT_INVALID']);
+    const detail = detailOf(refused);
+    assert.equal(detail.rule, 'repeat-children');
+    assert.equal(detail.component, 'list');
+    assert.equal(detail.count, 2);
+    assert.match(refused.message, /exactly one/i);
+    assert.equal(page(), before, 'a refused save writes no page row');
+
+    // Positive control, same suite: the same document with one repeat child saves.
+    const one = corpus('index.html');
+    assert.equal((one.match(/data-repeat/g) ?? []).length, 1);
+    const ok = await savePage({ db: handle, registry, path: '/one', slug: 'one', title: 'One', template: 'page', html: one });
+    assert.equal(ok.items['list']?.length, 1);
   } finally {
     handle.close();
   }

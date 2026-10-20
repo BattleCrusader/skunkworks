@@ -45,6 +45,7 @@ import { Semaphore } from './admin/auth.ts';
 import { seedSettings } from './download/code.ts';
 import { DownloadPlane, RETRY_ATTEMPTS } from './download/plane.ts';
 import { PluginHost } from './plugins/host.ts';
+import { matchEndpoint, runEndpoint } from './plugins/endpoint.ts';
 import type { WatermarkDeps, WatermarkStore } from './download/render.ts';
 
 // §9.1 (E-2) lives in tenancy/listener.ts so the admin router shares one rule;
@@ -455,6 +456,69 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     }
   });
 
+  // --- S4e: the declared public endpoint surface (D25) ---------------------
+  // The first caller of `plugins.invoke()` in the product. One path, one shape:
+  // `/_plugin/<id>/<endpoint>` on the tenant's own host. The tenant comes from the Host
+  // (§5.3), the endpoint must be declared in the installed manifest, and anything else is
+  // the tenant's ordinary 404 — byte-identical to a path with no page, so the surface does
+  // not tell a scanner which packages a site has.
+  app.register(async (scope) => {
+    scope.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => done(null, body));
+    scope.all('/_plugin/*', async (req: FastifyRequest, reply: FastifyReply) => {
+      const match = matchEndpoint(req.url);
+      const ctx = resolveRequest(req);
+      if (match === null || (req.method !== 'GET' && req.method !== 'POST')) {
+        await serveNotFound(req, reply);
+        return;
+      }
+      const db = openAdminWrite(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+      let result: unknown;
+      try {
+        result = await runEndpoint(plugins, {
+          db,
+          tenant: ctx.tenant.key,
+          plugin: match.plugin,
+          endpoint: match.endpoint,
+          method: req.method,
+          url: req.url,
+          body: typeof req.body === 'string' ? req.body : '',
+        });
+      } catch (err) {
+        // S4e: `skwctl plugin install|uninstall` writes the same `site.db` while the app is
+        // serving — that is the supported operator shape (§8.6), not a test artefact. Across
+        // the two processes' WAL handles, the first open after a DDL transaction can lose the
+        // race and fail with SQLITE_CANTOPEN/SQLITE_SCHEMA (measured through the composed gate:
+        // one 500 at the moment of an uninstall). One retry on the transient codes is the
+        // difference between "the operator's uninstall 500s the site for one request" and
+        // "the next request is the 404 it should be"; a genuine failure still surfaces.
+        if (!isTransientSqlite(err)) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const retryDb = openAdminWrite(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+        try {
+          result = await runEndpoint(plugins, {
+            db: retryDb,
+            tenant: ctx.tenant.key,
+            plugin: match.plugin,
+            endpoint: match.endpoint,
+            method: req.method,
+            url: req.url,
+            body: typeof req.body === 'string' ? req.body : '',
+          });
+        } finally {
+          retryDb.close();
+        }
+      } finally {
+        db.close();
+      }
+      if (result === null) {
+        await serveNotFound(req, reply);
+        return;
+      }
+      reply.header('cache-control', 'no-store').type('application/json; charset=utf-8');
+      reply.send(result);
+    });
+  });
+
   // §7.6's third channel. The JSON body is kept as the raw string because the HMAC is
   // over the bytes the store signed, not over a re-serialisation of them.
   app.register(async (scope) => {
@@ -686,6 +750,15 @@ function sendError(reply: FastifyReply, err: unknown, requestId: string): void {
 function describe(err: unknown): string {
   const e = err as { code?: string; message?: string };
   return e.code ?? e.message ?? 'unknown error';
+}
+
+/**
+ * S4e: the SQLite errors a second process writing the same file can produce for one request.
+ * Narrow on purpose — a `SQLITE_CORRUPT` is not retried, and neither is a refusal we raised.
+ */
+function isTransientSqlite(err: unknown): boolean {
+  const code = (err as { code?: string }).code;
+  return code === 'SQLITE_CANTOPEN' || code === 'SQLITE_BUSY' || code === 'SQLITE_BUSY_SNAPSHOT' || code === 'SQLITE_SCHEMA';
 }
 
 /** One `Accept` decision, in the one place that has to make it. */

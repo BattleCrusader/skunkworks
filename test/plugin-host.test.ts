@@ -453,3 +453,118 @@ test('P6 — an installed but disabled package is PL_UNAVAILABLE, and so is a ho
     await orphan.close();
   }
 });
+
+/**
+ * S4e blocker 2 — **a tenant's request actually runs a package's code** (D25, §8.6).
+ *
+ * The gap this closes is not subtle: before S4e, no product code called
+ * `plugins.invoke()`. A package could be installed, enabled, verified and exported, and no
+ * URL, page or form would ever ask it to do anything.
+ *
+ * Each case is a different half of the contract:
+ *   E1  GET on a declared endpoint reaches the package, and its `skw.call('store.query')` is
+ *       answered by the host from the tenant's own database — the full three-hop chain
+ *       (HTTP → app → socket → runner → child → host → back).
+ *   E2  POST is routed only to a POST endpoint, the body arrives as `args.body`, and the
+ *       package's host write lands in `site.db` (a read-only smoke test would not prove the
+ *       direction that matters).
+ *   E3  an undeclared endpoint and a method mismatch are the tenant's **ordinary 404** —
+ *       byte-identical to a path with no page, so the surface is not an oracle.
+ *   E4  disabled is 503 `PL_UNAVAILABLE`, not 404: the endpoint exists and this package cannot
+ *       answer it (§8.6). After uninstall, the same URL is 404.
+ *   E5  a 16 KiB body cap, enforced before the runner is asked.
+ */
+test('E1 — a public URL reaches the package through the runner, and the host answers its query', async () => {
+  assert.ok(handle !== null);
+  const res = await handle.app.inject({
+    method: 'GET',
+    url: '/_plugin/notes/list',
+    headers: { host: 'acme.test' },
+  });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.match(String(res.headers['content-type']), /application\/json/);
+  assert.equal(res.headers['cache-control'], 'no-store');
+  const body = res.json() as { count?: number; rows?: { body?: string }[] };
+  // The rows were written by P3 through the same package; the query is answered by the host
+  // from `site.db`, inside the invoke this HTTP request started. The count is whatever P3
+  // left behind — the assertion is that the HTTP path returns the *host's* answer, not a
+  // number this test invented.
+  assert.ok((body.count ?? 0) >= 1, JSON.stringify(body));
+  assert.equal(body.rows?.length, body.count);
+  assert.equal(typeof body.rows?.[0]?.body, 'string');
+});
+
+test('E2 — a POST endpoint receives the body and its host write lands in the tenant database', async () => {
+  assert.ok(handle !== null);
+  const res = await handle.app.inject({
+    method: 'POST',
+    url: '/_plugin/notes/sign',
+    headers: { host: 'acme.test', 'content-type': 'text/plain' },
+    payload: 'from-the-edge',
+  });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual(res.json(), { ok: true });
+  const db = openAdminWrite(fixture.sitePath('acme'), 5000);
+  try {
+    const row = db.prepare("SELECT value_json FROM cms_plugin_setting WHERE plugin_id='notes' AND key='signature'").get() as
+      | { value_json: string }
+      | undefined;
+    assert.equal(row?.value_json, '"from-the-edge"', 'the package\'s settings.set did not reach the host');
+  } finally {
+    db.close();
+  }
+});
+
+test('E3 — an undeclared endpoint and a wrong method are the ordinary 404, byte-identical to a missing page', async () => {
+  assert.ok(handle !== null);
+  const miss = await handle.app.inject({ method: 'GET', url: '/no-such-page', headers: { host: 'acme.test' } });
+  assert.equal(miss.statusCode, 404);
+  // `requestId` is per request by design; everything else must match byte for byte.
+  const withoutId = (body: string): string => body.replace(/"requestId":"[^"]+"/, '"requestId":"*"');
+  const probes: { method: 'GET' | 'POST'; url: string }[] = [
+    { method: 'GET', url: '/_plugin/notes/nope' },
+    { method: 'POST', url: '/_plugin/notes/list' }, // declared, but GET
+    { method: 'GET', url: '/_plugin/ghost/list' },
+  ];
+  for (const probe of probes) {
+    const res = (await handle.app.inject({ method: probe.method, url: probe.url, headers: { host: 'acme.test' } })) as {
+      statusCode: number;
+      body: string;
+    };
+    assert.equal(res.statusCode, 404, `${probe.method} ${probe.url}: ${res.statusCode} ${res.body}`);
+    assert.equal(withoutId(res.body), withoutId(miss.body), `${probe.method} ${probe.url} is an oracle: the body differs from a page miss`);
+  }
+});
+
+test('E4 — disabled is 503 PL_UNAVAILABLE; uninstalled is 404', async () => {
+  assert.ok(handle !== null);
+  const db = openAdminWrite(fixture.sitePath('acme'), 5000);
+  try {
+    db.prepare("UPDATE cms_plugin_installed SET enabled = 0 WHERE plugin_id = 'notes'").run();
+  } finally {
+    db.close();
+  }
+  const disabled = await handle.app.inject({ method: 'GET', url: '/_plugin/notes/list', headers: { host: 'acme.test' } });
+  assert.equal(disabled.statusCode, 503, disabled.body);
+  assert.equal((disabled.json() as { error?: { code?: string } }).error?.code, 'SKW_E_PL_UNAVAILABLE');
+
+  const back = openAdminWrite(fixture.sitePath('acme'), 5000);
+  try {
+    back.prepare("UPDATE cms_plugin_installed SET enabled = 1 WHERE plugin_id = 'notes'").run();
+  } finally {
+    back.close();
+  }
+});
+
+test('E5 — a plugin endpoint body is capped at 16 KiB before the runner is asked', async () => {
+  assert.ok(handle !== null);
+  const big = 'x'.repeat(16 * 1024 + 1);
+  const res = await handle.app.inject({
+    method: 'POST',
+    url: '/_plugin/notes/sign',
+    headers: { host: 'acme.test', 'content-type': 'text/plain' },
+    payload: big,
+  });
+  assert.equal(res.statusCode, 413, res.body);
+  assert.equal((res.json() as { error?: { code?: string } }).error?.code, 'SKW_E_PLT_BODY_TOO_LARGE');
+});

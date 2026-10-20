@@ -268,23 +268,50 @@ case "$BOOTSTRAP_STATUS" in
     ;;
 esac
 
-# --- 7b. the default TLS pair (S4d) ------------------------------------------
-# Every `listen 443 ssl` block names a certificate. ACME issues per host into
-# certs/<host>.crt; before the first issuance, and for the admin/demos vhosts, nginx needs
-# a pair that exists. Self-signed, 10 years, and never served for a host that has its own
-# certificate in the block (a tenant with cert_state=issued points at its own pair).
-if [ ! -f "$ROOT/certs/default.crt" ] || [ ! -f "$ROOT/certs/default.key" ]; then
-  mkdir -p "$ROOT/certs"
-  if ! command -v openssl >/dev/null 2>&1; then
-    fail "openssl is required to write certs/default.crt before nginx starts"
-    exit 17
-  fi
-  openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 \
-    -subj "/CN=skunkworks-default" \
-    -keyout "$ROOT/certs/default.key" -out "$ROOT/certs/default.crt" 2>/dev/null
-  chmod 600 "$ROOT/certs/default.key"
-  say "certs: self-signed default pair written to certs/ (a pending host still answers on 80)"
+# --- 7b. the per-host TLS pairs (S4e) -----------------------------------------
+# Before this step there was one `certs/default.crt` and a generated config that pointed every
+# tenant block at `certs/<host>.crt`. A bundle exported from a tenant that had TLS said
+# `cert_state=issued`, named a file it never shipped (a private key is per-host state), and the
+# first `compose up` died at `nginx -t`. The pair is now minted **here**, for every host the
+# generated config names, into the install's own directory (`<target>/certs`, which compose
+# mounts) rather than into the verified bundle.
+#
+# `cert_state` is not touched: it stays `none`, the report prints `certificate: pending`, and
+# the `acme` service is the only writer of `issued` — after it has the bytes on this host.
+CERTS_DIR="$DATA_DIR/certs"
+mkdir -p "$CERTS_DIR"
+chmod 700 "$CERTS_DIR"
+
+# The three writable paths compose mounts, created here because the containers' uids are
+# fixed (app 10001, runner 65534) and Docker creates a missing bind-mount source as
+# root:root 0755. Measured while closing the first-boot blocker: `plugin-runner` died with
+# `listen EACCES: permission denied /srv/run/plugin.sock` on a cold install, so the composed
+# plugin path had never bound. 0777 on the two directories that must be written across uids
+# (the socket, the per-package scratch); 0755 on the ACME webroot, which only the acme
+# service writes.
+mkdir -p "$ROOT/run" "$DATA_DIR/scratch" "$DATA_DIR/acme"
+chmod 0777 "$ROOT/run" "$DATA_DIR/scratch"
+chmod 0755 "$DATA_DIR/acme"
+
+# The app runs as 10001 and writes control.db (WAL), sessions, audit and plugin rows. A root
+# install owns the tree, so hand it over; a non-root install prints the one command it could
+# not run. Without this the app boots, then fails its first write with "attempt to write a
+# readonly database" — a dead site with a green install.
+if [ "$(id -u)" -eq 0 ]; then
+  chown -R 10001:10001 "$DATA_DIR" 2>/dev/null || true
+  chmod 0700 "$CERTS_DIR"
+else
+  say "note: not running as root; if the app container cannot write $DATA_DIR, run: chown -R 10001:10001 $DATA_DIR"
 fi
+# The demos host is `demos.<admin's parent>` (app/env.ts `demosHostOf`), and nginx names
+# `default.crt` for the admin and demos blocks. Both names go in that pair's SAN set.
+DEMOS_HOST="demos.$(printf '%s' "$ADMIN_HOST" | cut -d. -f2-)"
+node --no-warnings tools/install_certs.mjs --data "$DATA_DIR" --certs "$CERTS_DIR" \
+  --default-host "$ADMIN_HOST" --default-host "$DEMOS_HOST" || {
+  fail "could not mint the self-signed certificate pairs nginx needs (exit 17)"
+  exit 17
+}
+say "certs: $CERTS_DIR (per-host self-signed; ACME replaces a pair and reloads nginx)"
 
 # --- 8. compose up (exit 17) ------------------------------------------------
 if [ "$COMPOSE" -eq 1 ]; then

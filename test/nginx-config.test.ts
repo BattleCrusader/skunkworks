@@ -99,9 +99,12 @@ test('E-5 — every location regex is quoted, so no unquoted `{` can be read as 
     if (!/^\s*location\s/.test(line)) continue;
     const brace = line.indexOf('{');
     assert.ok(brace !== -1, `location line without a block: ${line}`);
-    const pattern = line.slice(0, brace);
-    if (pattern.includes('~')) {
-      assert.match(pattern, /~\s*"/, `an unquoted regex in: ${line.trim()}`);
+    const pattern = line.slice(0, brace).replace(/\^~/, '');
+    // `^~` is a prefix modifier, not a regex: it takes a literal path and needs no quotes.
+    // A regex location (`~` or `~*`) does, because `{0,39}` in a bare pattern is a block
+    // delimiter to nginx's tokenizer (E-5).
+    if (/~\*?\s/.test(pattern)) {
+      assert.match(pattern, /~\*?\s*"/, `an unquoted regex in: ${line.trim()}`);
     }
     // The only unquoted `{` on a location line is the block opener itself.
     assert.equal(line.slice(0, brace).includes('{'), false, `unquoted { before the block opener: ${line.trim()}`);
@@ -117,7 +120,7 @@ function serverBlock(text: string, host: string): string {
   return text.slice(start, end === -1 ? undefined : end + 2);
 }
 
-test('E-5 / §12.5 — a pending certificate gets `listen 80` and no `listen 443 ssl`', () => {
+test('S4e / §12.5 — every tenant block listens on 443 and names its own certificate; the state is a comment', () => {
   const withPending = generateAppConf(
     [
       { host: 'pending.test', key: 'pending', cert_state: 'none' },
@@ -125,12 +128,22 @@ test('E-5 / §12.5 — a pending certificate gets `listen 80` and no `listen 443
     ],
     { adminHost: 'admin.skw.test', demosHost: 'demos.skw.test', boxRps: 192 },
   );
+  // S4e: install.sh mints a self-signed pair for every host before nginx starts, so a 443
+  // block is safe for a pending host too — and a bundle exported from a tenant that had TLS
+  // no longer ships a claim no file backs. The listener is uniform; the *state* is the fact a
+  // reader needs, and it is a comment beside the block.
   const pendingBlock = serverBlock(withPending, 'pending.test');
   assert.notEqual(pendingBlock, '');
-  assert.match(pendingBlock, /^\s*listen 80;$/m);
-  assert.doesNotMatch(pendingBlock, /listen 443 ssl/);
+  assert.match(pendingBlock, /listen 80; listen 443 ssl;/);
+  assert.match(pendingBlock, /ssl_certificate     \/etc\/nginx\/certs\/pending\.test\.crt;/);
+  assert.match(pendingBlock, /ssl_certificate_key \/etc\/nginx\/certs\/pending\.test\.key;/);
+  assert.match(withPending, /# tenant pending\n# certificate: pending \(self-signed until ACME\)/);
   const issuedBlock = serverBlock(withPending, 'issued.test');
   assert.match(issuedBlock, /listen 80; listen 443 ssl;/);
+  assert.match(withPending, /# tenant issued\n# certificate: issued/);
+  // The http-01 webroot is in every tenant block, and it cannot be shadowed by a regex.
+  assert.match(pendingBlock, /location \^~ \/\.well-known\/acme-challenge\/ \{/);
+  assert.match(pendingBlock, /root \/srv\/acme;/);
 });
 
 test('the map carries every host of every tenant, and no default tenant', () => {

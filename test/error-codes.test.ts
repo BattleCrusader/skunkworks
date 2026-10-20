@@ -66,8 +66,10 @@ test('the codes S1 raises are all mapped, and the four E-4 additions are part of
   // refusals for a stored row that cannot become a page (never a skipped page).
   // S4c: 78 -> 80 — EXP WRITER_ACTIVE and PL EXPORT_PACKAGE_MISSING: two writers on one
   // tenant, and a plugin row whose package the bundle does not carry.
+  // S4e: 80 -> 82 — RT REPEAT_INVALID (a `list` with two `[data-repeat]` children) and
+  // PL OOM (the runner cgroup killed a package's child).
   const total = Object.values(codes.areas).reduce((n, names) => n + names.length, 0);
-  assert.equal(total, 80, `the taxonomy holds ${total} codes, expected 80 (S4c: EXP WRITER_ACTIVE, PL EXPORT_PACKAGE_MISSING)`);
+  assert.equal(total, 82, `the taxonomy holds ${total} codes, expected 82 (S4e: RT REPEAT_INVALID, PL OOM)`);
   for (const code of ['SKW_E_RT_PAGE_NOT_FOUND', 'SKW_E_PLT_INTERNAL', 'SKW_E_PLT_REQUEST_INVALID', 'SKW_E_PLT_BODY_TOO_LARGE']) {
     assert.equal(codes.retry_after?.[code], undefined, `${code} must not carry Retry-After`);
   }
