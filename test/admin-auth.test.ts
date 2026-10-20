@@ -28,6 +28,7 @@ import {
   login,
   median,
   openSession,
+  percentile,
   scrubBody,
   seedUser,
 } from './helpers/admin.ts';
@@ -160,7 +161,20 @@ test('3. TOTP is not required when the allowlist is populated', async () => {
 });
 
 test('4. three login failure causes are indistinguishable in status, body and time', async () => {
-  const iterations = 20;
+  // E-16: "Medians across the three causes stay within 20 %, measured with at least
+  // 40 samples each". S2c shipped 20 and recorded this gate red once in five full
+  // runs: `{wrong_password:40.42, unknown_email:31.20, wrong_totp:40.66}` (ratio
+  // 1.303). The cause was the statistic, not the code: at n=20 on a loaded box the
+  // sample median of one cause lands 20 % off its neighbour (measured: 3 of 12
+  // repetitions over the 1.20 band — 1.757, 1.202, 1.209 — with p10..p90 spanning
+  // 23.8..43.9 ms inside a single cause).
+  //
+  // The band stays 1.20 and the sample count goes to the errata's floor and beyond.
+  // Every round measures A, then B, then C back-to-back, so each cause has a sample
+  // in every round and a load phase that slows the box cannot land on one cause's
+  // block. The same measurement at n=60: 0 of 10 repetitions over the band, max
+  // 1.122 (`scratch/s2d/e16-repeats.sh`).
+  const iterations = 60;
   // The lockout rule is measured in case 5; here it would turn the 6th sample into
   // a 429 and hide the timing. Each sample therefore resets the counter, which is
   // the only thing this test touches outside the HTTP surface.
@@ -184,6 +198,7 @@ test('4. three login failure causes are indistinguishable in status, body and ti
 
   try {
     for (let i = 0; i < iterations; i += 1) {
+      // One round: the three causes, adjacent, in the same order every time.
       const t0 = process.hrtime.bigint();
       const a = await login({ port, key: 'acme', email: TIMING, password: `wrong-${i}` });
       wrongPassword.push(Number(process.hrtime.bigint() - t0) / 1e6);
@@ -228,9 +243,17 @@ test('4. three login failure causes are indistinguishable in status, body and ti
   };
   const values = Object.values(medians);
   const ratio = Math.max(...values) / Math.min(...values);
+  // The failure message carries the shape of the distribution, so the next reader can
+  // tell "the box was slow" from "one cause does less work": a cause whose median
+  // moved but whose p10/p90 did not is a real asymmetry, and one where the whole
+  // spread moved is the box.
+  const shape = (label: string, samples: number[]): string =>
+    `${label} median=${median(samples).toFixed(2)} p10=${percentile(samples, 10).toFixed(2)} p90=${percentile(samples, 90).toFixed(2)}`;
   assert.ok(
     ratio <= 1.2,
-    `medians across the three causes must be within 20%: ${JSON.stringify(medians)} (ratio ${ratio.toFixed(3)})`,
+    `medians across the three causes must be within 20%: ${JSON.stringify(medians)} (ratio ${ratio.toFixed(3)}); ` +
+      `n=${iterations} each, interleaved; ${shape('wrong_password', wrongPassword)} | ` +
+      `${shape('unknown_email', noSuchUser)} | ${shape('wrong_totp', wrongTotp)}`,
   );
 });
 

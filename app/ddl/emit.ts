@@ -27,6 +27,7 @@
  * tables it sits beside.
  */
 import { AppError } from '../errors.ts';
+import { refuse } from './refuse.ts';
 
 export type ColumnType =
   | 'TEXT'
@@ -55,22 +56,13 @@ export interface CreateTableOp {
   columns: ColumnSpec[];
 }
 
-/** §4.4: the five refusal reasons, verbatim. */
-export type RefusalReason =
-  | 'default_required'
-  | 'rebuild_required'
-  | 'limit'
-  | 'reserved_prefix'
-  | 'too_many_statements';
+/** §4.4's refusal lives in `refuse.ts` so the AST and the emitter raise one shape. */
+export { refuse };
+export type { RefusalReason } from './refuse.ts';
 
 const TABLE_NAME = /^u_[a-z0-9_]+$/;
 const COLUMN_NAME = /^[a-z][a-z0-9_]{0,39}$/;
 const MAX_COLUMNS = 40;
-
-/** §4.4's refusal: 422 with the reason on the wire. */
-export function refuse(reason: RefusalReason): AppError {
-  return new AppError('SKW_E_DM_DDL_REJECTED', undefined, { reason });
-}
 
 /**
  * `create_table` -> one statement.
@@ -82,25 +74,30 @@ export function emitCreateTable(op: CreateTableOp): string[] {
   if (!TABLE_NAME.test(op.name)) throw refuse('reserved_prefix');
   if (op.columns.length === 0 || op.columns.length > MAX_COLUMNS) throw refuse('limit');
 
-  const seen = new Set<string>();
-  const parts: string[] = [];
+  const seen = new Set<string>(['id']);
+  // S2c emitted this statement without an `id` column while still declaring
+  // `PRIMARY KEY ("id")`, so the preview was SQL that SQLite refuses ("no such column:
+  // id"). It was invisible because nothing executed the preview; S2d runs it, and
+  // `ddl-runner.test.ts` C5 compares the two statement for statement.
+  const parts: string[] = ['"id" INTEGER'];
   for (const column of op.columns) {
     if (!COLUMN_NAME.test(column.name)) {
       // A column name is not a §4.4 refusal class; it is a malformed form.
       throw new AppError('SKW_E_PLT_REQUEST_INVALID', `${JSON.stringify(column.name)} is not a column name`);
     }
     if (seen.has(column.name)) {
+      // `id` is the runner's: a column named id would shadow the primary key.
       throw new AppError('SKW_E_PLT_REQUEST_INVALID', `${column.name} is declared twice`);
     }
     seen.add(column.name);
-    parts.push(columnSql(column));
+    parts.push(emitColumn(column));
   }
 
   parts.push(`PRIMARY KEY ("id")`);
   return [`CREATE TABLE "${op.name}" (\n  ${parts.join(',\n  ')}\n)`];
 }
 
-function columnSql(column: ColumnSpec): string {
+export function emitColumn(column: ColumnSpec): string {
   const name = `"${column.name}"`;
   switch (column.type) {
     case 'BOOLEAN':

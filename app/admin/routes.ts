@@ -55,6 +55,7 @@ import { join } from 'node:path';
 
 import { emitCreateTable, registryRow, type CreateTableOp } from '../ddl/emit.ts';
 import { normaliseTableName, parseColumnLines } from '../ddl/form.ts';
+import { runDdl } from '../ddl/run.ts';
 import {
   createRow,
   deleteRow,
@@ -533,9 +534,9 @@ ${items}
       this.#pageDetail(reply, tenant, Number(id));
       return;
     }
-    // §9.4 — the table builder's scaffold. Off means absent, not disabled: with
-    // SKW_SCHEMA_EDIT=off these two paths are unknown admin paths.
-    if (action === 'builder' || action === 'builder/preview') {
+    // §9.4 — the table builder. Off means absent, not disabled: with
+    // SKW_SCHEMA_EDIT=off these paths are unknown admin paths.
+    if (action === 'builder' || action === 'builder/preview' || action === 'builder/apply') {
       // §9.4: `off` hides it entirely. A hidden surface is an absent route — not a
       // refusal that would tell a prober the feature exists on another box.
       if (this.#env.schemaEdit !== 'on') {
@@ -549,6 +550,10 @@ ${items}
       this.#requireMethod(req, 'POST');
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
+      if (action === 'builder/apply') {
+        this.#builderApply(req, reply, tenant, session);
+        return;
+      }
       this.#builderPreview(req, reply, tenant, session);
       return;
     }
@@ -1053,11 +1058,16 @@ for (const form of document.querySelectorAll('form[data-csrf-token]')) {
       page(
         `Skunkworks — ${tenant.key} — preview`,
         `<h1>${esc(tenant.key)} — preview</h1>
-<p data-role="not-executed">Not executed. This is the SQL the S2d runner would emit; no statement has run and no table exists.</p>
+<p data-role="not-executed">Not executed. This is the exact SQL the runner will execute — one emitter, so the preview cannot describe SQL nobody runs. Applying it is one transaction: the statement, the <code>cms_table_registry</code> row and the <code>cms_audit</code> row, the postcondition, then COMMIT.</p>
 <h2>Statement</h2>
 <pre data-role="ddl">${esc(statements.join(';\n\n'))};</pre>
 <h2>cms_table_registry row</h2>
 <pre data-role="registry">${esc(JSON.stringify(registry, null, 2))}</pre>
+<form method="post" action="/admin/t/${esc(tenant.key)}/builder/apply" data-csrf-token="${esc(csrf)}">
+  <input type="hidden" name="table" value="${esc(op.name)}">
+  <textarea name="columns" rows="10" hidden>${esc(fields.columns ?? '')}</textarea>
+  <button type="submit">Apply</button>
+</form>
 <form method="post" action="/admin/t/${esc(tenant.key)}/builder/preview" data-csrf-token="${esc(csrf)}">
   <input type="hidden" name="table" value="${esc(op.name)}">
   <textarea name="columns" rows="10">${esc(fields.columns ?? '')}</textarea>
@@ -1077,6 +1087,45 @@ for (const form of document.querySelectorAll('form[data-csrf-token]')) {
   });
 }
 </script>`,
+      ),
+    );
+  }
+
+  /**
+   * §9.4's apply: the runner, called from the form that previewed the same statement.
+   *
+   * The route does no SQL of its own — `runDdl` owns `BEGIN IMMEDIATE`, the registry row,
+   * the audit row, the postcondition and the discarded connection. A refusal propagates
+   * as the taxonomy body §4.3 requires (422 `SKW_E_DM_DDL_REJECTED` with its `reason`),
+   * and the client's `fetch` shows it rather than a rendered guess.
+   */
+  #builderApply(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const fields = fieldsOf(req.body);
+    const op: CreateTableOp = {
+      op: 'create_table',
+      name: normaliseTableName(fields.table),
+      columns: parseColumnLines(fields.columns),
+    };
+    const file = join(this.#env.dataDir, 'tenants', tenant.key, 'site.db');
+    const actor = this.#actor(session);
+    const report = runDdl(file, [op], {
+      actor,
+      maxStatements: this.#env.ddlMaxStatements,
+      busyTimeoutMs: this.#env.dbBusyTimeoutMs,
+    });
+    reply.type('text/html; charset=utf-8').send(
+      page(
+        `Skunkworks — ${tenant.key} — applied`,
+        `<h1>${esc(tenant.key)} — applied</h1>
+<p data-role="applied">One transaction: ${report.ops} operation, ${report.statements} statement(s), the registry row and the audit row, the postcondition, COMMIT.</p>
+<table data-role="report">
+  <tr><th>table</th><td>${esc(report.tables.join(', '))}</td></tr>
+  <tr><th>statements</th><td>${String(report.statements)}</td></tr>
+  <tr><th>lock attempts</th><td>${String(report.lockAttempts)} (waited ${String(report.lockWaitMs)} ms)</td></tr>
+  <tr><th>rebuilt</th><td>${esc(report.rebuilt.join(', ') || '—')}</td></tr>
+  <tr><th>audit</th><td>${esc(report.audit.map((a) => `${a.from} ${a.to}`).join(', '))}</td></tr>
+</table>
+<p><a href="/admin/t/${esc(tenant.key)}/builder">Another table</a> · <a href="/admin/t/${esc(tenant.key)}/tables/${esc(op.name)}">Edit its rows</a></p>`,
       ),
     );
   }

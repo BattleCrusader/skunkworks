@@ -38,6 +38,10 @@ export const HTTP: Record<string, number> = {
   SKW_E_DM_ASSET_IN_USE: 409,
   // §4.4: a DDL statement the AST refuses, before any SQL is emitted.
   SKW_E_DM_DDL_REJECTED: 422,
+  // §9.4: the transaction committed a schema the four allowed prefixes do not
+  // describe. Raised after the statements and before COMMIT, so the rollback takes
+  // the whole batch.
+  SKW_E_DM_DDL_POSTCONDITION: 422,
   // SEC — the security plane (S2a: §9.1's session/CSRF controls). The statuses are
   // the frozen ones from schema/error-codes.json.
   //
@@ -50,6 +54,9 @@ export const HTTP: Record<string, number> = {
   SKW_E_SEC_CODE_INVALID: 401,
   SKW_E_SEC_RATE_LIMITED: 429,
   SKW_E_SEC_ROLE_DISABLED: 403,
+  // §9.6 (C-21): the chain and the daily seal disagree — the anchor is what makes a
+  // recomputed chain visible, so this is the code an unanchored verifier cannot raise.
+  SKW_E_SEC_AUDIT_SEAL: 500,
   // RT — the render plane (§4.3 E-4): a resolved tenant with no page row
   SKW_E_RT_PAGE_NOT_FOUND: 404,
 };

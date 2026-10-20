@@ -1,0 +1,32 @@
+run  1  exit=0    60s  # tests 244 # pass 244 # fail 0 # skipped 0 
+         ok 16 - 4. three login failure causes are indistinguishable in status, body and time
+         claims: 27/27 passed, 0 skipped, 0 failed
+run  2  exit=0    55s  # tests 244 # pass 244 # fail 0 # skipped 0 
+         ok 16 - 4. three login failure causes are indistinguishable in status, body and time
+         claims: 27/27 passed, 0 skipped, 0 failed
+run  3  exit=0    57s  # tests 244 # pass 244 # fail 0 # skipped 0 
+         ok 16 - 4. three login failure causes are indistinguishable in status, body and time
+         claims: 27/27 passed, 0 skipped, 0 failed
+run  4  exit=0    54s  # tests 244 # pass 244 # fail 0 # skipped 0 
+         ok 16 - 4. three login failure causes are indistinguishable in status, body and time
+         claims: 27/27 passed, 0 skipped, 0 failed
+run  5  exit=0    51s  # tests 244 # pass 244 # fail 0 # skipped 0 
+         ok 16 - 4. three login failure causes are indistinguishable in status, body and time
+         claims: 27/27 passed, 0 skipped, 0 failed
+run  6  exit=0    67s  # tests 244 # pass 244 # fail 0 # skipped 0 
+         ok 16 - 4. three login failure causes are indistinguishable in status, body and time
+         claims: 27/27 passed, 0 skipped, 0 failed
+run  7  exit=0    65s  # tests 244 # pass 244 # fail 0 # skipped 0 
+         ok 16 - 4. three login failure causes are indistinguishable in status, body and time
+         claims: 27/27 passed, 0 skipped, 0 failed
+run  8  exit=0    71s  # tests 244 # pass 244 # fail 0 # skipped 0 
+         ok 16 - 4. three login failure causes are indistinguishable in status, body and time
+         claims: 27/27 passed, 0 skipped, 0 failed
+run  9  exit=0    67s  # tests 244 # pass 244 # fail 0 # skipped 0 
+         ok 16 - 4. three login failure causes are indistinguishable in status, body and time
+         claims: 27/27 passed, 0 skipped, 0 failed
+run 10  exit=0    68s  # tests 244 # pass 244 # fail 0 # skipped 0 
+         ok 16 - 4. three login failure causes are indistinguishable in status, body and time
+         claims: 27/27 passed, 0 skipped, 0 failed
+--- summary
+runs: 10  green: 10  e16-ok: 10  e16-red: 0  claims-27: 10

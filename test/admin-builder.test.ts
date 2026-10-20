@@ -1,14 +1,11 @@
 /**
- * §9.4 / §4.4 — the table builder's **scaffold**: the form, and the preview of the
- * DDL it would emit. The executor is S2d (the AST runner and the transactional
- * `BEGIN IMMEDIATE … ≤8 statements … cms_table_registry + cms_audit` sequence), so
- * this file asserts two things and refuses to assert a third:
+ * §9.4 / §4.4 — the table builder: the form, the preview, and (S2d) the apply.
  *
  *   - the form exists when `SKW_SCHEMA_EDIT=on` and is **absent** when `off`
  *     (§9.4: "hides it entirely — no disabled button");
  *   - the preview is the emitter's own output, statement for statement;
- *   - previewing creates nothing. A preview that had a side effect would be the
- *     executor, and the executor is not in this slice.
+ *   - previewing creates nothing, while applying runs the runner — the difference
+ *     between the two is the thing a preview is for.
  */
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
@@ -197,7 +194,7 @@ test('BUILD-3. the preview is the emitter output, statement for statement', asyn
   assert.match(res.body, /not executed/i);
 });
 
-test('BUILD-4. a preview creates nothing — there is no executor in this slice', async () => {
+test('BUILD-4. a preview creates nothing (the executor is the apply path, not the preview)', async () => {
   assert.deepEqual(uTables(), [], 'the preview must not run DDL');
 });
 
@@ -227,3 +224,64 @@ test('BUILD-7. the preview is a POST with the CSRF header, like every other writ
   assert.equal(res.status, 403);
   assert.equal(codeOf(res), 'SKW_E_SEC_CSRF');
 });
+
+// --- S2d: apply is the runner, behind the same two gates -------------------
+
+test('BUILD-8. apply creates the table, its registry row and its audit row in one transaction', async () => {
+  const columns = ['full_name TEXT NOT NULL', 'age INTEGER'].join('\n');
+  const res = await post(onPort, '/admin/t/acme/builder/apply', { table: 'crew', columns });
+  assert.equal(res.status, 200, res.body);
+  assert.match(String(header(res, 'content-type')), /text\/html/);
+  assert.match(res.body, /data-role="applied"/);
+  assert.match(res.body, /u_crew/);
+
+  assert.deepEqual(uTables(), ['u_crew'], 'the applied op is the only u_* table');
+  const db = new Database(fixture.sitePath('acme'), { readonly: true });
+  try {
+    const registry = db.prepare("SELECT table_class, column_count FROM cms_table_registry WHERE table_name = 'u_crew'").get() as
+      | { table_class: string; column_count: number }
+      | undefined;
+    assert.equal(registry?.table_class, 'user');
+    assert.equal(registry?.column_count, 3);
+    const audit = db.prepare("SELECT action, actor_label FROM cms_audit WHERE action = 'ddl.create_table'").get() as
+      | { action: string; actor_label: string }
+      | undefined;
+    assert.equal(audit?.actor_label, 'owner@acme.test', 'the audit row carries the operator, not the process');
+  } finally {
+    db.close();
+  }
+});
+
+test('BUILD-9. apply of an existing table is a 409, and the refused request changes nothing', async () => {
+  const res = await post(onPort, '/admin/t/acme/builder/apply', { table: 'crew', columns: 'other TEXT' });
+  assert.equal(res.status, 409, res.body);
+  assert.equal(codeOf(res), 'SKW_E_DM_KEY_IN_USE');
+
+  const db = new Database(fixture.sitePath('acme'), { readonly: true });
+  try {
+    const columns = (db.prepare('PRAGMA table_info("u_crew")').all() as { name: string }[]).map((c) => c.name);
+    assert.deepEqual(columns, ['id', 'full_name', 'age'], 'a refused apply must not alter the table');
+    const auditRows = (db.prepare("SELECT count(*) AS n FROM cms_audit WHERE action = 'ddl.create_table'").get() as { n: number }).n;
+    assert.equal(auditRows, 1, 'a refused apply must not write an audit row');
+  } finally {
+    db.close();
+  }
+});
+
+test('BUILD-10. apply is absent when SKW_SCHEMA_EDIT=off, and refuses without the CSRF header', async () => {
+  const offRes = await call({ port: offPort, path: '/admin/t/acme/builder/apply', host: ADMIN_HOST, headers: { cookie: session.cookie } });
+  assert.equal(offRes.status, 404, offRes.body);
+  assert.equal(codeOf(offRes), 'SKW_E_PLT_TENANT_UNKNOWN');
+
+  const noCsrf = await call({
+    port: onPort,
+    path: '/admin/t/acme/builder/apply',
+    method: 'POST',
+    host: ADMIN_HOST,
+    headers: { cookie: session.cookie, origin: ADMIN_ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ table: 'nope', columns: 'x TEXT' }).toString(),
+  });
+  assert.equal(noCsrf.status, 403);
+  assert.equal(codeOf(noCsrf), 'SKW_E_SEC_CSRF');
+});
+

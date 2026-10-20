@@ -28,8 +28,8 @@
  * of the same table, so the chain is per-file and append-only.
  */
 import type Database from 'better-sqlite3';
-import { createHash } from 'node:crypto';
 
+import { appendAudit } from '../audit/chain.ts';
 import { AppError } from '../errors.ts';
 
 export interface Actor {
@@ -61,7 +61,13 @@ export interface TableInfo {
 
 /** `tenant.key`-style discipline for identifiers; a table name is never interpolated unchecked. */
 const IDENT = /^[a-z][a-z0-9_]{0,63}$/;
-const TABLE = /^cms_[a-z][a-z0-9_]{0,63}$/;
+/**
+ * `cms_*` and `u_*`. §9.3 says "row data in `cms_*` is editable through generated
+ * forms"; a `u_*` table is created by §9.4's builder and has no other surface, so the
+ * same writer edits it — with the same audit row, the same `admin-write` class and the
+ * same three immutability rules. `p_*` stays out: a plugin's rows are the plugin's.
+ */
+const TABLE = /^(cms_|u_)[a-z][a-z0-9_]{0,63}$/;
 
 /** Long text gets a textarea; everything else an input. */
 const LONG_TEXT = new Set([
@@ -346,54 +352,12 @@ function inTransaction<T>(db: Database.Database, fn: () => T): T {
 }
 
 // --- §9.6: the audit row, in the same transaction -------------------------
+//
+// The canonical row and the hash live in `app/audit/chain.ts`, which the verifier and
+// the DDL runner also use: one definition of what a chain link is, or the writer and a
+// verifier disagree at the first field one of them forgot.
 
-function appendAudit(
-  db: Database.Database,
-  actor: Actor,
-  action: string,
-  table: string,
-  targetId: string,
-  before: Record<string, unknown> | null,
-  after: Record<string, unknown> | null,
-): void {
-  const previous = db.prepare('SELECT hash FROM cms_audit ORDER BY id DESC LIMIT 1').get() as { hash: string } | undefined;
-  const prev = previous?.hash ?? '';
-  const ts = new Date().toISOString();
-  const beforeJson = before === null ? null : JSON.stringify(before);
-  const afterJson = after === null ? null : JSON.stringify(after);
-  // The canonical row: every column this row carries, keys sorted.
-  const hash = createHash('sha256')
-    .update(
-      prev +
-        stable({
-          actor_user_id: actor.userId,
-          actor_label: actor.label,
-          action,
-          target_kind: table,
-          target_id: targetId,
-          before_json: beforeJson,
-          after_json: afterJson,
-          ts,
-        }),
-    )
-    .digest('hex');
-
-  db.prepare(
-    `INSERT INTO cms_audit
-       (actor_user_id, actor_label, action, target_kind, target_id, before_json, after_json, prev_hash, hash, ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(actor.userId, actor.label, action, table, targetId, beforeJson, afterJson, prev, hash, ts);
-}
-
-function stable(value: Record<string, unknown>): string {
-  const keys = Object.keys(value).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${JSON.stringify(value[k])}`).join(',')}}`;
-}
-
-/** Exported so a verifier can check the chain with the writer's own definition. */
-export function auditHash(prev: string, row: Record<string, unknown>): string {
-  return createHash('sha256').update(prev + stable(row)).digest('hex');
-}
+export { auditHash } from '../audit/chain.ts';
 
 /** The identifier rule, exported for the router's path parsing. */
 export function isIdentifier(value: string): boolean {

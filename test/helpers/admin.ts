@@ -136,3 +136,15 @@ export function median(samples: readonly number[]): number {
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2 : (sorted[mid] ?? 0);
 }
+
+/**
+ * The sample at `p` per cent, nearest-rank. Used to describe a timing distribution
+ * beside its median: a gate whose median moved and whose p10/p90 did not is a real
+ * asymmetry, and one where the whole spread moved is the box (E-16).
+ */
+export function percentile(samples: readonly number[], p: number): number {
+  const sorted = [...samples].sort((a, b) => a - b);
+  if (sorted.length === 0) return 0;
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.round((p / 100) * (sorted.length - 1))));
+  return sorted[index] as number;
+}

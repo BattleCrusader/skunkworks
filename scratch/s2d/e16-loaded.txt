@@ -1,0 +1,29 @@
+migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+registry: tenant broken skipped (SQLITE_NOTADB)
+plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+--- interleaved (A,B,C per round) ---
+wrong_password  n= 60 median=  31.94 ms  p10=  23.83  p90=  43.90  min=17.27  max=355.06
+unknown_email   n= 60 median=  32.17 ms  p10=  23.70  p90=  42.84  min=16.11  max=116.69
+wrong_totp      n= 60 median=  33.47 ms  p10=  26.26  p90=  52.40  min=21.51  max=158.57
+ratio of medians = 1.048   (band 1.200)
+A-C delta = -1.53 ms;  A-B delta = -0.23 ms
+--- sequential blocks (all A, then B, then C) ---
+wrong_password  n= 60 median=  30.42 ms  p10=  24.45  p90=  41.48  min=22.14  max=97.40
+unknown_email   n= 60 median=  31.59 ms  p10=  23.09  p90=  44.64  min=14.89  max=76.94
+wrong_totp      n= 60 median=  31.54 ms  p10=  24.95  p90=  41.61  min=17.83  max=74.30
+ratio of medians = 1.039   (band 1.200)
+./scratch/s2d/load.sh: line 18: 35958 Terminated: 15          ( end=$((SECONDS+DUR)); while [ $SECONDS -lt $end ]; do
+    :;
+done ) 2> /dev/null
+./scratch/s2d/load.sh: line 18: 35959 Terminated: 15          ( end=$((SECONDS+DUR)); while [ $SECONDS -lt $end ]; do
+    :;
+done ) 2> /dev/null
+./scratch/s2d/load.sh: line 18: 35960 Terminated: 15          ( end=$((SECONDS+DUR)); while [ $SECONDS -lt $end ]; do
+    :;
+done ) 2> /dev/null
+./scratch/s2d/load.sh: line 18: 35961 Terminated: 15          ( end=$((SECONDS+DUR)); while [ $SECONDS -lt $end ]; do
+    :;
+done ) 2> /dev/null
+./scratch/s2d/load.sh: line 18: 35962 Terminated: 15          ( end=$((SECONDS+DUR)); while [ $SECONDS -lt $end ]; do
+    dd if=/dev/zero of=/tmp/skwload.$$ bs=1m count=48 conv=fsync 2> /dev/null;
+done ) 2> /dev/null
