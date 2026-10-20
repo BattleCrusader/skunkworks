@@ -68,7 +68,9 @@ before(async () => {
   // The same fixture with an allowlist populated: TOTP is no longer mandatory.
   populated = makeFixture();
   await seedUser({ controlDb: populated.controlDb, tenantKey: 'acme', email: OWNER, totpSecret: TOTP_SECRET });
-  populatedHandle = await buildApp({ env: loadEnv(populated.env), adminAllowlist: ['10.0.0.0/8'] });
+  // E-17: the allowlist's only storage is SKW_ADMIN_ALLOWLIST, so the test sets the
+  // variable the edge reads. There is no build option to disagree with it.
+  populatedHandle = await buildApp({ env: loadEnv({ ...populated.env, SKW_ADMIN_ALLOWLIST: '10.0.0.0/8' }) });
   populatedPort = await listen(populatedHandle);
 
   // A bundle: SKW_FLEET_MODE=0 (§9.1).

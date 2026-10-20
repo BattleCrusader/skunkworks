@@ -17,16 +17,17 @@
  */
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { after, before, test } from 'node:test';
 
 import { buildApp, type AppHandle } from '../app/main.ts';
+import { parseAdminAllowlist } from '../app/admin/allowlist.ts';
 import { loadEnv } from '../app/env.ts';
 import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
-import { call, postRaw } from './helpers/http.ts';
+import { call, header, postRaw } from './helpers/http.ts';
 
 const SKIP = process.env.SKW_SKIP_DOCKER === '1';
 
@@ -41,6 +42,12 @@ function freePort(): Promise<number> {
       srv.close(() => resolve(port));
     });
   });
+}
+
+/** The app's own access log, line by line (empty before the first request). */
+function logLines(): string[] {
+  if (!existsSync(accessLog)) return [];
+  return readFileSync(accessLog, 'utf8').split('\n').filter((l) => l !== '');
 }
 
 function dockerAvailable(): boolean {
@@ -78,6 +85,14 @@ let container = '';
 let tmp = '';
 let ready = false;
 
+/** E-17: a second pair of edges, one admitting the test peer and one refusing it. */
+let allowPort = 0;
+let denyPort = 0;
+let allowContainer = '';
+let denyContainer = '';
+let accessLog = '';
+const extraDirs: string[] = [];
+
 before(async () => {
   if (SKIP) return;
   if (!dockerAvailable()) {
@@ -96,7 +111,11 @@ before(async () => {
       // Production already trusts 172.16.0.0/12 (the compose network); Docker
       // Desktop on macOS also uses 192.168.65.0/24 for its VM.
       SKW_EDGE_TRUSTED_CIDRS: '127.0.0.1/32,172.16.0.0/12,192.168.0.0/16',
+      // E-17: the edge test needs the app's own record of what reached it. The
+      // access log is a build option, not an env name (§4.3 stays at 23).
+      SKW_ADMIN_ALLOWLIST: '',
     }),
+    accessLogPath: (accessLog = join(mkdtempSync(join(REPO, '.e2e-log-')), 'access.log')),
   });
   appPort = await freePort();
   await handle.app.listen({ port: appPort, host: '0.0.0.0' });
@@ -124,6 +143,11 @@ before(async () => {
   writeFileSync(
     join(conf, '00-default.conf'),
     'server { listen 80 default_server; server_name _; location / { return 404; } }\n',
+  );
+  // E-17 needs nginx's own view of the peer address, not an assumption about it.
+  writeFileSync(
+    join(conf, '05-probe.conf'),
+    'server { listen 80; server_name probe.test; location / { return 200 "$remote_addr"; } }\n',
   );
 
   let generated = generateAppConf(readHosts(fixture.controlDb), {
@@ -188,11 +212,70 @@ before(async () => {
     await new Promise((r) => setTimeout(r, 250));
   }
   assert.ok(ready, 'nginx never answered /healthz through the edge');
+
+  // --- E-17: two more edges over the same app, differing only in the allowlist.
+  //
+  // nginx sees the *host's* address on the bridge, not 127.0.0.1, so the peer
+  // address is measured rather than assumed: 05-probe.conf returns $remote_addr.
+  const probe = await call({ port: edgePort, path: '/', host: 'probe.test' });
+  const peer = probe.body.trim();
+  assert.match(peer, /^[0-9a-fA-F:.]+$/, `could not read the edge's view of the peer: ${probe.body}`);
+
+  const edgeFor = async (allowlist: string[], name: string): Promise<{ port: number; container: string }> => {
+    const dir = mkdtempSync(join(REPO, `.e2e-${name}-`));
+    extraDirs.push(dir);
+    const c = join(dir, 'conf.d');
+    mkdirSync(c, { recursive: true });
+    writeFileSync(join(c, '00-default.conf'), 'server { listen 80 default_server; server_name _; location / { return 404; } }\n');
+    let text = generateAppConf(readHosts(fixture.controlDb), {
+      adminHost: 'admin.skw.test',
+      demosHost: 'demos.skw.test',
+      boxRps: 192,
+      adminAllowlist: parseAdminAllowlist(allowlist.join(',')),
+    });
+    text = text.replace(/listen 443 ssl;/g, '').replace(/proxy_pass http:\/\/app:3000;/g, `proxy_pass http://${gateway}:${appPort};`);
+    writeFileSync(join(c, '10-app.conf'), text);
+    const port = await freePort();
+    const name_ = `skw-nginx-e2e-${name}-${process.pid}`;
+    const run2 = spawnSync(
+      'docker',
+      [
+        'run', '--rm', '-d',
+        '--name', name_,
+        '--add-host', 'host.docker.internal:host-gateway',
+        '-p', `${port}:80`,
+        '-v', `${join(tmp, 'nginx.conf')}:/etc/nginx/nginx.conf:ro`,
+        '-v', `${c}:/etc/nginx/conf.d:ro`,
+        '-v', `${snippets}:/etc/nginx/snippets:ro`,
+        'nginx:1.31-alpine',
+      ],
+      { encoding: 'utf8' },
+    );
+    assert.equal(run2.status, 0, run2.stderr);
+    for (let i = 0; i < 60; i += 1) {
+      const p = await call({ port, path: '/healthz', host: 'acme.test' }).catch(() => undefined);
+      if (p !== undefined && p.status === 200) return { port, container: name_ };
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    throw new Error(`nginx (${name}) never answered /healthz`);
+  };
+
+  const allow = await edgeFor([`${peer}/32`], 'allow');
+  allowPort = allow.port;
+  allowContainer = allow.container;
+  const deny = await edgeFor(['203.0.113.0/24'], 'deny');
+  denyPort = deny.port;
+  denyContainer = deny.container;
 });
 
 after(async () => {
-  if (container !== '') spawnSync('docker', ['rm', '-f', container], { encoding: 'utf8' });
-  if (tmp !== '') rmSync(tmp, { recursive: true, force: true });
+  for (const name of [container, allowContainer, denyContainer]) {
+    if (name !== '') spawnSync('docker', ['rm', '-f', name], { encoding: 'utf8' });
+  }
+  for (const dir of [tmp, accessLog === '' ? '' : dirname(accessLog)]) {
+    if (dir !== '') rmSync(dir, { recursive: true, force: true });
+  }
+  for (const dir of extraDirs) rmSync(dir, { recursive: true, force: true });
   if (handle !== undefined) await handle.close();
   if (fixture !== undefined) fixture.cleanup();
 });
@@ -328,4 +411,34 @@ test('E-13: a 16 MiB body through the edge passes the limit and reaches the app'
   });
   assert.equal(res.status, 200, res.body.slice(0, 200));
   assert.equal((res.json as Whoami).body_bytes, 16 * 1024 * 1024);
+});
+
+// --- E-17 / E-13's fifth exception: the denied peer ----------------------
+
+test('E-17: a peer outside SKW_ADMIN_ALLOWLIST is nginx\'s 403, and the app never sees the request', { skip: SKIP }, async () => {
+  const path = '/admin/login?denied=1';
+  const before = logLines().length;
+
+  const res = await call({ port: denyPort, path, host: 'admin.skw.test' });
+  assert.equal(res.status, 403, res.body.slice(0, 200));
+
+  // E-13's fifth exception: nginx's body, no taxonomy code, no Set-Cookie. A
+  // taxonomy body here would publish the error registry to an unauthenticated peer.
+  assert.match(String(res.headers['content-type']), /text\/html/, 'the denied peer gets nginx\'s HTML, not a taxonomy body');
+  assert.equal(res.json, undefined, 'a denied peer must not receive JSON');
+  assert.doesNotMatch(res.body, /SKW_E_/);
+  assert.equal(header(res, 'set-cookie'), undefined, 'a denied peer gets no Set-Cookie');
+
+  // The app's own access log: the request did not arrive.
+  const lines = logLines();
+  assert.equal(lines.length, before, `the app recorded the denied request: ${lines.slice(-2).join(' | ')}`);
+  assert.equal(lines.some((l) => l.includes('denied=1')), false, 'the denied request reached the app');
+});
+
+test('E-17: the same request from a peer inside the list reaches the app', { skip: SKIP }, async () => {
+  const res = await call({ port: allowPort, path: '/admin/login?allowed=1', host: 'admin.skw.test' });
+  assert.equal(res.status, 200, res.body.slice(0, 200));
+  assert.match(res.body, /<form method="post" action="\/admin\/login"/);
+  // And the app's access log now has it: the pair of tests differs only in the list.
+  assert.ok(logLines().some((l) => l.includes('allowed=1')), 'the allowed request never reached the app');
 });

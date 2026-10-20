@@ -12,7 +12,7 @@
  */
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -63,12 +63,13 @@ export interface BuildAppOptions {
   /** Skip the boot migration fan-out (tests that want a corrupt fixture untouched). */
   migrateOnBoot?: boolean;
   /**
-   * §9.1's IP allowlist — opt-in, empty in every exported bundle. The SDS names the
-   * control and not its storage (no env name, no control table), so it enters here
-   * and defaults to empty, which is the exported-bundle value and the one that
-   * makes TOTP mandatory and idle 15 minutes.
+   * Where the app records one line per request it *received*.
+   *
+   * Not a product feature and not an environment name (§4.3 stays at 23): the
+   * E-17 gate has to assert that a peer denied by nginx never reached the app,
+   * and the only honest witness to "reached the app" is the app's own log.
    */
-  adminAllowlist?: string[];
+  accessLogPath?: string;
 }
 
 /**
@@ -132,13 +133,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   const sitePath = (key: string): string => join(tenantsDir, key, 'site.db');
 
   // --- S2a: the admin surface (§9.1, §9.2) --------------------------------
-  const admin = new AdminSurface({
-    env,
-    controlPath,
-    tenants,
-    adminHost,
-    allowlist: opts.adminAllowlist ?? [],
-  });
+  const admin = new AdminSurface({ env, controlPath, tenants, adminHost });
 
   // --- step 5: component registry, one transaction per tenant --------------
   const registry = readComponentRegistry(schemaDir);
@@ -161,6 +156,17 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     trustProxy: false,
     bodyLimit: 16 * 1024 * 1024,
   });
+
+  // E-17's gate needs a witness that a request did — or did not — reach the app.
+  // One line per request, before routing, so a 404 or a 403 from the app is still
+  // recorded. Off unless a caller names a file.
+  if (opts.accessLogPath !== undefined) {
+    const target = opts.accessLogPath;
+    app.addHook('onRequest', (req, _reply, done) => {
+      appendFileSync(target, `${new Date().toISOString()} ${req.method} ${req.url}\n`);
+      done();
+    });
+  }
 
   // D29's login page is a plain HTML form (`enctype=application/x-www-form-urlencoded`)
   // so the surface works with no JavaScript and no extra dependency. The body is

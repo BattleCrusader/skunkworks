@@ -4,12 +4,14 @@
  * (count(location-with-proxy_pass) == count(skunk-proxy include)) and the fact
  * that the generated file is the file in the repo.
  */
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { generateAppConf, readHosts, tenantRate } from '../tools/nginx_gen.ts';
+import { parseAdminAllowlist } from '../app/admin/allowlist.ts';
+import { generateAppConf, main, parseAllowlistForGenerator, readHosts, tenantRate } from '../tools/nginx_gen.ts';
 import { REPO, makeFixture } from './helpers/fixture.ts';
 
 const fixture = makeFixture();
@@ -191,4 +193,77 @@ test('the snippet is the frozen one: empty tenant header, edge token placeholder
   assert.match(snippet, /proxy_set_header X-Skunkworks-Tenant "";/);
   assert.match(snippet, /proxy_set_header X-Skunkworks-Edge {2}"__SKW_EDGE_TOKEN__";/);
   assert.match(snippet, /proxy_next_upstream {3}off;/);
+});
+
+// --- E-17: the allowlist is emitted in the admin block, and nowhere else ---
+
+test('E-17: with the list empty the admin block emits neither allow nor deny, and no block does', () => {
+  assert.doesNotMatch(generated, /^\s*allow\s/m, 'an empty allowlist must not emit an access directive');
+  assert.doesNotMatch(generated, /^\s*deny\s/m, 'an empty allowlist must never become an accidental deny all');
+  // The whole file, not only the admin block: §9.1a says the admin block and no other.
+  assert.equal(generated.includes('deny'), false, 'the string `deny` must not appear in 10-app.conf at all');
+});
+
+test('E-17: a populated list emits one `allow` per block plus `deny all;` in the admin block only', () => {
+  const withList = generateAppConf(readHosts(fixture.controlDb), {
+    adminHost: 'admin.skw.test',
+    demosHost: 'demos.skw.test',
+    adminAllowlist: parseAdminAllowlist('203.0.113.0/24, 2001:db8::/32'),
+  });
+  const admin = serverBlock(withList, 'admin.skw.test');
+  assert.match(admin, /^ {4}allow 203\.0\.113\.0\/24;$/m);
+  assert.match(admin, /^ {4}allow 2001:db8::\/32;$/m);
+  assert.match(admin, /^ {4}deny {2}all;$/m);
+  // Order: allow lines, then the deny, and both before the first location.
+  const firstAllow = admin.indexOf('allow 203.0.113.0/24;');
+  const deny = admin.indexOf('deny  all;');
+  const location = admin.indexOf('location /');
+  assert.ok(firstAllow !== -1 && deny !== -1 && firstAllow < deny && deny < location, admin);
+
+  // No tenant block and no demos block carries either directive, ever.
+  for (const spec of fixture.specs) {
+    if (spec.corrupt === true) continue;
+    const host = spec.hosts[0] as string;
+    const block = serverBlock(withList, host);
+    assert.doesNotMatch(block, /^\s*(allow|deny)\s/m, `tenant ${spec.key} carries an access directive`);
+  }
+  assert.doesNotMatch(serverBlock(withList, 'demos.skw.test'), /^\s*(allow|deny)\s/m);
+});
+
+test('E-17: the admin and demos hosts are derived from SKW_ADMIN_ORIGIN, and the old env names are gone', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'skw-nginxd-'));
+  const out = join(tmp, '10-app.conf');
+  const saved = { origin: process.env.SKW_ADMIN_ORIGIN, admin: process.env.SKW_ADMIN_HOST, demos: process.env.SKW_DEMOS_HOST };
+  try {
+    process.env.SKW_ADMIN_ORIGIN = 'https://admin.cms.example.com';
+    // The deleted names are read by nothing; setting them must change nothing.
+    process.env.SKW_ADMIN_HOST = 'wrong.example';
+    process.env.SKW_DEMOS_HOST = 'also-wrong.example';
+    assert.equal(main(['--data-dir', fixture.dir, '--out', out]), 0);
+    const text = readFileSync(out, 'utf8');
+    assert.match(text, /server_name admin\.cms\.example\.com;/);
+    assert.match(text, /server_name demos\.cms\.example\.com;/, 'demos is admin with its first label replaced');
+    assert.doesNotMatch(text, /wrong\.example/, 'SKW_ADMIN_HOST/SKW_DEMOS_HOST are deleted, not read');
+  } finally {
+    for (const [key, value] of Object.entries({ SKW_ADMIN_ORIGIN: saved.origin, SKW_ADMIN_HOST: saved.admin, SKW_DEMOS_HOST: saved.demos })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('E-17: the generator refuses a malformed allowlist from the same parser, with the same message', () => {
+  let parserMessage = '';
+  try {
+    parseAdminAllowlist('10.0.0.0/33');
+  } catch (err) {
+    parserMessage = (err as Error).message;
+  }
+  assert.match(parserMessage, /SKW_ADMIN_ALLOWLIST/);
+  assert.throws(
+    () => parseAllowlistForGenerator('10.0.0.0/33'),
+    (err: unknown) => (err as Error).message === parserMessage,
+    'the edge and the app must give one answer to "is this value usable"',
+  );
 });

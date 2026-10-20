@@ -26,10 +26,18 @@ export const HTTP: Record<string, number> = {
   SKW_E_PLT_INTERNAL: 500,
   SKW_E_PLT_REQUEST_INVALID: 400,
   SKW_E_PLT_BODY_TOO_LARGE: 413,
-  // DM — the data model plane
+  // DM — the data model plane. S2c adds the four the CRUD write path can receive
+  // from the schema itself: two triggers raise COLUMN_IMMUTABLE / ASSET_IN_USE by
+  // name (§4.3), and a UNIQUE / FK refusal is a 409 by §4.3's table.
   SKW_E_DM_SCHEMA_STALE: 503,
   SKW_E_DM_BUSY: 503,
   SKW_E_DM_QUOTA: 507,
+  SKW_E_DM_KEY_IN_USE: 409,
+  SKW_E_DM_FK_VIOLATION: 409,
+  SKW_E_DM_COLUMN_IMMUTABLE: 409,
+  SKW_E_DM_ASSET_IN_USE: 409,
+  // §4.4: a DDL statement the AST refuses, before any SQL is emitted.
+  SKW_E_DM_DDL_REJECTED: 422,
   // SEC — the security plane (S2a: §9.1's session/CSRF controls). The statuses are
   // the frozen ones from schema/error-codes.json.
   //

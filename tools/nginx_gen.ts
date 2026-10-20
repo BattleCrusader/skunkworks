@@ -26,11 +26,19 @@ import Database from 'better-sqlite3';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { parseAdminAllowlist, parseAdminAllowlistFrom } from '../app/admin/allowlist.ts';
+import { adminHostOf, demosHostOf } from '../app/env.ts';
+
 export interface GenOptions {
   edgePlaceholder?: string;
   adminHost: string;
   demosHost: string;
   boxRps?: number;
+  /**
+   * §9.1a (E-17): the parsed blocks. `[]` (the exported-bundle value) emits no
+   * access directive at all — never an accidental `deny all`.
+   */
+  adminAllowlist?: readonly string[];
 }
 
 interface HostRow {
@@ -146,6 +154,16 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
   out.push('    listen 80; listen 443 ssl;');
   out.push(`    server_name ${opts.adminHost};`);
   out.push('');
+  const allowlist = opts.adminAllowlist ?? [];
+  if (allowlist.length > 0) {
+    // E-17: one `allow` per SKW_ADMIN_ALLOWLIST block, then `deny all;`, in the
+    // admin block and in no other. With an empty list these lines are absent, so
+    // the default is the app's own authentication and never an accidental deny.
+    out.push('    # SKW_ADMIN_ALLOWLIST (§9.1a) — the edge admits these peers and refuses every other.');
+    for (const block of allowlist) out.push(`    allow ${block};`);
+    out.push('    deny  all;');
+    out.push('');
+  }
   out.push('    location / {');
   out.push('        include /etc/nginx/snippets/skunk-proxy.conf;');
   out.push('        proxy_pass http://app:3000;');
@@ -170,12 +188,29 @@ export function readHosts(controlDbPath: string): HostRow[] {
   }
 }
 
+/**
+ * E-17: the edge's one answer to "is this value usable" — the shared parser,
+ * unchanged. Kept as a named function so a test can assert the message is
+ * byte-identical to the app's, rather than inferring it from `main()`.
+ */
+export function parseAllowlistForGenerator(raw: string | undefined): string[] {
+  return parseAdminAllowlist(raw);
+}
+
 export function main(argv: readonly string[] = process.argv.slice(2)): number {
   let dataDir = process.env.SKW_DATA_DIR ?? '/srv/data';
   let out = join(process.cwd(), 'nginx', 'conf.d', '10-app.conf');
-  let adminHost = process.env.SKW_ADMIN_HOST ?? 'admin.skw.invalid';
-  let demosHost = process.env.SKW_DEMOS_HOST ?? 'demos.skw.invalid';
   let boxRps = Number(process.env.SKW_BOX_RPS ?? '192');
+  // E-17: SKW_ADMIN_HOST and SKW_DEMOS_HOST are deleted. The admin host is the
+  // host component of SKW_ADMIN_ORIGIN (§9.1) and demos is derived from it; the
+  // two flags below stay as test-only overrides.
+  const derivedAdmin = adminHostOf(process.env.SKW_ADMIN_ORIGIN ?? '');
+  if (derivedAdmin === null) {
+    throw new Error('nginx_gen: SKW_ADMIN_ORIGIN is required — the admin host is derived from it (E-17, §9.1a)');
+  }
+  let adminHost = derivedAdmin;
+  let demosHost = demosHostOf(derivedAdmin);
+  let adminAllowlist = parseAdminAllowlistFrom(process.env);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--data-dir') dataDir = argv[i + 1] ?? dataDir;
@@ -184,7 +219,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
     else if (arg === '--demos-host') demosHost = argv[i + 1] ?? demosHost;
     else if (arg === '--box-rps') boxRps = Number(argv[i + 1] ?? boxRps);
   }
-  const text = generateAppConf(readHosts(join(dataDir, 'control.db')), { adminHost, demosHost, boxRps });
+  const text = generateAppConf(readHosts(join(dataDir, 'control.db')), { adminHost, demosHost, boxRps, adminAllowlist });
   writeFileSync(out, text);
   process.stdout.write(`wrote ${out} (${text.split('\n').length} lines)\n`);
   return 0;

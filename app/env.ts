@@ -5,7 +5,9 @@
  *   1. refuse any key matching ^SK_|^SKUNK_, naming the key and its replacement
  *   2. assert SKW_ARGON2_MAX_CONCURRENT=4 and UV_THREADPOOL_SIZE=8
  */
+import { AllowlistParseError, parseAdminAllowlistFrom } from './admin/allowlist.ts';
 import { DELETED_ENV_NAMES } from './env-deleted.ts';
+import { normaliseHost } from './tenancy/normalise-host.ts';
 
 /** A refusal raised before the process is allowed to serve. */
 export class BootRefusal extends Error {
@@ -40,17 +42,23 @@ export interface Env {
   repointMaxRows: number;
   boxRps: number;
   emailMode: 'off' | 'smtp';
+  /**
+   * §9.1a (E-17): comma-separated CIDRs allowed to reach the admin host. Empty in
+   * every exported bundle; the edge enforces it, the app reads it for §9.1's two
+   * consequences (TOTP mandatory, idle 15 min) and for nothing else.
+   */
+  adminAllowlist: string[];
   port: number;
 }
 
-/** §4.2: twenty-two names, and this table is the complete list. */
+/** §4.3 (E-17): twenty-three names, and this table is the complete list. */
 export const SKW_NAMES = [
   'SKW_DATA_DIR', 'SKW_DB_POOL_MAX', 'SKW_DB_BUSY_TIMEOUT_MS', 'SKW_EDGE_TOKEN',
   'SKW_EDGE_TRUSTED_CIDRS', 'SKW_SESSION_KEY', 'SKW_DOWNLOAD_TOKEN_KEY', 'SKW_IP_HASH_KEY',
   'SKW_ADMIN_ORIGIN', 'SKW_ARGON2_MAX_CONCURRENT', 'SKW_DDL_MAX_STATEMENTS', 'SKW_RENDER_MODE',
   'SKW_EXPORT_NOW', 'SKW_SCHEMA_EDIT', 'SKW_FLEET_MODE', 'SKW_BUILD_ID', 'SKW_SMTP_URL',
   'SKW_SNAPSHOT_MAX_COMBOS', 'SKW_SNAPSHOT_MAX_BYTES', 'SKW_REPOINT_MAX_ROWS', 'SKW_BOX_RPS',
-  'SKW_EMAIL_MODE',
+  'SKW_EMAIL_MODE', 'SKW_ADMIN_ALLOWLIST',
 ] as const;
 
 /** §2.3 step 1: refuse to start without these six. */
@@ -149,6 +157,9 @@ export function loadEnv(
     repointMaxRows: int(source, 'SKW_REPOINT_MAX_ROWS', 5000),
     boxRps: int(source, 'SKW_BOX_RPS', 192),
     emailMode: parseEnum(source, 'SKW_EMAIL_MODE', 'off', ['off', 'smtp'] as const),
+    // E-17: the one parser. A non-empty value that does not parse refuses the boot
+    // with the parser's own message, so the edge and the app say the same thing.
+    adminAllowlist: allowlistOrRefuse(source),
     port: int(source, 'PORT', 3000),
   };
 
@@ -193,12 +204,35 @@ function splitCidrs(raw: string): string[] {
   return raw.split(',').map((s) => s.trim()).filter((s) => s !== '');
 }
 
-/** The admin listener is the admin host of SKW_ADMIN_ORIGIN (§9.1). */
+/** §9.1a (E-17): a non-empty value that does not parse is a boot refusal naming the token. */
+function allowlistOrRefuse(source: NodeJS.ProcessEnv): string[] {
+  try {
+    return parseAdminAllowlistFrom(source);
+  } catch (err) {
+    if (err instanceof AllowlistParseError) throw new BootRefusal(err.message);
+    throw err;
+  }
+}
+
+/**
+ * The admin listener is the admin host of SKW_ADMIN_ORIGIN (§9.1), normalised the
+ * same way a tenant Host is (§5.3): lowercase, no port, domainToASCII.
+ */
 export function adminHostOf(adminOrigin: string): string | null {
   if (adminOrigin === '') return null;
   try {
-    return new URL(adminOrigin).host.toLowerCase();
+    return normaliseHost(new URL(adminOrigin).host);
   } catch {
     return null;
   }
+}
+
+/**
+ * E-17: `demos.<domain>`, derived — the admin host with its first label replaced.
+ * `admin.cms.example.com -> demos.cms.example.com`. Neither derivation is an
+ * environment variable; `--admin-host`/`--demos-host` stay as test-only flags.
+ */
+export function demosHostOf(adminHost: string): string {
+  const dot = adminHost.indexOf('.');
+  return dot === -1 ? 'demos' : `demos${adminHost.slice(dot)}`;
 }

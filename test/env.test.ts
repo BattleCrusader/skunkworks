@@ -175,3 +175,33 @@ test('the real process boots clean env, then stops at the DB it was given', asyn
   });
   assert.doesNotMatch(res.stderr, /deleted environment prefix/);
 });
+
+// --- E-17 (§9.1a): SKW_ADMIN_ALLOWLIST, parsed once, empty vs unset --------
+
+test('E-17 — unset, "", " , " are all the empty allowlist', () => {
+  assert.deepEqual(loadEnv({ ...CLEAN }).adminAllowlist, []);
+  assert.deepEqual(loadEnv({ ...CLEAN, SKW_ADMIN_ALLOWLIST: '' }).adminAllowlist, []);
+  assert.deepEqual(loadEnv({ ...CLEAN, SKW_ADMIN_ALLOWLIST: ' , ' }).adminAllowlist, []);
+  // Empty and unset are the same *value* but not the same *string*: §9.1a says
+  // unset is the bundle default and is not an error, and that a value parsing to
+  // zero blocks is empty. There is no way to express "deny all".
+  assert.equal(loadEnv({ ...CLEAN }).adminAllowlist.length, 0);
+});
+
+test('E-17 — two IPv4 blocks, and a v4 plus a v6 block, are two entries each', () => {
+  assert.deepEqual(loadEnv({ ...CLEAN, SKW_ADMIN_ALLOWLIST: '203.0.113.0/24,198.51.100.0/24' }).adminAllowlist, [
+    '203.0.113.0/24',
+    '198.51.100.0/24',
+  ]);
+  assert.deepEqual(loadEnv({ ...CLEAN, SKW_ADMIN_ALLOWLIST: '203.0.113.0/24, 2001:db8::/32' }).adminAllowlist, [
+    '203.0.113.0/24',
+    '2001:db8::/32',
+  ]);
+});
+
+test('E-17 — a non-empty malformed value refuses the boot, naming the token', () => {
+  assert.throws(
+    () => loadEnv({ ...CLEAN, SKW_ADMIN_ALLOWLIST: '10.0.0.0/33' }),
+    (err: unknown) => err instanceof BootRefusal && /SKW_ADMIN_ALLOWLIST/.test(err.message) && /10\.0\.0\.0\/33/.test(err.message),
+  );
+});

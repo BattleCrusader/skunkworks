@@ -162,7 +162,7 @@ function generateConf(gateway: string): void {
       '--admin-host', 'admin.skw.test',
       '--demos-host', 'demos.skw.test',
     ],
-    { cwd: REPO, encoding: 'utf8' },
+    { cwd: REPO, encoding: 'utf8', env: { ...process.env, ...fixture.env } },
   );
   assert.equal(gen.status, 0, `nginx_gen failed: ${gen.stderr}`);
   const text = readFileSync(confPath, 'utf8')

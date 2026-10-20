@@ -29,6 +29,9 @@ x-app-environment: &app-environment
   SKW_REPOINT_MAX_ROWS: ${SKW_REPOINT_MAX_ROWS:-5000}
   SKW_BOX_RPS: ${SKW_BOX_RPS:-192}
   SKW_EMAIL_MODE: ${SKW_EMAIL_MODE:-off}
+  # §9.1a (E-17): the edge reads it to emit allow/deny, the app reads it for TOTP
+  # and the idle window. It must reach both, or they disagree about the control.
+  SKW_ADMIN_ALLOWLIST: ${SKW_ADMIN_ALLOWLIST:-}
   UV_THREADPOOL_SIZE: "8"
 
 services:

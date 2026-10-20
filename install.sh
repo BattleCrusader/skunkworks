@@ -145,6 +145,8 @@ SKW_RENDER_MODE=live
 SKW_SCHEMA_EDIT=off
 SKW_FLEET_MODE=0
 SKW_EMAIL_MODE=off
+# §9.1a (E-17): empty in every exported bundle. Empty means TOTP is mandatory.
+SKW_ADMIN_ALLOWLIST=
 UV_THREADPOOL_SIZE=8
 ACME_EMAIL=$EMAIL
 EOF

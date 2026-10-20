@@ -13,7 +13,8 @@
  *   ....  /admin/t/<key>/<action>      every tenant-scoped URL (D29, §9.2):
  *                                      `` (home), session, session/rotate, logout,
  *                                      totp/enrol, totp/confirm, password/reset-request,
- *                                      pages, pages/<id>.
+ *                                      pages, pages/<id>, tables, tables/<table>[/<id>][/delete],
+ *                                      builder, builder/preview (S2c).
  *
  * Rules this file implements, each cited:
  *
@@ -32,6 +33,15 @@
  *    form-field alternative anywhere in this file.
  *  - **E-16** — a credential failure is `401 SKW_E_SEC_AUTH_INVALID`, with one body
  *    for all three causes; the cause observed goes to `audit_log`, never the wire.
+ *  - **§9.3** — `cms_*` rows are editable through generated forms. The forms carry
+ *    the token in `data-csrf-token` and submit through `fetch`, because D28 leaves
+ *    no form-field alternative: a no-JS form post is refused `403 SKW_E_SEC_CSRF`
+ *    by design, and the page says so in a `<noscript>`.
+ *  - **§9.4 / §4.4** — the table builder is a form and a preview of the DDL
+ *    `app/ddl/emit.ts` would emit. No executor runs here; `SKW_SCHEMA_EDIT=off`
+ *    makes the two paths unknown paths.
+ *  - **E-17** — the allowlist is read from `env.adminAllowlist`, the one parser's
+ *    output; this file does not enforce it (nginx terminates the connection).
  *
  * Order of checks on a tenant-scoped route: listener → row 1 → row 2 → session
  * (404) → tenant (404) → Origin (403) → CSRF token (403) → the route. The session
@@ -43,6 +53,20 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 
+import { emitCreateTable, registryRow, type CreateTableOp } from '../ddl/emit.ts';
+import { normaliseTableName, parseColumnLines } from '../ddl/form.ts';
+import {
+  createRow,
+  deleteRow,
+  describeTable,
+  listTables as listTablesOf,
+  listRows,
+  selectRow,
+  taxonomy,
+  updateRow,
+  type Actor,
+  type TableInfo,
+} from './crud.ts';
 import { openAdminWrite, openRenderRead } from '../db/classes.ts';
 import type { Env } from '../env.ts';
 import { AppError } from '../errors.ts';
@@ -78,8 +102,6 @@ export interface AdminOptions {
   controlPath: string;
   tenants: TenantMap;
   adminHost: string | null;
-  /** §9.1: opt-in, empty in every exported bundle. Empty ⇒ TOTP mandatory, 15-min idle. */
-  allowlist?: string[];
 }
 
 interface Headers {
@@ -162,7 +184,10 @@ export class AdminSurface {
     this.#controlPath = opts.controlPath;
     this.#tenants = opts.tenants;
     this.#adminHost = opts.adminHost;
-    this.#allowlist = opts.allowlist ?? [];
+    // E-17: the one parser's output, read from the environment — there is no
+    // second way to set this value, so the app cannot disagree with the edge
+    // about what the list is.
+    this.#allowlist = opts.env.adminAllowlist;
     this.#idleMs = idleMsFor(this.#allowlist);
     this.sessions = new SessionStore(opts.controlPath, opts.env.sessionKey, opts.env.ipHashKey, opts.env.dbBusyTimeoutMs);
     this.auth = new Auth({
@@ -508,6 +533,35 @@ ${items}
       this.#pageDetail(reply, tenant, Number(id));
       return;
     }
+    // §9.4 — the table builder's scaffold. Off means absent, not disabled: with
+    // SKW_SCHEMA_EDIT=off these two paths are unknown admin paths.
+    if (action === 'builder' || action === 'builder/preview') {
+      // §9.4: `off` hides it entirely. A hidden surface is an absent route — not a
+      // refusal that would tell a prober the feature exists on another box.
+      if (this.#env.schemaEdit !== 'on') {
+        throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no admin route at this path');
+      }
+      if (action === 'builder') {
+        this.#requireMethod(req, 'GET');
+        this.#builderForm(reply, tenant, session);
+        return;
+      }
+      this.#requireMethod(req, 'POST');
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#builderPreview(req, reply, tenant, session);
+      return;
+    }
+
+    // §9.3 — the CRUD write path, on `admin-write`.
+    if (action === 'tables' && req.method === 'GET') {
+      this.#tablesIndex(reply, tenant);
+      return;
+    }
+    if (action.startsWith('tables/')) {
+      await this.#tableRoute(req, reply, session, tenant, action.slice('tables/'.length));
+      return;
+    }
     throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
   }
 
@@ -522,6 +576,8 @@ ${items}
 <nav>
   <a href="/admin">All tenants</a>
   <a href="/admin/t/${esc(tenant.key)}/pages">Pages</a>
+  <a href="/admin/t/${esc(tenant.key)}/tables">Tables</a>
+  ${this.#env.schemaEdit === 'on' ? `<a href="/admin/t/${esc(tenant.key)}/builder">Table builder</a>` : ''}
   <a href="/admin/t/${esc(tenant.key)}/session">Session</a>
 </nav>`,
       ),
@@ -704,6 +760,325 @@ ${items}
     } catch {
       throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'tenant database is not readable');
     }
+  }
+
+  /** §2.2's `admin-write`: the only class this file writes through. */
+  #siteWrite(key: string): Database.Database {
+    const file = join(this.#env.dataDir, 'tenants', key, 'site.db');
+    try {
+      return openAdminWrite(file, this.#env.dbBusyTimeoutMs);
+    } catch {
+      throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'tenant database is not writable');
+    }
+  }
+
+  // --- §9.3: the CRUD write path ------------------------------------------
+
+  #actor(session: SessionRecord): Actor {
+    const user = this.auth.userById(session.userId);
+    if (user === null) throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no session');
+    return { userId: user.id, label: user.email };
+  }
+
+  #tablesIndex(reply: FastifyReply, tenant: Tenant): void {
+    const db = this.#siteDb(tenant.key);
+    try {
+      // `listTables` is a read, so it runs on the render-read class; every write
+      // below opens its own `admin-write` handle and closes it.
+      const tables = listTablesOf(db);
+      const items = tables
+        .map((t) => `<li><a href="/admin/t/${esc(tenant.key)}/tables/${esc(t)}">${esc(t)}</a></li>`)
+        .join('\n');
+      reply.type('text/html; charset=utf-8').send(
+        page(
+          `Skunkworks — ${tenant.key} — tables`,
+          `<h1>${esc(tenant.key)} — tables</h1>
+<p>§9.3: row data in <code>cms_*</code> is editable through generated forms; <code>cms_audit</code> is the record of those writes and is not one of them.</p>
+<ul data-role="tables">
+${items}
+</ul>
+<p><a href="/admin/t/${esc(tenant.key)}/">Back</a></p>`,
+        ),
+      );
+    } finally {
+      db.close();
+    }
+  }
+
+  async #tableRoute(req: FastifyRequest, reply: FastifyReply, session: SessionRecord, tenant: Tenant, rest: string): Promise<void> {
+    let parts: string[];
+    try {
+      parts = rest.split('/').map((s) => decodeURIComponent(s));
+    } catch {
+      // A malformed percent-escape is a bad request, not a 500.
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
+    }
+    if (parts.length === 0 || parts.length > 3 || parts.some((p) => p === '')) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
+    }
+    const table = parts[0] as string;
+    const second = parts[1];
+    const third = parts[2];
+    const base = `/admin/t/${tenant.key}/tables/${table}`;
+
+    if (parts.length === 1) {
+      if (req.method === 'GET') {
+        this.#rowsPage(reply, tenant, table);
+        return;
+      }
+      if (req.method === 'POST') {
+        this.#writeGuard(req, session);
+        const result = this.#write(tenant, (db) => createRow(db, table, fieldsOf(req.body), this.#actor(session)));
+        reply.code(303).header('location', `${base}/${encodeURIComponent(result.id)}`).send('');
+        return;
+      }
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'GET or POST is the method here');
+    }
+
+    if (parts.length === 2 && second === 'new') {
+      this.#requireMethod(req, 'GET');
+      this.#formPage(reply, tenant, table, null, session);
+      return;
+    }
+
+    if (parts.length === 2 && second !== undefined) {
+      if (req.method === 'GET') {
+        this.#formPage(reply, tenant, table, second, session);
+        return;
+      }
+      if (req.method === 'POST') {
+        this.#writeGuard(req, session);
+        this.#write(tenant, (db) => updateRow(db, table, second, fieldsOf(req.body), this.#actor(session)));
+        reply.code(303).header('location', `${base}/${encodeURIComponent(second)}`).send('');
+        return;
+      }
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'GET or POST is the method here');
+    }
+
+    if (parts.length === 3 && third === 'delete') {
+      this.#requireMethod(req, 'POST');
+      this.#writeGuard(req, session);
+      this.#write(tenant, (db) => deleteRow(db, table, second as string, this.#actor(session)));
+      reply.code(303).header('location', base).send('');
+      return;
+    }
+
+    throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
+  }
+
+  /** Origin then CSRF — the order every other non-GET in this file uses. */
+  #writeGuard(req: FastifyRequest, session: SessionRecord): void {
+    this.#assertOrigin(req);
+    this.#assertCsrf(req, session);
+  }
+
+  /**
+   * One write, one `admin-write` handle, closed in a `finally`. The handle is
+   * never pooled and never reused: §9.4's "discarded, not returned to the pool"
+   * is the same rule for DDL, and a write handle that outlived its statement is
+   * state a permission boundary cannot afford.
+   */
+  #write<T>(tenant: Tenant, fn: (db: Database.Database) => T): T {
+    const db = this.#siteWrite(tenant.key);
+    try {
+      return fn(db);
+    } catch (err) {
+      // A refused write is reported with its taxonomy code — never a 500, and
+      // never retried.
+      throw taxonomy(err);
+    } finally {
+      db.close();
+    }
+  }
+
+  #rowsPage(reply: FastifyReply, tenant: Tenant, table: string): void {
+    const db = this.#siteDb(tenant.key);
+    try {
+      const info = describeTable(db, table);
+      const rows = listRows(db, table, 100);
+      const shown = info.columns.filter((c) => c.editable).slice(0, 6).map((c) => c.name);
+      const head = [info.pk, ...shown.filter((c) => c !== info.pk)].map((c) => `<th>${esc(c)}</th>`).join('');
+      const body = rows
+        .map((row) => {
+          const cells = [String(row[info.pk]), ...shown.filter((c) => c !== info.pk)].map((c) => `<td>${esc(String(row[c] ?? ''))}</td>`).join('');
+          return `<tr data-id="${esc(String(row[info.pk]))}">${cells}<td><a href="/admin/t/${esc(tenant.key)}/tables/${esc(table)}/${encodeURIComponent(String(row[info.pk]))}">edit</a></td></tr>`;
+        })
+        .join('\n');
+      reply.type('text/html; charset=utf-8').send(
+        page(
+          `Skunkworks — ${tenant.key} — ${table}`,
+          `<h1>${esc(tenant.key)} — ${esc(table)}</h1>
+<p><a href="/admin/t/${esc(tenant.key)}/tables/${esc(table)}/new">New row</a> · <a href="/admin/t/${esc(tenant.key)}/tables">Tables</a></p>
+<table data-role="rows"><thead><tr>${head}<th></th></tr></thead><tbody>
+${body}
+</tbody></table>`,
+        ),
+      );
+    } finally {
+      db.close();
+    }
+  }
+
+  #formPage(reply: FastifyReply, tenant: Tenant, table: string, id: string | null, session: SessionRecord): void {
+    const db = this.#siteDb(tenant.key);
+    try {
+      const info = describeTable(db, table);
+      const row = id === null ? undefined : selectRow(db, table, id);
+      if (id !== null && row === undefined) throw new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'no such row');
+      reply.type('text/html; charset=utf-8').send(
+        page(
+          `Skunkworks — ${tenant.key} — ${table}${id === null ? ' — new' : ` — ${id}`}`,
+          this.#formHtml(tenant, info, row ?? null, id, session),
+        ),
+      );
+    } finally {
+      db.close();
+    }
+  }
+
+  #formHtml(tenant: Tenant, info: TableInfo, row: Record<string, unknown> | null, id: string | null, session: SessionRecord): string {
+    const action = id === null
+      ? `/admin/t/${esc(tenant.key)}/tables/${esc(info.name)}`
+      : `/admin/t/${esc(tenant.key)}/tables/${esc(info.name)}/${encodeURIComponent(id)}`;
+    const controls = info.columns
+      .filter((c) => c.editable)
+      .map((c) => {
+        const value = row === null ? '' : row[c.name] === null || row[c.name] === undefined ? '' : String(row[c.name]);
+        const required = c.notNull && !c.hasDefault ? ' required' : '';
+        const label = `<label for="f_${esc(c.name)}">${esc(c.name)} <small>${esc(c.type)}${c.notNull ? ' NOT NULL' : ''}</small></label>`;
+        if (c.input === 'textarea') {
+          return `${label}<textarea id="f_${esc(c.name)}" name="${esc(c.name)}" rows="6"${required}>${esc(value)}</textarea>`;
+        }
+        return `${label}<input id="f_${esc(c.name)}" name="${esc(c.name)}" type="${c.input === 'number' ? 'number' : 'text'}" value="${esc(value)}"${required}>`;
+      })
+      .join('\n');
+
+    const readonly = info.columns
+      .filter((c) => !c.editable)
+      .map((c) => `<dt>${esc(c.name)}</dt><dd>${row === null ? '' : esc(String(row[c.name] ?? ''))} <small>${esc(c.reason ?? '')}</small></dd>`)
+      .join('\n');
+
+    const csrf = this.sessions.csrfToken(session);
+    const deletes = id === null
+      ? ''
+      : `<form method="post" action="${action}/delete" data-csrf-token="${esc(csrf)}"><button type="submit">Delete</button></form>`;
+
+    return `<h1>${esc(tenant.key)} — ${esc(info.name)}${id === null ? ' — new' : ` — ${esc(id)}`}</h1>
+<form method="post" action="${action}" data-csrf-token="${esc(csrf)}">
+${controls}
+<button type="submit">Save</button>
+</form>
+${deletes}
+<dl data-role="readonly">
+${readonly}
+</dl>
+<noscript><p>A write needs the <code>X-CSRF-Token</code> header (D28), so this form submits with JavaScript on.</p></noscript>
+<script>
+// D28: the CSRF token is a header and there is no form-field alternative. The
+// form therefore posts through fetch, which is the only way a browser can set it.
+for (const form of document.querySelectorAll('form[data-csrf-token]')) {
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    fetch(form.action, {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': form.dataset.csrfToken, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(new FormData(form)),
+      redirect: 'follow',
+    }).then((res) => { window.location.href = res.url; });
+  });
+}
+</script>`;
+  }
+
+  // --- §9.4: the table builder, scaffold only ------------------------------
+
+  /**
+   * The form. §9.4's `SKW_SCHEMA_EDIT=off` is handled by the router: the paths do
+   * not exist, so there is nothing to disable and no link to hide.
+   */
+  #builderForm(reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const csrf = this.sessions.csrfToken(session);
+    reply.type('text/html; charset=utf-8').send(
+      page(
+        `Skunkworks — ${tenant.key} — table builder`,
+        `<h1>${esc(tenant.key)} — table builder</h1>
+<p>§4.4: the AST is the only input; <code>create_table</code> names a <code>u_*</code> table and its columns.
+The foreign key is derived from the column type, never supplied.</p>
+<form method="post" action="/admin/t/${esc(tenant.key)}/builder/preview" data-csrf-token="${esc(csrf)}">
+  <label for="table">Table <small>u_&lt;name&gt;</small></label>
+  <input id="table" name="table" type="text" value="people" required>
+  <label for="columns">Columns <small>one per line: &lt;name&gt; &lt;TYPE&gt; [NOT NULL] [DEFAULT &lt;literal&gt;] [RELATION=u_&lt;table&gt;]</small></label>
+  <textarea id="columns" name="columns" rows="10" required>full_name TEXT NOT NULL
+age INTEGER
+active BOOLEAN NOT NULL DEFAULT true</textarea>
+  <button type="submit">Preview DDL</button>
+</form>
+<p>Types: TEXT, INTEGER, REAL, BLOB, NUMERIC, BOOLEAN, DATE, ASSET, PAGE, RELATION.</p>
+<p><a href="/admin/t/${esc(tenant.key)}/">Back</a></p>
+<script>
+for (const form of document.querySelectorAll('form[data-csrf-token]')) {
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    fetch(form.action, {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': form.dataset.csrfToken, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(new FormData(form)),
+      redirect: 'follow',
+    }).then((res) => { window.location.href = res.url; });
+  });
+}
+</script>`,
+      ),
+    );
+  }
+
+  /**
+   * The preview: the emitter's own statements, the registry row they would be
+   * written beside, and nothing executed. S2d owns `BEGIN IMMEDIATE`, the ≤8
+   * statement cap, the postcondition and the discarded connection; this route has
+   * no handle open at all, which is what makes "not executed" a fact rather than a
+   * promise.
+   */
+  #builderPreview(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const fields = fieldsOf(req.body);
+    const op: CreateTableOp = {
+      op: 'create_table',
+      name: normaliseTableName(fields.table),
+      columns: parseColumnLines(fields.columns),
+    };
+    const statements = emitCreateTable(op);
+    const registry = registryRow(op);
+    const csrf = this.sessions.csrfToken(session);
+    reply.type('text/html; charset=utf-8').send(
+      page(
+        `Skunkworks — ${tenant.key} — preview`,
+        `<h1>${esc(tenant.key)} — preview</h1>
+<p data-role="not-executed">Not executed. This is the SQL the S2d runner would emit; no statement has run and no table exists.</p>
+<h2>Statement</h2>
+<pre data-role="ddl">${esc(statements.join(';\n\n'))};</pre>
+<h2>cms_table_registry row</h2>
+<pre data-role="registry">${esc(JSON.stringify(registry, null, 2))}</pre>
+<form method="post" action="/admin/t/${esc(tenant.key)}/builder/preview" data-csrf-token="${esc(csrf)}">
+  <input type="hidden" name="table" value="${esc(op.name)}">
+  <textarea name="columns" rows="10">${esc(fields.columns ?? '')}</textarea>
+  <button type="submit">Preview again</button>
+</form>
+<p><a href="/admin/t/${esc(tenant.key)}/builder">Back to the form</a></p>
+<script>
+for (const form of document.querySelectorAll('form[data-csrf-token]')) {
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    fetch(form.action, {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': form.dataset.csrfToken, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(new FormData(form)),
+      redirect: 'follow',
+    }).then((res) => { window.location.href = res.url; });
+  });
+}
+</script>`,
+      ),
+    );
   }
 
   // --- session answers ---------------------------------------------------
