@@ -46,7 +46,18 @@ instance.
 This makes export/install a **product feature**, not a utility. Three sellable outcomes from one
 source of truth — see §5.1 for the capability matrix and the pre-flight checks.
 
-### 1.2 Asset and digital-goods intent (added 2026-10-20)
+### 1.2 Plugin intent (added 2026-10-20)
+
+- The CMS must support **plugins**: self-contained features that own their implementation, their
+  tables and their settings.
+- A plugin integrates with the **public UI** — a hand-built page or block calls it (e.g. a contact
+  form submits to the contact-form plugin), and the plugin persists what it captures into its own
+  tables.
+- A plugin hooks into the **admin UI** and may provide its own management forms. Forms are optional:
+  some plugins have nothing to administer.
+- Plugins must be exportable with the site: a bundle carries the plugin, its schema and its data.
+
+### 1.3 Asset and digital-goods intent (added 2026-10-20)
 
 - Upload and manage **assets** (images, PDFs, video, audio, archives) in a media library.
 - **Link assets into pages** — images, galleries, file links — without hand-writing paths.
@@ -84,6 +95,7 @@ source of truth — see §5.1 for the capability matrix and the pre-flight check
 | D22 | **Export target is a render mode, not a fork**: CMS bundle, Astro project, or static HTML/JS, all generated from the same pages + assets | Three SKUs, one content model. A fork would mean the fourth client's bug never reaches the first. |
 | D23 | **Watermark text is sanitised to cp1252, not flattened to ASCII** — preserve everything WinAnsi can render; transliterate common symbols; `?` for the rest | Measured: pdf-lib's WinAnsi accepts the full cp1252 set (€ “ – … ¥ £ © ° ÷ all encode). Stripping accents would have mangled `München` and `Øyvind` for no reason. Only CJK/emoji-class characters actually fail. |
 | D24 | **Astro export ships a runnable, editable project** (not pre-built SSG with source stripped) | The client bought the code, so they get the code. Stripped source would turn every future change into a rebuild request to us. |
+| D25 | **Plugins are a first-class extension surface**, not a folder of scripts: a manifest, owned tables, declared admin forms, declared public endpoints | One contract means a plugin is installable, exportable, disableable and auditable in the same way everywhere. The contract's details are being decided by the debate (§12). |
 
 ---
 
@@ -617,3 +629,56 @@ ships best-effort and gets iterated after the first client uses it.
 9. ~~Astro export shape — runnable project or pre-built SSG with source stripped?~~ **Resolved
    2026-10-20: runnable, editable project (D24).** SSG output is whatever `npm run build` produces on
    their box; we do not pre-build it for them.
+
+---
+
+## 12. Plugins (requirement added 2026-10-20 — design pending)
+
+Numbered last because it arrived last. The Architect folds it into §6 (schema ownership), §8
+(admin surface), §9 (security) and §10 (slices) in the SDS rather than leaving it an appendix.
+
+**What is fixed:**
+- A plugin owns its implementation, its tables, and its settings.
+- Public UI integration: a page, block or island calls the plugin; the plugin persists what it
+  captures. The page never gets a database handle (§4).
+- Admin integration: the plugin appears in the admin UI and *may* ship management forms.
+- Export: the plugin travels with the site — code, schema, settings, data.
+
+**What the debate must settle (seeded, not decided):**
+
+1. **Table ownership and naming.** `cms_*` is protected core, `u_*` is user-created. Plugin tables
+   need a third class — presumably `p_<plugin>_*` — that the DDL runner protects, the plugin's own
+   migrations own, and export includes. Who may alter a plugin table: the plugin migration only, or
+   the user via the table builder?
+2. **Migration ownership.** Plugins must ship forward-only migrations that run on install and on
+   upgrade, idempotently, inside the same transaction discipline as core migrations. What happens
+   when a plugin is downgraded, or when its migration conflicts with a `u_*` table the user already
+   built at the same name?
+3. **The contract shape.** A manifest (`plugin.json`): id, version, CMS version range, declared
+   tables, declared settings schema, declared admin routes/forms, declared public endpoints,
+   declared capabilities. What is *not* in the manifest cannot be done at runtime.
+4. **Admin UI extension — declarative or code?** Declarative form/table schemas keep the admin
+   consistent and make plugins renderable without shipping React; code gives flexibility and puts
+   unreviewed UI in the admin origin. Pick one, or pick declarative-with-an-escape-hatch and say
+   what the hatch costs.
+5. **Public endpoint security.** A plugin's public route is internet-exposed by definition: CSRF,
+   rate limiting, honeypot/Turnstile-style spam control, payload caps, and per-tenant quotas. A
+   contact form is the most attacked surface in any CMS.
+6. **Trust model.** Are plugins only first-party (we write them, they run in-process with full
+   privileges), or can a client install a third-party plugin? Node has no cheap sandbox; a
+   `vm`/worker boundary changes the whole runtime shape. Decide explicitly — "we'll be careful" is
+   not a trust model.
+7. **Capability scoping.** A plugin needs its own tables; does it get a handle that can only reach
+   them? Given round 1's finding that a readonly handle `ATTACH`es anything, "restricted handle" is
+   a claim that needs a mechanism, not a wish.
+8. **Disable vs uninstall.** Disabling must not lose data; uninstalling must state whether data is
+   dropped, archived to a bundle, or left orphaned. Defaults matter more than options.
+9. **Export semantics across the three SKUs.** A CMS bundle carries plugin code + tables + data. An
+   Astro or static export has no database — so a plugin must declare how it degrades: a contact form
+   can post to an external endpoint; a gated download cannot exist at all. Same pre-flight refusal
+   discipline as §5.1.
+10. **Version compatibility.** Plugin × CMS version matrix, and what the CMS does at boot when a
+    plugin demands a version it does not have: refuse to start, or run degraded?
+11. **Where plugin code lives.** In-tree (`plugins/<id>/`) compiled with the app, or loaded at
+    runtime from a tenant directory? The first is safe and simple; the second is a remote-code-
+    execution decision dressed as a feature.

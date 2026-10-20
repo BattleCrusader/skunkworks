@@ -1,0 +1,31 @@
+{
+  "$comment": "Export projection for a tenant site.db. The unit of reproducibility is this projection, not the file: two VACUUM INTO copies of the same logical content are not byte-identical once any volatile table has a row (scripts/model/verify_claims.py check 8). 'rows' = data travels; 'empty' = the table exists in the bundle and carries no rows. A table missing from this file is a build failure, so a new table cannot join the schema without someone deciding what it means for a sale.",
+  "version": 1,
+  "applies_to": ["cms", "astro", "static"],
+  "tables": {
+    "cms_settings": {
+      "mode": "rows",
+      "filter": "key NOT GLOB 'demo.*' AND key NOT GLOB 'billing.*'",
+      "why": "Site configuration travels; operator-only namespaces (demo furniture, billing state) do not. Without the filter a bundle exported from a demo goes live wearing the demo banner and noindex tag (Red Team O2)."
+    },
+    "cms_page": {"mode": "rows", "why": "The content being sold."},
+    "cms_page_revision": {"mode": "rows", "why": "The undo history is part of the handover: the client's first action after install is usually to fix a typo we made."},
+    "cms_nav": {"mode": "rows", "why": "The site is unusable without its navigation."},
+    "cms_asset": {"mode": "rows", "why": "Media library. Gated rows are refused by the exporter before this projection is applied (Platform refusal GATED_ASSETS_PRESENT)."},
+    "cms_asset_alias": {"mode": "rows", "why": "Old keys must still 301 inside the client's instance, or every URL we ever published to them dies at handover."},
+    "cms_asset_variant": {"mode": "rows", "why": "Derived files, but the rows are the index of which files exist; regenerating them all on install is minutes of CPU on a box we do not control."},
+    "cms_asset_link": {"mode": "rows", "why": "The usage graph; without it 'delete this image' stops warning about the page that uses it."},
+    "cms_asset_bundle": {"mode": "rows", "why": "A sellable set is content, not commerce state."},
+    "cms_asset_bundle_item": {"mode": "rows", "why": "Same."},
+    "cms_download_code": {"mode": "empty", "why": "Purchaser emails, order refs and live code fingerprints. A sold bundle has no issuers and no buyers; carrying the rows hands the client our customer list and our live codes (Red Team O3)."},
+    "cms_download_event": {"mode": "empty", "why": "ip_hash/ua_hash are personal data collected for our forensics, and the rows are per-request volatile, so they break reproduction as well."},
+    "cms_watermark_render": {"mode": "empty", "why": "One stamped file per purchaser, each carrying a different buyer's email. It is the single largest PII store in the file and the one that grows without bound (Red Team O12)."},
+    "cms_form": {"mode": "rows", "why": "Form definitions are part of the site."},
+    "cms_form_submission": {"mode": "empty", "why": "Prospect PII from our sales pipeline, not the client's content (Red Team O3). A CMS sold to the same client can export with --include-submissions, which is an explicit operator decision with an audit row."},
+    "cms_datasource": {"mode": "rows", "why": "The site's data bindings; a page whose source is missing renders an empty region."},
+    "cms_view_registry": {"mode": "rows", "why": "Views are migration-owned and the DDL postcondition reads this table; a bundle without it fails its own integrity check."},
+    "cms_table_registry": {"mode": "rows", "why": "The u_* inventory. EXPORT-NOTES.md must state its row count (Runtime contract)."},
+    "cms_audit": {"mode": "empty", "why": "Our operators' actions and labels. The client starts with an empty audit log, which is honest: we did not do anything on their box yet."},
+    "cms_redirect": {"mode": "rows", "why": "Redirects are content; dropping them 404s every slug we renamed during the build."}
+  }
+}
