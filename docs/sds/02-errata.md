@@ -2426,3 +2426,486 @@ Items 1 and 2 are independent; 3 requires both (it quotes their output), and 4 r
 | — | **carried, not separate items:** §16 S1's env row goes under `check_frozen.py`'s quote phase (inside E-25); `POINTERS` to `range(1, 26)` (inside E-25); E-23's "floors to 2" test sentence retired in effect (inside E-24); the `Makefile` comment's 8.99 s corrected to 9 036 ms (inside E-25) | E-24, E-25 | — |
 | — | **open, not closed here:** `limit_default > limit_max` is accepted at publish and unclamped on a render that sends no `limit`, so the clamp row is false for the default path — needs its own item and a decision between a publish refusal and a render clamp | `app/sources/spec.ts:141`; `app/sources/compile.ts:161–172`; `schema/site.sql` `cms_datasource.spec_json` (`json_valid` only) | minor (specification) |
 | — | **open, not closed here:** the runner's bare-invocation default stays 15 000 and `npm test` has no budget at all, so "the suite runs under a derived budget" is true of `make test` only | `scripts/run-node-tests.mjs:34`; `package.json`; `S2-closeout.md` §3.6 | minor (build) |
+
+---
+
+## 12. Errata E-26..E-28 (post-S3)
+
+**Status:** amendment of record for `docs/sds/SDS.md` and `docs/sds/00-adjudication.md`, issued after
+`docs/build/S3c-report.md` §8.3 and `docs/build/S3d-report.md` §8.5 declined to resolve a frozen contradiction
+in their own slices and §9.2 of the later report handed it back, and after `S3d-report.md` §2.10 disclosed a
+third defect of a different kind: **every gate in the tree would have passed while every production download
+was a 503.**
+
+**Date:** 2026-10-20. **Author:** Architect. **Scope:** the specification. No implementation file is edited by
+this pass. Each item carries the corrected text verbatim; a Builder applies it and adds the pointer line.
+
+**Three items.** E-26 and E-27 formalise decisions the CEO has already taken — `IDEA.md` §2 **D32** and **D33** —
+which the SDS has not absorbed; in both places the code chose the older sentence, correctly, because the older
+sentence was the frozen one. E-28 is not a decision but a **missing gate**: it adds the rule whose absence let a
+`.ts`-only worker URL reach production (`S3d-report.md` §2.10) with 404/404 green. None of the three weakens a
+frozen control. E-26 keeps the ten-minute authorisation expiry as the gate on every *new* redemption and makes
+the grace a strictly narrower permission that cannot spend a use; E-27 adds a bound and removes none; E-28 adds
+a gate and retires none.
+
+**Numbering.** §11 above is E-24 and E-25. This section is §12, and no citation above this line changes.
+`check_frozen.py`'s `POINTERS` is `range(1, 24)` today (`scripts/model/check_frozen.py:206`) and the check
+reports `pointers: 23/23`, so the pointer lines E-24 and E-25 owe were never pasted into `SDS.md`; item 8 below
+moves the range to `range(1, 29)` and lands all five, because a pointer range that stops at 23 is the same
+defect as a gate that stops at the slices it was written for.
+
+**Precedence, and the supersessions this section relies on** (§1's order is unchanged):
+
+1. **E-26 `SUPERSEDES 00-adjudication.md §4.4's payload line`** — the payload gains `"cexp"`. A second expiry
+   cannot live in configuration alone: the grace is a property of the *token* (a leaked one must know its own
+   end), and a settings edit must not retroactively shorten or extend a token already in a buyer's browser.
+   `check_frozen.py` does not quote the payload line — its `"token wire format"` block is the `v1.…` line only —
+   so no `SUPERSEDED` entry is required and `make verify-frozen` stays green; the marker is here because §4.4
+   is a frozen contract and precedence rule 2 requires the marker, not because a checker would notice.
+2. **E-26 `SUPERSEDES 00-adjudication.md §4.4's cookie clause "600 s"`** — the clause becomes `cexp − iat`.
+   The quoted block is `__Host-sk-dl-<tenantKey>=<token>; Path=/; Secure; HttpOnly; SameSite=Lax` with no
+   `Max-Age`, so the block is untouched; the clause is prose, and prose is where the number lived.
+3. **E-26 `SUPERSEDES R5b's sentence "An expired token: `exp - iat` is still 600, so only the clock can refuse
+   it"`** (`test/download-redeem.test.ts:341`, quoted as the rule in `S3c-report.md` §3.4 and relied on in
+   `S3d-report.md` §8.5). The **assertion** it guards survives for the token R5b actually builds; the
+   **sentence** does not, because `exp` stops being a verification-time refusal and becomes an
+   authorisation-time one. The security intent is preserved and narrowed: an expired token still cannot create
+   a redemption, and can now only continue one that a live token already created, on the same IP/UA pair,
+   until `cexp`. This is the one supersession in this item that is a *code* change as well as a text change
+   (`app/download/token.ts:134`).
+4. **E-26 `SUPERSEDES SDS.md §7.5's clause "after the token that produced it expires"`** — "the token expires"
+   now means `cexp`, the last instant a request against it may be served, not `exp`. A render's `expires_at`
+   is `cexp + download.continuation_grace_s` (43 200 s from mint at the defaults). The alternative — keeping
+   `exp + grace` — deletes the file 6 h 10 min after mint while the last permitted request is at 6 h 00 min
+   and a transfer it starts may run 1 024 s, i.e. it deletes a render under a running transfer, which is the
+   failure W7's re-stamp would mask as a slow download.
+5. **E-27 supersedes nothing.** It replaces a sentence of `SDS.md` §7.5 with a longer one and adds three
+   paragraphs; no register artefact moves.
+6. **E-28 supersedes nothing.** It adds a paragraph to §16's preamble and extends §13.1a's rule 2 to a second
+   class of witness; the existing witness table (`test/witness.test.ts`) keeps its shape, because its `W5`
+   row asserts `file` matches `^test/.*\.test\.ts$` and the dist gate is not a `test/` file.
+7. **§1's marker count moves.** §1 says "There are five such markers: E-1, E-2, E-4, E-11 and E-13". E-26 adds
+   four (numbers 1–4 above). The builder item 9 replaces that sentence; until it lands, the sentence is wrong
+   by four and no checker can see it.
+
+---
+
+### E-26 — §7.4 promises a continuation grace while every gate refuses an expired token; one token now carries two expiries
+
+**Defect.** Three texts, one behaviour, and they cannot all hold:
+
+- `SDS.md:1282–1286` (**Continuation grace**): "A request with an expired token is served without consuming
+  **iff** the MAC verifies, `iph`/`uah`/`aid` match, a `cms_download_event` row exists with that `jti` and
+  `kind='first'`, the code is not revoked, and `now - iat ≤ download.continuation_grace_s` (default 21,600)."
+- `SDS.md:1260–1264` (verification order), identical to `00-adjudication.md` §4.4: "(5) `exp - iat = 600`
+  **and** `iat ≤ now + 30`; (6) `iph`/`uah` match; (7) `aid` matches the route; (8) DB consume." Step (5)
+  contains **no** `now ≤ exp` test — the frozen contract never said an expired token is a verification
+  failure.
+- `S3c-report.md` §3.4 and the gate it quotes, `test/download-redeem.test.ts:341–345`: "An expired token:
+  `exp - iat` is still 600, so only the clock can refuse it" → `401 SKW_E_SEC_TOKEN_INVALID`.
+
+The Builder implemented the third. `app/download/token.ts:134` is `if (claims.exp < nowS) return { ok: false,
+reason: 'claims' }`, so a request with an expired token never reaches step (8), and §7.4's grace is
+unreachable code. `S3c-report.md` §8.3 states it ("Continuation grace is not implemented"), `S3d-report.md`
+§8.5 states the consequence ("a download resumed after 600 s needs a fresh redemption, while its render stays
+on disk for 6 hours"), and §9.2 of that report hands the contradiction back rather than choosing. `S3d-report.md`
+§8.5 is right that the two sentences cannot both be implemented, and `S3c-report.md` §8.3 is right that the
+grace is simply not wired. The resolution is **D32**, and it is not "delete the grace": it is "one token, two
+expiries".
+
+**The decision, and why.** D32 (`IDEA.md` §2): a download token carries an **authorisation expiry** (`exp`,
+`iat + 600`, unchanged) and a **continuation expiry** (`cexp`, `iat + download.continuation_grace_s`, default
+21 600). `exp` gates every *new* redemption — it is the only expiry that can spend a use. `cexp` permits
+*only* the continuation of a redemption that already exists, on the same IP/UA pair, and nothing else. The
+narrower permission is what makes a six-hour grace safe: a leaked token can never create a use, never write a
+`first` row and never reach a file it did not already buy; it can finish a transfer that was already
+authorised, and it dies at `cexp` whatever the buyer does. The case that needs it is §7.4's own: 1 GiB at
+`limit_rate 1m` is 1 024 s, which is longer than the ten-minute window, and re-entering the code mid-transfer
+is the UX that produces refund requests (D32's rationale). A mint is idempotent per (code, asset, IP, UA)
+inside the grace window so that re-entering the code returns the same `jti` and spends no second use.
+
+**Corrected text — drop-in for `SDS.md` §7.4, replacing (i) the wire-format block, (ii) the "Verification
+order" paragraph, (iii) the "Continuation grace" paragraph and (iv) the `600 s` clause of the "Cookie"
+paragraph, and nothing else.**
+
+```markdown
+~~~
+v1.<base64url(payload)>.<base64url(HMAC-SHA256(SKW_DOWNLOAD_TOKEN_KEY, "v1." + payload))>
+payload = {"jti":"<128-bit hex>","cid":<code id>,"aid":<asset id>,"iat":<unix s>,"exp":<unix s>,
+           "cexp":<unix s>,"iph":"<22 chars>","uah":"<22 chars>"}
+~~~
+
+`exp = iat + 600` is the **authorisation expiry**: the only expiry that permits a use to be spent.
+`cexp = iat + download.continuation_grace_s` (default 21 600, ceiling 86 400; `cexp ≥ exp`, so a grace of 0 is
+legal and makes the second window empty) is the **continuation expiry**: it permits a request to finish a
+redemption that `exp` already authorised, and nothing else. One token, two permissions, and the narrower one is
+deliberately the longer one.
+
+Verification order, each step a contract: (1) split on `.`, exactly three parts; (2) require `v1`; (3)
+base64url-decode the MAC and require **exactly 32 bytes before comparing** (a length mismatch makes
+`timingSafeEqual` throw `ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH`, which surfaces as 500 instead of 401); (4)
+`timingSafeEqual`; (5) `exp - iat = 600`, `cexp ≥ exp`, `cexp - iat ≤ 86 400` **and** `iat ≤ now + 30`; (6)
+`iph`/`uah` match; (7) `aid` matches `cms_download_code.asset_id`, not the route; (8) authorise against the
+clock and the ledger, in the two windows below. **No `JSON.parse` before step 4.** Step (5) contains **no**
+`now ≤ exp` test on purpose: whether an expired token may be served is a question about the ledger, and step
+(8) is where the ledger is. The 86 400 s ceiling is this errata's addition: without it the grace is whatever a
+`cms_settings` row says, and "a leaked token buys one asset for at most six hours" becomes a claim about
+configuration rather than about the token. A token minted before a grace increase keeps its own `cexp`; the
+check is against the claim, never against the current setting.
+
+| `now` | Permission | What the server may do | What it must never do |
+|---|---|---|---|
+| `now ≤ exp` | **authorisation**, and continuation | `INSERT … 'first'` (one use, §7.3) and serve; or, if this `jti` already has an `ok` `first` row, serve as a continuation and spend nothing | serve without the stat, stamp and range checks of §7.4's order |
+| `exp < now ≤ cexp` | **continuation only** | serve **iff** the MAC verified, `iph`/`uah` matched, `aid` is this code's asset, a `first` row exists for this `jti` with `outcome='ok'`, and the code is not revoked; no use is spent and no event row is written | insert a `first` row, move `uses`, or create a redemption of any kind — a token past `exp` can continue a purchase, never make one |
+| `now > cexp` | none | `401 SKW_E_SEC_TOKEN_INVALID`, `reason='continuation_expired'`, cookie cleared | reach the database |
+
+A request in the middle window whose `jti` has no `ok` `first` row is `401 SKW_E_SEC_TOKEN_INVALID`,
+`reason='no_redemption'`: the token is authentic and names a purchase that never happened, so it is not a
+continuation and it cannot become one. **Denial is still not a continuation** — a `first` row with
+`outcome != 'ok'` refuses in both windows (C-4), and a quota denial is not a licence to retry.
+
+| Endpoint | Reads the cookie? | Expiry it checks | What it answers when that expiry fails |
+|---|---|---|---|
+| `GET /d/<key>` — the form | no | none: a token is never parsed on this route | nothing to fail — `200` and the form. An invalid or expired cookie cannot turn the form into an error page. |
+| `POST /d/<key>` — redeem and mint | no | none: it **sets** `exp` and `cexp` | `401 SKW_E_SEC_CODE_INVALID` for a bad, revoked or expired *code*, `429 SKW_E_SEC_RATE_LIMITED` for the limiter. Neither is a token expiry. |
+| `GET /d/<key>/file` — the download | yes | `cexp` at step (5), then `exp` at step (8) | `401 SKW_E_SEC_TOKEN_INVALID` (`continuation_expired`, or `no_redemption` in the middle window), `401 SKW_E_SEC_TOKEN_MISMATCH` for `iph`/`uah`/`aid`, `410 SKW_E_SEC_USES_EXHAUSTED` in the first window only; `303` to `/d/<key>` when there is no cookie at all, which is a browser that has not redeemed yet and not a failure |
+
+**Minting, and why a resume spends no second use.** `POST /d/<key>` sets both expiries and chooses `jti` as
+follows: if a `cms_download_event` row exists with `kind='first'`, `code_id = cid`, `asset_id = aid`,
+`ip_hash = iph`, `ua_hash = uah`, `outcome = 'ok'` and `now − ts ≤ download.continuation_grace_s`, that row's
+`jti` is reused; otherwise the mint takes a fresh 128-bit `jti`. A row exists exactly when a use was spent, so
+the lookup costs nothing when there is nothing to reuse, and it is a seek on `ix_ev_code_ts` plus a filter over
+one code's rows (`cms_download_code.max_uses ≤ 100`). A re-typed code, from the same IP and User-Agent, inside
+the window therefore yields the same `jti`, which `consumeUse` sees as a continuation through
+`ux_ev_jti_first` — the resume spends nothing. `iat`, `exp` and `cexp` are re-stamped at every mint: the
+authority to mint is the **code**, never the token, so a leaked token cannot mint and cannot extend itself.
+
+**Cookie.** `__Host-sk-dl-<tenantKey>=<token>; Path=/; Secure; HttpOnly; SameSite=Lax`, `Max-Age = cexp − iat`
+(`download.continuation_grace_s`, default 21 600). `__Host-` requires `Path=/` and no `Domain`; the tenant key
+in the **name** prevents shadowing on a shared origin, and `Path=/` is what makes the prefix legal. The asset
+binding is in the token (`aid`), not in the cookie path. The cookie lives as long as the narrower permission;
+it is the authorisation inside it, not the cookie, that dies in ten minutes.
+```
+
+**Test that must change.**
+
+1. **`test/download-redeem.test.ts` `R5b`** — its `claims` object (`:325`) gains `cexp: nowS + 21_600`,
+   otherwise every token it mints is refused at step (5) as a missing claim and the case passes for the wrong
+   reason. Its third block (`:341–345`) keeps the assertion `401 SKW_E_SEC_TOKEN_INVALID`, but the token it
+   builds is now a **no-redemption** case — that `jti` has no `first` row and the code was only issued, never
+   downloaded — so the asserted `detail.reason` is `no_redemption`, and the comment "only the clock can
+   refuse it" is deleted. The sentence is superseded by this item; the assertion is not.
+2. **New `R13` in the same file — the window table, six cases.** (a) live token → `200`, one use; (b) the same
+   token with the clock past `exp` and its `first` row present → `200`, `uses` unchanged, no new row; (c) past
+   `cexp` → `401`, `detail.reason='continuation_expired'`, no use; (d) past `exp`, no `first` row → `401`,
+   `no_redemption`; (e) past `exp`, another IP or User-Agent → `401 SKW_E_SEC_TOKEN_MISMATCH`; (f)
+   `cexp - iat = 86_401` → `401` at step (5). Case (b) is the one that makes the grace a fact rather than a
+   reachable paragraph.
+3. **New `R14` — mint idempotency.** Two `POST /d/<key>` from one IP/UA inside the window return two tokens
+   with equal `jti` and different `iat`; the first download spends one use and the second token's download
+   spends none; `uses = 1` and exactly one `first` row.
+4. **New `W13` in `test/download-watermark.test.ts` — the render's lifetime follows `cexp`.** After a
+   successful download, `cms_watermark_render.expires_at = token cexp + download.continuation_grace_s`; and a
+   request past `cexp` is refused before the stamp, so it writes no render row. `W7` keeps its forced-past
+   case untouched — it sets the column itself and asserts the sweep, not the arithmetic.
+5. **No existing test goes red by accident.** No test asserts the download cookie's `Max-Age` (`R1` asserts
+   `; Path=/; Secure; HttpOnly; SameSite=Lax` and stops there) and no test asserts a render's `expires_at`
+   value; both were checked before this item was written.
+
+**Recorded, not closed — the resume key is the client, not the code.** A buyer who changes network or browser
+mid-transfer gets a new `jti` and spends a use for the resume, because the mint lookup is keyed by
+`ip_hash`/`ua_hash`. That is D32's own key ("per (code, asset, IP, UA)") and is not narrowed here. The
+alternative — keying on the code alone — would let a code shared in a chat be resumed from any client, which
+is exactly the leak `iph`/`uah` exist to close.
+
+**Severity: major (specification).** §7.4's grace is unreachable as implemented, so the document promises a
+resume it cannot deliver while the gate that refuses it is green; and D32 is a CEO decision the SDS has not
+absorbed in either direction. The security posture is unchanged by the fix and is in one respect stronger: one
+expiry now means one permission instead of two implied ones.
+
+---
+
+### E-27 — §7.5 caps eight renders per tenant and nothing at the box, so N busy tenants are 8 × N workers on a machine that also serves pages
+
+**Defect.** `SDS.md:1296–1299` ends its measurement paragraph with "hence: off-loop, 2 s cap, per-tenant
+semaphore of 8", and that is the whole concurrency rule: `STAMP_CONCURRENCY = 8`
+(`app/download/render.ts:58`) is a per-tenant `Semaphore` created lazily per tenant key (`:207–213`). On a
+one-tenant box that is correct. On the box this product is sold as — several tenants, one Node process, one
+nginx — the ceiling is `8 × active tenants` workers of ~50 MB each (D33's round-2 measurement), and the
+`Semaphore` has no notion of a second bound (`app/admin/auth.ts:71–102`). `S3d-report.md` §8.8 states it
+plainly: "One worker per stamp means up to 8 × tenants workers. The cap is per tenant by spec. A box with many
+simultaneously-active tenants has a memory ceiling that is 8 × N, not 8." And the budget does not bound the
+wait: the 2 000 ms timer starts **inside** the acquired slot (`render.ts:341`), so a request queued behind a
+saturated tenant waits without any deadline at all, and only then starts its two seconds.
+
+**The decision, and why.** D33 (`IDEA.md` §2): per-tenant **8**, process-global **`max(4, cores)`**, and the
+global one binds. The per-tenant cap exists because one tenant's burst must not starve the others; the global
+cap exists because the box's memory is the box's, not a tenant's, and a busy night must not become an OOM on a
+machine that is also serving pages. "Cores" is defined here as `os.availableParallelism()` — the CPUs this
+process may actually use — because `os.cpus().length` reports the host inside a container with a CPU quota
+(`--cpus=2` on a 16-core host would size the cap at 16 × 50 MB), and the cap exists to bound RSS on the box
+that runs it. The floor of 4 is D33's and is kept: a two-core box may run four renders (~200 MB) because a cap
+of one or two turns two simultaneous buyers into a queue that fails both.
+
+**Corrected text — drop-in for `SDS.md` §7.5, replacing the final sentence of the "Numbers:" paragraph
+("hence: off-loop, 2 s cap, per-tenant semaphore of 8.") with the first paragraph below, and inserting the
+three paragraphs that follow it after that paragraph; nothing else in §7.5 changes.**
+
+```markdown
+**Two semaphores, and the global one binds.** Stamping runs under a **per-tenant** semaphore of **8** and a
+**process-global** semaphore of **`max(4, os.availableParallelism())`** — the CPUs this process may actually
+use, not the host's core count, because a container with a CPU quota must not size its memory ceiling from
+cores it cannot run on. The effective concurrency for one tenant is `min(8, max(4, availableParallelism()))`
+and for the box is `min(8 × active tenants, max(4, availableParallelism()))`: at eight usable cores eight
+stamps run at once however many tenants are busy, and one tenant on a quiet box still gets all eight. At the
+measured ~50 MB per worker (D33) the global cap is the box's memory ceiling, which is the point.
+
+**Acquisition order is tenant, then global; release is the reverse.** The order is fixed and total, so no
+request can hold one semaphore and wait for the other in the opposite order, and there is no deadlock to
+reason about. A tenant's requests queue on its own eight slots; the box's slots are taken last, so no request
+occupies a scarce box slot while waiting for a tenant that is already full.
+
+**The 2 000 ms budget is the request's, not the renderer's.** It starts when the request reaches the stamp
+stage — before either acquisition — and covers queueing, both acquisitions, worker start and render. A request
+still queued when the budget expires is refused **without a worker being started**: `503
+SKW_E_SEC_WATERMARK_FAILED`, `detail.reason='queue'`, `detail.budget_ms`, `detail.queued_ms`, no render row, no
+file, no `X-Accel-Redirect`, and exactly one `cms_download_event` row with `kind='first'`,
+`outcome='denied_watermark'`, `bytes_declared=0`, `bytes_sent` NULL, the token's `jti`, `ip_hash` and
+`ua_hash`; `uses` is not moved. A request that acquires its slot at 1 990 ms has ten milliseconds left and
+times out with `detail.reason='timeout'` — that is the same budget doing its job, not a second one. Because
+the denied row is a `first` row with `outcome != 'ok'`, a retry under the same `jti` is refused again (C-4:
+a denial is not a continuation); the buyer recovers by redeeming the code again, which mints a fresh `jti` and
+spends nothing extra.
+
+**Where the global semaphore lives, and what the counters count.** One per process, created once at boot by
+the module that owns the store and shared by every tenant's render path; `buildApp`'s injected
+`WatermarkStore` takes it as an option so a test can size it, and production has no option that creates a
+second one — two stores in one process would be two global caps, the same defect at a smaller scale. The
+in-flight and peak counters the gates read count **renders**, not queued requests, so "peak 8" continues to
+mean eight workers.
+```
+
+**What happens to a request that waits past the budget while queued, and what the ledger records.** It is
+refused at the deadline: `503 SKW_E_SEC_WATERMARK_FAILED` with `detail.reason='queue'`,
+`detail.queued_ms` and `detail.budget_ms=2000`; no worker is created, so no worker is terminated and no render
+row and no file are produced; the ledger gets one `first` row with `outcome='denied_watermark'`,
+`bytes_declared=0`, `bytes_sent` NULL, the token's `jti` and the request's `ip_hash`/`ua_hash`; `uses` is
+untouched, and a retry under the same `jti` writes no second row. The render cache records nothing, because
+nothing was rendered.
+
+**Test that must change.**
+
+1. **`test/download-watermark.test.ts` `W6`** — extend from one tenant to two against an injected global
+   capacity of 4: 8 requests per tenant, all 16 settle, the peak **across both tenants** is ≤ 4 and each
+   tenant's own peak is ≤ 4. A sleeping renderer, no wall clock, so it belongs in `make test`. With the
+   global semaphore removed the peak is 8 and the case is red; that mutation is the negative control.
+2. **New `W14` — the queue deadline.** Global capacity 1 held by a renderer that does not settle, budget
+   40 ms (the precedent is `W5`), second request → `503` with `reason='queue'`, one `denied_watermark` row
+   with `bytes_declared=0`, `uses=0`, no `cms_watermark_render` row, no file, no `X-Accel-Redirect`; and a
+   retry under the same `jti` is still a denial, so the ledger holds one row and not two. Second mutation:
+   start the budget at acquisition (`render.ts:341`'s current placement) instead of at arrival → `W14` red
+   and `W6` green.
+3. **`test/perf/watermark-concurrency.perf.test.ts` `P-S3d-1`** — keep "exactly the cap", but state the cap as
+   `min(8, max(4, availableParallelism()))` and print both numbers. On this 8-core box that is 8 and the case
+   is unchanged; on a 2-core box the old `8` would have been red for the wrong reason. No third perf case is
+   added: a cross-tenant case that injects its capacity is a deterministic test and belongs in `W6`, where it
+   cannot flake on the box.
+
+**Recorded, not closed — ~50 MB per worker is round 2's measurement, not this slice's.** Neither `make test`
+nor `make test-perf` measures RSS, and this item does not propose one: a memory assertion in `make test` is a
+flake and one in `make test-perf` measures the box. The cap is the control; RSS is the operational thing to
+watch, and `S3d-report.md` §8.8 is where that was first said.
+
+**Severity: major (specification), correctness of the bound.** The per-tenant-only ceiling is 8 × N on a
+machine that also serves pages, and the budget that was supposed to bound the wait starts after the wait. The
+code is not wrong about the number it was given; the number it was given is not a box bound.
+
+---
+
+### E-28 — every gate runs the TypeScript source, so a path that resolves only under type stripping is invisible
+
+**Defect.** `S3d-report.md` §2.10: under the test runner `import.meta.url` ends in `.ts`, so
+`new URL('./stamp-worker.ts', …)` resolves, every test passes — and from `dist/` the same line names a file
+that does not exist, every stamp throws, and **every paying download is a 503**. The fix is in the tree
+(`stampWorkerUrl` follows the module's own extension, `app/download/render.ts:130–132`). The gap is not:
+nothing in `make test` executes one line of `dist/`. `make verify-s1` is `build typecheck` then
+`scripts/run-node-tests.mjs` over `test/**/*.test.ts` (`Makefile:107–108`), i.e. the modules are imported from
+`app/`, and `npm test` (`package.json:13`) is the same runner with no build at all.
+
+Measured this pass, importing the built modules as a `dist` consumer does:
+
+```
+stampWorkerUrl(dist/app/download/render.js)  ->  …/dist/app/download/stamp-worker.js    exists: true
+the same directory's `.ts` sibling           ->  …/dist/app/download/stamp-worker.ts    exists: false
+REPO  in dist/test/helpers/fixture.js        ->  …/skunkworks/dist
+SCHEMA from the same file                    ->  …/skunkworks/dist/schema                 exists: false
+```
+
+The `.ts` form is a 503 on every stamp and no gate in the tree reddens. `W3`
+(`test/download-watermark.test.ts:303–317`) is the twin that made it invisible: it calls the *function* twice
+and asserts the string it returns ends in `stamp-worker.js` — it never checks that the file exists and never
+starts a worker. `scratch/s3d/probe-dist.mjs` proved the fact by hand (`S3d-report.md` §2.10), and `scratch/`
+is not a target: by §1 rule 4 a build report is evidence, not authority, and a probe is not a gate.
+
+**Second instance, measured this pass, same class.** `tools/regen_conf.ts:8–13` imports `REPO` and
+`makeFixture` from `test/helpers/fixture.ts`, and `REPO` is
+`join(dirname(fileURLToPath(import.meta.url)), '..', '..')` (`test/helpers/fixture.ts:11`). Compiled, that file
+is `dist/test/helpers/fixture.js`, so `REPO` is `…/dist` and `SCHEMA` is `…/dist/schema`, which does not exist
+— `node dist/tools/regen_conf.js` cannot work, and no gate runs it. It is not shipped (`Dockerfile.app` copies
+`app`, `tools`, `schema` in the build stage and only `dist`, `build`, `schema` into `/srv/app`), which is
+exactly why it survived: a developer's afternoon, not a customer's download. The rule below covers it anyway,
+because the class is the resolver, not the blast radius.
+
+**The rule — drop-in for `SDS.md` §16's preamble, a new paragraph after E-25's budget paragraph.**
+
+```markdown
+**A path or URL computed at runtime is proved on the built artefact, never on the source.** Any code path that
+resolves a URL or a path from a value that differs between `app/**/*.ts` and `dist/app/**/*.js` —
+`import.meta.url`, `process.argv[1]`, `process.cwd()`, `require.resolve`, and any relative join against one of
+them — must have **at least one gate that runs the built artefact**: `make verify-dist`, which builds first
+and then executes `dist/` as a child process. A gate that imports the `.ts` module and calls the function is a
+*source* gate: it proves the function's logic and is blind to the resolution, because under Node's type
+stripping `import.meta.url` ends in `.ts` and every `.ts`-relative sibling exists. The class boundary is the
+resolver, not the I/O: a path assembled from an absolute configured root (`SKW_DATA_DIR`, the app's
+`contentRoot`) and a database value computes the same string in both worlds and is covered by the ordinary
+suite; a path assembled from the module's own URL is not. A new site in this class is a new row in the
+register and a new `D<n>` assertion in `make verify-dist`, or it is a `DIST_EXEMPT` entry with a reason — there
+is no third option, and "the test suite passes" is not one of them.
+```
+
+**Where the gate lives: `make verify-dist`, a new target, wired into `verify` so `make test` runs it.**
+
+```make
+verify-dist: build
+	@node scripts/dist-gate.mjs
+```
+
+It is **not** a `test/**/*.test.ts` file, deliberately: `npm test` is the bare runner (`package.json:13`) and
+does not build, so a dist case inside `test/` would either fail on a clean tree or be given a skip — and a skip
+is a failure here (E-8, E-15). It needs no nginx and no Docker: the app is the system under test and
+`X-Accel-Redirect` is asserted on the header, not on the bytes.
+
+| id | the gate runs | the site it proves |
+|---|---|---|
+| **D1** | `node dist/app/main.js` with the six boot keys and a scratch `SKW_DATA_DIR`; `GET /healthz` → `200` within 15 s | `isMain` (`app/main.ts:672`), `schemaDirFrom`/`findProjectRoot` (`app/main.ts:147`, `app/db/migrate.ts:231`) — the boot path, in the layout the image has (`dist/` beside `schema/` and `build/`, `Dockerfile.app:16–23`) |
+| **D2** | `GET /` → `200` with a rendered page | `astroHandler`'s `build/astro/server/entry.mjs` (`app/main.ts:443`) — reached only on the first page render, never by `/healthz` |
+| **D3** | one redemption end to end: `POST /d/<key>` → `303` + cookie, `GET /d/<key>/file` → `200`, `x-accel-redirect: /__protected/wm/…`, the named file exists and is not the blob | `stampWorkerUrl` (`app/download/render.ts:130–132`) and `new Worker(…)` (`:141`) — the defect of §2.10, and the only assertion that would have been red |
+| **D4** | `node dist/app/db/migrate.js --tenant all` on a scratch data dir → exit 0, `user_version` as the schema expects | `migrate.ts`'s `isMain` (`:246`) — the command `npm run migrate` ships |
+| **D5** | `node dist/app/cli/skwctl.js admin bootstrap` on a scratch dir → the documented exit codes and the 0600 file | `skwctl.ts`'s `isMain` (`:693`) — the command `install.sh:167` runs, on the one box where nobody is watching |
+| **D6** | `node dist/tools/nginx_gen.js --data-dir <fixture> --out <tmp>`, byte-compared with `nginx/conf.d/10-app.conf` | `nginx_gen.ts`'s `isMain` (`:257`) — the command `test/nginx-config.test.ts:188` names in its failure message and no gate has ever run |
+
+D1–D3 run against the suite's own fixture — `makeFixture()` writes a `control.db` with one tenant and its
+`site.db` into a temp directory (`test/helpers/fixture.ts`) — copied into a scratch `SKW_DATA_DIR`; the gate
+never reads or writes `data/` or `content/`, so it cannot damage a developer's tree. The fixture is built by
+the gate process, not by the artefact: the app under test is `dist/`, which is the only thing D1–D6 relax.
+
+**How the existing suites are audited against the rule.** Two halves, and the second is what keeps it true.
+
+*One-time audit.* Every occurrence of `import.meta.url`, `process.argv[1]`, `process.cwd()` and
+`require.resolve` under `app/` and `tools/` was read, and each was either given a `D<n>` above or listed in
+`DIST_EXEMPT`. There are **eight rows over five files** in the class today — the worker URL
+(`render.ts:130–132`, `:141`), the schema dir (`main.ts:147`), the Astro entry (`main.ts:443`), the app's own
+entry detection (`main.ts:672`), `migrate`'s `findProjectRoot` and `isMain` (`migrate.ts:231`, `:246`),
+`skwctl`'s `isMain` (`skwctl.ts:693`) and the nginx generator's `isMain` (`nginx_gen.ts:257`) — mapped onto the
+six assertions above. The ninth occurrence is `tools/regen_conf.ts`, and it is the `DIST_EXEMPT` entry with a
+reason: its `REPO` is module-relative and wrong in `dist` (measured above), it is not copied into the runtime
+image, and item 7 fixes it by taking the project root from `findProjectRoot` instead of from a test helper;
+until then it may not claim a `D` row, because a gate over a tool nobody ships would be a gate over nothing.
+It is also the instance that proves a green suite is not an audit.
+
+*Ongoing register — `test/dist-witness.test.ts`, a `DIST_SITES` table of `{site, source, resolvedBy, gate}`.*
+Three assertions, mirroring §13.1a's witness table: (1) every row's `gate` is an id that appears in
+`scripts/dist-gate.mjs`, and `make verify-dist` prints each id with its site on success, so the link is a
+transcript rather than a comment; (2) every occurrence of the four markers under `app/` and `tools/` is
+claimed by a row or listed in `DIST_EXEMPT` with a reason (`new URL(req.url, …)` is request parsing; a test
+helper's `import.meta.url` is not shipped); (3) an unclaimed occurrence fails, so the class cannot grow
+silently — the half a one-directional table cannot see, exactly as `W3` of the existing witness table exists
+for. The register lives in `make test` (it reads files and needs no `dist/`); the gate it points at lives in
+`make verify-dist` (it needs `dist/` and a child process).
+
+### E-28 audit — which existing gates satisfy the rule, and which need a built-artefact twin
+
+| Gate, as it exists today | What it executes | Sites in the class it can see | Verdict |
+|---|---|---|---|
+| `make verify-s1` → `scripts/run-node-tests.mjs` over `test/**/*.test.ts` (`Makefile:107–108`), 404/404 at `S3d-report.md` §10 | the TypeScript modules, in-process, under type stripping | **0 of 8** | **fails** — needs the twin, for every site |
+| `npm test` — the bare runner (`package.json:13`), also the path `hermes verify` uses | the same | **0 of 8** | **fails** — same twin, and no build at all |
+| `make test-perf` (`Makefile:114–117`) | the same, plus wall-clock assertions | **0 of 8** | **fails** — it measures the stamped path *from source*, which is the path that was wrong (`P-S3d-2` is a source render) |
+| `make build` (`Makefile:77–78`) | `tsc` → `dist/`, `astro build` | produces the artefact | **fails as a gate** — necessary, not sufficient; nothing executes what it emits |
+| `make typecheck` (`Makefile:80–82`) | `tsc --noEmit`, twice | **0 of 8** | **fails** — a `.ts`-relative sibling is type-valid, which is why the defect compiled |
+| `make verify-schema` | `scripts/model/gen_schema.py`, `validate_schema.py` | **0 of 8** — it reads `schema/` from the repo and never goes through `schemaDirFrom` | **fails** for the schema site, and is out of scope for the rest |
+| `make verify-claims` | python: re-runs the register's measurements | none — no resolution site | **not applicable** (asserts nothing about paths) |
+| `make verify-frozen` | python: quotes `SDS.md` against the register | none | **not applicable** |
+| `make verify-gitignore` | shell + `git check-ignore` | none (`dist/app.js` is a literal in a list, `scripts/verify-gitignore.sh:17`) | **not applicable** |
+| `W3` — `test/download-watermark.test.ts:303–317` | the *function*, twice, as strings; no `existsSync` on the dist worker and no worker started | the worker site, as a string | **fails** — this is the twin whose green hid a 100 % download outage |
+| `hermes verify` (harness; recorded in both S3 reports, no `make` target) | `npm run build`, `npm run typecheck`, `npm test`, `make test`, `make build`, then boots `node dist/app/main.js` and polls `/` | **3 of 8** — the boot class (`isMain`, the schema dir, the Astro entry) | **partial** — the only gate that runs the built entry, and it cannot see the download: readiness never reaches `/d/<key>/file`, so D3 is exactly the assertion it lacks |
+| `scratch/s3d/probe-dist.mjs` (`S3d-report.md` §2.10) | the compiled module and its compiled worker | the worker site | **evidence, not a gate** — not a target, never in CI, and §1 rule 4 says a report is not authority |
+| `make verify-dist` (this item) | `dist/` only, as a child process | **8 of 8** | **satisfies** — and it is the only one that does |
+
+**Which existing gates already satisfy E-28: none of the code-executing ones.** `hermes verify`'s boot is the
+only partial — it runs the built entry, so the boot class is covered there and nowhere else — and it is not a
+`make` target, so nothing in `make test` inherits it. Every other gate either never executes code
+(`verify-claims`, `verify-frozen`, `verify-gitignore`) or executes the source (`verify-s1`, `npm test`,
+`test-perf`, `typecheck`), and `build` emits the artefact without running it.
+
+**Test that must change.**
+
+1. **New `scripts/dist-gate.mjs` and `make verify-dist`** (the target above), added to `verify` so `make test`
+   is `verify-toolchain → verify-gitignore → verify-schema → verify-claims → verify-frozen → verify-s1 →
+   verify-dist`. `Makefile`'s `help` text gains the target.
+2. **New `test/dist-witness.test.ts`** — the register and its three assertions, above.
+3. **The negative control, recorded here so it is a gate and not a claim.** Restore
+   `new URL('./stamp-worker.ts', metaUrl)` in `stampWorkerUrl`: `make verify-dist` must go **red at D3** and
+   `make test` must stay **green at 404/404**. If `make test` also goes red, this item has not proved the gap —
+   it has proved some other gate already covered it, and the claim must be withdrawn rather than reworded.
+   Files restored byte-identical afterwards, as in `scratch/s3d/mutations.ts`.
+4. **`test/nginx-config.test.ts:188`** — its failure message names `node dist/tools/nginx_gen.js`, a command no
+   gate ran. D6 makes the message true; the message text does not change.
+5. **`scripts/model/check_frozen.py:206`** — `POINTERS` moves from `range(1, 24)` to `range(1, 29)`, landing the
+   pointer lines for E-24, E-25, E-26, E-27 and E-28. This also closes E-24/E-25's owed item 4, which the tree
+   has not applied (the check reports `pointers: 23/23` today).
+6. **Paste the three drop-ins into `SDS.md`**, each with its pointer line: §7.4 gains E-26's
+   (`> Amended by 02-errata.md E-26.`), §7.5 gains E-27's, and §16's preamble gains E-28's.
+   `make verify-frozen` is the gate; it quotes none of the three blocks, so the proof is that the retired
+   sentences are absent and the replacement paragraphs are present verbatim.
+
+**Recorded, not closed — `dist/` carries the test tree into the image.** `tsconfig.json`'s `rootDir` is `.`
+and `tools/regen_conf.ts` imports `test/helpers/fixture.ts`, so `tsc` emits `dist/test/…`, and
+`Dockerfile.app:18` copies all of `dist/` into `/srv/app`. That is a packaging and surface question for S4,
+not a resolution question; it is named here because D1–D6 make `dist/` the thing that ships and therefore the
+thing worth keeping small.
+
+**Severity: major (build), and the highest of the three for the customer.** The one measured instance was a
+100 % download outage with a green suite, and the class includes the worker, the schema directory, the SSR
+entry, both process entry points and the nginx generator.
+
+---
+
+### Builder items this section owes — ordered, each naming the file and the gate that proves it
+
+| # | Item | Files | Gate that proves it |
+|---|---|---|---|
+| 1 | **E-26** paste the §7.4 drop-in (wire format, verification order, the two windows, the endpoint table, the mint, the cookie) and its pointer line | `docs/sds/SDS.md` §7.4 | `make verify-frozen` green; `R13`/`R14` name the windows and the mint |
+| 2 | **E-26** implement `cexp`: the claim and its three step-(5) checks; the 86 400 s ceiling on the setting; `maySpend` into the consume so the middle window performs no insert; the `jti` reuse at mint | `app/download/token.ts`, `app/download/plane.ts`, `app/download/ledger.ts`, `app/download/code.ts` (the setting's bound) | `R5b`, `R13`, `R14`; mutation — delete the `maySpend` guard → `R13(c)` spends a use → red |
+| 3 | **E-26** render lifetime on `cexp`, not `exp` | `app/download/plane.ts` (`ensure({ expiresAt })`) | new `W13` |
+| 4 | **E-27** the global semaphore, the fixed acquisition order, and the budget measured from arrival | `app/download/render.ts`, `app/main.ts` | `W6` (two tenants, injected capacity 4), new `W14` (queue denial); mutations — no global → `W6` red, budget from acquisition → `W14` red |
+| 5 | **E-27** paste the §7.5 drop-in and its pointer line | `docs/sds/SDS.md` §7.5 | `make verify-frozen`; `W3`/`W6` assert the numbers the text now names |
+| 6 | **E-28** `make verify-dist` and its six assertions | `Makefile`, `scripts/dist-gate.mjs` | the negative control: `.ts` worker URL → `verify-dist` red at D3, `make test` green at 404/404 |
+| 7 | **E-28** the register | `test/dist-witness.test.ts` | an unclaimed `import.meta.url` under `app/` turns it red; renaming a `D<n>` in the gate turns it red |
+| 8 | **E-26/E-27/E-28** pointer lines and the range | `scripts/model/check_frozen.py:206` | pointer phase reports 28/28; renaming one pointer line turns it red |
+| 9 | **§1's marker count** — "There are five such markers: E-1, E-2, E-4, E-11 and E-13" becomes nine, naming E-26's four | `docs/sds/02-errata.md` §1 | **none — and said plainly:** no checker counts markers. A count in prose is kept true by the reader, which is why it is listed rather than quietly left wrong. |
+
+Items 1–2 are one change to the spec and one to the code and can land in either order; 3 depends on 2; 4–5 are
+independent of 1–3; 6–7 are independent of all of them; 8 requires every pointer line to exist, so it is last.
+
+---
+
+### Traceability — E-26..E-28
+
+| E | Closes | Source (verified in this pass) | Severity |
+|---|---|---|---|
+| **E-26** | §7.4's continuation grace is unreachable because `verifyToken` refuses every expired token; `R5b`'s sentence states the rule the frozen step (5) never contained; the payload and the cookie's `600 s` are the two frozen clauses that have to move; D32 is the decision | `S3c-report.md` §3.4 (the `R5b` case and its quote), §8.3 ("Continuation grace is not implemented"); `S3d-report.md` §8.5 (the consequence), §9.2 (handed back); `SDS.md:1252–1286`; `00-adjudication.md` §4.4 (`:1404–1443`); `IDEA.md` D32 (`:111`); `app/download/token.ts:131–134`; `test/download-redeem.test.ts:321–346`; `schema/site.sql:204` (`ix_ev_code_ts`) | major (specification) |
+| **E-27** | per-tenant 8 is 8 × N on a multi-tenant box and the 2 s budget starts after the queue, so a queued request has no deadline; D33 bounds the box and this item bounds the wait | `S3d-report.md` §2.6 (`P-S3d-1`), §8.8 ("8 × tenants workers"), §9.4 (disk growth); `IDEA.md` D33 (`:112`); `SDS.md:1296–1299`; `app/download/render.ts:55–58`, `:207–213`, `:330–341`; `app/admin/auth.ts:71–102` (`Semaphore` has no deadline) | major (specification) |
+| **E-28** | every gate executes the TypeScript source, so a resolution that only works under type stripping is invisible; the measured instance is a 503 on every production download with 404/404 green | `S3d-report.md` §2.10 (the defect and the probe), §10 (`make test` 404/404); `Makefile:77–78`, `:107–117`; `package.json:10–13`; `test/download-watermark.test.ts:303–317`; `tools/regen_conf.ts:8–13`; `test/helpers/fixture.ts:11`; `Dockerfile.app:16–23`; measured — `stampWorkerUrl(dist) → …/stamp-worker.js`, `exists: true`; the `.ts` sibling, `exists: false`; `REPO` in `dist/test/helpers/fixture.js` = `…/dist` and `…/dist/schema`, `exists: false` | major (build) |
+| — | **carried, not separate items:** `POINTERS` to `range(1, 29)` (item 8); §1's marker count (item 9); E-24/E-25's owed pointer lines, which item 8 lands | E-26..E-28 | — |
+| — | **open, not closed here:** a token refusal on `GET /d/<key>/file` writes no `denied` row — `verifyToken` fails and throws before the tenant database is opened (`app/download/plane.ts`, the `!verified.ok` branch), while `docs/sds/diagrams/gated-download.puml:59` says "401 … + one `kind='denied'` event row (jti may be NULL)". The only `'denied'` insert in `app/` is the redeem path (`plane.ts:341`). Needs its own item against §7.3 and the diagram — not E-26's, because the window change does not touch it | `app/download/plane.ts` (`!verified.ok`), `docs/sds/diagrams/gated-download.puml:59` | minor (specification) |
+| — | **open, not closed here:** E-26's resume key is `(code, asset, IP, UA)`, so a client that changes network or browser spends a use to resume; that is D32's own key, and narrowing it is a product decision, not an errata's | `IDEA.md` D32; E-26 "Recorded, not closed" | minor (specification) |
