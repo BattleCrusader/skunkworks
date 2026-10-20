@@ -74,6 +74,13 @@ const WM_PREFIX = 'content/protected/wm/';
  * for a flood that is not guessing.
  */
 export const RATE_LIMIT_ALL = 60;
+/**
+ * D34: how many attempts a refused browser makes in total (the navigation, then the page's
+ * own retries), and the jitter window that keeps a burst of refused buyers from returning
+ * in one wave. The loop is the page's — nothing on the server waits.
+ */
+export const RETRY_ATTEMPTS = 3;
+export const RETRY_JITTER_MS = 250;
 
 export interface PlaneDeps {
   env: Env;
@@ -477,22 +484,33 @@ ${error}
         } catch (err) {
           // Fail closed, and leave the record that says why. The row is written *before*
           // the 503 so a reader never sees a failed redemption with no ledger entry.
-          this.#denyWatermark(db, claims, iph, uah);
+          //
+          // D34: the row is `kind='denied'`, one per attempt. A refusal is not a
+          // redemption — nothing was authorised and nothing was spent — so writing it as
+          // `first` made the token's one attempt look spent and turned every retry into a
+          // second denial (`consumeUse` treats an existing non-`ok` `first` row as
+          // terminal). The retry page depends on this being a denial, not a redemption.
+          const reason = err instanceof AppError ? reasonOf(err) : 'renderer';
+          this.#denyWatermark(db, claims, iph, uah, reason);
           if (err instanceof AppError) throw err;
-          throw new AppError('SKW_E_SEC_WATERMARK_FAILED', 'the watermark could not be rendered', {
-            reason: 'renderer',
-            asset_key: asset.key,
-          });
+          throw new AppError(
+            'SKW_E_SEC_WATERMARK_FAILED',
+            'the watermark could not be rendered',
+            { reason: 'renderer', asset_key: asset.key },
+            this.watermark.retryAfterSeconds(),
+          );
         }
         let size: number;
         try {
           size = statSync(stamped.absPath).size;
         } catch {
-          this.#denyWatermark(db, claims, iph, uah);
-          throw new AppError('SKW_E_SEC_WATERMARK_FAILED', 'the stamped file vanished before the hand-off', {
-            reason: 'io',
-            asset_key: asset.key,
-          });
+          this.#denyWatermark(db, claims, iph, uah, 'io');
+          throw new AppError(
+            'SKW_E_SEC_WATERMARK_FAILED',
+            'the stamped file vanished before the hand-off',
+            { reason: 'io', asset_key: asset.key },
+            this.watermark.retryAfterSeconds(),
+          );
         }
         // The second tree: `content/protected/wm/…` behind `/__protected/wm/`, whose
         // alias is `/srv/content/protected/wm/`. `storage_path` is content-addressed and
@@ -571,6 +589,69 @@ ${error}
   }
 
   /**
+   * **D34 — the refusal a browser can act on.**
+   *
+   * A JSON 503 is a dead end for a buyer, so a `text/html` navigation gets a page instead:
+   * one that says what happened, how long to wait (`Retry-After`, the same number as the
+   * header), and then retries itself **three attempts in total** — the third answer is
+   * terminal and says the code was not used.
+   *
+   * The retry loop is the page's, and deliberately not the server's: no request waits
+   * longer than E-27's 2 s budget, nothing is queued behind a sleeping response, and a
+   * buyer who closes the tab costs nothing. The delay is `Retry-After` plus up to
+   * `RETRY_JITTER_MS` of client-side jitter, so a burst of refused browsers does not come
+   * back in one wave; the `<noscript>` fallback refreshes once at the header's value.
+   *
+   * `attempt` is one-based: the attempt that just failed.
+   */
+  busyPage(reply: FastifyReply, tenantKey: string, err: AppError, attempt: number): void {
+    const retryAfter = err.retryAfter ?? this.watermark.retryAfterSeconds();
+    const path = `/d/${encodeURIComponent(tenantKey)}/file`;
+    const terminal = attempt >= RETRY_ATTEMPTS;
+    const reason = reasonOf(err);
+    const busy = reason === 'queue' || reason === 'timeout';
+    const why = busy
+      ? 'The download queue is full. Nothing has been charged and your code has not been used.'
+      : 'This file could not be prepared just now. Nothing has been charged and your code has not been used.';
+
+    reply.header('cache-control', 'no-store').header('retry-after', String(retryAfter)).code(503).type('text/html; charset=utf-8');
+
+    if (terminal) {
+      reply.send(
+        pageHtml(
+          tenantKey,
+          'Your file could not be prepared',
+          `<h1>Your file could not be prepared</h1>
+<p role="alert">${escapeHtml(why)}</p>
+<p>Tried ${attempt} times, waiting ${retryAfter} s before each. If it keeps happening, the store has been told — try again in a few minutes.</p>
+<p><a href="/d/${escapeHtml(tenantKey)}">Enter your code again</a></p>`,
+          ` data-terminal="1" data-attempt="${attempt}"`,
+        ),
+      );
+      return;
+    }
+
+    const next = attempt + 1;
+    const nextUrl = `${path}?retry=${attempt}`;
+    reply.send(
+      pageHtml(
+        tenantKey,
+        'Preparing your file',
+        `<h1>Preparing your file</h1>
+<p role="status">${escapeHtml(why)}</p>
+<p>This page will try again automatically — attempt ${next} of ${RETRY_ATTEMPTS}. You can also
+<a href="${escapeHtml(nextUrl)}">try now</a>.</p>
+<script>
+setTimeout(function () { location.assign(${JSON.stringify(nextUrl)}); },
+  ${retryAfter * 1000} + Math.floor(Math.random() * ${RETRY_JITTER_MS}));
+</script>
+<noscript><meta http-equiv="refresh" content="${retryAfter};url=${escapeHtml(nextUrl)}"></noscript>`,
+        ` data-attempt="${attempt}" data-retry-ms="${retryAfter * 1000}" data-jitter-ms="${RETRY_JITTER_MS}"`,
+      ),
+    );
+  }
+
+  /**
    * `download.continuation_grace_s`, or the shipped default when the row is missing.
    *
    * A missing `download.default_max_uses` is a refusal at issue time (it decides a quota);
@@ -633,17 +714,37 @@ ${error}
   }
 
   /**
-   * The `denied_watermark` branch of the ledger (C-16). `kind='first'` because the token
-   * spent its one redemption attempt here; `bytes_declared=0` because nothing was
-   * authorised. `ON CONFLICT DO NOTHING` keeps an earlier `ok` row as it is — the token
-   * already redeemed, and this failure is a re-stamp that did not happen.
+   * One `denied` row per refused attempt (D34).
+   *
+   * `kind='denied'`, not `'first'`: a watermark refusal is not a redemption. Under the old
+   * kind the row tripped `ux_ev_jti_first` and `consumeUse` read it back as a spent
+   * attempt, so a retry after a 503 could never be served — the buyer's reload was a dead
+   * end even when the renderer recovered. `kind='denied'` has no unique index, which is
+   * what "each attempt writes its own row" requires.
+   *
+   * `bytes_declared=0` because nothing was authorised. The row records the **class**
+   * (`denied_watermark`); the finer reason (`queue`/`timeout`/`renderer`/`io`) travels in
+   * the 503's `detail.reason`, because `cms_download_event` has no reason column — adding
+   * one is a v4 data-model change, and it is recorded as S4 work rather than faked into
+   * `bytes_sent` or the `jti`.
    */
-  #denyWatermark(db: Database.Database, claims: { jti: string; cid: number; aid: number }, iph: string, uah: string): void {
+  #denyWatermark(
+    db: Database.Database,
+    claims: { jti: string; cid: number; aid: number },
+    iph: string,
+    uah: string,
+    reason: string,
+  ): void {
     db.prepare(
       `INSERT INTO cms_download_event (jti, kind, code_id, asset_id, bytes_declared, ip_hash, ua_hash, outcome)
-       VALUES (?, 'first', ?, ?, 0, ?, ?, 'denied_watermark')
-       ON CONFLICT DO NOTHING`,
+       VALUES (?, 'denied', ?, ?, 0, ?, ?, 'denied_watermark')`,
     ).run(claims.jti, claims.cid, claims.aid, iph, uah);
+    // The row is the class; the reason is the log line. S3R2-3 recorded that an operator
+    // keyed on `detail.reason='queue'` sees nothing in a one-store deployment — every
+    // production refusal is `timeout` — so the reason has to be somewhere a human reads.
+    process.stderr.write(
+      `download refusal: code=${claims.cid} asset=${claims.aid} reason=${reason} outcome=denied_watermark\n`,
+    );
   }
 
   /**
@@ -754,4 +855,20 @@ function headerValue(v: string | string[] | undefined): string | undefined {
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+/** One shell, so the retry page and the terminal page cannot drift apart. */
+function pageHtml(tenantKey: string, title: string, body: string, attrs: string): string {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(title)}</title></head>
+<body data-tenant="${escapeHtml(tenantKey)}"${attrs}>
+${body}
+</body></html>`;
+}
+
+/** `detail.reason`, which is how a watermark refusal says *why* it refused. */
+function reasonOf(err: AppError): string {
+  const detail = err.detail as { reason?: unknown } | null | undefined;
+  return detail !== null && typeof detail === 'object' && typeof detail.reason === 'string' ? detail.reason : 'unknown';
 }

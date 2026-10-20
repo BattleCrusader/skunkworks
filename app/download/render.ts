@@ -70,6 +70,46 @@ export const STAMP_CONCURRENCY = 8;
 export const WM_ROOT = 'content/protected/wm';
 
 /**
+ * D34 — how many completed renders the p50 is taken over, and what the p50 is before one
+ * has completed.
+ *
+ * A refusal's `Retry-After` has to be a number the buyer can act on, so it is derived from
+ * the **measured** service time (the p50 of recent renders) and the **live** backlog behind
+ * the gate — not from a constant, and not from the budget, which is a ceiling rather than a
+ * duration. Until the first render in this process completes there is nothing to measure;
+ * `P50_PRIOR_MS` is that prior, and it is replaced by the first measurement.
+ */
+const P50_WINDOW = 64;
+export const P50_PRIOR_MS = STAMP_BUDGET_MS / 4;
+/**
+ * The upper bound on `Retry-After`. A page that retries three times inside a ten-minute
+ * token cannot wait longer than this and still be inside the window, and a number a client
+ * will ignore is worse than a floor it will honour.
+ */
+export const MAX_RETRY_AFTER_S = 10;
+
+export interface StampPressure {
+  /** The p50 of the last `P50_WINDOW` completed renders, in ms. */
+  p50Ms: number;
+  /** Renders in flight plus requests queued on the process-global gate (E-27/D33). */
+  backlog: number;
+  /** The process-global gate's size. */
+  capacity: number;
+}
+
+/**
+ * **D34's number.** One wave is this request's own render; each full capacity of backlog
+ * ahead of it is another wave. `ceil` because `Retry-After` is whole delta-seconds and
+ * rounding down would send the page back before a slot can free.
+ */
+export function retryAfterSeconds(p: StampPressure): number {
+  const capacity = Math.max(1, p.capacity);
+  const waves = 1 + Math.ceil(Math.max(0, p.backlog) / capacity);
+  const ms = Math.max(0, p.p50Ms) * waves;
+  return Math.min(MAX_RETRY_AFTER_S, Math.max(1, Math.ceil(ms / 1000)));
+}
+
+/**
  * D33/E-27: the **process-global** cap. `availableParallelism()` is the CPUs this
  * process may actually use — not `os.cpus().length`, which reports the host inside a
  * container with a CPU quota and would size the cap at 16 × 50 MB on a two-core box.
@@ -332,6 +372,8 @@ export class WatermarkStore {
   readonly #peak = new Map<string, number>();
   #activeGlobal = 0;
   #peakGlobal = 0;
+  /** The last `P50_WINDOW` completed render durations, in ms — D34's measurement. */
+  readonly #durations: number[] = [];
   /** Keyed by `spec:source`: two tabs of one buyer must not draw the same page twice. */
   readonly #inFlight = new Map<string, Promise<StampResult>>();
 
@@ -373,6 +415,53 @@ export class WatermarkStore {
     return this.#peakGlobal;
   }
 
+  /**
+   * D34: the numbers a refusal's `Retry-After` is derived from, read at the instant of the
+   * refusal. The backlog is the **process-global** gate's, not the tenant's: E-27/D33 make
+   * the global cap the one that binds, and a tenant-local count would tell a buyer behind a
+   * shared box that nothing is ahead of them.
+   */
+  pressure(): StampPressure {
+    return {
+      p50Ms: this.#p50(),
+      backlog: this.#global.active + this.#global.waiting,
+      capacity: this.#global.size,
+    };
+  }
+
+  /** The refusal's `Retry-After`, in whole seconds (D34). */
+  retryAfterSeconds(): number {
+    return retryAfterSeconds(this.pressure());
+  }
+
+  /** The measured p50 of completed renders, or `P50_PRIOR_MS` before the first one. */
+  #p50(): number {
+    if (this.#durations.length === 0) return P50_PRIOR_MS;
+    const sorted = [...this.#durations].sort((a, b) => a - b);
+    const mid = sorted.length >> 1;
+    if (sorted.length % 2 === 1) return sorted[mid] as number;
+    return ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
+  }
+
+  /** A duration is recorded only for a render that produced bytes: a failure is not a service time. */
+  #record(durationMs: number): void {
+    if (!Number.isFinite(durationMs) || durationMs < 0) return;
+    this.#durations.push(durationMs);
+    if (this.#durations.length > P50_WINDOW) this.#durations.shift();
+  }
+
+  /**
+   * One watermark refusal, always carrying D34's retryable number.
+   *
+   * `heldSlots` is 1 for a refusal thrown from inside a render: that request still holds a
+   * gate slot at the instant it is refused, and counting its own slot as work ahead of it
+   * would add a wave that nobody has to wait for.
+   */
+  #denial(message: string, detail: Record<string, unknown>, heldSlots = 0): AppError {
+    const p = this.pressure();
+    return new AppError('SKW_E_SEC_WATERMARK_FAILED', message, detail, retryAfterSeconds({ ...p, backlog: Math.max(0, p.backlog - heldSlots) }));
+  }
+
   #gate(tenantKey: string): StampGate {
     let gate = this.#gates.get(tenantKey);
     if (gate === undefined) {
@@ -391,7 +480,7 @@ export class WatermarkStore {
    */
   async ensure(input: EnsureInput): Promise<StampResult> {
     if (stampable(input.asset) === null) {
-      throw new AppError('SKW_E_SEC_WATERMARK_FAILED', 'this format cannot be watermarked in v1', {
+      throw this.#denial('this format cannot be watermarked in v1', {
         reason: 'unstampable',
         mime: input.asset.mime,
       });
@@ -429,7 +518,7 @@ export class WatermarkStore {
       try {
         options = parseSpecJson(config.specJson);
       } catch (err) {
-        throw new AppError('SKW_E_SEC_WATERMARK_FAILED', `the watermark spec on this asset is invalid: ${(err as Error).message}`, {
+        throw this.#denial(`the watermark spec on this asset is invalid: ${(err as Error).message}`, {
           reason: 'spec_invalid',
           asset_key: input.asset.key,
         });
@@ -442,7 +531,7 @@ export class WatermarkStore {
     try {
       spec = buildSpec(input.asset, input.code, options);
     } catch (err) {
-      throw new AppError('SKW_E_SEC_WATERMARK_FAILED', (err as Error).message, {
+      throw this.#denial((err as Error).message, {
         reason: 'spec_invalid',
         asset_key: input.asset.key,
       });
@@ -526,18 +615,22 @@ export class WatermarkStore {
       this.#activeGlobal += 1;
       this.#peakGlobal = Math.max(this.#peakGlobal, this.#activeGlobal);
       try {
+        // D34: the measured service time is this span — after acquisition, around the
+        // render itself. Queueing is not a render and is not counted.
+        const renderStarted = this.#now();
         bytes = await new Promise<Buffer>((resolve, reject) => {
           timer = setTimeout(() => reject(new StampTimeout(remaining)), remaining);
           this.#render(job, remaining).then(resolve, reject);
         });
+        this.#record(this.#now() - renderStarted);
       } catch (err) {
         if (err instanceof AppError) throw err;
         const reason = err instanceof StampTimeout ? 'timeout' : 'renderer';
-        throw new AppError('SKW_E_SEC_WATERMARK_FAILED', `the watermark could not be rendered: ${(err as Error).message}`, {
+        throw this.#denial(`the watermark could not be rendered: ${(err as Error).message}`, {
           reason,
           asset_key: input.asset.key,
           budget_ms: this.#budgetMs,
-        });
+        }, 1);
       } finally {
         if (timer !== undefined) clearTimeout(timer);
         this.#active.set(input.tenantKey, Math.max(0, (this.#active.get(input.tenantKey) ?? 1) - 1));
@@ -548,7 +641,7 @@ export class WatermarkStore {
       tenantGate.release();
     }
     if (bytes.length === 0) {
-      throw new AppError('SKW_E_SEC_WATERMARK_FAILED', 'the renderer produced no bytes', {
+      throw this.#denial('the renderer produced no bytes', {
         reason: 'renderer',
         asset_key: input.asset.key,
       });
@@ -576,7 +669,7 @@ export class WatermarkStore {
       renameSync(tmp, absPath);
     } catch (err) {
       rmSync(tmp, { force: true });
-      throw new AppError('SKW_E_SEC_WATERMARK_FAILED', `the render could not be stored: ${(err as Error).message}`, {
+      throw this.#denial(`the render could not be stored: ${(err as Error).message}`, {
         reason: 'io',
         asset_key: input.asset.key,
       });
@@ -593,7 +686,7 @@ export class WatermarkStore {
    */
   #queueDenial(input: EnsureInput, arrival: number): AppError {
     const queuedMs = this.#now() - arrival;
-    return new AppError('SKW_E_SEC_WATERMARK_FAILED', 'the watermark queue released no renderer within the budget', {
+    return this.#denial('the watermark queue released no renderer within the budget', {
       reason: 'queue',
       asset_key: input.asset.key,
       budget_ms: this.#budgetMs,
@@ -603,7 +696,7 @@ export class WatermarkStore {
 
   /** A slot taken with no time left: the same budget doing its job, not a second one. */
   #timeoutDenial(input: EnsureInput, arrival: number): AppError {
-    return new AppError('SKW_E_SEC_WATERMARK_FAILED', `the watermark exceeded its ${this.#budgetMs} ms budget while queueing`, {
+    return this.#denial(`the watermark exceeded its ${this.#budgetMs} ms budget while queueing`, {
       reason: 'timeout',
       asset_key: input.asset.key,
       budget_ms: this.#budgetMs,

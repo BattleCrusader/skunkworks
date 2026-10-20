@@ -68,8 +68,14 @@ export const HTTP: Record<string, number> = {
   // §7.5 (S3d): the stamp failed — renderer error, the 2 s budget, an unencodable
   // character that survived the cp1252 sanitiser, or an unwritable render tree. 503:
   // the buyer's entitlement is untouched (no use is spent) and no un-stamped byte is
-  // served on any path. A retry needs a new redemption, because the denial is written
-  // to the ledger under this token's `jti` (a denial is not a continuation, C-4).
+  // served on any path.
+  //
+  // **D34 (S3 round 2): the refusal is retryable by contract.** Every 503 from this code
+  // carries `Retry-After`, derived from the measured render p50 and the live backlog
+  // (`render.ts`'s `retryAfterSeconds`), and the denial is written to the ledger as
+  // `kind='denied'` — not `'first'` — so a retry under the same token is a new attempt
+  // rather than a second denial, and the one `uses` is spent by whichever attempt is
+  // served. That is why this code has a dynamic wait and no entry in `RETRY_AFTER`.
   SKW_E_SEC_WATERMARK_FAILED: 503,
   // §7.5 (S3a): every upload that the sniff, the SVG rule or the filename rule refuses.
   // 415 Unsupported Media Type is the status the frozen registry assigns it, so a PHP
@@ -118,7 +124,13 @@ export class AppError extends Error {
   readonly retryAfter: number | undefined;
   readonly detail: unknown;
 
-  constructor(code: string, message?: string, detail?: unknown) {
+  /**
+   * `retryAfterSeconds` overrides the per-code constant. It exists for D34: a watermark
+   * refusal's wait is a measurement (the render p50 and the live backlog), not a table
+   * entry, and the header is the contract. Everything else keeps the table, so a code's
+   * `Retry-After` stays a frozen fact in `schema/error-codes.json`.
+   */
+  constructor(code: string, message?: string, detail?: unknown, retryAfterSeconds?: number) {
     if (!CODE_PATTERN.test(code)) {
       throw new Error(`not an SKW_E_ code: ${code}`);
     }
@@ -129,8 +141,11 @@ export class AppError extends Error {
     if (status === undefined) {
       throw new Error(`no HTTP mapping for ${code} (schema/error-codes.json)`);
     }
+    if (retryAfterSeconds !== undefined && (!Number.isInteger(retryAfterSeconds) || retryAfterSeconds < 0)) {
+      throw new Error(`Retry-After must be a whole number of seconds, got ${retryAfterSeconds}`);
+    }
     this.status = status;
-    this.retryAfter = RETRY_AFTER[code];
+    this.retryAfter = retryAfterSeconds ?? RETRY_AFTER[code];
     this.detail = detail;
   }
 }

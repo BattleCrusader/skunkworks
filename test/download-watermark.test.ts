@@ -9,8 +9,8 @@
  *   W2  one buyer, twice: one render, one row, one path, identical bytes;
  *   W3  the hand-off is `/__protected/wm/…` — never `/__protected/<hh>/<sha>` and never
  *       anything under `content/media/`;
- *   W4  a renderer that throws is `503 SKW_E_SEC_WATERMARK_FAILED`, writes
- *       `denied_watermark`, and emits **no** `X-Accel-Redirect`;
+ *   W4  a renderer that throws is `503 SKW_E_SEC_WATERMARK_FAILED` with a `Retry-After`, writes
+ *       one `denied` row per attempt, and emits **no** `X-Accel-Redirect`;
  *   W5  a render that overruns the 2 s budget takes the identical path (and the budget
  *       in the shipped build is asserted to be 2,000 ms);
  *   W6  sixteen concurrent stamps on one tenant never exceed eight in flight;
@@ -432,9 +432,16 @@ test('W4 — a stamp failure is 503, writes denied_watermark, and emits no X-Acc
 
     const rows = events(buyer.id);
     assert.equal(rows.length, 1, `expected one ledger row, got ${JSON.stringify(rows)}`);
-    assert.equal(rows[0]?.kind, 'first');
+    // D34: a refusal is a `denied` row, not a `first` one. Writing it as `first` tripped
+    // `ux_ev_jti_first` and made every retry a second denial, which is the dead end the
+    // retry page exists to remove.
+    assert.equal(rows[0]?.kind, 'denied');
     assert.equal(rows[0]?.outcome, 'denied_watermark');
     assert.equal(rows[0]?.bytes_declared, 0, 'nothing was authorised');
+    // D34: the refusal is retryable, and it says how long to wait — a whole number of
+    // seconds derived from the p50 and the backlog, not a constant.
+    const wait = Number(header(res, 'retry-after'));
+    assert.ok(Number.isInteger(wait) && wait >= 1 && wait <= 10, `retry-after ${String(header(res, 'retry-after'))}`);
 
     assert.equal(db((c) => Number((c.prepare(`SELECT uses FROM cms_download_code WHERE id = ?`).get(buyer.id) as { uses: number }).uses)), 0, 'a failure does not burn the use');
     assert.equal(renders().length, before, 'no render row was written');
@@ -443,8 +450,9 @@ test('W4 — a stamp failure is 503, writes denied_watermark, and emits no X-Acc
     const direct = await call({ port: broken.appPort, path: `/__protected/${bookSha.slice(0, 2)}/${bookSha}.pdf`, host: HOST });
     assert.equal(direct.status, 404, 'the media tree is nginx-internal, not an app route');
 
-    // A retry under the same token is still a denial, not a second chance: a denial is
-    // not a continuation (C4).
+    // A retry under the same token is a **new attempt, not a second chance spent**: it is
+    // refused because the renderer is still broken, it writes its own row, and `uses` is
+    // still 0 — nothing was consumed by either attempt.
     const retry = await call({
       port: broken.appPort,
       path: '/d/acme/file',
@@ -453,11 +461,14 @@ test('W4 — a stamp failure is 503, writes denied_watermark, and emits no X-Acc
     });
     assert.equal(retry.status, 503, retry.body);
     assert.equal(header(retry, 'x-accel-redirect'), undefined);
-    assert.equal(events(buyer.id).length, 1, 'the denial row is not duplicated');
+    assert.equal(events(buyer.id).length, 2, 'each attempt writes its own row (D34)');
+    assert.equal(events(buyer.id)[1]?.kind, 'denied');
+    assert.equal(db((c) => Number((c.prepare(`SELECT uses FROM cms_download_code WHERE id = ?`).get(buyer.id) as { uses: number }).uses)), 0);
 
     process.stdout.write(
       `# W4 forced renderer error -> ${res.status} ${(res.json as { error: { code: string } }).error.code}, ` +
-        `x-accel ${String(header(res, 'x-accel-redirect'))}, outcome ${rows[0]?.outcome}, uses 0\n`,
+        `retry-after ${String(header(res, 'retry-after'))}, x-accel ${String(header(res, 'x-accel-redirect'))}, ` +
+        `outcome ${rows[0]?.outcome} (${rows[0]?.kind}), uses 0; retry -> ${retry.status}, 2 rows, uses 0\n`,
     );
   } finally {
     await broken.close();
@@ -690,9 +701,13 @@ test('W14. a request still queued at the deadline is refused with reason=queue a
 
     const rows = events(b.id);
     assert.equal(rows.length, 1, `expected exactly one ledger row, got ${JSON.stringify(rows)}`);
-    assert.equal(rows[0]?.kind, 'first');
+    assert.equal(rows[0]?.kind, 'denied');
     assert.equal(rows[0]?.outcome, 'denied_watermark');
     assert.equal(rows[0]?.bytes_declared, 0);
+    // D34: the queue refusal carries the measured wait, and it is the store's own number.
+    const queueWait = header(refused, 'retry-after');
+    assert.match(String(queueWait), /^\d+$/, 'Retry-After is whole delta-seconds');
+    assert.equal(queueWait, String(waiter.handle.watermark.retryAfterSeconds()));
     assert.equal(
       db((c) => Number((c.prepare(`SELECT uses FROM cms_download_code WHERE id = ?`).get(b.id) as { uses: number }).uses)),
       0,
@@ -701,7 +716,8 @@ test('W14. a request still queued at the deadline is refused with reason=queue a
     const rendersAfter = db((conn) => Number((conn.prepare(`SELECT COUNT(*) AS n FROM cms_watermark_render`).get() as { n: number }).n));
     assert.equal(rendersAfter, rendersBefore, 'no render row, because no worker started');
 
-    // A retry under the same jti is still a denial: C-4, a denial is not a continuation.
+    // A retry under the same jti is a new attempt (D34): refused again while the holder
+    // keeps the only slot, with its own row — and still nothing spent.
     const retry = await call({
       port: waiter.appPort,
       path: '/d/acme/file',
@@ -709,7 +725,8 @@ test('W14. a request still queued at the deadline is refused with reason=queue a
       headers: { cookie: cookieOf(queuedRedeem) },
     });
     assert.equal(retry.status, 503, retry.body);
-    assert.equal(events(b.id).length, 1, 'the denial row is not duplicated');
+    assert.equal(events(b.id).length, 2, 'each attempt writes its own row (D34)');
+    assert.equal(events(b.id)[1]?.kind, 'denied');
     assert.ok(waited < 400, `the queue deadline did not bound the response: ${waited} ms (budget 40)`);
 
     // The holder, on the same gate with eight times the budget, is a *timeout*, not a queue
@@ -722,7 +739,8 @@ test('W14. a request still queued at the deadline is refused with reason=queue a
 
     process.stdout.write(
       `# W14 global cap 1; holder budget 300 ms -> 503 timeout; waiter budget 40 ms -> 503 ` +
-        `reason=queue after ${waited} ms (queued_ms ${String(body.error.detail?.queued_ms)}), one denied_watermark row, uses 0, no render\n`,
+        `reason=queue after ${waited} ms (queued_ms ${String(body.error.detail?.queued_ms)}), retry-after ${String(queueWait)} s, ` +
+        `one denied row per attempt, uses 0, no render\n`,
     );
   } finally {
     await waiter.close();

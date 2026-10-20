@@ -41,7 +41,7 @@ import { resolveTenant, TENANT_HEADER, type Listener, type Tenant } from './tena
 import { DEFAULT_CONTENT_ROOT } from './assets/store.ts';
 import { Semaphore } from './admin/auth.ts';
 import { seedSettings } from './download/code.ts';
-import { DownloadPlane } from './download/plane.ts';
+import { DownloadPlane, RETRY_ATTEMPTS } from './download/plane.ts';
 import type { WatermarkDeps, WatermarkStore } from './download/render.ts';
 
 // §9.1 (E-2) lives in tenancy/listener.ts so the admin router shares one rule;
@@ -385,7 +385,19 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   });
 
   app.get('/d/:key/file', async (req: FastifyRequest, reply: FastifyReply) => {
-    await plane.file(req, reply, downloadTenant(req));
+    const key = downloadTenant(req);
+    try {
+      await plane.file(req, reply, key);
+    } catch (err) {
+      // D34: a browser that is refused gets a page it can act on — the retry loop lives in
+      // the client, never as a request parked on the server. A store or a test, which does
+      // not ask for HTML, keeps the taxonomy body.
+      if (err instanceof AppError && err.code === 'SKW_E_SEC_WATERMARK_FAILED' && wantsHtml(req)) {
+        plane.busyPage(reply, key, err, retryAttempt(req.url));
+        return;
+      }
+      throw err;
+    }
   });
 
   // §7.6's third channel. The JSON body is kept as the raw string because the HMAC is
@@ -558,6 +570,21 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
 function pathnameOf(url: string): string {
   const q = url.indexOf('?');
   return q === -1 ? url : url.slice(0, q);
+}
+
+/**
+ * D34: which attempt this is, one-based, from `?retry=N`.
+ *
+ * The counter is the page's, and the server only uses it to decide whether this answer is a
+ * retry page or the terminal one. It is not an authorisation: a request that omits it is
+ * the first attempt, and one that lies about it only changes which page it is shown — the
+ * render and the ledger are the same either way.
+ */
+function retryAttempt(url: string): number {
+  const raw = queryParam(url, 'retry');
+  const n = raw === undefined ? 0 : Number(raw);
+  if (!Number.isInteger(n) || n < 0) return 1;
+  return Math.min(n, RETRY_ATTEMPTS - 1) + 1;
 }
 
 /** One query value, decoded; `undefined` when absent or malformed. */
