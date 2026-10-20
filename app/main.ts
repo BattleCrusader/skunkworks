@@ -162,6 +162,14 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     bodyLimit: 16 * 1024 * 1024,
   });
 
+  // D29's login page is a plain HTML form (`enctype=application/x-www-form-urlencoded`)
+  // so the surface works with no JavaScript and no extra dependency. The body is
+  // parsed as a string and read by `fieldsOf()` in the admin router, which is the
+  // one place a body becomes a field map.
+  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) =>
+    done(null, body),
+  );
+
   const started = Date.now();
 
   app.get('/healthz', async () => ({ build: env.buildId, uptime: Math.round((Date.now() - started) / 1000) }));

@@ -31,9 +31,14 @@ export const HTTP: Record<string, number> = {
   SKW_E_DM_BUSY: 503,
   SKW_E_DM_QUOTA: 507,
   // SEC — the security plane (S2a: §9.1's session/CSRF controls). The statuses are
-  // the frozen ones from schema/error-codes.json; the taxonomy has no credential
-  // login code, which is reported as a gap in docs/build/S2a-report.md §6.
+  // the frozen ones from schema/error-codes.json.
+  //
+  // E-16: `AUTH_INVALID` is a credential login failure (identity, password or TOTP;
+  // the three are one response). `CODE_INVALID` is §7.2's decision about a redeemed
+  // *download* access code and stays its own code — one counter that mixed a
+  // mistyped download code with a password-guessing run could not be alerted on.
   SKW_E_SEC_CSRF: 403,
+  SKW_E_SEC_AUTH_INVALID: 401,
   SKW_E_SEC_CODE_INVALID: 401,
   SKW_E_SEC_RATE_LIMITED: 429,
   SKW_E_SEC_ROLE_DISABLED: 403,

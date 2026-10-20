@@ -118,11 +118,11 @@ test('1. argon2id at the frozen cost: m=19456, t=2, p=1', async () => {
 test('2a. TOTP is mandatory when the allowlist is empty: no code and a wrong code are both 401', async () => {
   const missing = await login({ port, key: 'acme', email: TOTP_ONLY });
   assert.equal(missing.status, 401);
-  assert.equal(codeOf(missing), 'SKW_E_SEC_CODE_INVALID');
+  assert.equal(codeOf(missing), 'SKW_E_SEC_AUTH_INVALID');
 
   const wrong = await login({ port, key: 'acme', email: TOTP_ONLY, totp: '000000' });
   assert.equal(wrong.status, 401);
-  assert.equal(codeOf(wrong), 'SKW_E_SEC_CODE_INVALID');
+  assert.equal(codeOf(wrong), 'SKW_E_SEC_AUTH_INVALID');
 
   const absent = await login({ port, key: 'acme', email: TOTP_ONLY, totp: '' });
   assert.equal(absent.status, 401);
@@ -157,7 +157,7 @@ test('3. TOTP is not required when the allowlist is populated', async () => {
   assert.ok(Math.abs(windowMs - IDLE_MS_WITH_ALLOWLIST) < 5_000, `idle window ${windowMs}ms should be ~60 min`);
 });
 
-test('4. a wrong password and a nonexistent user are indistinguishable in status, body and time', async () => {
+test('4. three login failure causes are indistinguishable in status, body and time', async () => {
   const iterations = 20;
   // The lockout rule is measured in case 5; here it would turn the 6th sample into
   // a 429 and hide the timing. Each sample therefore resets the counter, which is
@@ -168,13 +168,17 @@ test('4. a wrong password and a nonexistent user are indistinguishable in status
   for (let i = 0; i < 3; i += 1) {
     await login({ port, key: 'acme', email: TIMING, password: 'warm-up-wrong' });
     await login({ port, key: 'acme', email: MISSING, password: 'warm-up-wrong' });
+    await login({ port, key: 'acme', email: TOTP_ONLY, totp: '000000' });
     clearFailures.run(TIMING);
+    clearFailures.run(TOTP_ONLY);
   }
 
   const wrongPassword: number[] = [];
   const noSuchUser: number[] = [];
+  const wrongTotp: number[] = [];
   let wrongRes: Awaited<ReturnType<typeof login>> | null = null;
   let missingRes: Awaited<ReturnType<typeof login>> | null = null;
+  let totpRes: Awaited<ReturnType<typeof login>> | null = null;
 
   try {
     for (let i = 0; i < iterations; i += 1) {
@@ -187,26 +191,66 @@ test('4. a wrong password and a nonexistent user are indistinguishable in status
       const b = await login({ port, key: 'acme', email: MISSING, password: `wrong-${i}` });
       noSuchUser.push(Number(process.hrtime.bigint() - t1) / 1e6);
 
+      // E-16: the third cause. A right password and a wrong TOTP.
+      const t2 = process.hrtime.bigint();
+      const c = await login({ port, key: 'acme', email: TOTP_ONLY, totp: '000000' });
+      wrongTotp.push(Number(process.hrtime.bigint() - t2) / 1e6);
+      clearFailures.run(TOTP_ONLY);
+
       if (i === 0) {
         wrongRes = a;
         missingRes = b;
+        totpRes = c;
       }
     }
   } finally {
     reset.close();
   }
 
-  assert.equal(wrongRes?.status, 401);
-  assert.equal(missingRes?.status, 401);
-  assert.equal(scrubBody(wrongRes!), scrubBody(missingRes!), 'status + body must be identical byte for byte');
+  for (const [name, res] of [['wrong password', wrongRes], ['unknown email', missingRes], ['wrong totp', totpRes]] as const) {
+    assert.equal(res?.status, 401, name);
+    assert.equal(codeOf(res!), 'SKW_E_SEC_AUTH_INVALID', `${name} must carry the E-16 code`);
+  }
 
-  const a = median(wrongPassword);
-  const b = median(noSuchUser);
-  const ratio = Math.max(a, b) / Math.min(a, b);
+  // One code, one status, one body — after requestId is substituted, all three are
+  // byte-identical. The message is the fixed literal, produced at the call site.
+  const scrubbed = [wrongRes!, missingRes!, totpRes!].map((r) => scrubBody(r));
+  assert.equal(scrubbed[0], scrubbed[1], 'wrong password vs unknown email');
+  assert.equal(scrubbed[0], scrubbed[2], 'wrong password vs wrong TOTP');
+  assert.match(scrubbed[0]!, /"message":"invalid credentials"/);
+
+  const medians = {
+    wrong_password: median(wrongPassword),
+    unknown_email: median(noSuchUser),
+    wrong_totp: median(wrongTotp),
+  };
+  const values = Object.values(medians);
+  const ratio = Math.max(...values) / Math.min(...values);
   assert.ok(
     ratio <= 1.2,
-    `medians must be within 20%: wrong-password ${a.toFixed(2)}ms vs nonexistent-user ${b.toFixed(2)}ms (ratio ${ratio.toFixed(3)})`,
+    `medians across the three causes must be within 20%: ${JSON.stringify(medians)} (ratio ${ratio.toFixed(3)})`,
   );
+});
+
+test('4b. E-16: the work an attempt does is a function of configuration only, not of the credentials', async () => {
+  // With TOTP mandatory, exactly one TOTP verification runs on every attempt —
+  // against the row's secret, or against a fixed dummy secret when the row has
+  // none — and it runs before the password verdict is used. So "the password was
+  // right, because a TOTP step then ran" is not observable.
+  const before = handle.admin.auth.totpComputations;
+  await login({ port, key: 'acme', email: OWNER, totp: currentTotp() });                    // success
+  await login({ port, key: 'acme', email: TIMING, password: 'wrong' });                     // wrong password
+  await login({ port, key: 'acme', email: MISSING, password: 'wrong' });                    // unknown email
+  await login({ port, key: 'acme', email: TOTP_ONLY, totp: '000000' });                     // wrong TOTP
+  const mandatory = handle.admin.auth.totpComputations - before;
+  assert.equal(mandatory, 4, 'one TOTP verification per attempt when TOTP is mandatory');
+
+  // With the allowlist populated, none runs at all — the count depends on
+  // `totpRequired` and on nothing else.
+  const beforePopulated = populatedHandle.admin.auth.totpComputations;
+  await login({ port: populatedPort, key: 'acme', email: OWNER });
+  await login({ port: populatedPort, key: 'acme', email: MISSING, password: 'wrong' });
+  assert.equal(populatedHandle.admin.auth.totpComputations - beforePopulated, 0, 'no TOTP work when it is optional');
 });
 
 test('5. five failures lock the account, and the lock is exponential to 15 minutes', async () => {
@@ -252,10 +296,20 @@ test('6. SKW_FLEET_MODE=0 refuses to authenticate a fleet_admin (403 SKW_E_SEC_R
   assert.equal(res.headers['set-cookie'], undefined, 'a refused role must not mint a session');
 });
 
-test('7. a login for a tenant that is not serving is the same 404 as an unknown key', async () => {
-  const suspended = await login({ port, key: 'nope', email: OWNER, totp: currentTotp() });
-  assert.equal(suspended.status, 404);
-  assert.equal(codeOf(suspended), 'SKW_E_PLT_TENANT_UNKNOWN');
+test('7. a login for an operator whose tenant is not serving is the row-9 404 (§5.3)', async () => {
+  // D29 removed the tenant key from the login URL, so "the key does not exist" is
+  // no longer a login case. The reachable case is real: the row's tenant is
+  // suspended, so the credentials may be right and the surface still has no tenant.
+  const beta = 'owner@beta.test';
+  await seedUser({ controlDb: fixture.controlDb, tenantKey: 'beta', email: beta, totpSecret: TOTP_SECRET });
+  const db = new Database(fixture.controlDb);
+  db.prepare("UPDATE tenant SET status = 'suspended' WHERE key = 'beta'").run();
+  db.close();
+
+  const res = await login({ port, email: beta, totp: currentTotp() });
+  assert.equal(res.status, 404);
+  assert.equal(codeOf(res), 'SKW_E_PLT_TENANT_UNKNOWN');
+  assert.equal(res.headers['set-cookie'], undefined, 'a suspended tenant mints no session');
 });
 
 test('8. the login route requires an exact Origin, even though no session exists yet', async () => {

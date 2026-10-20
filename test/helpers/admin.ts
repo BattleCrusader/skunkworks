@@ -50,7 +50,13 @@ export async function seedUser(opts: SeedOptions): Promise<number> {
 
 export interface LoginInput {
   port: number;
-  key: string;
+  /**
+   * D29: the login URL is `/admin/login` and is **not** tenant-scoped, so `key` is
+   * not part of the request. When it is given, the helper asserts that the tenant
+   * the server derived from the `user_account` row is the one the test meant —
+   * which is the stronger check the old per-tenant URL used to imply.
+   */
+  key?: string;
   email: string;
   password?: string;
   totp?: string;
@@ -58,19 +64,26 @@ export interface LoginInput {
   host?: string;
 }
 
-export function login(opts: LoginInput): Promise<Res> {
+export async function login(opts: LoginInput): Promise<Res> {
   const headers: Record<string, string> = {};
   if (opts.origin !== null) headers.origin = opts.origin ?? ADMIN_ORIGIN;
   const body: Record<string, string> = { email: opts.email, password: opts.password ?? PASSWORD };
   if (opts.totp !== undefined) body.totp = opts.totp;
-  return call({
+  const res = await call({
     port: opts.port,
-    path: `/admin/t/${opts.key}/login`,
+    path: '/admin/login',
     method: 'POST',
     host: opts.host ?? ADMIN_HOST,
     headers: { ...headers, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (opts.key !== undefined) {
+    const derived = (res.json as { tenant?: { key?: string } } | undefined)?.tenant?.key;
+    if (derived !== undefined && derived !== opts.key) {
+      throw new Error(`login resolved tenant ${derived}, expected ${opts.key} (D29: the row decides, not the URL)`);
+    }
+  }
+  return res;
 }
 
 /** The current TOTP for a secret, so a test can log in without a clock seam. */

@@ -19,8 +19,17 @@
  * 2. **Idle timeout is implemented by sliding `expires_at`.** The `session` table
  *    has no `last_seen_at` column and this slice may not add one, so the row's
  *    `expires_at` *is* "last activity + window". 15 min when the allowlist is
- *    empty (§9.1, fixed); 60 min when it is populated — the SDS fixes only the
- *    15-minute case, so the other value is stated here rather than implied.
+ *    empty (§9.1, fixed); 60 min when it is populated (E-18 fixes that value, so
+ *    it is no longer an implementation choice).
+ *
+ *    **E-18 adds the cap the sliding window could not express.** `created_at` is
+ *    the start of the session *lineage* and `expires_at` is the idle deadline; a
+ *    session is live only while `revoked_at IS NULL`, `expires_at > now` **and**
+ *    `created_at + SESSION_ABSOLUTE_MS > now`. The slide is clamped to the cap, so
+ *    a session in continuous use dies at 12 h instead of never; rotation gives the
+ *    child the parent's `created_at`, so rotating every few hours cannot launder
+ *    the cap away. No column is added and no migration exists: the cap is a pure
+ *    function of a column already present.
  * 3. **CSRF token = HMAC-SHA256(csrf_secret, session id)**, so the token is bound
  *    to the row and rotates with it. The secret never leaves the server; the
  *    token is handed out by `GET /admin/t/<key>/session`.
@@ -40,8 +49,13 @@ export const CSRF_HEADER = 'x-csrf-token';
 
 /** §9.1: "when [the allowlist is] empty, TOTP is mandatory and idle drops to 15 min". */
 export const IDLE_MS_NO_ALLOWLIST = 15 * 60_000;
-/** Not fixed by the SDS (gap); 60 min is the value this implementation ships. */
+/** E-18: the populated-allowlist window, frozen at 60 min (it was a gap in S2a). */
 export const IDLE_MS_WITH_ALLOWLIST = 60 * 60_000;
+/**
+ * E-18: the absolute cap, measured from `session.created_at` — the start of the
+ * lineage, never moved by a request and never reset by a rotation.
+ */
+export const SESSION_ABSOLUTE_MS = 12 * 60 * 60_000;
 
 export interface SessionRecord {
   id: string;
@@ -165,7 +179,9 @@ export class SessionStore {
     const id = randomBytes(32).toString('hex');
     const csrfSecret = randomBytes(32).toString('hex');
     const createdAt = new Date(input.atMs).toISOString();
-    const expiresAt = new Date(input.atMs + input.idleMs).toISOString();
+    // E-18: the idle deadline is clamped by the cap even at creation, so a session
+    // cannot be born with an expiry the cap would refuse.
+    const expiresAt = new Date(Math.min(input.atMs + input.idleMs, input.atMs + SESSION_ABSOLUTE_MS)).toISOString();
     const db = openAdminWrite(this.#controlPath, this.#busyTimeoutMs);
     try {
       db.prepare(
@@ -208,7 +224,10 @@ export class SessionStore {
         .get(id) as SessionRow | undefined;
       if (row === undefined) return null;
       if (row.revoked_at !== null) return null;
+      // E-18: two deadlines, both in `Date.parse` — `datetime()` reformats an ISO
+      // string and a comparison against the reformatted value is silently wrong.
       if (Date.parse(row.expires_at) <= atMs) return null;
+      if (Date.parse(row.created_at) + SESSION_ABSOLUTE_MS <= atMs) return null;
       return {
         id: row.id,
         userId: row.user_id,
@@ -230,8 +249,12 @@ export class SessionStore {
    */
   readAndTouch(id: string, atMs: number, idleMs: number): SessionRecord | null {
     const session = this.read(id, atMs);
+    // A refused request must not extend anything: the read returned null before
+    // any write, so a dead row is left exactly as it was (E-18).
     if (session === null) return null;
-    const expiresAt = new Date(atMs + idleMs).toISOString();
+    // E-18: `expires_at := min(now + idle, created_at + SESSION_ABSOLUTE_MS)`.
+    const capAt = Date.parse(session.createdAt) + SESSION_ABSOLUTE_MS;
+    const expiresAt = new Date(Math.min(atMs + idleMs, capAt)).toISOString();
     if (expiresAt !== session.expiresAt) {
       const db = openAdminWrite(this.#controlPath, this.#busyTimeoutMs);
       try {
@@ -254,16 +277,24 @@ export class SessionStore {
     const db = openAdminWrite(this.#controlPath, this.#busyTimeoutMs);
     const id = randomBytes(32).toString('hex');
     const csrfSecret = randomBytes(32).toString('hex');
-    const createdAt = new Date(input.atMs).toISOString();
-    const expiresAt = new Date(input.atMs + input.idleMs).toISOString();
+    const rotatedAt = new Date(input.atMs).toISOString();
     try {
       const tx = db.transaction(() => {
         const old = db
-          .prepare('SELECT user_id, tenant_id, revoked_at, expires_at FROM session WHERE id = ?')
-          .get(oldId) as { user_id: number; tenant_id: number | null; revoked_at: string | null; expires_at: string } | undefined;
+          .prepare('SELECT user_id, tenant_id, revoked_at, expires_at, created_at FROM session WHERE id = ?')
+          .get(oldId) as
+          | { user_id: number; tenant_id: number | null; revoked_at: string | null; expires_at: string; created_at: string }
+          | undefined;
         if (old === undefined || old.revoked_at !== null) return null;
         if (Date.parse(old.expires_at) <= input.atMs) return null;
-        db.prepare('UPDATE session SET revoked_at = ? WHERE id = ?').run(createdAt, oldId);
+        // E-18: rotation inherits the lineage. Without this, an operator or a
+        // stolen cookie that rotates every few hours resets the cap, which is the
+        // same hole as having none.
+        const capAt = Date.parse(old.created_at) + SESSION_ABSOLUTE_MS;
+        if (capAt <= input.atMs) return null;
+        const createdAt = old.created_at;
+        const expiresAt = new Date(Math.min(input.atMs + input.idleMs, capAt)).toISOString();
+        db.prepare('UPDATE session SET revoked_at = ? WHERE id = ?').run(rotatedAt, oldId);
         db.prepare(
           `INSERT INTO session (id, user_id, tenant_id, csrf_secret, ip_hash, ua_hash, created_at, expires_at, rotated_from)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,

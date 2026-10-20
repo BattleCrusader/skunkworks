@@ -4,11 +4,11 @@
  * changed status cannot go unnoticed.
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { CODE_PATTERN, HTTP, RETRY_AFTER } from '../app/errors.ts';
+import { AppError, CODE_PATTERN, HTTP, RETRY_AFTER, errorBody } from '../app/errors.ts';
 import { REPO } from './helpers/fixture.ts';
 
 interface Codes {
@@ -51,10 +51,52 @@ test('the codes S1 raises are all mapped, and the four E-4 additions are part of
     assert.equal(typeof HTTP[code], 'number');
     assert.equal(HTTP[code], codes.http[code], `${code} disagrees with the JSON`);
   }
-  // E-4: 67 -> 71 codes, and none of the four carries a Retry-After.
+  // E-16: 71 -> 72 codes (AUTH_INVALID), and none of the four E-4 additions carries
+  // a Retry-After. The count is the gate: the app map, the JSON and this number move
+  // together or the suite is red.
   const total = Object.values(codes.areas).reduce((n, names) => n + names.length, 0);
-  assert.equal(total, 71, `the taxonomy holds ${total} codes, expected 71 (E-4)`);
+  assert.equal(total, 72, `the taxonomy holds ${total} codes, expected 72 (E-16)`);
   for (const code of ['SKW_E_RT_PAGE_NOT_FOUND', 'SKW_E_PLT_INTERNAL', 'SKW_E_PLT_REQUEST_INVALID', 'SKW_E_PLT_BODY_TOO_LARGE']) {
     assert.equal(codes.retry_after?.[code], undefined, `${code} must not carry Retry-After`);
   }
+});
+
+test('E-16: a credential login failure has its own code, 401, and no Retry-After', () => {
+  // The code exists in the frozen JSON, in the SEC area, mapped to 401.
+  assert.ok(codes.areas.SEC?.includes('AUTH_INVALID'), 'AUTH_INVALID must be in areas.SEC');
+  assert.equal(codes.http['SKW_E_SEC_AUTH_INVALID'], 401);
+  assert.equal(HTTP['SKW_E_SEC_AUTH_INVALID'], 401);
+  assert.equal(codes.retry_after?.['SKW_E_SEC_AUTH_INVALID'], undefined);
+  assert.equal(RETRY_AFTER['SKW_E_SEC_AUTH_INVALID'], undefined);
+  // CODE_INVALID keeps its own meaning and its own row: the two must not collapse.
+  assert.equal(codes.http['SKW_E_SEC_CODE_INVALID'], 401);
+  assert.notEqual('SKW_E_SEC_AUTH_INVALID', 'SKW_E_SEC_CODE_INVALID');
+});
+
+test('E-16: the split is real — a download code still raises CODE_INVALID, and the admin surface cannot raise it', () => {
+  // §7.2's decision, still constructible with its own code and status.
+  const downloadCode = new AppError('SKW_E_SEC_CODE_INVALID', 'invalid credentials');
+  assert.equal(downloadCode.code, 'SKW_E_SEC_CODE_INVALID');
+  assert.equal(downloadCode.status, 401);
+  const login = new AppError('SKW_E_SEC_AUTH_INVALID', 'invalid credentials');
+  const bodyOf = (err: AppError): string =>
+    JSON.stringify(errorBody(err, 'r')).replace(/"code":"[^"]+"/, '"code":"<code>"');
+  assert.equal(
+    bodyOf(downloadCode),
+    bodyOf(login),
+    'the bodies differ only in the code, which is what makes one counter per decision possible',
+  );
+  assert.equal(errorBody(downloadCode, 'r').error.code, 'SKW_E_SEC_CODE_INVALID');
+  assert.equal(errorBody(login, 'r').error.code, 'SKW_E_SEC_AUTH_INVALID');
+
+  // The structural half: no file under app/admin raises the download code, so the
+  // login path cannot emit it by accident (that is what S2a did).
+  const dir = join(REPO, 'app', 'admin');
+  const offenders: string[] = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.ts')) continue;
+    const text = readFileSync(join(dir, name), 'utf8');
+    if (text.includes("AppError('SKW_E_SEC_CODE_INVALID'")) offenders.push(name);
+  }
+  assert.deepEqual(offenders, [], 'the admin surface must not raise the paid-download code');
 });

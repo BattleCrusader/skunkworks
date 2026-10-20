@@ -7,16 +7,15 @@
  *   | Lockout       | 5 failures → `locked_until`, exponential to 15 min |
  *   | `fleet_admin` | with `SKW_FLEET_MODE=0` the app refuses to create **or authenticate** that role (`403 SKW_E_SEC_ROLE_DISABLED`) |
  *
- * Three things the SDS does not fix, decided here and reported as gaps:
+ * Two things the SDS does not fix, decided here and reported as gaps:
  *
- * 1. **No credential-login error code exists.** The taxonomy's 71 codes are frozen
- *    and none of them is "the password was wrong"; §4.3's `SEC` list is complete
- *    for v1 and `test/error-codes.test.ts` pins the count at 71, so adding one is
- *    not this slice's call. `SKW_E_SEC_CODE_INVALID` (401) is used: its decision
- *    is the same shape — a presented secret against a stored argon2id hash — and
- *    it keeps one status for "wrong password", "no such user" and "wrong TOTP",
- *    which is what the indistinguishability criterion needs. Errata should add
- *    `SKW_E_SEC_AUTH_INVALID`.
+ * 1. **The credential-login code is `SKW_E_SEC_AUTH_INVALID` (401), per E-16.**
+ *    One status, one code, one body for "wrong password", "unknown email" and
+ *    "wrong TOTP". `SKW_E_SEC_CODE_INVALID` stays §7.2's decision about a redeemed
+ *    download access code and is not borrowed here (S2a did borrow it; E-16
+ *    corrects that, because one counter that mixes the two cannot be alerted on).
+ *    The observed cause is recorded in `audit_log.after_json.reason`, which an
+ *    attacker cannot read; the wire distinguishes nothing.
  * 2. **TOTP parameters are RFC 6238 defaults** — SHA-1, 6 digits, 30 s step, one
  *    step of clock tolerance each way. Only `user_account.totp_secret` exists in
  *    the schema (a base32 secret), so the parameters have to be a convention.
@@ -59,6 +58,14 @@ export const TOTP_DIGITS = 6;
 export const DUMMY_HASH =
   '$argon2id$v=19$m=19456,t=2,p=1$GE2gealfzOO+9CmpJBDThA$iD8YCgPH+gGN2M8ubdV8hvmsNMTSvJEl7JBDDocHHDo';
 const DUMMY_PASSWORD = 'skw-dummy-password-for-timing-equalisation';
+
+/**
+ * E-16: the secret a TOTP verification runs against when the row has none, so the
+ * work an attempt performs does not announce whether the account exists. 20 random
+ * bytes rendered as unpadded base32 (32 characters) — the same shape as a real
+ * secret; no row points at it, so nothing authenticates with it.
+ */
+export const DUMMY_TOTP_SECRET = 'MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43U';
 
 /** The 4-slot argon2 semaphore (§9.1, `SKW_ARGON2_MAX_CONCURRENT=4`). */
 export class Semaphore {
@@ -168,14 +175,28 @@ interface UserRow {
 }
 
 export interface AuthenticateInput {
-  tenantId: number;
+  /**
+   * D29: the login URL is `/admin/login`, which is not tenant-scoped, so the
+   * tenant is read from the `user_account` row and never from a URL segment.
+   * An email that exists in two tenants is ambiguous and authenticates nothing.
+   */
   email: string;
   password: string;
   totp: string | undefined;
   atMs: number;
 }
 
-export type AuthenticateResult = { ok: true; user: AuthUser } | { ok: false; error: AppError };
+/**
+ * E-16: the cause the *server* observed. It never reaches the wire — the three
+ * credential causes are one status, one code and one body — and it exists so
+ * `audit_log.after_json.reason` can answer the operator's question after a
+ * break-in attempt, which an attacker cannot read.
+ */
+export type LoginFailureReason = 'unknown_user' | 'ambiguous' | 'password' | 'totp' | 'locked' | 'role_disabled';
+
+export type AuthenticateResult =
+  | { ok: true; user: AuthUser }
+  | { ok: false; error: AppError; reason: LoginFailureReason };
 
 export class Auth {
   readonly #controlPath: string;
@@ -183,6 +204,12 @@ export class Auth {
   readonly #fleetMode: boolean;
   readonly #totpRequired: boolean;
   readonly #semaphore: Semaphore;
+  /**
+   * E-16's work-shape witness: one increment per TOTP verification performed. The
+   * count must depend on `totpRequired` only — never on the credentials submitted.
+   * A gate reads it; nothing in production does.
+   */
+  #totpComputations = 0;
 
   constructor(opts: {
     controlPath: string;
@@ -200,6 +227,10 @@ export class Auth {
 
   get totpRequired(): boolean {
     return this.#totpRequired;
+  }
+
+  get totpComputations(): number {
+    return this.#totpComputations;
   }
 
   /** The row behind a session, for the `GET /session` answer. No secret leaves here. */
@@ -227,72 +258,71 @@ export class Auth {
    */
   async authenticate(input: AuthenticateInput): Promise<AuthenticateResult> {
     const db = openAdminWrite(this.#controlPath, this.#busyTimeoutMs);
-    let row: UserRow | undefined;
+    let rows: UserRow[];
     try {
-      row = db
+      rows = db
         .prepare(
           `SELECT id, tenant_id, email, password_hash, role, totp_secret, failed_logins, locked_until
              FROM user_account
-            WHERE email = ? AND (tenant_id = ? OR tenant_id IS NULL)
-            ORDER BY (tenant_id IS NULL) ASC
-            LIMIT 1`,
+            WHERE email = ?`,
         )
-        .get(input.email, input.tenantId) as UserRow | undefined;
+        .all(input.email) as UserRow[];
     } finally {
       db.close();
     }
 
-    if (row === undefined) {
-      // The same cost as a real verification, so the response time does not
-      // announce that the email is unknown (acceptance criterion 3).
-      await this.#semaphore.run(async () => {
-        try {
-          await verify(DUMMY_HASH, input.password);
-        } catch {
-          /* a dummy verify that throws is still a dummy verify */
-        }
-      });
-      return { ok: false, error: new AppError('SKW_E_SEC_CODE_INVALID', 'invalid credentials') };
-    }
+    // One row is the identity. Two rows with the same email in different tenants
+    // are two operands with one password field: the request is ambiguous, and the
+    // answer is the same 401 as a wrong password (no oracle that says "this email
+    // exists twice").
+    const row = rows.length === 1 ? rows[0] : undefined;
 
     // §9.1: with SKW_FLEET_MODE=0 the app refuses to *authenticate* this role.
     // Checked before the password so the refusal is the same whether or not the
     // password is right — a bundle has no fleet_admin row to begin with.
-    if (row.role === 'fleet_admin' && !this.#fleetMode) {
-      return { ok: false, error: new AppError('SKW_E_SEC_ROLE_DISABLED', 'fleet_admin is disabled in this build') };
+    if (row !== undefined && row.role === 'fleet_admin' && !this.#fleetMode) {
+      return {
+        ok: false,
+        error: new AppError('SKW_E_SEC_ROLE_DISABLED', 'fleet_admin is disabled in this build'),
+        reason: 'role_disabled',
+      };
     }
 
-    if (row.locked_until !== null && Date.parse(row.locked_until) > input.atMs) {
-      return { ok: false, error: new AppError('SKW_E_SEC_RATE_LIMITED', 'too many failed logins') };
+    if (row !== undefined && row.locked_until !== null && Date.parse(row.locked_until) > input.atMs) {
+      return { ok: false, error: new AppError('SKW_E_SEC_RATE_LIMITED', 'too many failed logins'), reason: 'locked' };
     }
+
+    // E-16: the work an attempt performs is a function of the configuration and
+    // never of the credentials submitted. Exactly one argon2id verify, and — when
+    // TOTP is mandatory — exactly one TOTP verification, against the row's secret
+    // or against a fixed dummy secret when there is no row (or the row has none).
+    // The TOTP step runs before the password verdict is used, so "the password was
+    // right, because a TOTP step ran" is not observable.
+    const passwordHash = row?.password_hash ?? DUMMY_HASH;
+    const totpSecret = row?.totp_secret ?? DUMMY_TOTP_SECRET;
 
     let passwordOk = false;
     try {
-      passwordOk = await this.#semaphore.run(() => verify(row.password_hash, input.password));
+      passwordOk = await this.#semaphore.run(() => verify(passwordHash, input.password));
     } catch {
       passwordOk = false;
     }
 
-    if (!passwordOk) {
-      this.#recordFailure(row.id, row.failed_logins, input.atMs);
-      return { ok: false, error: new AppError('SKW_E_SEC_CODE_INVALID', 'invalid credentials') };
+    let totpOk = false;
+    if (this.#totpRequired) {
+      this.#totpComputations += 1;
+      try {
+        totpOk = verifyTotp(totpSecret, input.totp ?? '', input.atMs);
+      } catch {
+        totpOk = false;
+      }
     }
 
-    if (this.#totpRequired) {
-      const secret = row.totp_secret;
-      const code = input.totp ?? '';
-      let totpOk = false;
-      if (secret !== null) {
-        try {
-          totpOk = verifyTotp(secret, code, input.atMs);
-        } catch {
-          totpOk = false;
-        }
-      }
-      if (!totpOk) {
-        this.#recordFailure(row.id, row.failed_logins, input.atMs);
-        return { ok: false, error: new AppError('SKW_E_SEC_CODE_INVALID', 'invalid credentials') };
-      }
+    if (row === undefined || !passwordOk || (this.#totpRequired && !totpOk)) {
+      if (row !== undefined) this.#recordFailure(row.id, row.failed_logins, input.atMs);
+      const reason: LoginFailureReason =
+        row === undefined ? (rows.length === 0 ? 'unknown_user' : 'ambiguous') : !passwordOk ? 'password' : 'totp';
+      return { ok: false, error: new AppError('SKW_E_SEC_AUTH_INVALID', 'invalid credentials'), reason };
     }
 
     const db2 = openAdminWrite(this.#controlPath, this.#busyTimeoutMs);

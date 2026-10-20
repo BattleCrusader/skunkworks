@@ -14,7 +14,12 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { after, before, test } from 'node:test';
 
-import { IDLE_MS_NO_ALLOWLIST, SESSION_COOKIE, SESSION_COOKIE_ATTRS } from '../app/admin/session.ts';
+import {
+  IDLE_MS_NO_ALLOWLIST,
+  SESSION_ABSOLUTE_MS,
+  SESSION_COOKIE,
+  SESSION_COOKIE_ATTRS,
+} from '../app/admin/session.ts';
 import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import {
@@ -197,6 +202,124 @@ test('5. idle timeout: 15 minutes when the allowlist is empty, and the window sl
   const expired = await sessionRequest(fresh.cookie);
   assert.equal(expired.status, 404, 'an idle-expired session is not a session');
   assert.equal(codeOf(expired), 'SKW_E_PLT_TENANT_UNKNOWN');
+});
+
+// --- E-18: a 12-hour cap over the sliding idle window -----------------------
+
+/** The stored row, so an assertion can be about the row and not the response. */
+function rowOf(id: string): { created_at: string; expires_at: string; revoked_at: string | null } {
+  const db = new Database(fixture.controlDb, { readonly: true });
+  const row = db.prepare('SELECT created_at, expires_at, revoked_at FROM session WHERE id = ?').get(id) as {
+    created_at: string;
+    expires_at: string;
+    revoked_at: string | null;
+  };
+  db.close();
+  return row;
+}
+
+function updateRow(id: string, fields: { created_at?: string; expires_at?: string }): void {
+  const db = new Database(fixture.controlDb);
+  if (fields.created_at !== undefined) db.prepare('UPDATE session SET created_at = ? WHERE id = ?').run(fields.created_at, id);
+  if (fields.expires_at !== undefined) db.prepare('UPDATE session SET expires_at = ? WHERE id = ?').run(fields.expires_at, id);
+  db.close();
+}
+
+test('7. E-18(a): a session touched every 5 minutes is refused at created_at + 12 h, with 404 and no Set-Cookie', async () => {
+  const fresh = await openSession({ port, key: 'acme', email: OWNER });
+  const id = idOf(fresh.cookie);
+  const created = Date.parse(rowOf(id).created_at);
+
+  // Continuous use: one touch every five minutes, straight through the cap. Every
+  // touch before the cap is a live session; the one at the cap is not. The idle
+  // deadline starts at the cap, which is where continuous use would have put it.
+  updateRow(id, { expires_at: new Date(created + SESSION_ABSOLUTE_MS).toISOString() });
+  const step = 5 * 60_000;
+  for (let t = created + step; t < created + SESSION_ABSOLUTE_MS; t += step) {
+    assert.notEqual(handle.admin.sessions.readAndTouch(id, t, IDLE_MS_NO_ALLOWLIST), null, `live at +${(t - created) / 60_000} min`);
+  }
+  assert.equal(
+    handle.admin.sessions.readAndTouch(id, created + SESSION_ABSOLUTE_MS, IDLE_MS_NO_ALLOWLIST),
+    null,
+    'the lineage dies at exactly 12 h however continuously it is used',
+  );
+
+  // The same thing on the wire, with a *recent* idle deadline: a polling tab is
+  // always "active", so activity must not buy an extension.
+  updateRow(id, {
+    created_at: new Date(Date.now() - SESSION_ABSOLUTE_MS - 1_000).toISOString(),
+    expires_at: new Date(Date.now() + IDLE_MS_NO_ALLOWLIST).toISOString(),
+  });
+  const before = rowOf(id).expires_at;
+  const res = await sessionRequest(fresh.cookie);
+  assert.equal(res.status, 404);
+  assert.equal(codeOf(res), 'SKW_E_PLT_TENANT_UNKNOWN');
+  assert.equal(res.headers['set-cookie'], undefined, 'a refused request must not reissue the cookie');
+  assert.equal(rowOf(id).expires_at, before, 'a refused request must not slide the row');
+});
+
+test('8. E-18(b): the slide clamps at created_at + SESSION_ABSOLUTE_MS, asserted on the stored value', async () => {
+  const fresh = await openSession({ port, key: 'acme', email: OWNER });
+  const id = idOf(fresh.cookie);
+  const created = Date.parse(rowOf(id).created_at);
+
+  // Ten minutes before the cap a 15-minute idle window would cross it.
+  const near = created + SESSION_ABSOLUTE_MS - 10 * 60_000;
+  updateRow(id, { expires_at: new Date(near + 1_000).toISOString() });
+  const touched = handle.admin.sessions.readAndTouch(id, near, IDLE_MS_NO_ALLOWLIST);
+  assert.notEqual(touched, null);
+  assert.equal(
+    Date.parse(rowOf(id).expires_at),
+    created + SESSION_ABSOLUTE_MS,
+    'expires_at is the clamp, not now + idle',
+  );
+
+  // And it never exceeds the cap on a later touch either.
+  handle.admin.sessions.readAndTouch(id, near + 9 * 60_000, IDLE_MS_NO_ALLOWLIST);
+  assert.equal(Date.parse(rowOf(id).expires_at), created + SESSION_ABSOLUTE_MS);
+  assert.ok(SESSION_ABSOLUTE_MS === 12 * 60 * 60_000);
+});
+
+test('9. E-18(c): rotation at 11 h 59 m inherits created_at, so the child dies one minute later', async () => {
+  const fresh = await openSession({ port, key: 'acme', email: OWNER });
+  const id = idOf(fresh.cookie);
+  const created = Date.now() - (SESSION_ABSOLUTE_MS - 60_000);
+  updateRow(id, { created_at: new Date(created).toISOString() });
+
+  const res = await call({
+    port,
+    path: '/admin/t/acme/session/rotate',
+    method: 'POST',
+    host: ADMIN_HOST,
+    headers: { cookie: fresh.cookie, origin: ADMIN_ORIGIN, 'x-csrf-token': fresh.csrfToken },
+  });
+  assert.equal(res.status, 200, res.body);
+  const child = cookiePair(res);
+  assert.ok(child !== undefined);
+  const childRow = rowOf(idOf(child));
+  assert.equal(Date.parse(childRow.created_at), created, "the child inherits the parent's created_at");
+  assert.equal(
+    Date.parse(childRow.expires_at),
+    created + SESSION_ABSOLUTE_MS,
+    'so its idle deadline is clamped by the same cap',
+  );
+  // One minute later the child is dead, even though it was minted a second ago.
+  const cap = created + SESSION_ABSOLUTE_MS;
+  assert.notEqual(handle.admin.sessions.read(idOf(child), cap - 1), null);
+  assert.equal(handle.admin.sessions.read(idOf(child), cap + 1), null);
+});
+
+test('10. E-18(d): a session dead by idle inside the cap is refused, and the attempt does not slide it', async () => {
+  const fresh = await openSession({ port, key: 'acme', email: OWNER });
+  const id = idOf(fresh.cookie);
+  const expiredAt = new Date(Date.now() - 1_000).toISOString();
+  updateRow(id, { created_at: new Date(Date.now() - 60 * 60_000).toISOString(), expires_at: expiredAt });
+
+  const res = await sessionRequest(fresh.cookie);
+  assert.equal(res.status, 404, 'dead by idle, inside the cap, is still dead');
+  assert.equal(codeOf(res), 'SKW_E_PLT_TENANT_UNKNOWN');
+  assert.equal(res.headers['set-cookie'], undefined);
+  assert.equal(rowOf(id).expires_at, expiredAt, 'the refused attempt wrote nothing');
 });
 
 test('6. a session for tenant A cannot act on tenant B through the URL (§9.2)', async () => {
