@@ -13,9 +13,10 @@
  * Both are asserted to have hit at least one line, so a generator change cannot make this
  * test silently stop testing the edge it claims to test.
  *
- *   G1  a redeemed cookie downloads the stored PDF through the edge, byte-identical, with
- *       the `Content-Length` the app did **not** send;
- *   G2  `/__protected/<hh>/<sha>.pdf` requested directly is 404 — the location is internal;
+ *   G1  a redeemed cookie downloads the buyer's **stamped render** through the edge, and
+ *       the stored blob (which every buyer shares) is not what is served;
+ *   G2  `/__protected/<hh>/<sha>.pdf` and `/__protected/wm/<spec>/<sha>.pdf` requested
+ *       directly are 404 — both locations are internal;
  *   G3  `Range: bytes=100-199` is a 206 with exactly those bytes, and spends nothing more;
  *   G4  8 parallel ranges through the edge spend one use and return eight correct slices.
  */
@@ -36,6 +37,7 @@ import { buildApp, type AppHandle } from '../app/main.ts';
 import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, header, type Res } from './helpers/http.ts';
+import { pdfDrawnText } from './helpers/pdftext.ts';
 
 const SKIP = process.env.SKW_SKIP_DOCKER === '1';
 const HOST = 'acme.test';
@@ -86,6 +88,8 @@ let bookSha = '';
 let codeId = 0;
 let code = '';
 const book = Buffer.from(PDF, 'latin1');
+/** What the edge actually served in G1 — the render, which G3/G4 then slice. */
+let served: Buffer = Buffer.alloc(0);
 
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -172,7 +176,14 @@ before(async () => {
       accessClass: 'gated',
     });
     bookSha = uploaded.asset.sha256;
-    const issued = await issueCode({ db, contentRoot, assetKey: 'vault/book', maxUses: 10 });
+    const issued = await issueCode({
+      db,
+      contentRoot,
+      assetKey: 'vault/book',
+      maxUses: 10,
+      email: 'reader@example.com',
+      orderRef: 'ORD-G1-0001',
+    });
     codeId = issued.id;
     code = issued.code;
   } finally {
@@ -260,7 +271,7 @@ after(async () => {
   if (fixture !== undefined) fixture.cleanup();
 });
 
-test('G1 — a redeemed cookie downloads the stored PDF through the edge, byte-identical', { skip: SKIP }, async () => {
+test('G1 — a redeemed cookie downloads the buyer\'s stamped render through the edge', { skip: SKIP }, async () => {
   const redeemed = await edge('/d/acme', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -271,47 +282,85 @@ test('G1 — a redeemed cookie downloads the stored PDF through the edge, byte-i
 
   const res = await edge('/d/acme/file', { headers: { cookie } });
   assert.equal(res.status, 200, res.body);
-  assert.equal(sha256(res.raw), sha256(book), 'nginx served the stored bytes');
-  assert.equal(res.raw.length, book.length);
+
+  // S3d: the edge serves the **render**, and the render is what the ledger authorised.
+  // The stored blob is still on disk and is still *not* what a gated buyer receives.
+  const db = openAdminWrite(fixture.sitePath('acme'));
+  let renderPath = '';
+  let declared = -1;
+  let sent: number | null = -1;
+  try {
+    const row = db.prepare(`SELECT path FROM cms_watermark_render WHERE source_sha = ?`).get(bookSha) as {
+      path: string;
+    } | undefined;
+    assert.ok(row !== undefined, 'no render row for this asset');
+    renderPath = row.path;
+    const ev = db
+      .prepare(`SELECT bytes_declared, bytes_sent FROM cms_download_event WHERE code_id = ? AND kind = 'first'`)
+      .get(codeId) as { bytes_declared: number; bytes_sent: number | null };
+    declared = ev.bytes_declared;
+    sent = ev.bytes_sent;
+  } finally {
+    db.close();
+  }
+
+  assert.match(renderPath, /^content\/protected\/wm\/[0-9a-f]{64}\/[0-9a-f]{64}\.pdf$/, renderPath);
+  assert.ok(!renderPath.startsWith('content/media/'), 'the hand-off is the store tree');
+  const render = readFileSync(join(contentRoot, renderPath.slice('content/'.length)));
+  served = res.raw;
+  assert.equal(sha256(res.raw), sha256(render), 'nginx served the render, byte for byte');
+  assert.notEqual(sha256(res.raw), sha256(book), 'nginx served the shared store blob');
+  assert.equal(res.raw.length, render.length);
   // The app sent no body and no length; this header is nginx's, from the file.
-  assert.equal(String(header(res, 'content-length')), String(book.length));
+  assert.equal(String(header(res, 'content-length')), String(render.length));
   assert.match(String(header(res, 'content-disposition')), /filename\*=UTF-8''%E6%8A%A5%E5%91%8A\.pdf/);
   assert.equal(header(res, 'x-accel-redirect'), undefined, 'nginx consumed the header');
   assert.match(String(header(res, 'content-type')), /application\/pdf/);
   assert.equal(usesOf(), 1);
 
+  // The footer is in the file the edge sent — the whole point of the slice, asserted
+  // through a real nginx rather than against the app's header.
+  const text = pdfDrawnText(res.raw);
+  assert.ok(text.includes('ORD-G1-0001'), `the served footer lost its order_ref:\n${text}`);
+
   // The acceptance criterion, in one place: the ledger's `bytes_declared` is the length
   // nginx actually sent, and `bytes_sent` is NULL because the app never observes a byte.
-  const db = openAdminWrite(fixture.sitePath('acme'));
-  let declared = -1;
-  let sent: number | null = -1;
-  try {
-    const row = db
-      .prepare(`SELECT bytes_declared, bytes_sent FROM cms_download_event WHERE code_id = ? AND kind = 'first'`)
-      .get(codeId) as { bytes_declared: number; bytes_sent: number | null };
-    declared = row.bytes_declared;
-    sent = row.bytes_sent;
-  } finally {
-    db.close();
-  }
   assert.equal(declared, Number(header(res, 'content-length')), 'bytes_declared is nginx\'s Content-Length');
   assert.equal(sent, null, 'bytes_sent stays NULL in v1');
   process.stdout.write(
     `# G1 ${res.status} ${res.raw.length} B sha256 ${sha256(res.raw).slice(0, 8)} ` +
-      `content-length ${String(header(res, 'content-length'))} bytes_declared ${declared} ` +
-      `bytes_sent ${String(sent)} uses=${usesOf()}\n`,
+      `(blob ${sha256(book).slice(0, 8)}) path ${renderPath.slice(0, 40)}… ` +
+      `content-length ${ String(header(res, 'content-length'))} bytes_declared ${declared} ` +
+      `bytes_sent ${String(sent)} uses=${usesOf()} order_ref=${text.includes('ORD-G1-0001')}\n`,
   );
 });
 
-test('G2 — /__protected/ is internal: a direct request is nginx\'s 404', { skip: SKIP }, async () => {
+test('G2 — /__protected/ and /__protected/wm/ are internal: a direct request is nginx\'s 404', { skip: SKIP }, async () => {
   const uri = `/__protected/${bookSha.slice(0, 2)}/${bookSha}.pdf`;
   const direct = await edge(uri);
   assert.equal(direct.status, 404, `an internal location answered a direct request: ${direct.status}`);
   assert.equal(direct.headers['x-accel-redirect'], undefined);
-  process.stdout.write(`# G2 GET ${uri} -> ${direct.status} (internal)\n`);
+
+  // The second tree is internal too — a render is not a URL a buyer can guess or share.
+  const db = openAdminWrite(fixture.sitePath('acme'));
+  let renderPath = '';
+  try {
+    const row = db.prepare(`SELECT path FROM cms_watermark_render WHERE source_sha = ?`).get(bookSha) as {
+      path: string;
+    } | undefined;
+    renderPath = row?.path ?? '';
+  } finally {
+    db.close();
+  }
+  assert.notEqual(renderPath, '');
+  const wmUri = `/__protected/wm/${renderPath.slice(`${'content/protected/wm/'}`.length)}`;
+  const wmDirect = await edge(wmUri);
+  assert.equal(wmDirect.status, 404, `the wm location answered a direct request: ${wmDirect.status}`);
+  process.stdout.write(`# G2 GET ${uri} -> ${direct.status}, GET ${wmUri.slice(0, 44)}… -> ${wmDirect.status} (internal)\n`);
 });
 
 test('G3 — Range: bytes=100-199 through the edge is a 206 with exactly those bytes', { skip: SKIP }, async () => {
+  assert.ok(served.length > 200, 'G1 must have served a file to slice');
   const redeemed = await edge('/d/acme', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -323,20 +372,21 @@ test('G3 — Range: bytes=100-199 through the edge is a 206 with exactly those b
   const res = await edge('/d/acme/file', { headers: { cookie, range: 'bytes=100-199' } });
   assert.equal(res.status, 206, res.body);
   assert.equal(res.raw.length, 100);
-  assert.deepEqual(res.raw, book.subarray(100, 200), 'the slice is the file\'s');
-  assert.equal(String(header(res, 'content-range')), `bytes 100-199/${book.length}`);
+  assert.deepEqual(res.raw, served.subarray(100, 200), 'the slice is the render\'s');
+  assert.equal(String(header(res, 'content-range')), `bytes 100-199/${served.length}`);
   assert.equal(usesOf(), before + 1, 'a new token spends exactly one use, range or not');
 
-  // The same token again: a continuation, and no second use. `bytes=150-` is the last
-  // fifty bytes — index 200 would be past the end of a 200-byte file and is correctly 416.
+  // The same token again: a continuation, and no second use. `bytes=150-` is the render's
+  // last bytes; the same render is still on disk because the second tab reused it.
   const again = await edge('/d/acme/file', { headers: { cookie, range: 'bytes=150-' } });
   assert.equal(again.status, 206);
-  assert.deepEqual(again.raw, book.subarray(150));
+  assert.deepEqual(again.raw, served.subarray(150));
   assert.equal(usesOf(), before + 1, 'a continuation under the same token spends nothing');
   process.stdout.write(`# G3 206 ${res.raw.length} B range ${String(header(res, 'content-range'))} uses=${usesOf()}\n`);
 });
 
 test('G4 — 8 parallel ranges through the edge: one use, eight correct slices', { skip: SKIP }, async () => {
+  assert.ok(served.length > 200, 'G1 must have served a file to slice');
   const redeemed = await edge('/d/acme', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -351,7 +401,7 @@ test('G4 — 8 parallel ranges through the edge: one use, eight correct slices',
   );
   for (const [i, res] of results.entries()) {
     assert.equal(res.status, 206, res.body);
-    assert.deepEqual(res.raw, book.subarray(i * 10), `slice ${i}`);
+    assert.deepEqual(res.raw, served.subarray(i * 10), `slice ${i}`);
   }
   assert.equal(usesOf(), before + 1, 'eight parallel ranges, one use');
   assert.equal(eventCount(), beforeEvents + 1, 'one event row');

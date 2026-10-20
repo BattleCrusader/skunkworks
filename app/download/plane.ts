@@ -37,6 +37,8 @@ import { pathUnder } from '../assets/store.ts';
 import { DUMMY_HASH, Semaphore } from '../admin/auth.ts';
 import { verify as argonVerify } from '@node-rs/argon2';
 import {
+  DEFAULT_CONTINUATION_GRACE_S,
+  SETTING_CONTINUATION_GRACE,
   SETTING_WEBHOOK_SECRET,
   assetById,
   issueCode,
@@ -46,6 +48,8 @@ import {
   verifyWebhookSignature,
 } from './code.ts';
 import { consumeUse, type ConsumeResult } from './ledger.ts';
+import { WatermarkStore, type StampResult, type WatermarkDeps } from './render.ts';
+import { stampable } from './watermark.ts';
 import {
   TOKEN_TTL_S,
   clientHash,
@@ -59,6 +63,8 @@ import {
 /** 5 refusals per 15 minutes, per IP and per selector (§16 S3c). */
 export const RATE_LIMIT = 5;
 export const RATE_WINDOW_MS = 15 * 60_000;
+/** The render tree's prefix, stated once: the row's `path` and the URI both derive from it. */
+const WM_PREFIX = 'content/protected/wm/';
 /**
  * The per-IP ceiling on *all* attempts, refusals included. The 5/15 min budget above
  * counts refusals, because a buyer behind an office NAT must not be told "too many
@@ -77,6 +83,13 @@ export interface PlaneDeps {
   /** One process-wide argon2 semaphore, shared with the admin login (§7.2: 4). */
   argon: Semaphore;
   now?: () => number;
+  /**
+   * The watermarker's numbers and, in a test only, its renderer. The shipped values are
+   * `STAMP_BUDGET_MS`/`STAMP_CONCURRENCY`; `download-watermark.test.ts` builds an app with
+   * a renderer that throws and one that never settles, which is the only way to prove the
+   * denial path without corrupting a real PDF.
+   */
+  watermark?: Omit<WatermarkDeps, 'contentRoot' | 'now'> | undefined;
   /**
    * The limiter's numbers, injectable **only** so the timing gate can measure the
    * verify instead of the limiter: 1,000 trials from one address are 1,000 refusals,
@@ -194,11 +207,21 @@ interface CodeRow {
   revoked_at: string | null;
 }
 
+/** What the watermark text may read: the code row, never the request (§7.5). */
+interface StampableCodeRow extends Omit<CodeRow, 'code_hash'> {
+  issued_to_email: string | null;
+  order_ref: string | null;
+  created_at: string;
+  code_selector: string;
+}
+
 export class DownloadPlane {
   readonly #deps: PlaneDeps;
   readonly #ipFailures: SlidingWindow;
   readonly #selectorFailures: SlidingWindow;
   readonly #ipAll: SlidingWindow;
+  /** The render cache. Public so a gate can call `sweep` at a fixed instant. */
+  readonly watermark: WatermarkStore;
 
   constructor(deps: PlaneDeps) {
     this.#deps = deps;
@@ -208,6 +231,11 @@ export class DownloadPlane {
     this.#ipFailures = new SlidingWindow(refusals, windowMs);
     this.#selectorFailures = new SlidingWindow(refusals, windowMs);
     this.#ipAll = new SlidingWindow(all, windowMs);
+    this.watermark = new WatermarkStore({
+      contentRoot: deps.contentRoot,
+      ...(deps.watermark ?? {}),
+      ...(deps.now === undefined ? {} : { now: deps.now }),
+    });
   }
 
   #now(): number {
@@ -378,9 +406,12 @@ ${error}
     const db = this.#deps.openDb(tenantKey);
     try {
       const row = db
-        .prepare(`SELECT id, asset_id, bundle_id, max_uses, uses, expires_at, revoked_at
-                    FROM cms_download_code WHERE id = ?`)
-        .get(claims.cid) as Omit<CodeRow, 'code_hash'> | undefined;
+        .prepare(
+          `SELECT id, asset_id, bundle_id, max_uses, uses, expires_at, revoked_at,
+                  issued_to_email, order_ref, created_at, code_selector
+             FROM cms_download_code WHERE id = ?`,
+        )
+        .get(claims.cid) as StampableCodeRow | undefined;
       const asset = assetById(db, claims.aid);
       if (row === undefined || asset === null || row.asset_id !== claims.aid) {
         // A token that names a code/asset pair the database does not have is a
@@ -390,20 +421,72 @@ ${error}
         });
       }
 
-      // 1. the target, before anything is spent.
-      let size: number;
-      const fsPath = pathUnder(this.#deps.contentRoot, asset.storage_path);
+      // 1. the source blob, before anything is spent. A missing file is our fault, not
+      //    the buyer's, and it must not burn a use (R8).
       try {
-        const st = statSync(fsPath);
+        const st = statSync(pathUnder(this.#deps.contentRoot, asset.storage_path));
         if (!st.isFile()) throw new Error('not a file');
-        size = st.size;
       } catch {
         throw new AppError('SKW_E_RT_ASSET_MISSING', 'the stored file for this asset is missing', {
           asset_key: asset.key,
         });
       }
 
-      // 2. the range, before anything is spent. C-7: 416 writes no `first` event.
+      // 2. **the stamp, before anything is spent and before any range is validated.**
+      //    A gated asset of a format the renderer claims is never handed off as the
+      //    store's blob: the bytes nginx serves are the buyer's copy or there is no
+      //    response at all. The render's own size is what the Range is measured
+      //    against, because that is the file the buyer receives.
+      //
+      //    A format no renderer claims (video, audio, an archive) keeps the S3c path.
+      //    That is a *stated* coverage gap — §7.5 says so, and `issueCode` tells the
+      //    operator at issue time — not a silent fallback for a stampable asset.
+      let handOff: { uri: string; size: number } | null = null;
+      if (stampable(asset) !== null) {
+        let stamped: StampResult;
+        try {
+          stamped = await this.watermark.ensure({
+            tenantKey,
+            db,
+            asset,
+            code: {
+              id: row.id,
+              email: row.issued_to_email,
+              orderRef: row.order_ref,
+              issuedAt: row.created_at,
+              selector: row.code_selector,
+            },
+            expiresAt: new Date((claims.exp + this.#graceSeconds(db)) * 1000).toISOString(),
+          });
+        } catch (err) {
+          // Fail closed, and leave the record that says why. The row is written *before*
+          // the 503 so a reader never sees a failed redemption with no ledger entry.
+          this.#denyWatermark(db, claims, iph, uah);
+          if (err instanceof AppError) throw err;
+          throw new AppError('SKW_E_SEC_WATERMARK_FAILED', 'the watermark could not be rendered', {
+            reason: 'renderer',
+            asset_key: asset.key,
+          });
+        }
+        let size: number;
+        try {
+          size = statSync(stamped.absPath).size;
+        } catch {
+          this.#denyWatermark(db, claims, iph, uah);
+          throw new AppError('SKW_E_SEC_WATERMARK_FAILED', 'the stamped file vanished before the hand-off', {
+            reason: 'io',
+            asset_key: asset.key,
+          });
+        }
+        // The second tree: `content/protected/wm/…` behind `/__protected/wm/`, whose
+        // alias is `/srv/content/protected/wm/`. `storage_path` is content-addressed and
+        // shared by every buyer, which is exactly what a watermark must not be.
+        handOff = { uri: `/__protected/wm/${stamped.relPath.slice(WM_PREFIX.length)}`, size };
+      }
+
+      const size = handOff === null ? statSync(pathUnder(this.#deps.contentRoot, asset.storage_path)).size : handOff.size;
+
+      // 3. the range, before anything is spent. C-7: 416 writes no `first` event.
       const range = parseRange(req.headers.range, size);
       if (range.kind === 'unsatisfiable') {
         reply
@@ -416,7 +499,7 @@ ${error}
       }
       const bytesDeclared = range.kind === 'full' ? size : range.length;
 
-      // 3. the consume: insert-first, then update, in one BEGIN IMMEDIATE (C-7).
+      // 4. the consume: insert-first, then update, in one BEGIN IMMEDIATE (C-7).
       const consumed: ConsumeResult = consumeUse(db, {
         jti: claims.jti,
         codeId: claims.cid,
@@ -437,14 +520,14 @@ ${error}
         throw new AppError('SKW_E_SEC_CODE_INVALID', 'this code can no longer be used', { reason: consumed.reason });
       }
 
-      // 4. the hand-off. `storage_path` is `content/media/hh/<sha>.<ext>`, and the
-      // internal location's alias is `/srv/content/media/` — so the URI is the
-      // suffix, and there is exactly one rule that produces it.
+      // 5. the hand-off. `storage_path` is `content/media/hh/<sha>.<ext>` and the internal
+      // location's alias is `/srv/content/media/`; a render is `content/protected/wm/…`
+      // and its location is `/__protected/wm/`. There is exactly one rule per tree.
       //
       // `Accept-Ranges` is **not** set here: the app serves no range, nginx does, and a
       // full GET through the edge otherwise carries `bytes, bytes` (the app's header and
       // nginx's). The 416 path above does set it, because that response is the app's own.
-      const uri = `/__protected/${asset.storage_path.slice('content/media/'.length)}`;
+      const uri = handOff?.uri ?? `/__protected/${asset.storage_path.slice('content/media/'.length)}`;
       reply
         .code(200)
         .header('content-type', asset.mime)
@@ -456,6 +539,37 @@ ${error}
     } finally {
       db.close();
     }
+  }
+
+  /**
+   * `download.continuation_grace_s`, or the shipped default when the row is missing.
+   *
+   * A missing `download.default_max_uses` is a refusal at issue time (it decides a quota);
+   * a missing *grace* decides nothing about money, and refusing a download over it would
+   * be a paying customer denied by a seed that has not run yet. The default is the number
+   * §7.5 ships, and the seed is asserted by `download-codes.test.ts`.
+   */
+  #graceSeconds(db: Database.Database): number {
+    const row = db.prepare(`SELECT value_json FROM cms_settings WHERE key = ?`).get(SETTING_CONTINUATION_GRACE) as
+      | { value_json: string }
+      | undefined;
+    if (row === undefined) return DEFAULT_CONTINUATION_GRACE_S;
+    const value = Number(row.value_json);
+    return Number.isInteger(value) && value >= 0 ? value : DEFAULT_CONTINUATION_GRACE_S;
+  }
+
+  /**
+   * The `denied_watermark` branch of the ledger (C-16). `kind='first'` because the token
+   * spent its one redemption attempt here; `bytes_declared=0` because nothing was
+   * authorised. `ON CONFLICT DO NOTHING` keeps an earlier `ok` row as it is — the token
+   * already redeemed, and this failure is a re-stamp that did not happen.
+   */
+  #denyWatermark(db: Database.Database, claims: { jti: string; cid: number; aid: number }, iph: string, uah: string): void {
+    db.prepare(
+      `INSERT INTO cms_download_event (jti, kind, code_id, asset_id, bytes_declared, ip_hash, ua_hash, outcome)
+       VALUES (?, 'first', ?, ?, 0, ?, ?, 'denied_watermark')
+       ON CONFLICT DO NOTHING`,
+    ).run(claims.jti, claims.cid, claims.aid, iph, uah);
   }
 
   /**

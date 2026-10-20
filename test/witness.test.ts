@@ -124,6 +124,30 @@ export const WITNESSES: readonly Witness[] = [
     tests: ['I4'],
     refuses: 'a code for an encrypted PDF (by flag or by trailer) and for an asset with a public URL',
   },
+  // §7.5 / C-16 (S3d) — the watermark. Three mechanisms: the key that makes a render
+  // per-purchaser, the transient that bounds it, and the character set that stops a name
+  // from becoming a denial.
+  {
+    mechanism: 'specSha',
+    source: 'app/download/watermark.ts',
+    file: 'test/download-watermark.test.ts',
+    tests: ['W1', 'W8'],
+    refuses: 'two purchasers of one asset sharing a render — the hash covers the resolved text, not the asset',
+  },
+  {
+    mechanism: 'WatermarkStore.ensure',
+    source: 'app/download/render.ts',
+    file: 'test/download-watermark.test.ts',
+    tests: ['W2', 'W6', 'W7'],
+    refuses: 'a second row for one spec, a stamp above the cap of eight, and a hand-off of a file the sweep deleted',
+  },
+  {
+    mechanism: 'sanitiseCp1252',
+    source: 'app/download/cp1252.ts',
+    file: 'test/download-watermark.test.ts',
+    tests: ['W9'],
+    refuses: 'a character a WinAnsi font cannot draw — preserved when cp1252 has it, transliterated next, `?` last',
+  },
 ];
 
 const WITNESS_LINE = /Exclusive witness: (\S+) ([A-Za-z0-9][A-Za-z0-9-]*(?:, ?[A-Za-z0-9][A-Za-z0-9-]*)*)/;

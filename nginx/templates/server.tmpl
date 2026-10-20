@@ -24,6 +24,16 @@ server {
         add_header Cache-Control "public, max-age=31536000, immutable";
     }
 
+    location /__protected/wm/ {
+        # §7.5 (S3d): stamped, per-purchaser renders — a bounded transient, one directory
+        # per spec hash. A second internal location on a second tree: `content/media/`
+        # keeps one meaning (the shared store blob) and is never the hand-off for a gated
+        # asset. Longest-prefix wins over `/__protected/` below, so both stay internal.
+        internal;
+        alias /srv/content/protected/wm/;
+        limit_rate 1m;
+    }
+
     location /__protected/ {
         internal;
         alias /srv/content/media/;

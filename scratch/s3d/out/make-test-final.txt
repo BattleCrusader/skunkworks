@@ -1,0 +1,2793 @@
+verify-toolchain: /usr/bin/python3 -> python 3.9.6, sqlite 3.43.2, argon2 ok
+PASS  13 must-ignore + 7 must-keep = 20 paths behave as intended
+control.sql: v4, 9 tables, 76 columns
+site.sql:    v3, 27 tables, 228 columns
+png:         docs/debate/diagrams/r1-data-model.png (192754 bytes)
+png:         docs/sds/diagrams/er-data-model.png (192754 bytes)
+control.db: v4, 9 tables, 9 explicit indexes, 5 FK clauses, 7 triggers, integrity=ok, fk_check=0 violations, journal=wal, app_id=0x534b5700
+site.db: v3, 27 tables, 21 explicit indexes, 16 FK clauses, 5 triggers, integrity=ok, fk_check=0 violations, journal=wal, app_id=0x534b5701
+   ok every trigger registered: 5 triggers == 5 registry rows
+
+asset identity and the generated path (C-17)
+   ok image asset: accepted
+   ok asset key with ../: rejected (CHECK constraint failed)
+   ok asset key uppercase: rejected (CHECK constraint failed)
+   ok image without dimensions: rejected (CHECK constraint failed)
+   ok INSERT naming the generated storage_path: rejected (cannot INSERT into generated column "storage_path")
+   ok UPDATE naming the generated storage_path: rejected (cannot UPDATE generated column "storage_path")
+   ok sha256 rewrite (address is immutable): rejected (SKW_E_DM_COLUMN_IMMUTABLE)
+   ok generated path is derived from (sha256,mime): content/media/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png
+
+access codes: selector + argon2, no pepper (C-6)
+   ok code with neither asset nor bundle: rejected (CHECK constraint failed)
+   ok code with both asset and bundle: rejected (CHECK constraint failed)
+   ok selector of length 5: rejected (CHECK constraint failed)
+   ok selector of length 3: rejected (CHECK constraint failed)
+   ok plaintext code stored as code_hash: rejected (CHECK constraint failed)
+   ok 4-char selector + argon2id PHC: accepted
+   ok duplicate selector: rejected (UNIQUE constraint failed)
+   ok selector rewrite is immutable: rejected (SKW_E_DM_COLUMN_IMMUTABLE)
+   ok code_hash rewrite is immutable: rejected (SKW_E_DM_COLUMN_IMMUTABLE)
+   ok uses bump is allowed: accepted
+   ok lowering max_uses below uses (revoke-lite): accepted
+   ok no pepper or lookup column: ['asset_id', 'bundle_id', 'code_hash', 'code_selector', 'created_at', 'expires_at', 'id', 'issued_to_email', 'last_used_at', 'max_uses', 'order_ref', 'revoked_at', 'uses']
+
+redemption accounting: jti is the unit (C-7, C-14)
+   ok event without bytes_declared: rejected (NOT NULL constraint failed)
+   ok event with a made-up kind: rejected (CHECK constraint failed)
+   ok NULL-jti denial: accepted
+   ok NULL-jti denial: accepted
+   ok NULL-jti denial: accepted
+   ok first event: accepted
+   ok range continuation under the same jti: accepted
+   ok second first event for one jti: rejected (UNIQUE constraint failed)
+   ok bytes_sent may be NULL (v1 never observes it): accepted
+
+page path, template slug, body ban (O-15, C-23, C-12)
+   ok root path '/': accepted
+   ok page path /a/: rejected (CHECK constraint failed)
+   ok page path /a/../b: rejected (CHECK constraint failed)
+   ok page path /x//y: rejected (CHECK constraint failed)
+   ok template 'Landing' (uppercase): rejected (CHECK constraint failed)
+   ok template 'docs-v2' (a slug, not an enum): accepted
+   ok body with <script: rejected (CHECK constraint failed)
+   ok body with <SCRIPT (LIKE folds case): rejected (CHECK constraint failed)
+   ok body with an HTML comment: rejected (CHECK constraint failed)
+   ok body with javascript: URL: rejected (CHECK constraint failed)
+   ok body with a list component: accepted
+
+redirect targets stay internal (O-16)
+   ok redirect to '/': accepted
+   ok to_path //evil.example: rejected (CHECK constraint failed)
+   ok to_path /a/../b: rejected (CHECK constraint failed)
+   ok to_path /x/: rejected (CHECK constraint failed)
+
+data sources: no function kind, aggregates are grammar (C-18)
+   ok datasource kind=function: rejected (CHECK constraint failed)
+   ok datasource spec is not JSON: rejected (CHECK constraint failed)
+   ok aggregate_json is an array, not an object: rejected (CHECK constraint failed)
+   ok aggregate count over an indexed column: accepted
+
+runtime table classes: u_* and p_* only (C-13)
+   ok u_* registered as class user: accepted
+   ok p_* registered as class plugin: accepted
+   ok u_* claiming class plugin: rejected (CHECK constraint failed)
+   ok p_* with no plugin id: rejected (CHECK constraint failed)
+   ok bare 'p_' table name (the GLOB 'p_*' off-by-one): rejected (CHECK constraint failed)
+   ok a cms_* table in the runtime registry: rejected (CHECK constraint failed)
+
+component registry is the loop contract (C-4)
+   ok shipped component 'hero': accepted
+   ok shipped component 'prose': accepted
+   ok shipped component 'image': accepted
+   ok shipped component 'gallery': accepted
+   ok shipped component 'download-button': accepted
+   ok shipped component 'cta': accepted
+   ok shipped component 'form': accepted
+   ok shipped component 'embed': accepted
+   ok shipped component 'list': accepted
+   ok shipped component 'page': accepted
+   ok shipped component 'landing': accepted
+   ok shipped component 'post': accepted
+   ok shipped component 'index': accepted
+   ok shipped component 'copy-email': accepted
+   ok list without a repeat child: rejected (CHECK constraint failed)
+   ok list with a different child selector: rejected (CHECK constraint failed)
+   ok non-list with a repeat child: rejected (CHECK constraint failed)
+   ok limit_max out of range: rejected (CHECK constraint failed)
+
+plugin trust and settings (C-9, O-44)
+   ok enabled plugin with no test report (O-37): rejected (CHECK constraint failed)
+   ok installed plugin with a test report: accepted
+   ok secret setting not flagged secret: rejected (CHECK constraint failed)
+   ok secret setting: accepted
+   ok setting for an uninstalled plugin: rejected (CHECK constraint failed)
+
+audit is append-only (C-21)
+   ok audit insert: accepted
+   ok audit update: rejected (SKW_E_DM_COLUMN_IMMUTABLE)
+   ok audit delete: rejected (SKW_E_DM_COLUMN_IMMUTABLE)
+
+asset delete guard (O-04)
+   ok delete a linked asset with fk=OFF: rejected (SKW_E_DM_ASSET_IN_USE)
+   ok delete after unlinking: accepted
+
+error codes are one taxonomy (C-19)
+   ok 72 codes, all match ^SKW_E_(RT|DM|SEC|PLT|EXP|PL)_[A-Z0-9_]+$
+   ok every SKW_E_ code raised by the DDL is registered (2 distinct: ['SKW_E_DM_ASSET_IN_USE', 'SKW_E_DM_COLUMN_IMMUTABLE'])
+control.db empty size after VACUUM: 122880 bytes
+site.db empty size after VACUUM: 319488 bytes
+
+FAILURES: none
+PASS  1 schema/ER parity + negative tests                      v3: 36 entities == 36 CREATE TABLE; r1-data-model.png 192754 B; er-data-model.png 192754 B
+PASS  2 cp loses data, VACUUM INTO keeps it                    cp=no such table; VACUUM INTO rows=1000 user_version=9 views=1 jm=delete wal_before=28872B
+PASS  3 key immutable by FK, not by app                        referenced rename REJECTED, unreferenced rename ACCEPTED
+PASS  4 partial unique index breaks FK parent                  foreign key mismatch - "u_p" referencing "cms_asset"
+PASS  5 sqlite_sequence survives restore, not rebuild          seq 5->3 across rebuild; restored -> next id 6
+PASS  6 PRAGMA foreign_keys is a no-op in a txn                inside txn=1, after commit=1 (silently ignored)
+PASS  7 argon2id equality lookup is impossible                 verify=12.38ms (m=19456,t=2) salted (different hashes) -> derived 5000-code scan=62s at the frozen set and 420s at m=65536,t=3 (6.8x, parameter ratio 5.05x); hmac=0.622ms
+PASS  8 readonly is not a tenancy boundary                     readonly handle read 1 foreign row(s): buyer@acme.com
+PASS  9  r2 amendments apply to a populated v1                 user_version 2, integrity ok, fk_check 0, revisions=2, seq cms_page=3, 3 triggers all registered
+PASS  10 root path '/' is insertable                           v1 REJECTED '/' (homepage uninsertable) and ACCEPTED to_path='//evil.example'; amended accepts '/', rejects '/a/', '/../x', '/x//y' and '//evil.example', '/a/../b', '/x/'
+PASS  11 storage_path is generated, sha256 immutable           cannot INSERT into generated column "storage_path"; cannot UPDATE generated column "storage_path"; sha256 -> SKW_E_DM_COLUMN_IMMUTABLE
+PASS  12 asset delete guard holds with foreign_keys=OFF        fk=0 python -> SKW_E_DM_ASSET_IN_USE; cli rc=19 -> Error: stepping, SKW_E_DM_ASSET_IN_USE (19); unreferenced delete OK with fk=1, derived rows cascaded {'cms_asset_variant': 0, 'cms_asset_alias': 0, 'cms_watermark_render': 0}
+PASS  13 rebuild with fk=ON cascade-deletes children           revisions before=2; DROP with fk=ON -> 0 (cascade deleted); rebuild with fk=OFF -> 2
+PASS  14 dedupe write order: 24 requests, 1 download           24 concurrent requests, one jti: update-first uses=24 (events=1); insert-first uses=1 (events=1)
+PASS  15 (jti) WHERE kind='first' tolerates NULL               3 NULL-jti denials accepted; (J1,'first') twice -> UNIQUE constraint failed: cms_download_event.jti; (J1,'range') accepted; null=4
+PASS  16 export projection is the reproducible unit            27/27 tables classified {'filtered': 2, 'rows': 18, 'empty': 7}; vac==vac c0927757d760; after volatile rows file 1f9d2018e4b4 (differs) but projection d500d5fabaa4 (identical); content change -> 991880e6b093 (differs)
+PASS  17 argon2 parameter cost on this box                     m=19456,t=2,p=1 min=25.6 med=26.8ms; m=65536,t=3,p=1 min=141.3 med=148.4ms (5.5x)
+PASS  18 an unanchored audit chain proves nothing              tamper row 2 + recompute chain -> unanchored chain verifies (True); anchored head mismatches (7885b109.. -> c57f64d3..)
+PASS  19 delete-guard cost, indexed vs not                     200k referencing rows, unreferenced delete: no index 9.02 ms, indexed 0.039 ms (n=5 each)
+PASS  20 migration chain v1->v3 converges on site.sql          27 tables / 5 triggers identical on both paths (table text + trigger bodies), control 9 tables at v4 with a 9-column segment seal, no session pragma; codes-in-file -> REJECTED (legacy_12_char_codes_have_no_v3_selector)
+PASS  21 selector seek + argon2 verifier (C-6)                 5000 issued, 11 selector collisions resolved by retry; seek p50=5.42us (plan SEARCH, 1000 lookups); argon2 m=19456,t=2 real=27.8ms dummy=28.1ms; duplicate -> UNIQUE constraint failed: cms_download_code.code_selector
+PASS  22 redemption on the v3 tables (C-7)                     24 concurrent threads, one jti -> uses=1, first rows=1; cap 2 reached -> J3 outcome=denied_quota uses=2 (0 rows updated); Range row writes=1, uses=2
+PASS  23 export projection is a union over the live DB (C-5)   29/29 live tables classified (core 27, u_ 1, p_ 1); modes used=['empty', 'filtered', 'rows']; manifest without export -> SKW_E_PL_NO_EXPORT_CLASS for ['p_contact_message']
+PASS  24 plugin table class + asset guard (C-13/O-36)          guard -> SKW_E_DM_ASSET_IN_USE; without it the delete leaves 1 dangling asset_key (registered guard rows before drop=1)
+PASS  25 audit chain needs a daily seal (C-21)                 10000 rows chained 75.3ms, 2 segments verified, sealed 123us; grew by 5 rows on 2026-10-22 in 224us -> 2026-10-20 still ok (head db0d9418..); row 9990 deleted -> walk ok but rows=9989 of 9990 and head b83e1487.. of db0d9418.. -> SKW_E_SEC_AUDIT_SEAL, while 2026-10-21 stays ok
+PASS  26 body ban + list loop contract (C-12/C-4)              DB rejected 5 body vectors (script element, style element, html comment, javascript: url, srcdoc); loop: deterministic, text escaped, [data-empty] on zero rows, clamp 99->50 with data-truncated; unknown shell 'docs-v2' -> SKW_E_RT_TEMPLATE_UNKNOWN (4 shells shipped)
+PASS  27 connection classes: query_only is not tenancy (C-15)  query_only: VACUUM INTO -> attempt to write a readonly database; temp trigger -> attempt to write a readonly database; ATTACH -> ALLOWED: main,temp,other; exporter class wrote 8192 B
+
+27/27 passed, 0 skipped, 0 failed
+adopted sentences: 22/25 verbatim in SDS.md; 3 superseded by 02-errata
+  SUPERSEDED by E-20 (asserted)
+  SUPERSEDED by E-19 (asserted)
+  SUPERSEDED by E-2 (asserted)
+frozen §4 blocks: 11/12 verbatim; 1 superseded by 02-errata
+  SUPERSEDED by E-11 (asserted)
+resolution steps: 5/5 present; env names: 29/29 present
+§16 S2 rows: 13/13; required strings: 5/5; pointers: 23/23
+
+PASS the SDS quotes the register
+22:13:00 [@astrojs/node] Enabling sessions with filesystem storage
+22:13:00 [types] Generated 65ms
+22:13:00 [build] output: "server"
+22:13:00 [build] mode: "server"
+22:13:00 [build] directory: /Volumes/Backup/Development/skunkworks/build/astro/
+22:13:00 [build] adapter: @astrojs/node
+22:13:00 [build] Collecting build info...
+22:13:00 [build] ✓ Completed in 103ms.
+22:13:00 [build] Building server entrypoints...
+22:13:01 [vite] ✓ built in 156ms
+22:13:01 [vite] ✓ built in 139ms
+22:13:01 [vite] ✓ built in 12ms
+22:13:01 [build] Rearranging server assets...
+22:13:01 [build] ✓ Completed in 337ms.
+22:13:01 [build] Server built in 444ms
+22:13:01 [build] Complete!
+TAP version 13
+# Subtest: E-17.1 unset -> empty, which is the exported-bundle value
+ok 1 - E-17.1 unset -> empty, which is the exported-bundle value
+  ---
+  duration_ms: 0.80925
+  type: 'test'
+  ...
+# Subtest: E-17.2 "" -> empty
+ok 2 - E-17.2 "" -> empty
+  ---
+  duration_ms: 0.064459
+  type: 'test'
+  ...
+# Subtest: E-17.3 " , " -> empty (whitespace and empty members are not blocks)
+ok 3 - E-17.3 " , " -> empty (whitespace and empty members are not blocks)
+  ---
+  duration_ms: 0.055541
+  type: 'test'
+  ...
+# Subtest: E-17.4 two IPv4 blocks -> two entries, in the order given
+ok 4 - E-17.4 two IPv4 blocks -> two entries, in the order given
+  ---
+  duration_ms: 0.429583
+  type: 'test'
+  ...
+# Subtest: E-17.5 a v4 and a v6 block -> two entries, and the v6 line is rendered as given
+ok 5 - E-17.5 a v4 and a v6 block -> two entries, and the v6 line is rendered as given
+  ---
+  duration_ms: 9.956958
+  type: 'test'
+  ...
+# Subtest: E-17.6 a non-empty malformed value is a refusal naming the offending token
+ok 6 - E-17.6 a non-empty malformed value is a refusal naming the offending token
+  ---
+  duration_ms: 1.579125
+  type: 'test'
+  ...
+# Subtest: E-17: SKW_ADMIN_ALLOWLIST is the twenty-third name and loadEnv carries it
+ok 7 - E-17: SKW_ADMIN_ALLOWLIST is the twenty-third name and loadEnv carries it
+  ---
+  duration_ms: 0.461208
+  type: 'test'
+  ...
+# Subtest: E-17: the real process refuses to boot on a malformed allowlist, naming the token (E-8 harness)
+ok 8 - E-17: the real process refuses to boot on a malformed allowlist, naming the token (E-8 harness)
+  ---
+  duration_ms: 438.6
+  type: 'test'
+  ...
+# Subtest: E-17: TOTP-mandatory-when-empty is derived from the parser, not a hardcoded flag
+ok 9 - E-17: TOTP-mandatory-when-empty is derived from the parser, not a hardcoded flag
+  ---
+  duration_ms: 0.516
+  type: 'test'
+  ...
+# Subtest: E-17: the parser is one module imported by both consumers, not a copy
+ok 10 - E-17: the parser is one module imported by both consumers, not a copy
+  ---
+  duration_ms: 4.490417
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: 0. the allowlist decides both consequences §9.1 states: TOTP and the idle window
+ok 11 - 0. the allowlist decides both consequences §9.1 states: TOTP and the idle window
+  ---
+  duration_ms: 241.258542
+  type: 'test'
+  ...
+# Subtest: 1. argon2id at the frozen cost: m=19456, t=2, p=1
+ok 12 - 1. argon2id at the frozen cost: m=19456, t=2, p=1
+  ---
+  duration_ms: 0.5445
+  type: 'test'
+  ...
+# Subtest: 2a. TOTP is mandatory when the allowlist is empty: no code and a wrong code are both 401
+ok 13 - 2a. TOTP is mandatory when the allowlist is empty: no code and a wrong code are both 401
+  ---
+  duration_ms: 67.920958
+  type: 'test'
+  ...
+# Subtest: 2b. with a valid TOTP the login succeeds, sets the cookie and reports totpRequired=false afterwards
+ok 14 - 2b. with a valid TOTP the login succeeds, sets the cookie and reports totpRequired=false afterwards
+  ---
+  duration_ms: 17.186333
+  type: 'test'
+  ...
+# Subtest: 3. TOTP is not required when the allowlist is populated
+ok 15 - 3. TOTP is not required when the allowlist is populated
+  ---
+  duration_ms: 14.942667
+  type: 'test'
+  ...
+# Subtest: 4. three login failure causes are indistinguishable in status and body
+ok 16 - 4. three login failure causes are indistinguishable in status and body
+  ---
+  duration_ms: 43.427
+  type: 'test'
+  ...
+# Subtest: 4b. E-16: the work an attempt does is a function of configuration only, not of the credentials
+ok 17 - 4b. E-16: the work an attempt does is a function of configuration only, not of the credentials
+  ---
+  duration_ms: 81.477458
+  type: 'test'
+  ...
+# Subtest: 5. five failures lock the account, and the lock is exponential to 15 minutes
+ok 18 - 5. five failures lock the account, and the lock is exponential to 15 minutes
+  ---
+  duration_ms: 84.153916
+  type: 'test'
+  ...
+# Subtest: 6. SKW_FLEET_MODE=0 refuses to authenticate a fleet_admin (403 SKW_E_SEC_ROLE_DISABLED)
+ok 19 - 6. SKW_FLEET_MODE=0 refuses to authenticate a fleet_admin (403 SKW_E_SEC_ROLE_DISABLED)
+  ---
+  duration_ms: 2.209125
+  type: 'test'
+  ...
+# Subtest: 7. a login for an operator whose tenant is not serving is the row-9 404 (§5.3)
+ok 20 - 7. a login for an operator whose tenant is not serving is the row-9 404 (§5.3)
+  ---
+  duration_ms: 25.574292
+  type: 'test'
+  ...
+# Subtest: 8. the login route requires an exact Origin, even though no session exists yet
+ok 21 - 8. the login route requires an exact Origin, even though no session exists yet
+  ---
+  duration_ms: 1.032166
+  type: 'test'
+  ...
+# Subtest: 9. PASSWORD is the fixture password, so a positive login is not accidentally a 401
+ok 22 - 9. PASSWORD is the fixture password, so a positive login is not accidentally a 401
+  ---
+  duration_ms: 14.848667
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: DDL-1. the emitter maps §4.4's ten types to SQLite, and derives every FK from the type
+ok 23 - DDL-1. the emitter maps §4.4's ten types to SQLite, and derives every FK from the type
+  ---
+  duration_ms: 165.880666
+  type: 'test'
+  ...
+# Subtest: DDL-2. the emitter refuses a reserved or malformed name before any SQL exists
+ok 24 - DDL-2. the emitter refuses a reserved or malformed name before any SQL exists
+  ---
+  duration_ms: 0.476959
+  type: 'test'
+  ...
+# Subtest: BUILD-1. SKW_SCHEMA_EDIT=off has no builder: the route is not there and no page links it
+ok 25 - BUILD-1. SKW_SCHEMA_EDIT=off has no builder: the route is not there and no page links it
+  ---
+  duration_ms: 5.035125
+  type: 'test'
+  ...
+# Subtest: BUILD-2. SKW_SCHEMA_EDIT=on renders the form and links it from the tenant home
+ok 26 - BUILD-2. SKW_SCHEMA_EDIT=on renders the form and links it from the tenant home
+  ---
+  duration_ms: 3.293834
+  type: 'test'
+  ...
+# Subtest: BUILD-3. the preview is the emitter output, statement for statement
+ok 27 - BUILD-3. the preview is the emitter output, statement for statement
+  ---
+  duration_ms: 3.19625
+  type: 'test'
+  ...
+# Subtest: BUILD-4. a preview creates nothing (the executor is the apply path, not the preview)
+ok 28 - BUILD-4. a preview creates nothing (the executor is the apply path, not the preview)
+  ---
+  duration_ms: 1.389792
+  type: 'test'
+  ...
+# Subtest: BUILD-5. a reserved name in the form is 422 SKW_E_DM_DDL_REJECTED with its reason
+ok 29 - BUILD-5. a reserved name in the form is 422 SKW_E_DM_DDL_REJECTED with its reason
+  ---
+  duration_ms: 3.712083
+  type: 'test'
+  ...
+# Subtest: BUILD-6. a malformed column line is a 400 naming the line, not a half-parsed preview
+ok 30 - BUILD-6. a malformed column line is a 400 naming the line, not a half-parsed preview
+  ---
+  duration_ms: 2.105041
+  type: 'test'
+  ...
+# Subtest: BUILD-7. the preview is a POST with the CSRF header, like every other write-shaped request
+ok 31 - BUILD-7. the preview is a POST with the CSRF header, like every other write-shaped request
+  ---
+  duration_ms: 2.456166
+  type: 'test'
+  ...
+# Subtest: BUILD-8. apply creates the table, its registry row and its audit row in one transaction
+ok 32 - BUILD-8. apply creates the table, its registry row and its audit row in one transaction
+  ---
+  duration_ms: 7.4855
+  type: 'test'
+  ...
+# Subtest: BUILD-9. apply of an existing table is a 409, and the refused request changes nothing
+ok 33 - BUILD-9. apply of an existing table is a 409, and the refused request changes nothing
+  ---
+  duration_ms: 5.610416
+  type: 'test'
+  ...
+# Subtest: BUILD-10. apply is absent when SKW_SCHEMA_EDIT=off, and refuses without the CSRF header
+ok 34 - BUILD-10. apply is absent when SKW_SCHEMA_EDIT=off, and refuses without the CSRF header
+  ---
+  duration_ms: 2.808667
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: CRUD-3. the CRUD pages are server-rendered, and the edit form has one control per editable column
+ok 35 - CRUD-3. the CRUD pages are server-rendered, and the edit form has one control per editable column
+  ---
+  duration_ms: 89.535667
+  type: 'test'
+  ...
+# Subtest: CRUD-4. create writes the row and one audit row carrying actor, before=null and after
+ok 36 - CRUD-4. create writes the row and one audit row carrying actor, before=null and after
+  ---
+  duration_ms: 7.4575
+  type: 'test'
+  ...
+# Subtest: CRUD-5. edit writes before and after, and the row chains onto the previous hash
+ok 37 - CRUD-5. edit writes before and after, and the row chains onto the previous hash
+  ---
+  duration_ms: 6.788916
+  type: 'test'
+  ...
+# Subtest: CRUD-6. delete removes the row and records what it was
+ok 38 - CRUD-6. delete removes the row and records what it was
+  ---
+  duration_ms: 6.237666
+  type: 'test'
+  ...
+# Subtest: CRUD-7. a write the schema refuses is a taxonomy 400, and writes no audit row
+ok 39 - CRUD-7. a write the schema refuses is a taxonomy 400, and writes no audit row
+  ---
+  duration_ms: 10.161167
+  type: 'test'
+  ...
+# Subtest: CRUD-8. delete of a row another table references is the taxonomy 409, not a 500
+ok 40 - CRUD-8. delete of a row another table references is the taxonomy 409, not a 500
+  ---
+  duration_ms: 12.653
+  type: 'test'
+  ...
+# Subtest: CRUD-9. a unique-key collision is SKW_E_DM_KEY_IN_USE, not a 500
+ok 41 - CRUD-9. a unique-key collision is SKW_E_DM_KEY_IN_USE, not a 500
+  ---
+  duration_ms: 3.231667
+  type: 'test'
+  ...
+# Subtest: CRUD-10. a write on the render-read class throws, and nothing is written
+ok 42 - CRUD-10. a write on the render-read class throws, and nothing is written
+  ---
+  duration_ms: 1.992625
+  type: 'test'
+  ...
+# Subtest: CRUD-11. the write path never opens render-read and never retries
+ok 43 - CRUD-11. the write path never opens render-read and never retries
+  ---
+  duration_ms: 0.407625
+  type: 'test'
+  ...
+# Subtest: CRUD-12. the same write against another tenant is refused before any row is touched
+ok 44 - CRUD-12. the same write against another tenant is refused before any row is touched
+  ---
+  duration_ms: 2.996625
+  type: 'test'
+  ...
+# Subtest: CRUD-13. a CRUD write without the CSRF header is 403
+ok 45 - CRUD-13. a CRUD write without the CSRF header is 403
+  ---
+  duration_ms: 2.603709
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: matrix 1 no CSRF header
+ok 46 - matrix 1 no CSRF header
+  ---
+  duration_ms: 91.406458
+  type: 'test'
+  ...
+# Subtest: matrix 2 no CSRF header, no Origin
+ok 47 - matrix 2 no CSRF header, no Origin
+  ---
+  duration_ms: 17.947792
+  type: 'test'
+  ...
+# Subtest: matrix 3 empty CSRF header
+ok 48 - matrix 3 empty CSRF header
+  ---
+  duration_ms: 17.908584
+  type: 'test'
+  ...
+# Subtest: matrix 4 43 random characters
+ok 49 - matrix 4 43 random characters
+  ---
+  duration_ms: 16.483417
+  type: 'test'
+  ...
+# Subtest: matrix 5 a valid token from another session
+ok 50 - matrix 5 a valid token from another session
+  ---
+  duration_ms: 34.350417
+  type: 'test'
+  ...
+# Subtest: matrix 6 the session id used as the token
+ok 51 - matrix 6 the session id used as the token
+  ---
+  duration_ms: 14.241125
+  type: 'test'
+  ...
+# Subtest: matrix 7 correct token, one character flipped
+ok 52 - matrix 7 correct token, one character flipped
+  ---
+  duration_ms: 14.525584
+  type: 'test'
+  ...
+# Subtest: matrix 8 correct token, no Origin
+ok 53 - matrix 8 correct token, no Origin
+  ---
+  duration_ms: 15.157625
+  type: 'test'
+  ...
+# Subtest: matrix 9 correct token, foreign Origin
+ok 54 - matrix 9 correct token, foreign Origin
+  ---
+  duration_ms: 14.365292
+  type: 'test'
+  ...
+# Subtest: matrix 10 correct token, Origin with a suffix
+ok 55 - matrix 10 correct token, Origin with a suffix
+  ---
+  duration_ms: 14.874375
+  type: 'test'
+  ...
+# Subtest: matrix 11 correct token, wrong scheme
+ok 56 - matrix 11 correct token, wrong scheme
+  ---
+  duration_ms: 14.278709
+  type: 'test'
+  ...
+# Subtest: matrix 12 correct token, exact Origin (positive control)
+ok 57 - matrix 12 correct token, exact Origin (positive control)
+  ---
+  duration_ms: 16.426167
+  type: 'test'
+  ...
+# Subtest: the matrix is not one route: every non-GET without a token is refused
+ok 58 - the matrix is not one route: every non-GET without a token is refused
+  ---
+  duration_ms: 16.674584
+  type: 'test'
+  ...
+# Subtest: a GET needs no CSRF token, and a POST with the token succeeds and rotates
+ok 59 - a GET needs no CSRF token, and a POST with the token succeeds and rotates
+  ---
+  duration_ms: 15.802625
+  type: 'test'
+  ...
+# Subtest: the token is bound to the session: two sessions of one user do not share it
+ok 60 - the token is bound to the session: two sessions of one user do not share it
+  ---
+  duration_ms: 28.964334
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: (a) the listener is the admin hostname, and the path never selects it
+ok 61 - (a) the listener is the admin hostname, and the path never selects it
+  ---
+  duration_ms: 63.644916
+  type: 'test'
+  ...
+# Subtest: (b) /admin/t/acme/pages on a tenant host is the same 404 as an unknown path, with no Set-Cookie
+ok 62 - (b) /admin/t/acme/pages on a tenant host is the same 404 as an unknown path, with no Set-Cookie
+  ---
+  duration_ms: 11.046791
+  type: 'test'
+  ...
+# Subtest: (c) the same path on a demo host is the same 404, not a 421
+ok 63 - (c) the same path on a demo host is the same 404, not a 421
+  ---
+  duration_ms: 1.675375
+  type: 'test'
+  ...
+# Subtest: (d) the admin host with no session is 404 SKW_E_PLT_TENANT_UNKNOWN on every path
+ok 64 - (d) the admin host with no session is 404 SKW_E_PLT_TENANT_UNKNOWN on every path
+  ---
+  duration_ms: 2.087917
+  type: 'test'
+  ...
+# Subtest: (d2) the admin host refuses a tenant header that is present at all (row 1)
+ok 65 - (d2) the admin host refuses a tenant header that is present at all (row 1)
+  ---
+  duration_ms: 1.306041
+  type: 'test'
+  ...
+# Subtest: (e) S2a: a real admin session does not make a tenant host an admin surface
+ok 66 - (e) S2a: a real admin session does not make a tenant host an admin surface
+  ---
+  duration_ms: 23.241083
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: D29-1. GET /admin with no session is the row-7 404, not a login redirect
+ok 67 - D29-1. GET /admin with no session is the row-7 404, not a login redirect
+  ---
+  duration_ms: 211.323375
+  type: 'test'
+  ...
+# Subtest: D29-2. the console lists the tenant an operator may reach, and only that one
+ok 68 - D29-2. the console lists the tenant an operator may reach, and only that one
+  ---
+  duration_ms: 19.897417
+  type: 'test'
+  ...
+# Subtest: D29-3. the switcher changes the URL; the session row tenant is unchanged
+ok 69 - D29-3. the switcher changes the URL; the session row tenant is unchanged
+  ---
+  duration_ms: 18.941375
+  type: 'test'
+  ...
+# Subtest: D29-4. another tenant's /admin/t/<key>/… is refused for a non-fleet operator
+ok 70 - D29-4. another tenant's /admin/t/<key>/… is refused for a non-fleet operator
+  ---
+  duration_ms: 19.304625
+  type: 'test'
+  ...
+# Subtest: D29-5. a fleet operator reaches the console and no tenant URL
+ok 71 - D29-5. a fleet operator reaches the console and no tenant URL
+  ---
+  duration_ms: 17.289083
+  type: 'test'
+  ...
+# Subtest: D29-6. /admin/login is the only login URL: a page for GET, a real form post for POST
+ok 72 - D29-6. /admin/login is the only login URL: a page for GET, a real form post for POST
+  ---
+  duration_ms: 15.168417
+  type: 'test'
+  ...
+# Subtest: D28. the CSRF token is a header and there is no form-field alternative
+ok 73 - D28. the CSRF token is a header and there is no form-field alternative
+  ---
+  duration_ms: 16.625083
+  type: 'test'
+  ...
+# Subtest: E19-2a. enrolment hands out a secret that is not written until a code proves it
+ok 74 - E19-2a. enrolment hands out a secret that is not written until a code proves it
+  ---
+  duration_ms: 53.570042
+  type: 'test'
+  ...
+# Subtest: E19-2b. skwctl admin reset-totp replaces the secret and revokes the sessions
+ok 75 - E19-2b. skwctl admin reset-totp replaces the secret and revokes the sessions
+  ---
+  duration_ms: 144.418083
+  type: 'test'
+  ...
+# Subtest: E19-3a. reset request issues a single-use token; consumption changes the password and kills the sessions
+ok 76 - E19-3a. reset request issues a single-use token; consumption changes the password and kills the sessions
+  ---
+  duration_ms: 57.786584
+  type: 'test'
+  ...
+# Subtest: E19-3b. an expired token, a short password and a wrong Origin are all refused
+ok 77 - E19-3b. an expired token, a short password and a wrong Origin are all refused
+  ---
+  duration_ms: 17.661834
+  type: 'test'
+  ...
+# Subtest: CRUD-1. GET pages lists this tenant's cms_page rows, and the detail is one row
+ok 78 - CRUD-1. GET pages lists this tenant's cms_page rows, and the detail is one row
+  ---
+  duration_ms: 17.706917
+  type: 'test'
+  ...
+# Subtest: CRUD-2. the list is tenant-scoped: beta's page id is not reachable from acme
+ok 79 - CRUD-2. the list is tenant-scoped: beta's page id is not reachable from acme
+  ---
+  duration_ms: 17.633125
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: 1. the cookie carries exactly the five frozen attributes
+ok 80 - 1. the cookie carries exactly the five frozen attributes
+  ---
+  duration_ms: 104.349458
+  type: 'test'
+  ...
+# Subtest: 2. a tampered cookie is not a session: five rejection cases, all the row-7 404
+ok 81 - 2. a tampered cookie is not a session: five rejection cases, all the row-7 404
+  ---
+  duration_ms: 6.377
+  type: 'test'
+  ...
+# Subtest: 3. a revoked session is refused on the next request
+ok 82 - 3. a revoked session is refused on the next request
+  ---
+  duration_ms: 19.53425
+  type: 'test'
+  ...
+# Subtest: 4. rotation on privilege change: new id, old id dead, rotated_from recorded
+ok 83 - 4. rotation on privilege change: new id, old id dead, rotated_from recorded
+  ---
+  duration_ms: 18.262125
+  type: 'test'
+  ...
+# Subtest: 5. idle timeout: 15 minutes when the allowlist is empty, and the window slides
+ok 84 - 5. idle timeout: 15 minutes when the allowlist is empty, and the window slides
+  ---
+  duration_ms: 15.932541
+  type: 'test'
+  ...
+# Subtest: 7. E-18(a): a session touched every 5 minutes is refused at created_at + 12 h, with 404 and no Set-Cookie
+ok 85 - 7. E-18(a): a session touched every 5 minutes is refused at created_at + 12 h, with 404 and no Set-Cookie
+  ---
+  duration_ms: 74.750709
+  type: 'test'
+  ...
+# Subtest: 8. E-18(b): the slide clamps at created_at + SESSION_ABSOLUTE_MS, asserted on the stored value
+ok 86 - 8. E-18(b): the slide clamps at created_at + SESSION_ABSOLUTE_MS, asserted on the stored value
+  ---
+  duration_ms: 15.276084
+  type: 'test'
+  ...
+# Subtest: 9. E-18(c): rotation at 11 h 59 m inherits created_at, so the child dies one minute later
+ok 87 - 9. E-18(c): rotation at 11 h 59 m inherits created_at, so the child dies one minute later
+  ---
+  duration_ms: 18.103833
+  type: 'test'
+  ...
+# Subtest: 10. E-18(d): a session dead by idle inside the cap is refused, and the attempt does not slide it
+ok 88 - 10. E-18(d): a session dead by idle inside the cap is refused, and the attempt does not slide it
+  ---
+  duration_ms: 16.409542
+  type: 'test'
+  ...
+# Subtest: 6. a session for tenant A cannot act on tenant B through the URL (§9.2)
+ok 89 - 6. a session for tenant A cannot act on tenant B through the URL (§9.2)
+  ---
+  duration_ms: 1.277917
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: S2E-22. the admin lists the registry, and a source published through the gate is on it
+ok 90 - S2E-22. the admin lists the registry, and a source published through the gate is on it
+  ---
+  duration_ms: 110.44275
+  type: 'test'
+  ...
+# Subtest: S2E-23. the admin route refuses a `function` source with C-18's code
+ok 91 - S2E-23. the admin route refuses a `function` source with C-18's code
+  ---
+  duration_ms: 3.62025
+  type: 'test'
+  ...
+# Subtest: S2E-24. a source write without the CSRF token is the same 403 as every other write
+ok 92 - S2E-24. a source write without the CSRF token is the same 403 as every other write
+  ---
+  duration_ms: 3.518666
+  type: 'test'
+  ...
+# preview tenant=acme path=/soon ts=2026-10-20T11:13:13.634Z
+# Subtest: S2E-25. the page detail mints the preview token in admin, and the render path accepts it
+ok 93 - S2E-25. the page detail mints the preview token in admin, and the render path accepts it
+  ---
+  duration_ms: 156.465
+  type: 'test'
+  ...
+# Subtest: A1 — the same bytes twice produce one file
+    # Subtest: two uploads of one PNG: ONE file, ONE row, and the second says it reused
+    ok 1 - two uploads of one PNG: ONE file, ONE row, and the second says it reused
+      ---
+      duration_ms: 19.959917
+      type: 'test'
+      ...
+    1..1
+ok 94 - A1 — the same bytes twice produce one file
+  ---
+  duration_ms: 20.3555
+  type: 'suite'
+  ...
+# Subtest: A2 — dedupe is physical, identity is the key (D13 + D17)
+    # Subtest: one blob, two keys: the bytes are shared and neither row is a lie
+    ok 1 - one blob, two keys: the bytes are shared and neither row is a lie
+      ---
+      duration_ms: 10.3985
+      type: 'test'
+      ...
+    1..1
+ok 95 - A2 — dedupe is physical, identity is the key (D13 + D17)
+  ---
+  duration_ms: 10.52025
+  type: 'suite'
+  ...
+# Subtest: A3 — an image with GPS EXIF comes out without it
+    # Subtest: the input carries a GPS IFD; the stored file carries no EXIF at all
+    ok 1 - the input carries a GPS IFD; the stored file carries no EXIF at all
+      ---
+      duration_ms: 10.463292
+      type: 'test'
+      ...
+    1..1
+ok 96 - A3 — an image with GPS EXIF comes out without it
+  ---
+  duration_ms: 10.643458
+  type: 'suite'
+  ...
+# Subtest: A4 — a PHP payload renamed .png is refused and nothing is written
+    # Subtest: magic-byte sniff refuses it, and the content tree is untouched
+    ok 1 - magic-byte sniff refuses it, and the content tree is untouched
+      ---
+      duration_ms: 1.95375
+      type: 'test'
+      ...
+    # Subtest: an HTML document renamed .png is refused by the same rule
+    ok 2 - an HTML document renamed .png is refused by the same rule
+      ---
+      duration_ms: 0.313542
+      type: 'test'
+      ...
+    1..2
+ok 97 - A4 — a PHP payload renamed .png is refused and nothing is written
+  ---
+  duration_ms: 2.486208
+  type: 'suite'
+  ...
+# Subtest: A5 — an SVG is refused with its code
+    # Subtest: an .svg upload is 415 SKW_E_SEC_UPLOAD_REJECTED, reason svg_forbidden
+    ok 1 - an .svg upload is 415 SKW_E_SEC_UPLOAD_REJECTED, reason svg_forbidden
+      ---
+      duration_ms: 0.848833
+      type: 'test'
+      ...
+    # Subtest: an SVG payload named .png is refused too (extension is not the rule)
+    ok 2 - an SVG payload named .png is refused too (extension is not the rule)
+      ---
+      duration_ms: 0.240625
+      type: 'test'
+      ...
+    1..2
+ok 98 - A5 — an SVG is refused with its code
+  ---
+  duration_ms: 1.219542
+  type: 'suite'
+  ...
+# Subtest: A6 — the quota is enforced before the write
+    # Subtest: 1 byte of headroom, a 2-byte write: refused, and the store is byte-identical
+    ok 1 - 1 byte of headroom, a 2-byte write: refused, and the store is byte-identical
+      ---
+      duration_ms: 1.205209
+      type: 'test'
+      ...
+    # Subtest: an upload over quota leaves no file, no row, and no temp file
+    ok 2 - an upload over quota leaves no file, no row, and no temp file
+      ---
+      duration_ms: 4.722833
+      type: 'test'
+      ...
+    # Subtest: the limit is the tenant’s own storage_quota_bytes, not a constant
+    ok 3 - the limit is the tenant’s own storage_quota_bytes, not a constant
+      ---
+      duration_ms: 1.767291
+      type: 'test'
+      ...
+    # Subtest: a deduplicated upload is allowed at exactly the quota: it costs no bytes
+    ok 4 - a deduplicated upload is allowed at exactly the quota: it costs no bytes
+      ---
+      duration_ms: 5.230709
+      type: 'test'
+      ...
+    1..4
+ok 99 - A6 — the quota is enforced before the write
+  ---
+  duration_ms: 13.087875
+  type: 'suite'
+  ...
+# Subtest: A7 — a key’s bytes never change
+    # Subtest: re-uploading different bytes under an existing key is refused
+    ok 1 - re-uploading different bytes under an existing key is refused
+      ---
+      duration_ms: 5.532791
+      type: 'test'
+      ...
+    # Subtest: the same bytes under a new key while a store file exists does not overwrite it
+    ok 2 - the same bytes under a new key while a store file exists does not overwrite it
+      ---
+      duration_ms: 4.190334
+      type: 'test'
+      ...
+    1..2
+ok 100 - A7 — a key’s bytes never change
+  ---
+  duration_ms: 9.894083
+  type: 'suite'
+  ...
+# Subtest: A8 — the alias row, the link graph, and the delete that is refused
+    # Subtest: an unreferenced rename writes the alias row and moves no bytes
+    ok 1 - an unreferenced rename writes the alias row and moves no bytes
+      ---
+      duration_ms: 6.615709
+      type: 'test'
+      ...
+    # Subtest: a link refuses the rename, and the delete names the code until it is unlinked
+    ok 2 - a link refuses the rename, and the delete names the code until it is unlinked
+      ---
+      duration_ms: 6.374166
+      type: 'test'
+      ...
+    # Subtest: the alias cascades when the asset is deleted
+    ok 3 - the alias cascades when the asset is deleted
+      ---
+      duration_ms: 4.281791
+      type: 'test'
+      ...
+    # Subtest: a page reference writes the link row when the page is scanned
+    ok 4 - a page reference writes the link row when the page is scanned
+      ---
+      duration_ms: 5.955625
+      type: 'test'
+      ...
+    1..4
+ok 101 - A8 — the alias row, the link graph, and the delete that is refused
+  ---
+  duration_ms: 23.4645
+  type: 'suite'
+  ...
+# Subtest: the store’s path is generated, never a filename
+    # Subtest: a filename that is a path is refused, not sanitised
+    ok 1 - a filename that is a path is refused, not sanitised
+      ---
+      duration_ms: 2.265916
+      type: 'test'
+      ...
+    # Subtest: the stored path is content/media/<hh>/<sha>.<ext> and the sha is over the stored bytes
+    ok 2 - the stored path is content/media/<hh>/<sha>.<ext> and the sha is over the stored bytes
+      ---
+      duration_ms: 3.26425
+      type: 'test'
+      ...
+    # Subtest: the file cap refuses before the sniff, with 413
+    ok 3 - the file cap refuses before the sniff, with 413
+      ---
+      duration_ms: 0.852792
+      type: 'test'
+      ...
+    1..3
+ok 102 - the store’s path is generated, never a filename
+  ---
+  duration_ms: 6.534917
+  type: 'suite'
+  ...
+# Subtest: a datasource that selects an asset column links the values it can see
+    # Subtest: one link per distinct asset value, and none for NULL
+    ok 1 - one link per distinct asset value, and none for NULL
+      ---
+      duration_ms: 4.117416
+      type: 'test'
+      ...
+    1..1
+ok 103 - a datasource that selects an asset column links the values it can see
+  ---
+  duration_ms: 4.239709
+  type: 'suite'
+  ...
+# Subtest: A1. the writer and the verifier agree: rows chain, every hash recomputes, and nothing seals
+ok 104 - A1. the writer and the verifier agree: rows chain, every hash recomputes, and nothing seals
+  ---
+  duration_ms: 14.480875
+  type: 'test'
+  ...
+# Subtest: A2. the canonical row is the eight fields §9.6 hashes, with sorted keys
+ok 105 - A2. the canonical row is the eight fields §9.6 hashes, with sorted keys
+  ---
+  duration_ms: 0.124959
+  type: 'test'
+  ...
+# Subtest: A3. a seal covers the day’s own id range: first_id, last_id, rows_in_day, anchor, head
+ok 106 - A3. a seal covers the day’s own id range: first_id, last_id, rows_in_day, anchor, head
+  ---
+  duration_ms: 10.282083
+  type: 'test'
+  ...
+# Subtest: A4. tamper one row and recompute the chain: the walk passes and the seal refuses
+ok 107 - A4. tamper one row and recompute the chain: the walk passes and the seal refuses
+  ---
+  duration_ms: 11.0475
+  type: 'test'
+  ...
+# Subtest: A5. a row deleted INSIDE the segment breaks the walk, and the day is refused
+ok 108 - A5. a row deleted INSIDE the segment breaks the walk, and the day is refused
+  ---
+  duration_ms: 10.1945
+  type: 'test'
+  ...
+# Subtest: A6. a day with rows and no seal is `unsealed`; a day with no rows is `empty`
+ok 109 - A6. a day with rows and no seal is `unsealed`; a day with no rows is `empty`
+  ---
+  duration_ms: 9.296625
+  type: 'test'
+  ...
+# Subtest: A7. a day is sealed once: a second seal is `already_sealed` and the stored row is untouched
+ok 110 - A7. a day is sealed once: a second seal is `already_sealed` and the stored row is untouched
+  ---
+  duration_ms: 12.216041
+  type: 'test'
+  ...
+# Subtest: A8. the seal day is UTC and comes from one function, not the caller’s locale
+ok 111 - A8. the seal day is UTC and comes from one function, not the caller’s locale
+  ---
+  duration_ms: 0.275333
+  type: 'test'
+  ...
+# Subtest: B1-1. an untouched chain that GREW on the next day still verifies for the earlier day (the positive control)
+ok 112 - B1-1. an untouched chain that GREW on the next day still verifies for the earlier day (the positive control)
+  ---
+  duration_ms: 11.259833
+  type: 'test'
+  ...
+# Subtest: B1-2. a row deleted BEFORE the segment is `anchor_mismatch`
+ok 113 - B1-2. a row deleted BEFORE the segment is `anchor_mismatch`
+  ---
+  duration_ms: 12.9715
+  type: 'test'
+  ...
+# Subtest: B1-3. a row tampered INSIDE the segment is `broken_at`, and a corrupted later day leaves day D green
+ok 114 - B1-3. a row tampered INSIDE the segment is `broken_at`, and a corrupted later day leaves day D green
+  ---
+  duration_ms: 12.053542
+  type: 'test'
+  ...
+# Subtest: B1-4. a segment truncated on disk is `count_mismatch` — the walk alone cannot see it
+ok 115 - B1-4. a segment truncated on disk is `count_mismatch` — the walk alone cannot see it
+  ---
+  duration_ms: 9.342
+  type: 'test'
+  ...
+# Subtest: B1-5. sealing a day that has not ended is `day_not_over`
+ok 116 - B1-5. sealing a day that has not ended is `day_not_over`
+  ---
+  duration_ms: 8.697042
+  type: 'test'
+  ...
+# Subtest: B1-6. a second seal is refused, the row is byte-identical, and a direct UPDATE is aborted by the trigger
+ok 117 - B1-6. a second seal is refused, the row is byte-identical, and a direct UPDATE is aborted by the trigger
+  ---
+  duration_ms: 9.186583
+  type: 'test'
+  ...
+# Subtest: B1-7. a backfilled day is sealed from its OWN segment, with late=1 and the real sealed_at
+ok 118 - B1-7. a backfilled day is sealed from its OWN segment, with late=1 and the real sealed_at
+  ---
+  duration_ms: 61.104792
+  type: 'test'
+  ...
+# Subtest: B1-9. a day whose rows are interleaved with another day’s is `not_contiguous`
+ok 119 - B1-9. a day whose rows are interleaved with another day’s is `not_contiguous`
+  ---
+  duration_ms: 11.571625
+  type: 'test'
+  ...
+# Subtest: B1-10. a broken chain is never sealed: `chain_broken` refuses the write
+ok 120 - B1-10. a broken chain is never sealed: `chain_broken` refuses the write
+  ---
+  duration_ms: 9.723833
+  type: 'test'
+  ...
+# Subtest: B1-11. one code, distinct reasons: the operator and the test can tell the controls apart
+ok 121 - B1-11. one code, distinct reasons: the operator and the test can tell the controls apart
+  ---
+  duration_ms: 10.843042
+  type: 'test'
+  ...
+# Subtest: CLI-1. `audit status` names a sealed day, an UNSEALED day and an empty one, and exits 1 on the gap
+ok 122 - CLI-1. `audit status` names a sealed day, an UNSEALED day and an empty one, and exits 1 on the gap
+  ---
+  duration_ms: 586.650416
+  type: 'test'
+  ...
+# Subtest: CLI-2. `--heal` writes one seal and one audit_log row per day, with a real sealed_at
+ok 123 - CLI-2. `--heal` writes one seal and one audit_log row per day, with a real sealed_at
+  ---
+  duration_ms: 117.073667
+  type: 'test'
+  ...
+# Subtest: CLI-3. the three refusal names are distinct on stderr and carry the exit code each one means
+ok 124 - CLI-3. the three refusal names are distinct on stderr and carry the exit code each one means
+  ---
+  duration_ms: 515.604583
+  type: 'test'
+  ...
+# Subtest: CLI-4. `audit seal` on an already-sealed day is a non-failure that prints the stored facts
+ok 125 - CLI-4. `audit seal` on an already-sealed day is a non-failure that prints the stored facts
+  ---
+  duration_ms: 105.456291
+  type: 'test'
+  ...
+# Subtest: CLI-5. `seal` with no `--day` seals the last day that ENDED, never today
+ok 126 - CLI-5. `seal` with no `--day` seals the last day that ENDED, never today
+  ---
+  duration_ms: 117.570333
+  type: 'test'
+  ...
+# Subtest: CLI-6. the verify verdict is a segment report, not a file count
+ok 127 - CLI-6. the verify verdict is a segment report, not a file count
+  ---
+  duration_ms: 109.000916
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: 1. a fresh seeded control.db and nothing else yields one operator, and a code from the printed URI logs in
+ok 128 - 1. a fresh seeded control.db and nothing else yields one operator, and a code from the printed URI logs in
+  ---
+  duration_ms: 262.597875
+  type: 'test'
+  ...
+# Subtest: 10. the otpauth URI parses and its secret verifies a TOTP code
+ok 129 - 10. the otpauth URI parses and its secret verifies a TOTP code
+  ---
+  duration_ms: 0.390083
+  type: 'test'
+  ...
+# Subtest: 2. a second run exits 3 and leaves password_hash, totp_secret and must_change byte-identical
+ok 130 - 2. a second run exits 3 and leaves password_hash, totp_secret and must_change byte-identical
+  ---
+  duration_ms: 147.637042
+  type: 'test'
+  ...
+# Subtest: 3. a claimed user exits 3 and the file is not written
+ok 131 - 3. a claimed user exits 3 and the file is not written
+  ---
+  duration_ms: 128.756458
+  type: 'test'
+  ...
+# Subtest: 4. zero user rows with one production tenant creates one; two tenants and no --tenant refuses AMBIGUOUS_TARGET
+ok 132 - 4. zero user rows with one production tenant creates one; two tenants and no --tenant refuses AMBIGUOUS_TARGET
+  ---
+  duration_ms: 386.447458
+  type: 'test'
+  ...
+# Subtest: 5. a fleet_admin target with SKW_FLEET_MODE=0 refuses
+ok 133 - 5. a fleet_admin target with SKW_FLEET_MODE=0 refuses
+  ---
+  duration_ms: 127.173375
+  type: 'test'
+  ...
+# Subtest: 6. SKW_RENDER_MODE=snapshot refuses to write control.db
+ok 134 - 6. SKW_RENDER_MODE=snapshot refuses to write control.db
+  ---
+  duration_ms: 151.266292
+  type: 'test'
+  ...
+# Subtest: 7. a non-TTY invocation without --enrolment-out refuses and writes nothing anywhere
+ok 135 - 7. a non-TTY invocation without --enrolment-out refuses and writes nothing anywhere
+  ---
+  duration_ms: 125.331209
+  type: 'test'
+  ...
+# Subtest: 8. the file is 0600 and a second --enrolment-out to the same path refuses (O_EXCL)
+ok 136 - 8. the file is 0600 and a second --enrolment-out to the same path refuses (O_EXCL)
+  ---
+  duration_ms: 419.243667
+  type: 'test'
+  ...
+# Subtest: 9. the secret is in the enrolment file and in no other artefact
+ok 137 - 9. the secret is in the enrolment file and in no other artefact
+  ---
+  duration_ms: 135.568792
+  type: 'test'
+  ...
+# Subtest: docker compose config parses the file
+ok 138 - docker compose config parses the file
+  ---
+  duration_ms: 0.50475
+  type: 'test'
+  ...
+# Subtest: exactly four services, named as the SDS names them
+ok 139 - exactly four services, named as the SDS names them
+  ---
+  duration_ms: 0.436458
+  type: 'test'
+  ...
+# Subtest: app publishes no port
+ok 140 - app publishes no port
+  ---
+  duration_ms: 0.074208
+  type: 'test'
+  ...
+# Subtest: plugin-runner has no network and drops every capability
+ok 141 - plugin-runner has no network and drops every capability
+  ---
+  duration_ms: 0.061334
+  type: 'test'
+  ...
+# Subtest: nginx is the only service with published ports, and it publishes 80 and 443
+ok 142 - nginx is the only service with published ports, and it publishes 80 and 443
+  ---
+  duration_ms: 0.162541
+  type: 'test'
+  ...
+# Subtest: app runs read-only with a tmpfs /tmp and the three volumes (§12.2)
+ok 143 - app runs read-only with a tmpfs /tmp and the three volumes (§12.2)
+  ---
+  duration_ms: 0.150875
+  type: 'test'
+  ...
+# Subtest: app gets SKW_DATA_DIR and UV_THREADPOOL_SIZE=8, and no legacy prefix
+ok 144 - app gets SKW_DATA_DIR and UV_THREADPOOL_SIZE=8, and no legacy prefix
+  ---
+  duration_ms: 0.21575
+  type: 'test'
+  ...
+# Subtest: there is no migrate service (app migrates itself, C-10)
+ok 145 - there is no migrate service (app migrates itself, C-10)
+  ---
+  duration_ms: 0.047208
+  type: 'test'
+  ...
+# Subtest: D31-0. control — limit_default below limit_max publishes and renders that many rows
+ok 146 - D31-0. control — limit_default below limit_max publishes and renders that many rows
+  ---
+  duration_ms: 26.509792
+  type: 'test'
+  ...
+# Subtest: D31-1. publish refuses limit_default > limit_max, names the field, and writes no row
+ok 147 - D31-1. publish refuses limit_default > limit_max, names the field, and writes no row
+  ---
+  duration_ms: 2.855
+  type: 'test'
+  ...
+# Subtest: D31-2. a spec that bypassed publish renders clamped to limit_max, not refused and not 50
+ok 148 - D31-2. a spec that bypassed publish renders clamped to limit_max, not refused and not 50
+  ---
+  duration_ms: 1.828708
+  type: 'test'
+  ...
+# Subtest: D31-3. compile() clamps a hand-built spec, so the clamp is not only a parse-time habit
+ok 149 - D31-3. compile() clamps a hand-built spec, so the clamp is not only a parse-time habit
+  ---
+  duration_ms: 0.227583
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: D6-0. the control resolves before any drift
+ok 150 - D6-0. the control resolves before any drift
+  ---
+  duration_ms: 1.879958
+  type: 'test'
+  ...
+# Subtest: D6-1. an out-of-band column drop refuses with the taxonomy code, naming the column
+ok 151 - D6-1. an out-of-band column drop refuses with the taxonomy code, naming the column
+  ---
+  duration_ms: 7.4905
+  type: 'test'
+  ...
+# Subtest: D6-2. a source that does not name the drifted column still resolves
+ok 152 - D6-2. a source that does not name the drifted column still resolves
+  ---
+  duration_ms: 2.10575
+  type: 'test'
+  ...
+# Subtest: D6-3. the refusal logs one line that names the drifted column
+ok 153 - D6-3. the refusal logs one line that names the drifted column
+  ---
+  duration_ms: 0.122292
+  type: 'test'
+  ...
+# Subtest: D6-4. a real SQLite error from the resolve statement is mapped, not rethrown
+ok 154 - D6-4. a real SQLite error from the resolve statement is mapped, not rethrown
+  ---
+  duration_ms: 1.026083
+  type: 'test'
+  ...
+# Subtest: D6-5. on the wire: 422, a taxonomy body, and no stack, path or SQL text
+ok 155 - D6-5. on the wire: 422, a taxonomy body, and no stack, path or SQL text
+  ---
+  duration_ms: 19.92175
+  type: 'test'
+  ...
+# Subtest: C1. a table named outside u_ is refused by the AST, and the connection is never opened
+ok 156 - C1. a table named outside u_ is refused by the AST, and the connection is never opened
+  ---
+  duration_ms: 11.077125
+  type: 'test'
+  ...
+# Subtest: C2. a batch failing on its third statement leaves the schema byte-identical
+ok 157 - C2. a batch failing on its third statement leaves the schema byte-identical
+  ---
+  duration_ms: 14.496417
+  type: 'test'
+  ...
+# Subtest: C3. two processes: BEGIN IMMEDIATE serialises the second behind the first
+ok 158 - C3. two processes: BEGIN IMMEDIATE serialises the second behind the first
+  ---
+  duration_ms: 549.375125
+  type: 'test'
+  ...
+# Subtest: C4. SIGKILL between the last statement and COMMIT leaves no table, no registry row, no audit row
+ok 159 - C4. SIGKILL between the last statement and COMMIT leaves no table, no registry row, no audit row
+  ---
+  duration_ms: 124.13925
+  type: 'test'
+  ...
+# Subtest: C5. the executed SQL text equals the preview text for all six ops
+ok 160 - C5. the executed SQL text equals the preview text for all six ops
+  ---
+  duration_ms: 45.256292
+  type: 'test'
+  ...
+# Subtest: C6. a DDL audit row tampered with and recomputed still fails against the seal
+ok 161 - C6. a DDL audit row tampered with and recomputed still fails against the seal
+  ---
+  duration_ms: 16.895791
+  type: 'test'
+  ...
+# Subtest: C7. concurrent CRUD writes during a rebuild lose nothing, and the rebuild reports its lock waits
+ok 162 - C7. concurrent CRUD writes during a rebuild lose nothing, and the rebuild reports its lock waits
+  ---
+  duration_ms: 5296.698291
+  type: 'test'
+  ...
+# Subtest: O1. create_table: registry row, audit row and the asset guard in one transaction
+ok 163 - O1. create_table: registry row, audit row and the asset guard in one transaction
+  ---
+  duration_ms: 12.319
+  type: 'test'
+  ...
+# Subtest: O2. add_column: in place when SQLite allows it, refused without a default when it does not
+ok 164 - O2. add_column: in place when SQLite allows it, refused without a default when it does not
+  ---
+  duration_ms: 10.510666
+  type: 'test'
+  ...
+# Subtest: O3. drop_column: rebuild_required on an indexed column, rebuild when the caller asks
+ok 165 - O3. drop_column: rebuild_required on an indexed column, rebuild when the caller asks
+  ---
+  duration_ms: 15.039958
+  type: 'test'
+  ...
+# Subtest: O4. rename_table moves the table, its indexes and its registry row together
+ok 166 - O4. rename_table moves the table, its indexes and its registry row together
+  ---
+  duration_ms: 11.565333
+  type: 'test'
+  ...
+# Subtest: O5. create_index / drop_index keep cms_table_registry.index_count true, and the limit is enforced
+ok 167 - O5. create_index / drop_index keep cms_table_registry.index_count true, and the limit is enforced
+  ---
+  duration_ms: 16.970041
+  type: 'test'
+  ...
+# Subtest: O6. drop_table removes the table, its guard trigger, its registry rows and nothing else
+ok 168 - O6. drop_table removes the table, its guard trigger, its registry rows and nothing else
+  ---
+  duration_ms: 13.946208
+  type: 'test'
+  ...
+# Subtest: O7. a rebuild regenerates the asset guard: dropping the last asset column removes it
+ok 169 - O7. a rebuild regenerates the asset guard: dropping the last asset column removes it
+  ---
+  duration_ms: 24.254833
+  type: 'test'
+  ...
+# Subtest: R1. too_many_statements: a batch over SKW_DDL_MAX_STATEMENTS is refused before the connection
+ok 170 - R1. too_many_statements: a batch over SKW_DDL_MAX_STATEMENTS is refused before the connection
+  ---
+  duration_ms: 5.337375
+  type: 'test'
+  ...
+# Subtest: R2. the postcondition refuses a table outside the four prefixes even if SQLite accepted it
+ok 171 - R2. the postcondition refuses a table outside the four prefixes even if SQLite accepted it
+  ---
+  duration_ms: 15.754584
+  type: 'test'
+  ...
+# Subtest: R3. the postcondition is not vacuous: an unregistered trigger fails it
+ok 172 - R3. the postcondition is not vacuous: an unregistered trigger fails it
+  ---
+  duration_ms: 11.516167
+  type: 'test'
+  ...
+# Subtest: R4. the audit row of a DDL op chains onto the rows the CRUD path wrote
+ok 173 - R4. the audit row of a DDL op chains onto the rows the CRUD path wrote
+  ---
+  duration_ms: 12.842917
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: I1 — a code is 16 Crockford characters; the row holds the selector and an argon2id hash
+ok 174 - I1 — a code is 16 Crockford characters; the row holds the selector and an argon2id hash
+  ---
+  duration_ms: 142.139917
+  type: 'test'
+  ...
+# Subtest: I2 — max_uses resolves per issue, then the tenant setting, and a missing setting is a refusal
+ok 175 - I2 — max_uses resolves per issue, then the tenant setting, and a missing setting is a refusal
+  ---
+  duration_ms: 1.849375
+  type: 'test'
+  ...
+# Subtest: I3 — unlimited needs the tenant toggle and the per-issue confirmation
+ok 176 - I3 — unlimited needs the tenant toggle and the per-issue confirmation
+  ---
+  duration_ms: 1.160916
+  type: 'test'
+  ...
+# Subtest: I4. an encrypted PDF is refused at issue, naming the asset
+ok 177 - I4. an encrypted PDF is refused at issue, naming the asset
+  ---
+  duration_ms: 5.860083
+  type: 'test'
+  ...
+# Subtest: I5 — CSV: a blank max_uses uses the tenant default, and one bad line issues nothing
+ok 178 - I5 — CSV: a blank max_uses uses the tenant default, and one bad line issues nothing
+  ---
+  duration_ms: 33.224083
+  type: 'test'
+  ...
+# Subtest: I6 — the signed webhook: good signature issues, a replayed order is 409, a bad one is 401
+ok 179 - I6 — the signed webhook: good signature issues, a replayed order is 409, a bad one is 401
+  ---
+  duration_ms: 26.085166
+  type: 'test'
+  ...
+# Subtest: I7 — reissue revokes the old row and mints a new code
+ok 180 - I7 — reissue revokes the old row and mints a new code
+  ---
+  duration_ms: 31.158458
+  type: 'test'
+  ...
+# Subtest: I8 — the admin screen issues, shows the plaintext once, and lists the codes
+ok 181 - I8 — the admin screen issues, shows the plaintext once, and lists the codes
+  ---
+  duration_ms: 28.973292
+  type: 'test'
+  ...
+# Subtest: C1. 8 processes, one jti: one redemption, seven continuations, one row
+ok 182 - C1. 8 processes, one jti: one redemption, seven continuations, one row
+  ---
+  duration_ms: 1539.314958
+  type: 'test'
+  ...
+# Subtest: C2 — 8 processes, two jti: two uses, two rows
+ok 183 - C2 — 8 processes, two jti: two uses, two rows
+  ---
+  duration_ms: 1560.017833
+  type: 'test'
+  ...
+# Subtest: C3. 8 processes, 8 jti, max_uses=2: exactly two spend and six are denied
+ok 184 - C3. 8 processes, 8 jti, max_uses=2: exactly two spend and six are denied
+  ---
+  duration_ms: 1562.543791
+  type: 'test'
+  ...
+# Subtest: C4 — a quota denial is not a continuation: the same jti retried is denied again
+ok 185 - C4 — a quota denial is not a continuation: the same jti retried is denied again
+  ---
+  duration_ms: 5.327125
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# \# R1 8 parallel ranges -> 200 x8, uses=1, event rows=1 (kinds first:ok), bytes_declared=1202
+# Subtest: R1 — 8 parallel Range requests under one token spend exactly one use and write one row
+ok 186 - R1 — 8 parallel Range requests under one token spend exactly one use and write one row
+  ---
+  duration_ms: 497.783833
+  type: 'test'
+  ...
+# Subtest: R2 — two different tokens spend two uses and write two rows
+ok 187 - R2 — two different tokens spend two uses and write two rows
+  ---
+  duration_ms: 264.635167
+  type: 'test'
+  ...
+# Subtest: R3 — Range: bytes=1- cannot bypass the counter once the use is spent
+ok 188 - R3 — Range: bytes=1- cannot bypass the counter once the use is spent
+  ---
+  duration_ms: 253.755291
+  type: 'test'
+  ...
+# Subtest: R3b — an oversized range is clamped, still spends one use, and bytes_declared is the render
+ok 189 - R3b — an oversized range is clamped, still spends one use, and bytes_declared is the render
+  ---
+  duration_ms: 243.471583
+  type: 'test'
+  ...
+# Subtest: R3c — an unsatisfiable range is 416, writes no event and spends nothing
+ok 190 - R3c — an unsatisfiable range is 416, writes no event and spends nothing
+  ---
+  duration_ms: 259.797458
+  type: 'test'
+  ...
+# Subtest: R4 — an unknown selector and a wrong secret are indistinguishable
+ok 191 - R4 — an unknown selector and a wrong secret are indistinguishable
+  ---
+  duration_ms: 47.747167
+  type: 'test'
+  ...
+# Subtest: R5. a garbage or oversized token is 401, never 500
+ok 192 - R5. a garbage or oversized token is 401, never 500
+  ---
+  duration_ms: 5.639917
+  type: 'test'
+  ...
+# Subtest: R5b. a token minted for another client, asset or clock is refused
+ok 193 - R5b. a token minted for another client, asset or clock is refused
+  ---
+  duration_ms: 38.792375
+  type: 'test'
+  ...
+# Subtest: R6 — 报告.pdf downloads with filename*=UTF-8''… and status 200
+ok 194 - R6 — 报告.pdf downloads with filename*=UTF-8''… and status 200
+  ---
+  duration_ms: 251.105125
+  type: 'test'
+  ...
+# Subtest: R7 — bytes_declared is the authorised length; bytes_sent stays NULL
+ok 195 - R7 — bytes_declared is the authorised length; bytes_sent stays NULL
+  ---
+  duration_ms: 424.590792
+  type: 'test'
+  ...
+# Subtest: R8 — a missing blob is 503 SKW_E_RT_ASSET_MISSING and spends nothing
+ok 196 - R8 — a missing blob is 503 SKW_E_RT_ASSET_MISSING and spends nothing
+  ---
+  duration_ms: 29.111875
+  type: 'test'
+  ...
+# Subtest: R9 — a code with max_uses NULL is unlimited only behind the toggle and the confirmation
+ok 197 - R9 — a code with max_uses NULL is unlimited only behind the toggle and the confirmation
+  ---
+  duration_ms: 243.821417
+  type: 'test'
+  ...
+# Subtest: R10 — lowering max_uses below uses blocks the next redemption immediately
+ok 198 - R10 — lowering max_uses below uses blocks the next redemption immediately
+  ---
+  duration_ms: 225.190917
+  type: 'test'
+  ...
+# Subtest: R10b — a revoked code stops a token that was already minted
+ok 199 - R10b — a revoked code stops a token that was already minted
+  ---
+  duration_ms: 218.437584
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: R11 — the form is served to a browser and a bad code comes back as the same form
+ok 200 - R11 — the form is served to a browser and a bad code comes back as the same form
+  ---
+  duration_ms: 16.082167
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: R12 — the limiter: 5 refusals per 15 minutes per IP, and the 6th attempt is 429
+ok 201 - R12 — the limiter: 5 refusals per 15 minutes per IP, and the 6th attempt is 429
+  ---
+  duration_ms: 86.932417
+  type: 'test'
+  ...
+# Subtest: R12b — the IP window closes on its own, across six different selectors
+ok 202 - R12b — the IP window closes on its own, across six different selectors
+  ---
+  duration_ms: 71.848709
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# \# W1 2 buyers -> 2 files, spec_sha 42451c9195a8… vs 55b56d21040d…, bytes 1903/1896, own order_ref: true/true
+# Subtest: W1. two buyers of one asset get two files, two spec hashes, and their own order_ref
+ok 203 - W1. two buyers of one asset get two files, two spec hashes, and their own order_ref
+  ---
+  duration_ms: 595.718917
+  type: 'test'
+  ...
+# \# W2 2 downloads -> 1 render, 1 row, sha256 d5f48a17ebab…, mtime unchanged
+# Subtest: W2. the same buyer twice reuses one render: one row, one path, identical bytes
+ok 204 - W2. the same buyer twice reuses one render: one row, one path, identical bytes
+  ---
+  duration_ms: 347.650416
+  type: 'test'
+  ...
+# \# W3 x-accel /__protected/wm/44eaec6618def19de0151913… -> 1897 B under content/protected/
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: W3 — the handed-off path is under content/protected/, never content/media/
+ok 205 - W3 — the handed-off path is under content/protected/, never content/media/
+  ---
+  duration_ms: 337.747958
+  type: 'test'
+  ...
+# \# W4 forced renderer error -> 503 SKW_E_SEC_WATERMARK_FAILED, x-accel undefined, outcome denied_watermark, uses 0
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: W4 — a stamp failure is 503, writes denied_watermark, and emits no X-Accel-Redirect
+ok 206 - W4 — a stamp failure is 503, writes denied_watermark, and emits no X-Accel-Redirect
+  ---
+  duration_ms: 43.80075
+  type: 'test'
+  ...
+# \# W5 budget 40 ms (shipped 2000) -> 503 SKW_E_SEC_WATERMARK_FAILED in 57 ms, x-accel undefined, outcome denied_watermark
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: W5 — a render that overruns the budget takes the same denial path
+ok 207 - W5 — a render that overruns the budget takes the same denial path
+  ---
+  duration_ms: 75.917334
+  type: 'test'
+  ...
+# \# W6 16 concurrent stamps -> peak in flight 8 (cap 8)
+# Subtest: W6. 16 concurrent stamps never exceed 8 in flight
+ok 208 - W6. 16 concurrent stamps never exceed 8 in flight
+  ---
+  duration_ms: 263.064042
+  type: 'test'
+  ...
+# \# W7 sweep -> rows 1, files 1; next request re-stamped /__protected/wm/da2503724f0b5cb999… -> 200
+# Subtest: W7. a render past expires_at is swept, and the next request re-stamps rather than 404ing
+ok 209 - W7. a render past expires_at is swept, and the next request re-stamps rather than 404ing
+  ---
+  duration_ms: 453.820417
+  type: 'test'
+  ...
+# \# W8 footer "licensed to ??@??.jp · order ORD-8123-XYZ" — order_ref intact, isCp1252=true
+# \# W9 sanitiser: "München · Øyvind Ærø" preserved, "→" -> "->", "张三" -> "??"
+# \# W10 22 renders, all under content/protected/wm/, no public link to one
+# Subtest: W8. a CJK name is sanitised to cp1252 in the footer while order_ref stays intact
+ok 210 - W8. a CJK name is sanitised to cp1252 in the footer while order_ref stays intact
+  ---
+  duration_ms: 211.937375
+  type: 'test'
+  ...
+# Subtest: W9. the cp1252 sanitiser preserves, transliterates, and only then substitutes
+ok 211 - W9. the cp1252 sanitiser preserves, transliterates, and only then substitutes
+  ---
+  duration_ms: 0.352625
+  type: 'test'
+  ...
+# Subtest: W10 — no render is reachable from content/public, and every render lives under content/protected
+ok 212 - W10 — no render is reachable from content/public, and every render lives under content/protected
+  ---
+  duration_ms: 1.279542
+  type: 'test'
+  ...
+# \# W11 archive -> /__protected/2d/2da1aa247560ceab80474de53d9e… (not stampable in v1, no render row)
+# Subtest: W11 — a format no renderer claims keeps the S3c hand-off, and the boundary is named
+ok 213 - W11 — a format no renderer claims keeps the S3c hand-off, and the boundary is named
+  ---
+  duration_ms: 29.846166
+  type: 'test'
+  ...
+# \# W12 image renders 4980/4960 B, png 320x240, 2 spec hashes
+# Subtest: W12 — an image is stamped with sharp and handed off from the wm tree
+ok 214 - W12 — an image is stamped with sharp and handed off from the wm tree
+  ---
+  duration_ms: 586.955333
+  type: 'test'
+  ...
+# Subtest: a deleted SKUNK_ key refuses the boot and names both the key and its replacement
+ok 215 - a deleted SKUNK_ key refuses the boot and names both the key and its replacement
+  ---
+  duration_ms: 1.035417
+  type: 'test'
+  ...
+# Subtest: a deleted SK_ key refuses the boot and names it
+ok 216 - a deleted SK_ key refuses the boot and names it
+  ---
+  duration_ms: 0.103125
+  type: 'test'
+  ...
+# Subtest: the refusal lists every offending key, sorted, each with its replacement
+ok 217 - the refusal lists every offending key, sorted, each with its replacement
+  ---
+  duration_ms: 0.4215
+  type: 'test'
+  ...
+# Subtest: a missing required key refuses the boot, naming it
+ok 218 - a missing required key refuses the boot, naming it
+  ---
+  duration_ms: 0.195458
+  type: 'test'
+  ...
+# Subtest: E-9 — UV_THREADPOOL_SIZE must be 8, and the message says why it cannot be set late
+ok 219 - E-9 — UV_THREADPOOL_SIZE must be 8, and the message says why it cannot be set late
+  ---
+  duration_ms: 0.23775
+  type: 'test'
+  ...
+# Subtest: SKW_ARGON2_MAX_CONCURRENT must be 4 (§2.3 step 2, C-6)
+ok 220 - SKW_ARGON2_MAX_CONCURRENT must be 4 (§2.3 step 2, C-6)
+  ---
+  duration_ms: 0.090542
+  type: 'test'
+  ...
+# Subtest: the real process refuses to start and exits non-zero, naming the key on stderr
+ok 221 - the real process refuses to start and exits non-zero, naming the key on stderr
+  ---
+  duration_ms: 254.47775
+  type: 'test'
+  ...
+# Subtest: E-8 — the spawn harness reports ETIMEDOUT as a named failure rather than waiting
+ok 222 - E-8 — the spawn harness reports ETIMEDOUT as a named failure rather than waiting
+  ---
+  duration_ms: 5030.179042
+  type: 'test'
+  ...
+# Subtest: the real process boots clean env, then stops at the DB it was given
+ok 223 - the real process boots clean env, then stops at the DB it was given
+  ---
+  duration_ms: 434.657125
+  type: 'test'
+  ...
+# Subtest: E-17 — unset, "", " , " are all the empty allowlist
+ok 224 - E-17 — unset, "", " , " are all the empty allowlist
+  ---
+  duration_ms: 2.369583
+  type: 'test'
+  ...
+# Subtest: E-17 — two IPv4 blocks, and a v4 plus a v6 block, are two entries each
+ok 225 - E-17 — two IPv4 blocks, and a v4 plus a v6 block, are two entries each
+  ---
+  duration_ms: 2.259542
+  type: 'test'
+  ...
+# Subtest: E-17 — a non-empty malformed value refuses the boot, naming the token
+ok 226 - E-17 — a non-empty malformed value refuses the boot, naming the token
+  ---
+  duration_ms: 0.448083
+  type: 'test'
+  ...
+# Subtest: the app pattern is the frozen pattern
+ok 227 - the app pattern is the frozen pattern
+  ---
+  duration_ms: 0.974375
+  type: 'test'
+  ...
+# Subtest: every code the app can raise exists in the JSON, with the same status
+ok 228 - every code the app can raise exists in the JSON, with the same status
+  ---
+  duration_ms: 0.362541
+  type: 'test'
+  ...
+# Subtest: every Retry-After the app sends is the frozen value
+ok 229 - every Retry-After the app sends is the frozen value
+  ---
+  duration_ms: 0.206375
+  type: 'test'
+  ...
+# Subtest: the codes S1 raises are all mapped, and the four E-4 additions are part of the taxonomy
+ok 230 - the codes S1 raises are all mapped, and the four E-4 additions are part of the taxonomy
+  ---
+  duration_ms: 0.128042
+  type: 'test'
+  ...
+# Subtest: E-16: a credential login failure has its own code, 401, and no Retry-After
+ok 231 - E-16: a credential login failure has its own code, 401, and no Retry-After
+  ---
+  duration_ms: 0.123791
+  type: 'test'
+  ...
+# Subtest: E-16: the split is real — a download code still raises CODE_INVALID, and the admin surface cannot raise it
+ok 232 - E-16: the split is real — a download code still raises CODE_INVALID, and the admin surface cannot raise it
+  ---
+  duration_ms: 2.494667
+  type: 'test'
+  ...
+# Subtest: F1 — a public asset gets one relative link, and it resolves to the stored bytes
+ok 233 - F1 — a public asset gets one relative link, and it resolves to the stored bytes
+  ---
+  duration_ms: 10.696792
+  type: 'test'
+  ...
+# Subtest: F2 — a gated asset has NO link, by key and by checksum; flipping it public creates one
+ok 234 - F2 — a gated asset has NO link, by key and by checksum; flipping it public creates one
+  ---
+  duration_ms: 10.705167
+  type: 'test'
+  ...
+# Subtest: F3 — a rename leaves no moment where neither URL resolves, and the map names old -> new
+ok 235 - F3 — a rename leaves no moment where neither URL resolves, and the map names old -> new
+  ---
+  duration_ms: 522.439833
+  type: 'test'
+  ...
+# Subtest: F4 — delete removes the link, and the alias it cascaded stops being a 301
+ok 236 - F4 — delete removes the link, and the alias it cascaded stops being a 301
+  ---
+  duration_ms: 9.936541
+  type: 'test'
+  ...
+# Subtest: rebuild — recreates a missing link, removes an orphan, and reports a gated link before removing it
+ok 237 - rebuild — recreates a missing link, removes an orphan, and reports a gated link before removing it
+  ---
+  duration_ms: 8.431333
+  type: 'test'
+  ...
+# Subtest: (a) a suite with no skip exits 0 and prints no banner
+ok 238 - (a) a suite with no skip exits 0 and prints no banner
+  ---
+  duration_ms: 228.079916
+  type: 'test'
+  ...
+# Subtest: (b) one skipped test is a red gate, and the failure names it
+ok 239 - (b) one skipped test is a red gate, and the failure names it
+  ---
+  duration_ms: 151.029917
+  type: 'test'
+  ...
+# Subtest: (b2) SKW_SKIP_DOCKER=1 alone is not an escape, and the message says what it hid
+ok 240 - (b2) SKW_SKIP_DOCKER=1 alone is not an escape, and the message says what it hid
+  ---
+  duration_ms: 128.800041
+  type: 'test'
+  ...
+# Subtest: (c) SKW_ALLOW_SKIP=1 is the only escape, and it prints that the run is not a gate
+ok 241 - (c) SKW_ALLOW_SKIP=1 is the only escape, and it prints that the run is not a gate
+  ---
+  duration_ms: 139.129
+  type: 'test'
+  ...
+# Subtest: (d) a failing test is still red, and the escape does not launder it
+ok 242 - (d) a failing test is still red, and the escape does not launder it
+  ---
+  duration_ms: 249.280666
+  type: 'test'
+  ...
+# Subtest: (e) the Makefile never sets the escape
+ok 243 - (e) the Makefile never sets the escape
+  ---
+  duration_ms: 1.862708
+  type: 'test'
+  ...
+# Subtest: install.sh installs a fresh bundle and logs in end to end; a second run changes nothing
+ok 244 - install.sh installs a fresh bundle and logs in end to end; a second run changes nothing
+  ---
+  duration_ms: 726.353459
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: acme.test renders Acme's /pricing from its own site.db
+ok 245 - acme.test renders Acme's /pricing from its own site.db
+  ---
+  duration_ms: 207.676417
+  type: 'test'
+  ...
+# Subtest: www.acme.test (an alias) renders the same tenant
+ok 246 - www.acme.test (an alias) renders the same tenant
+  ---
+  duration_ms: 2.475916
+  type: 'test'
+  ...
+# Subtest: beta.test renders Beta's /pricing, not Acme's
+ok 247 - beta.test renders Beta's /pricing, not Acme's
+  ---
+  duration_ms: 3.116667
+  type: 'test'
+  ...
+# Subtest: an unmapped Host is 404 SKW_E_PLT_TENANT_UNKNOWN, with no default tenant
+ok 248 - an unmapped Host is 404 SKW_E_PLT_TENANT_UNKNOWN, with no default tenant
+  ---
+  duration_ms: 1.798333
+  type: 'test'
+  ...
+# Subtest: a path with no cms_page row is 404 SKW_E_RT_PAGE_NOT_FOUND and never falls through to another tenant
+ok 249 - a path with no cms_page row is 404 SKW_E_RT_PAGE_NOT_FOUND and never falls through to another tenant
+  ---
+  duration_ms: 1.502459
+  type: 'test'
+  ...
+# Subtest: a malformed JSON body is 400 SKW_E_PLT_REQUEST_INVALID, not a borrowed 503 (§4.3 E-4)
+ok 250 - a malformed JSON body is 400 SKW_E_PLT_REQUEST_INVALID, not a borrowed 503 (§4.3 E-4)
+  ---
+  duration_ms: 1.92475
+  type: 'test'
+  ...
+# Subtest: a 17 MiB body direct to the app is 413 SKW_E_PLT_BODY_TOO_LARGE (§4.3 E-4)
+ok 251 - a 17 MiB body direct to the app is 413 SKW_E_PLT_BODY_TOO_LARGE (§4.3 E-4)
+  ---
+  duration_ms: 1.681167
+  type: 'test'
+  ...
+# Subtest: a route that throws is 500 SKW_E_PLT_INTERNAL with a requestId and no stack, path or SQL (§4.3 E-4)
+ok 252 - a route that throws is 500 SKW_E_PLT_INTERNAL with a requestId and no stack, path or SQL (§4.3 E-4)
+  ---
+  duration_ms: 2.464917
+  type: 'test'
+  ...
+# Subtest: E-13 — an HTTP/1.1 request with no Host is 400 before the app, and names no tenant
+ok 253 - E-13 — an HTTP/1.1 request with no Host is 400 before the app, and names no tenant
+  ---
+  duration_ms: 1.161666
+  type: 'test'
+  ...
+# Subtest: the page response is no-store (v1 has no CDN, §5.5)
+ok 254 - the page response is no-store (v1 has no CDN, §5.5)
+  ---
+  duration_ms: 2.209416
+  type: 'test'
+  ...
+# Subtest: /healthz reports SKW_BUILD_ID and touches nothing (§9.5)
+ok 255 - /healthz reports SKW_BUILD_ID and touches nothing (§9.5)
+  ---
+  duration_ms: 1.421708
+  type: 'test'
+  ...
+# Subtest: S2E-15. regenerating from the same live schema is byte-identical
+ok 256 - S2E-15. regenerating from the same live schema is byte-identical
+  ---
+  duration_ms: 2.77575
+  type: 'test'
+  ...
+# Subtest: S2E-16. every generated column and type agrees with PRAGMA table_xinfo of the live table
+ok 257 - S2E-16. every generated column and type agrees with PRAGMA table_xinfo of the live table
+  ---
+  duration_ms: 2.674417
+  type: 'test'
+  ...
+# Subtest: S2E-17. the committed base-schema types regenerate identically from a fresh site.db
+ok 258 - S2E-17. the committed base-schema types regenerate identically from a fresh site.db
+  ---
+  duration_ms: 8.082583
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: M1 — the grid renders a thumbnail per image, linked to the farm URL the variant row names
+ok 259 - M1 — the grid renders a thumbnail per image, linked to the farm URL the variant row names
+  ---
+  duration_ms: 208.463667
+  type: 'test'
+  ...
+# Subtest: M2 — a gated asset is listed but offers no public URL, and the picker refuses it
+ok 260 - M2 — a gated asset is listed but offers no public URL, and the picker refuses it
+  ---
+  duration_ms: 7.982959
+  type: 'test'
+  ...
+# Subtest: M3 — search matches key, filename, alt text and kind, and nothing else
+ok 261 - M3 — search matches key, filename, alt text and kind, and nothing else
+  ---
+  duration_ms: 17.884541
+  type: 'test'
+  ...
+# Subtest: M4 — media.json reports the farm URL for a public asset and null for a gated one
+ok 262 - M4 — media.json reports the farm URL for a public asset and null for a gated one
+  ---
+  duration_ms: 3.667
+  type: 'test'
+  ...
+# Subtest: M5 — the library is a read surface: no route writes, and no session means no library
+ok 263 - M5 — the library is a read surface: no route writes, and no session means no library
+  ---
+  duration_ms: 3.457084
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: migrate creates every missing site.db from site.sql and reports per tenant, exit 0
+ok 264 - migrate creates every missing site.db from site.sql and reports per tenant, exit 0
+  ---
+  duration_ms: 310.253458
+  type: 'test'
+  ...
+# Subtest: control.db is created when absent, and a second run is a no-op
+ok 265 - control.db is created when absent, and a second run is a no-op
+  ---
+  duration_ms: 117.371584
+  type: 'test'
+  ...
+# Subtest: a v1 site.db is migrated through the frozen chain to v3
+ok 266 - a v1 site.db is migrated through the frozen chain to v3
+  ---
+  duration_ms: 88.753709
+  type: 'test'
+  ...
+# Subtest: E-14 negative control — dropping one CHECK from the migrated file makes the comparison go red
+ok 267 - E-14 negative control — dropping one CHECK from the migrated file makes the comparison go red
+  ---
+  duration_ms: 116.579625
+  type: 'test'
+  ...
+# Subtest: E-6 — `legacy_alter_table` appears nowhere in the migration path
+ok 268 - E-6 — `legacy_alter_table` appears nowhere in the migration path
+  ---
+  duration_ms: 1.834125
+  type: 'test'
+  ...
+# Subtest: E-3 — a control.db at v2 migrates to v4 through r3 and r4, and control_revision holds one row
+ok 269 - E-3 — a control.db at v2 migrates to v4 through r3 and r4, and control_revision holds one row
+  ---
+  duration_ms: 22.095042
+  type: 'test'
+  ...
+# Subtest: E-20 — a v3 control.db reaches v4 with a nine-column segment seal, and its old anchors are kept in audit_log
+ok 270 - E-20 — a v3 control.db reaches v4 with a nine-column segment seal, and its old anchors are kept in audit_log
+  ---
+  duration_ms: 16.761625
+  type: 'test'
+  ...
+# Subtest: a control.db that cannot be migrated exits 15 and names the migration
+ok 271 - a control.db that cannot be migrated exits 15 and names the migration
+  ---
+  duration_ms: 112.916625
+  type: 'test'
+  ...
+# Subtest: the app refuses to boot on a control.db it cannot migrate, exit 15
+ok 272 - the app refuses to boot on a control.db it cannot migrate, exit 15
+  ---
+  duration_ms: 421.850417
+  type: 'test'
+  ...
+# Subtest: one corrupt tenant 503s alone; the other three serve
+ok 273 - one corrupt tenant 503s alone; the other three serve
+  ---
+  duration_ms: 186.022792
+  type: 'test'
+  ...
+# wrote /var/folders/sc/90s9zqm54p5f2mj8tx1bzlx40000gn/T/skw-nginxd-L8M820/10-app.conf (180 lines)
+# Subtest: every location with proxy_pass includes the snippet, and no other does
+ok 274 - every location with proxy_pass includes the snippet, and no other does
+  ---
+  duration_ms: 1.169583
+  type: 'test'
+  ...
+# Subtest: the demo location rewrites, then overrides exactly the two tenant lines
+ok 275 - the demo location rewrites, then overrides exactly the two tenant lines
+  ---
+  duration_ms: 0.259042
+  type: 'test'
+  ...
+# Subtest: the slash-less demo form 301s to the slash form
+ok 276 - the slash-less demo form 301s to the slash form
+  ---
+  duration_ms: 0.197125
+  type: 'test'
+  ...
+# Subtest: E-5 — every location regex is quoted, so no unquoted `{` can be read as a block
+ok 277 - E-5 — every location regex is quoted, so no unquoted `{` can be read as a block
+  ---
+  duration_ms: 0.334042
+  type: 'test'
+  ...
+# Subtest: E-5 / §12.5 — a pending certificate gets `listen 80` and no `listen 443 ssl`
+ok 278 - E-5 / §12.5 — a pending certificate gets `listen 80` and no `listen 443 ssl`
+  ---
+  duration_ms: 0.193041
+  type: 'test'
+  ...
+# Subtest: the map carries every host of every tenant, and no default tenant
+ok 279 - the map carries every host of every tenant, and no default tenant
+  ---
+  duration_ms: 0.169792
+  type: 'test'
+  ...
+# Subtest: the admin vhost is one hostname with no demo location and no /media/
+ok 280 - the admin vhost is one hostname with no demo location and no /media/
+  ---
+  duration_ms: 0.110375
+  type: 'test'
+  ...
+# Subtest: the demos vhost 404s everything outside /demo/
+ok 281 - the demos vhost 404s everything outside /demo/
+  ---
+  duration_ms: 0.068708
+  type: 'test'
+  ...
+# Subtest: the rate is derived, not the fixed 20r/s (§12.3: 3 tenants at 192 rps -> 20r/s burst 40)
+ok 282 - the rate is derived, not the fixed 20r/s (§12.3: 3 tenants at 192 rps -> 20r/s burst 40)
+  ---
+  duration_ms: 0.747792
+  type: 'test'
+  ...
+# Subtest: the generator refuses a domain that collides with the demos or admin vhost
+ok 283 - the generator refuses a domain that collides with the demos or admin vhost
+  ---
+  duration_ms: 0.576792
+  type: 'test'
+  ...
+# Subtest: the committed nginx/conf.d/10-app.conf is the generator output for this fixture
+ok 284 - the committed nginx/conf.d/10-app.conf is the generator output for this fixture
+  ---
+  duration_ms: 0.505209
+  type: 'test'
+  ...
+# Subtest: the snippet is the frozen one: empty tenant header, edge token placeholder
+ok 285 - the snippet is the frozen one: empty tenant header, edge token placeholder
+  ---
+  duration_ms: 0.668875
+  type: 'test'
+  ...
+# Subtest: E-17: with the list empty the admin block emits neither allow nor deny, and no block does
+ok 286 - E-17: with the list empty the admin block emits neither allow nor deny, and no block does
+  ---
+  duration_ms: 0.111042
+  type: 'test'
+  ...
+# Subtest: E-17: a populated list emits one `allow` per block plus `deny all;` in the admin block only
+ok 287 - E-17: a populated list emits one `allow` per block plus `deny all;` in the admin block only
+  ---
+  duration_ms: 3.8555
+  type: 'test'
+  ...
+# Subtest: E-17: the admin and demos hosts are derived from SKW_ADMIN_ORIGIN, and the old env names are gone
+ok 288 - E-17: the admin and demos hosts are derived from SKW_ADMIN_ORIGIN, and the old env names are gone
+  ---
+  duration_ms: 2.350375
+  type: 'test'
+  ...
+# Subtest: E-17: the generator refuses a malformed allowlist from the same parser, with the same message
+ok 289 - E-17: the generator refuses a malformed allowlist from the same parser, with the same message
+  ---
+  duration_ms: 0.116792
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: through real nginx: GET /demo/acme/whoami strips to /whoami and keeps the query
+ok 290 - through real nginx: GET /demo/acme/whoami strips to /whoami and keeps the query
+  ---
+  duration_ms: 1155.366292
+  type: 'test'
+  ...
+# Subtest: through real nginx: POST /demo/acme/whoami delivers its body
+ok 291 - through real nginx: POST /demo/acme/whoami delivers its body
+  ---
+  duration_ms: 7.666458
+  type: 'test'
+  ...
+# Subtest: through real nginx: /demo/beta 301s to /demo/beta/ and keeps the query
+ok 292 - through real nginx: /demo/beta 301s to /demo/beta/ and keeps the query
+  ---
+  duration_ms: 1.652333
+  type: 'test'
+  ...
+# Subtest: through real nginx: a host-routed page renders the right tenant
+ok 293 - through real nginx: a host-routed page renders the right tenant
+  ---
+  duration_ms: 98.855917
+  type: 'test'
+  ...
+# Subtest: through real nginx: a client-supplied tenant header is stripped by the snippet
+ok 294 - through real nginx: a client-supplied tenant header is stripped by the snippet
+  ---
+  duration_ms: 3.782541
+  type: 'test'
+  ...
+# Subtest: through real nginx: an unknown demo key is 404, not a rendered page
+ok 295 - through real nginx: an unknown demo key is 404, not a rendered page
+  ---
+  duration_ms: 4.60275
+  type: 'test'
+  ...
+# Subtest: E-5: a 40-character demo key reaches the app (JSON 404 from the app, not nginx HTML)
+ok 296 - E-5: a 40-character demo key reaches the app (JSON 404 from the app, not nginx HTML)
+  ---
+  duration_ms: 2.443625
+  type: 'test'
+  ...
+# Subtest: E-11: a client X-Forwarded-Prefix is cleared at the edge
+ok 297 - E-11: a client X-Forwarded-Prefix is cleared at the edge
+  ---
+  duration_ms: 3.19125
+  type: 'test'
+  ...
+# Subtest: E-1(b): an empty tenant header on the admin host through the real edge is row 7, 404 not 421
+ok 298 - E-1(b): an empty tenant header on the admin host through the real edge is row 7, 404 not 421
+  ---
+  duration_ms: 3.158875
+  type: 'test'
+  ...
+# Subtest: E-13: a 17 MiB body through the edge is nginx's HTML 413, with no taxonomy code
+ok 299 - E-13: a 17 MiB body through the edge is nginx's HTML 413, with no taxonomy code
+  ---
+  duration_ms: 5002.744459
+  type: 'test'
+  ...
+# Subtest: E-13: a 16 MiB body through the edge passes the limit and reaches the app
+ok 300 - E-13: a 16 MiB body through the edge passes the limit and reaches the app
+  ---
+  duration_ms: 128.973667
+  type: 'test'
+  ...
+# Subtest: E-17: a peer outside SKW_ADMIN_ALLOWLIST is nginx's 403, and the app never sees the request
+ok 301 - E-17: a peer outside SKW_ADMIN_ALLOWLIST is nginx's 403, and the app never sees the request
+  ---
+  duration_ms: 3.309208
+  type: 'test'
+  ...
+# Subtest: E-17: the same request from a peer inside the list reaches the app
+ok 302 - E-17: the same request from a peer inside the list reaches the app
+  ---
+  duration_ms: 6.726375
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# \# G1 200 1218 B sha256 74517603 (blob 25be815f) path content/protected/wm/4d821429cb5972748d6… content-length 1218 bytes_declared 1218 bytes_sent null uses=1 order_ref=true
+# Subtest: G1 — a redeemed cookie downloads the buyer's stamped render through the edge
+ok 303 - G1 — a redeemed cookie downloads the buyer's stamped render through the edge
+  ---
+  duration_ms: 1320.5055
+  type: 'test'
+  ...
+# \# G2 GET /__protected/25/25be815f5174b97f2d2959165c3da86002efe3d808bdee910d637b8691c2032d.pdf -> 404, GET /__protected/wm/4d821429cb5972748d6ad26f01ac… -> 404 (internal)
+# Subtest: G2 — /__protected/ and /__protected/wm/ are internal: a direct request is nginx's 404
+ok 304 - G2 — /__protected/ and /__protected/wm/ are internal: a direct request is nginx's 404
+  ---
+  duration_ms: 3.726708
+  type: 'test'
+  ...
+# \# G3 206 100 B range bytes 100-199/1218 uses=2
+# Subtest: G3 — Range: bytes=100-199 through the edge is a 206 with exactly those bytes
+ok 305 - G3 — Range: bytes=100-199 through the edge is a 206 with exactly those bytes
+  ---
+  duration_ms: 29.839167
+  type: 'test'
+  ...
+# \# G4 8 parallel ranges -> 206 x8, one use (2 -> 3), event rows 2 -> 3
+# Subtest: G4 — 8 parallel ranges through the edge: one use, eight correct slices
+ok 306 - G4 — 8 parallel ranges through the edge: one use, eight correct slices
+  ---
+  duration_ms: 59.24775
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# \# N1 app-killed: /healthz -> 502, /media/banner/home.jpg -> 200 (1226 B, sha256 5a809698), farm link sha256 5a809698
+# Subtest: N1 — with the app killed, /media/<key> is a 200 with the stored bytes and everything else is a 502
+ok 307 - N1 — with the app killed, /media/<key> is a 200 with the stored bytes and everything else is a 502
+  ---
+  duration_ms: 1289.6955
+  type: 'test'
+  ...
+# \# N2 gated 404 body sha256 9f6d0b634cab6787cdebb2a02e08a2e2ff6d8863344e46aa7bf387e607b827c3 (153 B) == missing 404 body sha256 9f6d0b634cab6787cdebb2a02e08a2e2ff6d8863344e46aa7bf387e607b827c3
+# Subtest: N2 — a gated asset is 404 and its body is identical to a key that never existed
+ok 308 - N2 — a gated asset is 404 and its body is identical to a key that never existed
+  ---
+  duration_ms: 15.076666
+  type: 'test'
+  ...
+# \# N3 samples 1657, dead 0, sawOld 127, sawNew 1530, old statuses [200,404], new statuses [200,404]
+# Subtest: N3 — a rename never leaves both URLs dead (HTTP-sampled), and the old URL then 301s
+ok 309 - N3 — a rename never leaves both URLs dead (HTTP-sampled), and the old URL then 301s
+  ---
+  duration_ms: 2625.873125
+  type: 'test'
+  ...
+# Subtest: N4 — a delete removes the link and the alias: both URLs are 404 after a reload
+ok 310 - N4 — a delete removes the link and the alias: both URLs are 404 after a reload
+  ---
+  duration_ms: 191.764917
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: E-12: a new tenant 404s at the edge until the generator runs and nginx reloads
+ok 311 - E-12: a new tenant 404s at the edge until the generator runs and nginx reloads
+  ---
+  duration_ms: 1919.722292
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: GET /demo/acme/whoami -> path=/whoami, tenant_header=acme, query preserved
+ok 312 - GET /demo/acme/whoami -> path=/whoami, tenant_header=acme, query preserved
+  ---
+  duration_ms: 17.720833
+  type: 'test'
+  ...
+# Subtest: POST /demo/acme/whoami carries its body through the prefix location
+ok 313 - POST /demo/acme/whoami carries its body through the prefix location
+  ---
+  duration_ms: 1.620083
+  type: 'test'
+  ...
+# Subtest: the slash-less form 301s to the slash form and keeps the query
+ok 314 - the slash-less form 301s to the slash form and keeps the query
+  ---
+  duration_ms: 0.413292
+  type: 'test'
+  ...
+# Subtest: a well-formed key that is absent from control.db is 404
+ok 315 - a well-formed key that is absent from control.db is 404
+  ---
+  duration_ms: 1.764083
+  type: 'test'
+  ...
+# Subtest: the app never strips a prefix itself: /demo/acme at the app is 404, not /
+ok 316 - the app never strips a prefix itself: /demo/acme at the app is 404, not /
+  ---
+  duration_ms: 1.349083
+  type: 'test'
+  ...
+# Subtest: host-routed /whoami reports the host resolution and a null header
+ok 317 - host-routed /whoami reports the host resolution and a null header
+  ---
+  duration_ms: 2.9205
+  type: 'test'
+  ...
+# Subtest: E-11 — a client X-Forwarded-Prefix is ignored on a host-routed request
+ok 318 - E-11 — a client X-Forwarded-Prefix is ignored on a host-routed request
+  ---
+  duration_ms: 0.860959
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# preview tenant=acme path=/draft-page ts=2026-10-20T11:14:10.584Z
+# Subtest: S2E-11. a preview token for a draft page renders it, with no-store
+ok 319 - S2E-11. a preview token for a draft page renders it, with no-store
+  ---
+  duration_ms: 176.449375
+  type: 'test'
+  ...
+# Subtest: S2E-12. the same token is rejected for a published page
+ok 320 - S2E-12. the same token is rejected for a published page
+  ---
+  duration_ms: 2.934542
+  type: 'test'
+  ...
+# Subtest: S2E-13. a token older than 30 minutes is rejected; a token minted for another path is rejected
+ok 321 - S2E-13. a token older than 30 minutes is rejected; a token minted for another path is rejected
+  ---
+  duration_ms: 4.520416
+  type: 'test'
+  ...
+# Subtest: S2E-14. the TTL is exactly 30 minutes, and a token is logged exactly once per accepted render
+ok 322 - S2E-14. the TTL is exactly 30 minutes, and a token is logged exactly once per accepted render
+  ---
+  duration_ms: 0.922917
+  type: 'test'
+  ...
+# Subtest: R1 — the same image uploaded twice yields identical rendition bytes, and each sha is the file
+ok 323 - R1 — the same image uploaded twice yields identical rendition bytes, and each sha is the file
+  ---
+  duration_ms: 1053.191167
+  type: 'test'
+  ...
+# Subtest: R2 — regeneration is deterministic: a second derive changes neither bytes nor rows
+ok 324 - R2 — regeneration is deterministic: a second derive changes neither bytes nor rows
+  ---
+  duration_ms: 432.824833
+  type: 'test'
+  ...
+# Subtest: R3 — srcset carries the labels and widths the variant rows hold, not a constant table
+ok 325 - R3 — srcset carries the labels and widths the variant rows hold, not a constant table
+  ---
+  duration_ms: 696.996125
+  type: 'test'
+  ...
+# Subtest: R4 — ?v= changes when the bytes change, and survives a rename unchanged
+ok 326 - R4 — ?v= changes when the bytes change, and survives a rename unchanged
+  ---
+  duration_ms: 341.998958
+  type: 'test'
+  ...
+# Subtest: R5 — a gated asset resolves to url: null and an empty srcset
+ok 327 - R5 — a gated asset resolves to url: null and an empty srcset
+  ---
+  duration_ms: 104.081459
+  type: 'test'
+  ...
+# Subtest: R6 — a small image is not upscaled; the recorded width is the width produced
+ok 328 - R6 — a small image is not upscaled; the recorded width is the width produced
+  ---
+  duration_ms: 83.822416
+  type: 'test'
+  ...
+# Subtest: R7 — data.asset() is the same resolver the render path hands a template
+ok 329 - R7 — data.asset() is the same resolver the render path hands a template
+  ---
+  duration_ms: 348.729584
+  type: 'test'
+  ...
+# Subtest: R8 — a document has no renditions and a url with no srcset
+ok 330 - R8 — a document has no renditions and a url with no srcset
+  ---
+  duration_ms: 7.156917
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: M6-1. the health field names every unsealed day with rows, not only yesterday
+ok 331 - M6-1. the health field names every unsealed day with rows, not only yesterday
+  ---
+  duration_ms: 58.283209
+  type: 'test'
+  ...
+# Subtest: M6-2. the same list is in the HTTP health payload the operator polls
+ok 332 - M6-2. the same list is in the HTTP health payload the operator polls
+  ---
+  duration_ms: 29.366875
+  type: 'test'
+  ...
+# Subtest: M6-3. `skwctl audit status` prints the same days as UNSEALED and exits 1
+ok 333 - M6-3. `skwctl audit status` prints the same days as UNSEALED and exits 1
+  ---
+  duration_ms: 107.142084
+  type: 'test'
+  ...
+# Subtest: M6-4. sealing the days clears them from the health field and from the CLI
+ok 334 - M6-4. sealing the days clears them from the health field and from the CLI
+  ---
+  duration_ms: 226.648417
+  type: 'test'
+  ...
+# Subtest: M6-5. the lookback is bounded, stated, and the same window the CLI can print
+ok 335 - M6-5. the lookback is bounded, stated, and the same window the CLI can print
+  ---
+  duration_ms: 130.89275
+  type: 'test'
+  ...
+# Subtest: S2E-18. one seal per tenant per day, covering that day’s own ids, and a second run is refused
+ok 336 - S2E-18. one seal per tenant per day, covering that day’s own ids, and a second run is refused
+  ---
+  duration_ms: 15.10875
+  type: 'test'
+  ...
+# Subtest: S2E-19. a second seal after the chain grew does not overwrite the anchor
+ok 337 - S2E-19. a second seal after the chain grew does not overwrite the anchor
+  ---
+  duration_ms: 7.378042
+  type: 'test'
+  ...
+# Subtest: S2E-20. the scheduler targets the next UTC midnight, seals the last ended day, and stops cleanly
+ok 338 - S2E-20. the scheduler targets the next UTC midnight, seals the last ended day, and stops cleanly
+  ---
+  duration_ms: 5.838417
+  type: 'test'
+  ...
+# Subtest: S2E-21a. `audit verify` PASSES for a sealed day after the chain grew on the next day
+ok 339 - S2E-21a. `audit verify` PASSES for a sealed day after the chain grew on the next day
+  ---
+  duration_ms: 362.467875
+  type: 'test'
+  ...
+# Subtest: S2E-21b. `audit verify` FAILS after a row inside the day is altered, with its own refusal name
+ok 340 - S2E-21b. `audit verify` FAILS after a row inside the day is altered, with its own refusal name
+  ---
+  duration_ms: 210.1355
+  type: 'test'
+  ...
+# Subtest: S2E-21c. an unsealed day with rows refuses with `AUDIT_SEAL_UNSEALED`, not as a mismatch
+ok 341 - S2E-21c. an unsealed day with rows refuses with `AUDIT_SEAL_UNSEALED`, not as a mismatch
+  ---
+  duration_ms: 103.563792
+  type: 'test'
+  ...
+# Subtest: B1-8. the tick reports a gap, writes ONE audit_log row, and does not seal it
+ok 342 - B1-8. the tick reports a gap, writes ONE audit_log row, and does not seal it
+  ---
+  duration_ms: 8.9475
+  type: 'test'
+  ...
+# Subtest: B1-12. the status read names a sealed day, an UNSEALED day and an empty one
+ok 343 - B1-12. the status read names a sealed day, an UNSEALED day and an empty one
+  ---
+  duration_ms: 4.134708
+  type: 'test'
+  ...
+# view_checksum tenant=acme relation=cms_v_posts_public registered=7ffef9df77906fcd found=2ce8f299a48642c5
+# Subtest: S2E-1. a query source with SCAN in its plan is refused at publish, naming the column that caused it
+ok 344 - S2E-1. a query source with SCAN in its plan is refused at publish, naming the column that caused it
+  ---
+  duration_ms: 3.131917
+  type: 'test'
+  ...
+# Subtest: S2E-11. a plan-only SCAN is refused even when every column it names is indexed, and the refusal names the plan (exclusive witness for refusePlan)
+ok 345 - S2E-11. a plan-only SCAN is refused even when every column it names is indexed, and the refusal names the plan (exclusive witness for refusePlan)
+  ---
+  duration_ms: 7.451
+  type: 'test'
+  ...
+# Subtest: S2E-2. adding the index the refusal named makes the same source publish, with the measured cost stored
+ok 346 - S2E-2. adding the index the refusal named makes the same source publish, with the measured cost stored
+  ---
+  duration_ms: 7.467958
+  type: 'test'
+  ...
+# Subtest: S2E-3. group_by of three columns and an over-budget cost are refused with their own codes
+ok 347 - S2E-3. group_by of three columns and an over-budget cost are refused with their own codes
+  ---
+  duration_ms: 7.471583
+  type: 'test'
+  ...
+# Subtest: S2E-4. is_public=false is refused by the resolver; an audited publish flips it and the same call resolves
+ok 348 - S2E-4. is_public=false is refused by the resolver; an audited publish flips it and the same call resolves
+  ---
+  duration_ms: 17.442625
+  type: 'test'
+  ...
+# Subtest: S2E-5. a column outside the allowlist is refused at publish AND at resolve time
+ok 349 - S2E-5. a column outside the allowlist is refused at publish AND at resolve time
+  ---
+  duration_ms: 9.931833
+  type: 'test'
+  ...
+# Subtest: S2E-6. two parameter sets inside one TTL return their own rows, in both orders (O-10)
+ok 350 - S2E-6. two parameter sets inside one TTL return their own rows, in both orders (O-10)
+  ---
+  duration_ms: 2.299042
+  type: 'test'
+  ...
+# Subtest: S2E-7. TTL: a row inserted after publish is invisible before the TTL and visible after it
+ok 351 - S2E-7. TTL: a row inserted after publish is invisible before the TTL and visible after it
+  ---
+  duration_ms: 6.491375
+  type: 'test'
+  ...
+# Subtest: S2E-8. a `function` source is refused with C-18's code and no file is loaded
+ok 352 - S2E-8. a `function` source is refused with C-18's code and no file is loaded
+  ---
+  duration_ms: 2.804083
+  type: 'test'
+  ...
+# Subtest: S2E-9. the render path gets resolved rows and no handle
+ok 353 - S2E-9. the render path gets resolved rows and no handle
+  ---
+  duration_ms: 1.216875
+  type: 'test'
+  ...
+# Subtest: S2E-10. a query source cannot name a `cms_*` table, and a limit above limit_max is clamped and flagged
+ok 354 - S2E-10. a query source cannot name a `cms_*` table, and a limit above limit_max is clamped and flagged
+  ---
+  duration_ms: 6.08425
+  type: 'test'
+  ...
+# Subtest: M5-1. a non-integer `limit` is refused at publish and at resolve, with its taxonomy shape
+ok 355 - M5-1. a non-integer `limit` is refused at publish and at resolve, with its taxonomy shape
+  ---
+  duration_ms: 3.397458
+  type: 'test'
+  ...
+# Subtest: V1-1. re-pointing a published view out of band refuses with reason=view_checksum and serves ZERO rows
+ok 356 - V1-1. re-pointing a published view out of band refuses with reason=view_checksum and serves ZERO rows
+  ---
+  duration_ms: 11.266542
+  type: 'test'
+  ...
+# Subtest: V1-2. a DDL op that changes a published view refreshes the checksum, un-publishes its sources, and audits both digests
+ok 357 - V1-2. a DDL op that changes a published view refreshes the checksum, un-publishes its sources, and audits both digests
+  ---
+  duration_ms: 28.086208
+  type: 'test'
+  ...
+# Subtest: V1-3. the view hash is paid once per schema stamp, not once per resolve
+ok 358 - V1-3. the view hash is paid once per schema stamp, not once per resolve
+  ---
+  duration_ms: 31.09075
+  type: 'test'
+  ...
+# Subtest: V1-4. the cost budget applies to a `view` source: the ceiling is consulted and refuses with its own code
+ok 359 - V1-4. the cost budget applies to a `view` source: the ceiling is consulted and refuses with its own code
+  ---
+  duration_ms: 8.074958
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: two stamp reads with no write between them are equal, and neither rebuilds
+ok 360 - two stamp reads with no write between them are equal, and neither rebuilds
+  ---
+  duration_ms: 10.143125
+  type: 'test'
+  ...
+# Subtest: UPDATE tenant.status = suspended is visible on the next request (§5.3 row 9)
+ok 361 - UPDATE tenant.status = suspended is visible on the next request (§5.3 row 9)
+  ---
+  duration_ms: 104.8305
+  type: 'test'
+  ...
+# Subtest: UPDATE tenant.status = archived is visible on the next request
+ok 362 - UPDATE tenant.status = archived is visible on the next request
+  ---
+  duration_ms: 12.659125
+  type: 'test'
+  ...
+# Subtest: UPDATE tenant.mode = 'demo' moves the stamp and no longer changes routing (E-2 rule 4)
+ok 363 - UPDATE tenant.mode = 'demo' moves the stamp and no longer changes routing (E-2 rule 4)
+  ---
+  duration_ms: 21.997625
+  type: 'test'
+  ...
+# Subtest: UPDATE tenant.db_version = 9 is 503 SKW_E_DM_SCHEMA_STALE with Retry-After: 5
+ok 364 - UPDATE tenant.db_version = 9 is 503 SKW_E_DM_SCHEMA_STALE with Retry-After: 5
+  ---
+  duration_ms: 12.444709
+  type: 'test'
+  ...
+# Subtest: DELETE FROM domain stops the host routing on the next request
+ok 365 - DELETE FROM domain stops the host routing on the next request
+  ---
+  duration_ms: 8.032833
+  type: 'test'
+  ...
+# Subtest: INSERT INTO domain makes the new host serve on the next request
+ok 366 - INSERT INTO domain makes the new host serve on the next request
+  ---
+  duration_ms: 3.275875
+  type: 'test'
+  ...
+# Subtest: INSERT INTO tenant + domain serves the new tenant on the next request
+ok 367 - INSERT INTO tenant + domain serves the new tenant on the next request
+  ---
+  duration_ms: 15.760708
+  type: 'test'
+  ...
+# Subtest: §5.4a — exactly one stamp read per request, and one rebuild per bump
+ok 368 - §5.4a — exactly one stamp read per request, and one rebuild per bump
+  ---
+  duration_ms: 16.460084
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: row 1 — the admin listener refuses a tenant header present at all (non-empty and empty)
+ok 369 - row 1 — the admin listener refuses a tenant header present at all (non-empty and empty)
+  ---
+  duration_ms: 0.923875
+  type: 'test'
+  ...
+# Subtest: row 2 — an untrusted peer that asserts any X-Skunkworks-* header is 421
+ok 370 - row 2 — an untrusted peer that asserts any X-Skunkworks-* header is 421
+  ---
+  duration_ms: 0.459
+  type: 'test'
+  ...
+# Subtest: row 3 — a non-empty tenant header without the edge token is 421
+ok 371 - row 3 — a non-empty tenant header without the edge token is 421
+  ---
+  duration_ms: 0.265875
+  type: 'test'
+  ...
+# Subtest: row 4 — a tenant header that is not a tenant key is 400
+ok 372 - row 4 — a tenant header that is not a tenant key is 400
+  ---
+  duration_ms: 0.439917
+  type: 'test'
+  ...
+# Subtest: row 5 — a tenant header that disagrees with X-Forwarded-Prefix is 400
+ok 373 - row 5 — a tenant header that disagrees with X-Forwarded-Prefix is 400
+  ---
+  duration_ms: 0.207666
+  type: 'test'
+  ...
+# Subtest: row 6 — a valid header from the edge selects that tenant, prefix from the header or ""
+ok 374 - row 6 — a valid header from the edge selects that tenant, prefix from the header or ""
+  ---
+  duration_ms: 0.27775
+  type: 'test'
+  ...
+# Subtest: row 7 — the admin listener with no header resolves from session.tenant_id only
+ok 375 - row 7 — the admin listener with no header resolves from session.tenant_id only
+  ---
+  duration_ms: 0.139417
+  type: 'test'
+  ...
+# Subtest: row 8 — no header on the public listener resolves from the normalised Host
+ok 376 - row 8 — no header on the public listener resolves from the normalised Host
+  ---
+  duration_ms: 0.149042
+  type: 'test'
+  ...
+# Subtest: row 9 — a resolved tenant that is suspended or archived is 404
+ok 377 - row 9 — a resolved tenant that is suspended or archived is 404
+  ---
+  duration_ms: 0.289959
+  type: 'test'
+  ...
+# Subtest: row 10 — a resolved tenant whose database is unusable is 503, one code per cause
+ok 378 - row 10 — a resolved tenant whose database is unusable is 503, one code per cause
+  ---
+  duration_ms: 0.378958
+  type: 'test'
+  ...
+# Subtest: E-1 (a) — an empty X-Skunkworks-Tenant on the admin listener is row 1, 421
+ok 379 - E-1 (a) — an empty X-Skunkworks-Tenant on the admin listener is row 1, 421
+  ---
+  duration_ms: 0.120583
+  type: 'test'
+  ...
+# Subtest: E-1 (c) — no public-listener request reports row 1 or row 7
+ok 380 - E-1 (c) — no public-listener request reports row 1 or row 7
+  ---
+  duration_ms: 0.2645
+  type: 'test'
+  ...
+# Subtest: inert 1 — a client header with no edge token is refused, not honoured
+ok 381 - inert 1 — a client header with no edge token is refused, not honoured
+  ---
+  duration_ms: 0.053334
+  type: 'test'
+  ...
+# Subtest: inert 2 — a client header with a guessed edge token is refused, not honoured
+ok 382 - inert 2 — a client header with a guessed edge token is refused, not honoured
+  ---
+  duration_ms: 0.051833
+  type: 'test'
+  ...
+# Subtest: inert 3 — an empty header is no assertion: the Host decides
+ok 383 - inert 3 — an empty header is no assertion: the Host decides
+  ---
+  duration_ms: 0.042416
+  type: 'test'
+  ...
+# Subtest: inert 4 — a malformed claim is a 400, never a silent fallback
+ok 384 - inert 4 — a malformed claim is a 400, never a silent fallback
+  ---
+  duration_ms: 0.044083
+  type: 'test'
+  ...
+# Subtest: inert 5 — a valid claim with a valid token still cannot cross a prefix mismatch
+ok 385 - inert 5 — a valid claim with a valid token still cannot cross a prefix mismatch
+  ---
+  duration_ms: 0.045042
+  type: 'test'
+  ...
+# Subtest: CIDR containment: the two frozen defaults and the loopback forms
+ok 386 - CIDR containment: the two frozen defaults and the loopback forms
+  ---
+  duration_ms: 0.056458
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: E-7 — every code with a retry_after entry carries the header, with that value
+ok 387 - E-7 — every code with a retry_after entry carries the header, with that value
+  ---
+  duration_ms: 464.741792
+  type: 'test'
+  ...
+# Subtest: E-7 — no other code carries the header
+ok 388 - E-7 — no other code carries the header
+  ---
+  duration_ms: 51.323875
+  type: 'test'
+  ...
+# Subtest: W1. every mechanism in the table names a test that exists in the file it names
+ok 389 - W1. every mechanism in the table names a test that exists in the file it names
+  ---
+  duration_ms: 5.479
+  type: 'test'
+  ...
+# Subtest: W2. every mechanism carries a comment naming its witness, with the file and the exact test name
+ok 390 - W2. every mechanism carries a comment naming its witness, with the file and the exact test name
+  ---
+  duration_ms: 0.6495
+  type: 'test'
+  ...
+# Subtest: W3. every `Exclusive witness:` comment in app/ is registered here — a new mechanism cannot skip the table
+ok 391 - W3. every `Exclusive witness:` comment in app/ is registered here — a new mechanism cannot skip the table
+  ---
+  duration_ms: 7.692917
+  type: 'test'
+  ...
+# Subtest: W4. the table covers every mechanism §16 S2 names as a security control
+ok 392 - W4. the table covers every mechanism §16 S2 names as a security control
+  ---
+  duration_ms: 0.123333
+  type: 'test'
+  ...
+# Subtest: W5. no row repeats a mechanism, and every row explains what it refuses
+ok 393 - W5. no row repeats a mechanism, and every row explains what it refuses
+  ---
+  duration_ms: 0.284958
+  type: 'test'
+  ...
+1..393
+# tests 404
+# suites 10
+# pass 404
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 69294.923875

@@ -21,7 +21,7 @@
  * file, where 6 refusals in a row hit it and a correct 7th attempt is still refused.
  */
 import assert from 'node:assert/strict';
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 
@@ -176,7 +176,11 @@ test('R1 — 8 parallel Range requests under one token spend exactly one use and
   );
   for (const r of parallel) {
     assert.equal(r.status, 200, r.body);
-    assert.equal(header(r, 'x-accel-redirect'), `/__protected/${bookSha.slice(0, 2)}/${bookSha}.pdf`);
+    // S3d: a gated PDF is stamped per purchaser, so the hand-off is the render tree —
+    // never the content-addressed blob every buyer shares. The shape is asserted, not a
+    // literal, because the spec hash is the buyer's.
+    assert.match(String(header(r, 'x-accel-redirect')), /^\/__protected\/wm\/[0-9a-f]{64}\/[0-9a-f]{64}\.pdf$/);
+    assert.ok(!String(header(r, 'x-accel-redirect')).startsWith(`/__protected/${bookSha.slice(0, 2)}/`));
     assert.equal(r.body, '', 'the app sends no bytes: nginx serves the file');
   }
 
@@ -233,26 +237,34 @@ test('R3 — Range: bytes=1- cannot bypass the counter once the use is spent', a
   );
 });
 
-test('R3b — an oversized range is clamped, still spends one use, and bytes_declared is the file', async () => {
+test('R3b — an oversized range is clamped, still spends one use, and bytes_declared is the render', async () => {
   const code = await issue(2);
   const cookie = cookieOf(await redeem(code.code));
   const res = await download(cookie, { range: 'bytes=0-999999999' });
   assert.equal(res.status, 200);
   assert.equal(usesOf(code.id), 1);
-  assert.equal(events(code.id)[0]?.bytes_declared, bookBytes);
+  // S3d: the file is the render, so "the file" is its length, not the blob's.
+  const uri = String(header(res, 'x-accel-redirect'));
+  const renderBytes = statSync(join(contentRoot, 'protected', uri.slice('/__protected/'.length))).size;
+  assert.equal(events(code.id)[0]?.bytes_declared, renderBytes);
 });
 
 test('R3c — an unsatisfiable range is 416, writes no event and spends nothing', async () => {
   const code = await issue(2);
   const cookie = cookieOf(await redeem(code.code));
-  const res = await download(cookie, { range: `bytes=${bookBytes + 10}-` });
+  // A start past any render this box can produce. The 416 is measured against the
+  // *render's* length, which the stamp produced before the range was validated.
+  const res = await download(cookie, { range: 'bytes=999999999-' });
   assert.equal(res.status, 416);
-  assert.equal(header(res, 'content-range'), `bytes */${bookBytes}`);
   assert.equal(usesOf(code.id), 0);
   assert.equal(events(code.id).length, 0, 'C-7: 416 writes no first event');
 
   // and the same token still works afterwards: the 416 cost it nothing.
-  assert.equal((await download(cookie)).status, 200);
+  const after = await download(cookie);
+  assert.equal(after.status, 200);
+  const uri = String(header(after, 'x-accel-redirect'));
+  const renderBytes = statSync(join(contentRoot, 'protected', uri.slice('/__protected/'.length))).size;
+  assert.equal(header(res, 'content-range'), `bytes */${renderBytes}`, 'the 416 names the render, not the blob');
   assert.equal(usesOf(code.id), 1);
 });
 
@@ -348,9 +360,15 @@ test('R6 — 报告.pdf downloads with filename*=UTF-8\'\'… and status 200', a
 test('R7 — bytes_declared is the authorised length; bytes_sent stays NULL', async () => {
   const code = await issue(2);
   const cookie = cookieOf(await redeem(code.code));
-  assert.equal((await download(cookie)).status, 200);
+  const full = await download(cookie);
+  assert.equal(full.status, 200);
+  // S3d: the file the buyer receives is the stamped render, so the authorised length is
+  // the render's, not the store blob's — and it is the length nginx will send.
+  const uri = String(header(full, 'x-accel-redirect'));
+  const renderBytes = statSync(join(contentRoot, 'protected', uri.slice('/__protected/'.length))).size;
   const [row] = events(code.id);
-  assert.equal(row?.bytes_declared, bookBytes);
+  assert.equal(row?.bytes_declared, renderBytes);
+  assert.notEqual(renderBytes, bookBytes, 'a stamped PDF is not the stored blob byte-for-byte');
   assert.equal(row?.bytes_sent, null, 'v1 never observes a byte count');
 
   const ranged = await issue(2);

@@ -11,6 +11,7 @@
  *   6. bind run/plugin.sock and spawn one child per package  <- NOT S1 (S4)
  */
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
+import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -41,6 +42,7 @@ import { DEFAULT_CONTENT_ROOT } from './assets/store.ts';
 import { Semaphore } from './admin/auth.ts';
 import { seedSettings } from './download/code.ts';
 import { DownloadPlane } from './download/plane.ts';
+import type { WatermarkDeps, WatermarkStore } from './download/render.ts';
 
 // §9.1 (E-2) lives in tenancy/listener.ts so the admin router shares one rule;
 // re-exported here because that is the import path the S1 gate uses.
@@ -70,10 +72,16 @@ export interface AppHandle {
   tenants: TenantMap;
   /** The admin surface (S2a), so a gate can inspect a session row without a socket. */
   admin: AdminSurface;
-  /** The per-process source cache (§6.2), so a gate can assert a hit. */
+  /**
+   * The per-process source cache (§6.2), so a gate can assert a hit. */
   sources: SourceCache;
   /** The daily seal job (§9.6); stopped by `close()`. */
   seals: SealSchedulerHandle;
+  /**
+   * The watermark render cache (§7.5), so a gate can sweep at a fixed instant without
+   * waiting for the tick. Nothing outside the download plane writes to it.
+   */
+  watermark: WatermarkStore;
   close(): Promise<void>;
 }
 
@@ -97,6 +105,13 @@ export interface BuildAppOptions {
    * otherwise spend its 1,000 trials inside the limiter; the default is the spec.
    */
   downloadLimits?: { refusals?: number; windowMs?: number; all?: number } | undefined;
+  /**
+   * The watermarker's budget, concurrency and (in a gate only) its renderer. §7.5's
+   * shipped values are `STAMP_BUDGET_MS`/`STAMP_CONCURRENCY`; present here so
+   * `download-watermark.test.ts` can force the renderer to throw and to overrun, which
+   * are the two branches this slice exists to make un-servable.
+   */
+  watermark?: Omit<WatermarkDeps, 'contentRoot' | 'now'> | undefined;
   /**
    * Where the app records one line per request it *received*.
    *
@@ -331,6 +346,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     contentRoot,
     argon,
     limits: opts.downloadLimits,
+    watermark: opts.watermark,
     openDb: (key: string) => {
       try {
         return openAdminWrite(sitePath(key), env.dbBusyTimeoutMs);
@@ -506,14 +522,37 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     return { listener, tenant: result.tenant, via: result.via, prefix: result.prefix, pathname };
   }
 
+  // §7.5: the render tree is a bounded transient. Every minute, delete the renders whose
+  // token expired more than `continuation_grace_s` ago. Unref'd, so it never keeps the
+  // process alive; `close()` stops it. A tenant whose database is unreadable is skipped
+  // (the next tick tries again) — a sweep must never take the app down.
+  const sweepTimer = setInterval(() => {
+    for (const tenant of tenants.all()) {
+      let db: Database.Database | null = null;
+      try {
+        db = openAdminWrite(sitePath(tenant.key), env.dbBusyTimeoutMs);
+        const swept = plane.watermark.sweep(db, Date.now());
+        if (swept.rows > 0) {
+          process.stdout.write(`watermark sweep: ${tenant.key} rows=${swept.rows} files=${swept.files}\n`);
+        }
+      } catch (err) {
+        process.stderr.write(`watermark sweep: ${tenant.key} skipped (${describe(err)})\n`);
+      } finally {
+        db?.close();
+      }
+    }
+  }, 60_000);
+  sweepTimer.unref();
+
   async function close(): Promise<void> {
+    clearInterval(sweepTimer);
     seals.stop();
     pool.close();
     tenants.close();
     await app.close();
   }
 
-  return { app, env, tenants, admin, sources, seals, close };
+  return { app, env, tenants, admin, sources, seals, watermark: plane.watermark, close };
 }
 
 function pathnameOf(url: string): string {

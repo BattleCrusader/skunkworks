@@ -133,6 +133,16 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
     out.push('        add_header Cache-Control "public, max-age=31536000, immutable";');
     out.push('    }');
     out.push('');
+    // §7.5 (S3d): the stamped per-purchaser renders. A **second** internal location, with
+    // its own tree, so `content/media/` keeps exactly one meaning: the immutable store
+    // blob that every buyer shares. A gated asset's hand-off is this one, never the other.
+    // `alias` is the directory, so the URI carries `wm/<spec_sha>/<asset_sha>.<ext>`.
+    out.push('    location /__protected/wm/ {');
+    out.push('        internal;');
+    out.push('        alias /srv/content/protected/wm/;');
+    out.push('        limit_rate 1m;');
+    out.push('    }');
+    out.push('');
     out.push('    location /__protected/ {');
     out.push('        internal;');
     out.push('        alias /srv/content/media/;');

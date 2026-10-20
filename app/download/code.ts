@@ -41,11 +41,26 @@ export const SELECTOR_RETRIES = 8;
 export const SETTING_DEFAULT_MAX_USES = 'download.default_max_uses';
 export const SETTING_ALLOW_UNLIMITED = 'download.allow_unlimited';
 export const SETTING_WEBHOOK_SECRET = 'download.webhook_secret';
+/**
+ * §7.5 (C-16): how long a render outlives the token that produced it. The sweep deletes a
+ * render `continuation_grace_s` after its token expires, so a 1 GiB transfer under
+ * `limit_rate 1m` (1,024 s) finishes without the file vanishing underneath it.
+ */
+export const SETTING_CONTINUATION_GRACE = 'download.continuation_grace_s';
+/** §7.5's shipped value, stated once: the seed writes it, the plane falls back to it. */
+export const DEFAULT_CONTINUATION_GRACE_S = 21_600;
+/**
+ * D20's tenant default watermark: an asset **key**, empty when unset. A per-asset
+ * `cms_asset.watermark_asset_id` wins over it.
+ */
+export const SETTING_DEFAULT_WATERMARK = 'download.default_watermark_asset';
 
 /** The values `cms_settings` is seeded with at boot. Changing one is a migration, not a default. */
-export const SHIPPED_SETTINGS: { key: string; value: string; type: 'int' | 'bool' }[] = [
+export const SHIPPED_SETTINGS: { key: string; value: string; type: 'int' | 'bool' | 'string' }[] = [
   { key: SETTING_DEFAULT_MAX_USES, value: '3', type: 'int' },
   { key: SETTING_ALLOW_UNLIMITED, value: 'false', type: 'bool' },
+  { key: SETTING_CONTINUATION_GRACE, value: '21600', type: 'int' },
+  { key: SETTING_DEFAULT_WATERMARK, value: '""', type: 'string' },
 ];
 
 /** `cms_download_code.max_uses`'s CHECK — stated once so the refusal can name both bounds. */

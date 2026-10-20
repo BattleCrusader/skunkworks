@@ -65,6 +65,12 @@ export const HTTP: Record<string, number> = {
   SKW_E_SEC_USES_EXHAUSTED: 410,
   SKW_E_SEC_RATE_LIMITED: 429,
   SKW_E_SEC_ROLE_DISABLED: 403,
+  // §7.5 (S3d): the stamp failed — renderer error, the 2 s budget, an unencodable
+  // character that survived the cp1252 sanitiser, or an unwritable render tree. 503:
+  // the buyer's entitlement is untouched (no use is spent) and no un-stamped byte is
+  // served on any path. A retry needs a new redemption, because the denial is written
+  // to the ledger under this token's `jti` (a denial is not a continuation, C-4).
+  SKW_E_SEC_WATERMARK_FAILED: 503,
   // §7.5 (S3a): every upload that the sniff, the SVG rule or the filename rule refuses.
   // 415 Unsupported Media Type is the status the frozen registry assigns it, so a PHP
   // payload renamed `.png` is refused with the code that describes the refusal.
