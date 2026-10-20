@@ -10,11 +10,13 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
 
 import { listenerFor, buildApp, type AppHandle } from '../app/main.ts';
 import { loadEnv } from '../app/env.ts';
 import { makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, type Res } from './helpers/http.ts';
+import { TOTP_SECRET, openSession, seedUser } from './helpers/admin.ts';
 
 const ADMIN_HOST = 'admin.skw.test';
 
@@ -24,6 +26,8 @@ let port = 0;
 
 before(async () => {
   fixture = makeFixture();
+  // S2a: the "public listener does not parse the cookie" case needs a real one.
+  await seedUser({ controlDb: fixture.controlDb, tenantKey: 'acme', email: 'oracle@acme.test', totpSecret: TOTP_SECRET });
   handle = await buildApp({ env: loadEnv(fixture.env) });
   await handle.app.listen({ port: 0, host: '127.0.0.1' });
   const address = handle.app.server.address();
@@ -103,3 +107,67 @@ test('(d2) the admin host refuses a tenant header that is present at all (row 1)
     assert.equal((res.json as { error: { code: string } }).error.code, 'SKW_E_PLT_EDGE_PROOF');
   }
 });
+
+test('(e) S2a: a real admin session does not make a tenant host an admin surface', async () => {
+  // The regression E-2 exists for, measured with the strongest witness available
+  // now that S2a lands: a *valid* `__Host-sk-sess` cookie and an admin path, on a
+  // tenant host. §9.1 rule 1 says a public listener does not even parse the cookie,
+  // so the answer must be the same 404 as any unmatched path — and the session row
+  // must not have been touched by the attempt.
+  const { cookie } = await openSession({ port, key: 'acme', email: 'oracle@acme.test' });
+
+  const expiredBefore = sessionExpiry(fixture.controlDb, cookie);
+  const adminish = await call({
+    port,
+    path: '/admin/t/acme/pages',
+    host: 'acme.test',
+    headers: { cookie },
+  });
+  const unknown = await call({ port, path: '/no-such-page', host: 'acme.test', headers: { cookie } });
+
+  assert.equal(adminish.status, 404);
+  assert.equal((adminish.json as { error: { code: string } }).error.code, 'SKW_E_RT_PAGE_NOT_FOUND');
+  assert.equal(adminish.headers['set-cookie'], undefined);
+  assert.equal(scrub(adminish), scrub(unknown), 'byte-identical to any unmatched path, cookie and all');
+  assert.equal(
+    sessionExpiry(fixture.controlDb, cookie),
+    expiredBefore,
+    'a public listener must not parse the session cookie: the row was not touched',
+  );
+
+  // And the same cookie is a session on the admin host, so the row above is not
+  // simply an invalid cookie.
+  const onAdmin = await call({ port, path: '/admin/t/acme/session', host: ADMIN_HOST, headers: { cookie } });
+  assert.equal(onAdmin.status, 200);
+
+  // The sharpest form of the same rule: a *login* with real credentials, sent to a
+  // tenant host, must not mint a session. If the path could select the admin
+  // surface this would be a 200 with a `Set-Cookie` on the tenant's own origin —
+  // which is B1 with an attacker holding the credentials.
+  const loginOnTenant = await call({
+    port,
+    path: '/admin/t/acme/login',
+    method: 'POST',
+    host: 'acme.test',
+    headers: { 'content-type': 'application/json', origin: 'https://admin.skw.test' },
+    body: JSON.stringify({ email: 'oracle@acme.test', password: 'correct-horse-battery-staple' }),
+  });
+  assert.equal(loginOnTenant.status, 404);
+  assert.equal((loginOnTenant.json as { error: { code: string } }).error.code, 'SKW_E_RT_PAGE_NOT_FOUND');
+  assert.equal(loginOnTenant.headers['set-cookie'], undefined, 'a tenant host must never mint an admin session');
+});
+
+/** `expires_at` of the session behind a cookie, read from a second connection. */
+function sessionExpiry(controlDb: string, cookie: string): string | null {
+  const value = cookie.slice(cookie.indexOf('=') + 1);
+  const id = value.split('.')[0] ?? '';
+  const db = new Database(controlDb, { readonly: true });
+  try {
+    const row = db.prepare('SELECT expires_at FROM session WHERE id = ?').get(id) as
+      | { expires_at: string }
+      | undefined;
+    return row?.expires_at ?? null;
+  } finally {
+    db.close();
+  }
+}

@@ -16,7 +16,7 @@ help:
 	@echo "make verify-claims-modern same gate on \$$(MODERN_PYTHON), whose SQLite is >= 3.50 (E-15)"
 	@echo "make verify-frozen       assert docs/sds/SDS.md quotes the register verbatim"
 	@echo "make verify-gitignore    assert .gitignore verdicts against git"
-	@echo "make verify-s1           build, typecheck, and run the S1 gates in test/"
+	@echo "make verify-s1           build, typecheck, and run the S1 gates in test/ (a skip is a failure, G3)"
 	@echo "make build               tsc to dist/ plus the Astro middleware entry in build/astro/"
 	@echo "make diagrams            re-render every .puml in docs/ and report each PNG's size"
 
@@ -82,8 +82,13 @@ typecheck:
 
 # --test-timeout=15000 (E-8): a gate that regresses into a wait is red in under 20 s,
 # with a named failure, instead of a CI job timeout.
+#
+# scripts/run-node-tests.mjs (G3, `S1-qa.md` §7): a skip is a failure on the node side
+# too, exactly as E-15 already required of verify_claims.py. `SKW_SKIP_DOCKER=1` alone
+# can no longer buy a green gate; the only escape is `SKW_ALLOW_SKIP=1`, which is never
+# set here and prints a banner that says the run proved nothing.
 verify-s1: verify-toolchain build typecheck
-	@node --test --test-concurrency=1 --test-timeout=15000 $(shell find test -name '*.test.ts' | sort)
+	@node scripts/run-node-tests.mjs $(shell find test -name '*.test.ts' | sort)
 
 diagrams:
 	@plantuml -tpng -charset UTF-8 docs/sds/diagrams/*.puml docs/debate/diagrams/*.puml

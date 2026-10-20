@@ -4,9 +4,30 @@ name: gate
 # once on the pinned /usr/bin/python3, and once on an interpreter whose SQLite is
 # >= 3.50, so the amendment chain is exercised on the version that re-parses
 # triggers instead of only on the one that tolerated the ordering defect (E-6).
+#
+# G4 (`docs/build/S1-qa.md` §7) — this file, as first written, could not pass:
+#   * it asserted `sqlite >= 3.50` of ubuntu-24.04's own python3, which links the
+#     distribution's SQLite 3.45.1, and nothing installed a newer one;
+#   * it assumed a runner carrying `plantuml` and the `sqlite3` CLI, which checks
+#     1 and 12 of verify_claims.py shell out to.
+# Fixed, and the choice is stated here because the halves are deliberately
+# different — a workflow must not assert a version it did not provision:
+#   * of /usr/bin/python3 the workflow asserts only what ubuntu-24.04 provides —
+#     SQLite >= 3.40, the floor the frozen chain is proven on — and prints the
+#     real version, so a distribution bump is visible instead of fatal;
+#   * the >= 3.50 run is *provisioned*: actions/setup-python installs a
+#     python-build-standalone build, which bundles its own SQLite (measured on
+#     the same distribution here: CPython 3.14.7 -> SQLite 3.53.1), and the step
+#     asserts >= 3.50 against that interpreter before any gate runs.
+# This workflow has still never executed on GitHub Actions. It must not be cited
+# as evidence until a green run exists; the local equivalents — `make test`,
+# `make verify-s1` and `make verify-claims-modern` — are what S1 and S2 cite.
 on:
   push:
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   gate:
@@ -19,25 +40,48 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - name: interpreters
+      # verify_claims.py checks 1 and 12 shell out to these two binaries. They are
+      # gate dependencies, not conveniences: without them the claims gate is red.
+      - name: gate binaries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends plantuml sqlite3
+          plantuml -version | head -1
+          sqlite3 --version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: interpreters (E-15)
         run: |
           /usr/bin/python3 -m pip install --user --break-system-packages argon2-cffi
-          # The modern interpreter: a python whose bundled SQLite is >= 3.50.
-          # If the runner's python is older than that, the step fails rather than
-          # silently proving nothing.
-          python3 -c 'import sqlite3,sys; v=tuple(map(int,sqlite3.sqlite_version.split("."))); print(sys.version, sqlite3.sqlite_version); assert v >= (3,50), "modern interpreter has SQLite %s < 3.50" % sqlite3.sqlite_version'
-          python3 -m pip install --user --break-system-packages argon2-cffi
+          python -m pip install --user --break-system-packages argon2-cffi
+          /usr/bin/python3 - <<'PY'
+          import sqlite3, sys
+          v = tuple(map(int, sqlite3.sqlite_version.split('.')))
+          print('pinned:', sys.executable, sys.version.split()[0], 'sqlite', sqlite3.sqlite_version)
+          assert v >= (3, 40), f'pinned interpreter has SQLite {sqlite3.sqlite_version} < 3.40'
+          PY
+          python - <<'PY'
+          import sqlite3, sys
+          v = tuple(map(int, sqlite3.sqlite_version.split('.')))
+          print('modern:', sys.executable, sys.version.split()[0], 'sqlite', sqlite3.sqlite_version)
+          assert v >= (3, 50), f'modern interpreter has SQLite {sqlite3.sqlite_version} < 3.50'
+          PY
+          echo "MODERN_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
 
       - run: npm ci
       - run: docker info
 
-      # One interpreter, declared, no skips (a skip is a failure — E-15).
+      # One interpreter, declared, no skips. scripts/run-node-tests.mjs makes a skip
+      # a failure (G3), exactly as E-15 already required of verify_claims.py.
       - name: make test (/usr/bin/python3)
         run: make test PYTHON=/usr/bin/python3
 
-      # The second claims run, on the modern SQLite (E-6/E-15).
+      # The second claims run, on the provisioned modern SQLite (E-6/E-15).
       - name: verify-claims (modern SQLite)
-        run: make verify-claims-modern MODERN_PYTHON=python3
+        run: make verify-claims-modern MODERN_PYTHON="$MODERN_PYTHON"
 
       - name: make verify-s1
         run: make verify-s1 PYTHON=/usr/bin/python3

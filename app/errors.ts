@@ -30,6 +30,13 @@ export const HTTP: Record<string, number> = {
   SKW_E_DM_SCHEMA_STALE: 503,
   SKW_E_DM_BUSY: 503,
   SKW_E_DM_QUOTA: 507,
+  // SEC — the security plane (S2a: §9.1's session/CSRF controls). The statuses are
+  // the frozen ones from schema/error-codes.json; the taxonomy has no credential
+  // login code, which is reported as a gap in docs/build/S2a-report.md §6.
+  SKW_E_SEC_CSRF: 403,
+  SKW_E_SEC_CODE_INVALID: 401,
+  SKW_E_SEC_RATE_LIMITED: 429,
+  SKW_E_SEC_ROLE_DISABLED: 403,
   // RT — the render plane (§4.3 E-4): a resolved tenant with no page row
   SKW_E_RT_PAGE_NOT_FOUND: 404,
 };

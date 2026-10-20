@@ -82,13 +82,13 @@ function header(headers: ResolveInput['headers'], name: string): string | undefi
   return Array.isArray(v) ? v[0] : v;
 }
 
-/** "present at all" — including an empty value (§5.3, E-1). */
-function headerPresent(headers: ResolveInput['headers'], name: string): boolean {
+/** "present at all" — including an empty value (§5.3, E-1). Exported for row 1's admin listener check. */
+export function headerPresent(headers: ResolveInput['headers'], name: string): boolean {
   return Object.prototype.hasOwnProperty.call(headers, name) && headers[name] !== undefined;
 }
 
 /** Any X-Skunkworks-* header at all (row 2 is about the family, not one name). */
-function anySkunkworksHeader(headers: ResolveInput['headers']): boolean {
+export function anySkunkworksHeader(headers: ResolveInput['headers']): boolean {
   return Object.keys(headers).some((k) => k.startsWith('x-skunkworks-'));
 }
 

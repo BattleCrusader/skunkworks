@@ -1,0 +1,331 @@
+/**
+ * Admin credentials — SDS §9.1's control table, and §16 S2's "auth (argon2id,
+ * TOTP when the allowlist is empty)".
+ *
+ *   | Password hash | argon2id, `m=19456, t=2, p=1`, through the same 4-slot semaphore as codes |
+ *   | TOTP          | mandatory when the IP allowlist is empty |
+ *   | Lockout       | 5 failures → `locked_until`, exponential to 15 min |
+ *   | `fleet_admin` | with `SKW_FLEET_MODE=0` the app refuses to create **or authenticate** that role (`403 SKW_E_SEC_ROLE_DISABLED`) |
+ *
+ * Three things the SDS does not fix, decided here and reported as gaps:
+ *
+ * 1. **No credential-login error code exists.** The taxonomy's 71 codes are frozen
+ *    and none of them is "the password was wrong"; §4.3's `SEC` list is complete
+ *    for v1 and `test/error-codes.test.ts` pins the count at 71, so adding one is
+ *    not this slice's call. `SKW_E_SEC_CODE_INVALID` (401) is used: its decision
+ *    is the same shape — a presented secret against a stored argon2id hash — and
+ *    it keeps one status for "wrong password", "no such user" and "wrong TOTP",
+ *    which is what the indistinguishability criterion needs. Errata should add
+ *    `SKW_E_SEC_AUTH_INVALID`.
+ * 2. **TOTP parameters are RFC 6238 defaults** — SHA-1, 6 digits, 30 s step, one
+ *    step of clock tolerance each way. Only `user_account.totp_secret` exists in
+ *    the schema (a base32 secret), so the parameters have to be a convention.
+ * 3. **"Exponential to 15 min"** is `60 s × 2^(n−5)` for the n-th consecutive
+ *    failure, capped at 900 s: 1, 2, 4, 8, 15 minutes. The table carries
+ *    `failed_logins` and `locked_until` and nothing else, so the exponent is the
+ *    failure count rather than a separate lock counter.
+ * 4. **A global `fleet_admin` row can authenticate from a tenant login URL.**
+ *    `user_account`'s CHECK forces `tenant_id IS NULL` for that role, and §9.2
+ *    gives every admin URL the shape `/admin/t/<key>/…`, so a fleet operator has
+ *    no URL of their own in this slice. The lookup therefore accepts a global row
+ *    as a fallback (a tenant-scoped row with the same email wins), so the role can
+ *    be authenticated — and refused, `403 SKW_E_SEC_ROLE_DISABLED`, when
+ *    `SKW_FLEET_MODE=0`. A fleet login URL is an open item; until it exists a
+ *    fleet session has `tenant_id = NULL` and resolves to the row-7 404 on every
+ *    tenant route, which is the true statement about it.
+ */
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+import { hash, verify } from '@node-rs/argon2';
+
+import { openAdminWrite } from '../db/classes.ts';
+import { AppError } from '../errors.ts';
+
+/** C-6 / §9.1: `m=19456, t=2, p=1`, argon2id. */
+export const ARGON2_OPTIONS = { algorithm: 2, memoryCost: 19456, timeCost: 2, parallelism: 1 } as const;
+
+export const LOCKOUT_THRESHOLD = 5;
+export const LOCKOUT_MAX_MS = 15 * 60_000;
+export const TOTP_STEP_MS = 30_000;
+export const TOTP_DIGITS = 6;
+
+/**
+ * A verifier for a user that does not exist. `authenticate()` always performs
+ * exactly one argon2id verify — against this hash when the lookup missed — so an
+ * unknown email and a wrong password cost the same wall clock. The value is a
+ * real PHC string for a published dummy password; nothing authenticates with it
+ * because no row points at it.
+ */
+export const DUMMY_HASH =
+  '$argon2id$v=19$m=19456,t=2,p=1$GE2gealfzOO+9CmpJBDThA$iD8YCgPH+gGN2M8ubdV8hvmsNMTSvJEl7JBDDocHHDo';
+const DUMMY_PASSWORD = 'skw-dummy-password-for-timing-equalisation';
+
+/** The 4-slot argon2 semaphore (§9.1, `SKW_ARGON2_MAX_CONCURRENT=4`). */
+export class Semaphore {
+  readonly #size: number;
+  #active = 0;
+  readonly #queue: (() => void)[] = [];
+
+  constructor(size: number) {
+    if (!Number.isInteger(size) || size < 1) throw new Error('semaphore size must be a positive integer');
+    this.#size = size;
+  }
+
+  get active(): number {
+    return this.#active;
+  }
+
+  get waiting(): number {
+    return this.#queue.length;
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.#active >= this.#size) {
+      await new Promise<void>((resolve) => this.#queue.push(resolve));
+    }
+    this.#active += 1;
+    try {
+      return await fn();
+    } finally {
+      this.#active -= 1;
+      const next = this.#queue.shift();
+      if (next !== undefined) next();
+    }
+  }
+}
+
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+/** RFC 4648 base32, no padding required (a `user_account.totp_secret` is stored as text). */
+export function base32Decode(input: string): Buffer {
+  const clean = input.toUpperCase().replace(/[\s-]/g, '').replace(/=+$/, '');
+  if (clean === '') throw new Error('empty base32 secret');
+  let bits = 0;
+  let value = 0;
+  const out: number[] = [];
+  for (const ch of clean) {
+    const index = B32.indexOf(ch);
+    if (index === -1) throw new Error('not a base32 secret');
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(out);
+}
+
+/** RFC 6238 with the RFC 4226 truncation. */
+export function totpCode(secret: string, atMs: number, stepMs = TOTP_STEP_MS): string {
+  const counter = Math.floor(atMs / stepMs);
+  const message = Buffer.alloc(8);
+  message.writeBigUInt64BE(BigInt(counter));
+  const mac = createHmac('sha1', base32Decode(secret)).update(message).digest();
+  const offset = (mac[mac.length - 1] ?? 0) & 0x0f;
+  const binary =
+    (((mac[offset] ?? 0) & 0x7f) << 24) |
+    ((mac[offset + 1] ?? 0) << 16) |
+    ((mac[offset + 2] ?? 0) << 8) |
+    (mac[offset + 3] ?? 0);
+  return String(binary % 10 ** TOTP_DIGITS).padStart(TOTP_DIGITS, '0');
+}
+
+/** One step of tolerance each way, compared in constant time. */
+export function verifyTotp(secret: string, code: string, atMs: number, window = 1): boolean {
+  if (!new RegExp(`^\\d{${TOTP_DIGITS}}$`).test(code)) return false;
+  for (let step = -window; step <= window; step += 1) {
+    const want = Buffer.from(totpCode(secret, atMs + step * TOTP_STEP_MS));
+    const got = Buffer.from(code);
+    if (want.length === got.length && timingSafeEqual(want, got)) return true;
+  }
+  return false;
+}
+
+/** 1, 2, 4, 8, 15 minutes for the 5th, 6th, … consecutive failure (§9.1). */
+export function lockoutMsFor(failedLogins: number): number {
+  if (failedLogins < LOCKOUT_THRESHOLD) return 0;
+  const exponent = failedLogins - LOCKOUT_THRESHOLD;
+  return Math.min(60_000 * 2 ** exponent, LOCKOUT_MAX_MS);
+}
+
+export interface AuthUser {
+  id: number;
+  tenantId: number | null;
+  email: string;
+  role: 'fleet_admin' | 'owner' | 'editor' | 'viewer';
+}
+
+interface UserRow {
+  id: number;
+  tenant_id: number | null;
+  email: string;
+  password_hash: string;
+  role: AuthUser['role'];
+  totp_secret: string | null;
+  failed_logins: number;
+  locked_until: string | null;
+}
+
+export interface AuthenticateInput {
+  tenantId: number;
+  email: string;
+  password: string;
+  totp: string | undefined;
+  atMs: number;
+}
+
+export type AuthenticateResult = { ok: true; user: AuthUser } | { ok: false; error: AppError };
+
+export class Auth {
+  readonly #controlPath: string;
+  readonly #busyTimeoutMs: number;
+  readonly #fleetMode: boolean;
+  readonly #totpRequired: boolean;
+  readonly #semaphore: Semaphore;
+
+  constructor(opts: {
+    controlPath: string;
+    fleetMode: boolean;
+    allowlist: readonly string[];
+    semaphore?: Semaphore;
+    busyTimeoutMs?: number;
+  }) {
+    this.#controlPath = opts.controlPath;
+    this.#fleetMode = opts.fleetMode;
+    this.#totpRequired = opts.allowlist.length === 0;
+    this.#semaphore = opts.semaphore ?? new Semaphore(4);
+    this.#busyTimeoutMs = opts.busyTimeoutMs ?? 5000;
+  }
+
+  get totpRequired(): boolean {
+    return this.#totpRequired;
+  }
+
+  /** The row behind a session, for the `GET /session` answer. No secret leaves here. */
+  userById(id: number): AuthUser | null {
+    const db = openAdminWrite(this.#controlPath, this.#busyTimeoutMs);
+    try {
+      const row = db
+        .prepare('SELECT id, tenant_id, email, role FROM user_account WHERE id = ?')
+        .get(id) as Pick<UserRow, 'id' | 'tenant_id' | 'email' | 'role'> | undefined;
+      if (row === undefined) return null;
+      return { id: row.id, tenantId: row.tenant_id, email: row.email, role: row.role };
+    } finally {
+      db.close();
+    }
+  }
+
+  hashPassword(password: string): Promise<string> {
+    return this.#semaphore.run(() => hash(password, ARGON2_OPTIONS));
+  }
+
+  /**
+   * One lookup, exactly one argon2id verify, and the same 401 for a wrong
+   * password, an unknown email and a wrong TOTP. The failure counters are written
+   * in one statement so two concurrent attempts cannot each read the old count.
+   */
+  async authenticate(input: AuthenticateInput): Promise<AuthenticateResult> {
+    const db = openAdminWrite(this.#controlPath, this.#busyTimeoutMs);
+    let row: UserRow | undefined;
+    try {
+      row = db
+        .prepare(
+          `SELECT id, tenant_id, email, password_hash, role, totp_secret, failed_logins, locked_until
+             FROM user_account
+            WHERE email = ? AND (tenant_id = ? OR tenant_id IS NULL)
+            ORDER BY (tenant_id IS NULL) ASC
+            LIMIT 1`,
+        )
+        .get(input.email, input.tenantId) as UserRow | undefined;
+    } finally {
+      db.close();
+    }
+
+    if (row === undefined) {
+      // The same cost as a real verification, so the response time does not
+      // announce that the email is unknown (acceptance criterion 3).
+      await this.#semaphore.run(async () => {
+        try {
+          await verify(DUMMY_HASH, input.password);
+        } catch {
+          /* a dummy verify that throws is still a dummy verify */
+        }
+      });
+      return { ok: false, error: new AppError('SKW_E_SEC_CODE_INVALID', 'invalid credentials') };
+    }
+
+    // §9.1: with SKW_FLEET_MODE=0 the app refuses to *authenticate* this role.
+    // Checked before the password so the refusal is the same whether or not the
+    // password is right — a bundle has no fleet_admin row to begin with.
+    if (row.role === 'fleet_admin' && !this.#fleetMode) {
+      return { ok: false, error: new AppError('SKW_E_SEC_ROLE_DISABLED', 'fleet_admin is disabled in this build') };
+    }
+
+    if (row.locked_until !== null && Date.parse(row.locked_until) > input.atMs) {
+      return { ok: false, error: new AppError('SKW_E_SEC_RATE_LIMITED', 'too many failed logins') };
+    }
+
+    let passwordOk = false;
+    try {
+      passwordOk = await this.#semaphore.run(() => verify(row.password_hash, input.password));
+    } catch {
+      passwordOk = false;
+    }
+
+    if (!passwordOk) {
+      this.#recordFailure(row.id, row.failed_logins, input.atMs);
+      return { ok: false, error: new AppError('SKW_E_SEC_CODE_INVALID', 'invalid credentials') };
+    }
+
+    if (this.#totpRequired) {
+      const secret = row.totp_secret;
+      const code = input.totp ?? '';
+      let totpOk = false;
+      if (secret !== null) {
+        try {
+          totpOk = verifyTotp(secret, code, input.atMs);
+        } catch {
+          totpOk = false;
+        }
+      }
+      if (!totpOk) {
+        this.#recordFailure(row.id, row.failed_logins, input.atMs);
+        return { ok: false, error: new AppError('SKW_E_SEC_CODE_INVALID', 'invalid credentials') };
+      }
+    }
+
+    const db2 = openAdminWrite(this.#controlPath, this.#busyTimeoutMs);
+    try {
+      db2
+        .prepare(
+          `UPDATE user_account SET failed_logins = 0, locked_until = NULL, last_login_at = ? WHERE id = ?`,
+        )
+        .run(new Date(input.atMs).toISOString(), row.id);
+    } finally {
+      db2.close();
+    }
+
+    return {
+      ok: true,
+      user: { id: row.id, tenantId: row.tenant_id, email: row.email, role: row.role },
+    };
+  }
+
+  #recordFailure(userId: number, previousFailures: number, atMs: number): void {
+    const next = previousFailures + 1;
+    const lockMs = lockoutMsFor(next);
+    const lockedUntil = lockMs === 0 ? null : new Date(atMs + lockMs).toISOString();
+    const db = openAdminWrite(this.#controlPath, this.#busyTimeoutMs);
+    try {
+      db.prepare(
+        `UPDATE user_account
+            SET failed_logins = failed_logins + 1,
+                locked_until = COALESCE(?, locked_until)
+          WHERE id = ?`,
+      ).run(lockedUntil, userId);
+    } finally {
+      db.close();
+    }
+  }
+}

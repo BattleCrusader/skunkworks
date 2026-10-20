@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { BootRefusal, adminHostOf, loadEnv, type Env } from './env.ts';
 import { AppError, errorBody, frameworkCode, HTTP } from './errors.ts';
 import { RenderPool, openAdminWrite } from './db/classes.ts';
+import { AdminSurface } from './admin/routes.ts';
 import {
   EXIT_CONTROL_FAILED,
   findProjectRoot,
@@ -29,8 +30,13 @@ import {
 } from './db/migrate.ts';
 import { loadPage, normalisePagePath, pageMiss } from './render/page.ts';
 import { TenantMap } from './tenancy/cache.ts';
+import { listenerFor } from './tenancy/listener.ts';
 import { normaliseHost } from './tenancy/normalise-host.ts';
 import { resolveTenant, TENANT_HEADER, type Listener, type Tenant } from './tenancy/resolve.ts';
+
+// §9.1 (E-2) lives in tenancy/listener.ts so the admin router shares one rule;
+// re-exported here because that is the import path the S1 gate uses.
+export { listenerFor };
 
 type AstroHandler = (
   req: FastifyRequest['raw'],
@@ -44,6 +50,8 @@ export interface AppHandle {
   env: Env;
   /** The live tenant map, so a gate can assert §5.4a's one-read-per-request. */
   tenants: TenantMap;
+  /** The admin surface (S2a), so a gate can inspect a session row without a socket. */
+  admin: AdminSurface;
   close(): Promise<void>;
 }
 
@@ -54,21 +62,22 @@ export interface BuildAppOptions {
   logger?: boolean;
   /** Skip the boot migration fan-out (tests that want a corrupt fixture untouched). */
   migrateOnBoot?: boolean;
+  /**
+   * §9.1's IP allowlist — opt-in, empty in every exported bundle. The SDS names the
+   * control and not its storage (no env name, no control table), so it enters here
+   * and defaults to empty, which is the exported-bundle value and the one that
+   * makes TOTP mandatory and idle 15 minutes.
+   */
+  adminAllowlist?: string[];
 }
 
 /**
  * §9.1 (E-2): the listener is the admin **hostname**, and that hostname is the
  * only thing that makes a request an admin request. The path never selects the
  * listener: `/admin`, `/admin/…`, `/adminish` and `/demo/<key>/admin/…` are
- * ordinary paths on a public listener.
+ * ordinary paths on a public listener. The rule itself is in
+ * `tenancy/listener.ts` and is re-exported above.
  */
-export function listenerFor(host: string | null, adminHost: string | null): Listener {
-  if (adminHost === null) return 'public';
-  const h = normaliseHost(host);
-  const admin = normaliseHost(adminHost);
-  if (h === null || admin === null) return 'public';
-  return h === admin ? 'admin' : 'public';
-}
 
 /** §9.1 rule 2: the admin host serves the admin surface and nothing else. */
 function isAdminPath(pathname: string): boolean {
@@ -121,6 +130,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   const tenants = new TenantMap(controlPath, { busyTimeoutMs: env.dbBusyTimeoutMs });
   const pool = new RenderPool(env.dbPoolMax, env.dbBusyTimeoutMs);
   const sitePath = (key: string): string => join(tenantsDir, key, 'site.db');
+
+  // --- S2a: the admin surface (§9.1, §9.2) --------------------------------
+  const admin = new AdminSurface({
+    env,
+    controlPath,
+    tenants,
+    adminHost,
+    allowlist: opts.adminAllowlist ?? [],
+  });
 
   // --- step 5: component registry, one transaction per tenant --------------
   const registry = readComponentRegistry(schemaDir);
@@ -193,11 +211,23 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     scope.post('/whoami', whoami);
   });
 
+  // §9.1: the admin surface is mounted on the admin hostname only. The route is
+  // registered for every `/admin…` path — including on a public listener, where
+  // the handler immediately hands the request to the page-miss path, which is how
+  // "no admin route is mounted on a public listener" stays literally true and
+  // byte-identical to any unmatched path.
+  app.all('/admin', async (req: FastifyRequest, reply: FastifyReply) => {
+    await admin.handle(req, reply, serveNotFound);
+  });
+  app.all('/admin/*', async (req: FastifyRequest, reply: FastifyReply) => {
+    await admin.handle(req, reply, serveNotFound);
+  });
+
   app.setErrorHandler((err, req, reply) => {
     sendError(reply, err, String(req.id));
   });
 
-  app.setNotFoundHandler(async (req, reply) => {
+  async function serveNotFound(req: FastifyRequest, reply: FastifyReply): Promise<void> {
     const ctx = resolveRequest(req);
     const path = normalisePagePath(req.url);
     // §4.3 (E-4): a URL that cannot name a path is refused before a route runs.
@@ -209,6 +239,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     reply.raw.setHeader('cache-control', 'no-store');
     reply.hijack();
     await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page });
+  }
+
+  app.setNotFoundHandler(async (req, reply) => {
+    await serveNotFound(req, reply);
   });
 
   let cachedHandler: AstroHandler | undefined;
@@ -263,8 +297,20 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     const headers: Record<string, string | string[] | undefined> = {};
     for (const [k, v] of Object.entries(req.headers)) headers[k.toLowerCase()] = v;
 
+    // §9.1 rule 1: on a public listener there is no session cookie parse at all —
+    // the admin surface does not exist there, so neither does its session.
+    const session = listener === 'admin' ? admin.sessionFor(req.headers.cookie) : null;
+
     const result = resolveTenant(
-      { peer: req.socket.remoteAddress ?? '', host: req.headers.host, headers, listener, session: null },
+      {
+        peer: req.socket.remoteAddress ?? '',
+        host: req.headers.host,
+        headers,
+        listener,
+        // Row 7 needs a tenant id; a fleet_admin session has none and resolves to
+        // the 404 that "no tenant here" is (§9.2).
+        session: session === null ? null : { tenantId: session.tenantId ?? -1 },
+      },
       {
         edgeToken: env.edgeToken,
         trustedCidrs: env.edgeTrustedCidrs,
@@ -290,7 +336,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     await app.close();
   }
 
-  return { app, env, tenants, close };
+  return { app, env, tenants, admin, close };
 }
 
 function pathnameOf(url: string): string {
