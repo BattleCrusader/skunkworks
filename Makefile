@@ -5,7 +5,7 @@
 # exit non-zero on failure.
 
 .PHONY: help test test-perf verify verify-toolchain verify-gitignore verify-schema verify-claims \
-        verify-claims-modern verify-frozen verify-s1 verify-dist build typecheck diagrams
+        verify-claims-modern verify-frozen verify-s1 verify-dist verify-no-leak build typecheck diagrams
 
 help:
 	@echo "make test                run every verification check (canonical, deterministic)"
@@ -38,7 +38,7 @@ MODERN_PYTHON ?= python3
 
 test: verify-toolchain verify
 
-verify: verify-gitignore verify-schema verify-claims verify-frozen verify-s1 verify-dist
+verify: verify-gitignore verify-schema verify-claims verify-frozen verify-s1 verify-dist verify-no-leak
 
 # E-15: preflight. Both imports are load-bearing — checks 17 and 21 need argon2, and
 # every check needs a SQLite that can apply the frozen chain.
@@ -118,6 +118,17 @@ verify-s1: verify-toolchain build typecheck
 # failure here (E-8, E-15).
 verify-dist: build
 	@node scripts/dist-gate.mjs
+
+# ITEM 0 (S4a): a run that leaves a `skw-*` container or network behind is red. It runs
+# **last** in `verify` on purpose — a leak is left by a file that has already finished, so
+# no test file can see it. The script carries its own negative control (create a
+# container, skip the teardown, require the audit to name it, remove it, require clean);
+# without that, a matcher that matches nothing would read as a tidy daemon.
+#
+# Docker is not optional here: the real-nginx gates already fail without a daemon (a skip
+# is a failure, E-15), so an audit that cannot query it is a failure too, not a pass.
+verify-no-leak: verify-s1
+	@node scripts/leak-gate.mjs --self-test
 
 # The performance gate. Not part of `make test`, and it says what it is before it runs: these
 # assertions are only meaningful on a box that is not already busy. The load-average guard refuses

@@ -190,7 +190,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   // per-surface one (4 × 19 MiB ≈ 76 MiB against the 1 GB container).
   const contentRoot = opts.contentRoot ?? DEFAULT_CONTENT_ROOT;
   const argon = new Semaphore(env.argon2MaxConcurrent);
-  const admin = new AdminSurface({ env, controlPath, tenants, adminHost, semaphore: argon, contentRoot });
+  const admin = new AdminSurface({ env, controlPath, tenants, adminHost, semaphore: argon, contentRoot, schemaDir });
 
   // --- S2e: one seal per tenant per UTC day (§9.6) -------------------------
   // The timer is unref'd, so it never keeps the process alive; `close()` stops it.
@@ -610,7 +610,10 @@ function sendError(reply: FastifyReply, err: unknown, requestId: string): void {
   const e = err as { statusCode?: number };
   const raw = typeof e.statusCode === 'number' && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500;
   const code = frameworkCode(raw);
-  // Never a stack, never a path, never a key, never a detail (§4.3).
+  // The wire carries no stack, no path, no key (§4.3). The operator's log does: a framework
+  // failure that is only ever `SKW_E_PLT_INTERNAL` is a bug nobody can find — this line is
+  // why the S4a editor's 500 named its own cause on the first run.
+  process.stderr.write(`unhandled: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
   reply.code(HTTP[code] ?? 500).type('application/json; charset=utf-8');
   void reply.send({ error: { code, requestId } });
 }

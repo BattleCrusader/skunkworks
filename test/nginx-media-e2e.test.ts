@@ -41,6 +41,7 @@ import { buildApp, type AppHandle } from '../app/main.ts';
 import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, header, type Res } from './helpers/http.ts';
+import { removeContainer, trackContainer } from './helpers/docker.ts';
 
 const SKIP = process.env.SKW_SKIP_DOCKER === '1';
 const HOST = 'acme.test';
@@ -208,7 +209,7 @@ before(async () => {
   );
 
   edgePort = await freePort();
-  container = `skw-nginx-media-${process.pid}`;
+  container = trackContainer(`skw-nginx-media-${process.pid}`);
   const run = spawnSync(
     'docker',
     [
@@ -234,7 +235,7 @@ before(async () => {
 });
 
 after(async () => {
-  if (container !== '') spawnSync('docker', ['rm', '-f', container], { encoding: 'utf8' });
+  removeContainer(container);
   if (handle !== undefined && appAlive) await handle.close();
   if (tmp !== '') rmSync(tmp, { recursive: true, force: true });
   if (fixture !== undefined) fixture.cleanup();

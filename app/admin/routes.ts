@@ -51,9 +51,18 @@
 import type Database from 'better-sqlite3';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { extOfMime } from '../assets/farm.ts';
+import { applyPick, mediaChoices, pickAsset } from '../editor/media.ts';
+import { loadRegistry, registryCss } from '../editor/registry.ts';
+import { loadForEditor, savePage } from '../editor/save.ts';
+import {
+  EDITOR_BOOT_JS,
+  grapesJsBundle,
+  grapesJsCss,
+  renderEditorPage,
+} from './editor.ts';
 import { emitCreateTable, registryRow, type CreateTableOp } from '../ddl/emit.ts';
 import { normaliseTableName, parseColumnLines } from '../ddl/form.ts';
 import { runDdl } from '../ddl/run.ts';
@@ -101,6 +110,17 @@ import {
 const KEY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const PAGE_ID_RE = /^[0-9]{1,18}$/;
 
+/**
+ * `cms_page.slug`'s CHECK is `^[a-z0-9][a-z0-9-]*$`: a slash is not a slug, so `/blog/post`
+ * becomes `blog-post` and `/` becomes `home`. The editor sends a slug when the operator
+ * set one; this is the derivation for the case where it did not.
+ */
+export function slugOf(path: string): string {
+  const trimmed = path.replace(/^\/+|\/+$/g, '');
+  const slug = trimmed === '' ? 'home' : trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug === '' ? 'home' : slug;
+}
+
 /** What the admin router calls when the request is not the admin surface after all. */
 export type NotFoundFallback = (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
 
@@ -117,6 +137,15 @@ export interface AdminOptions {
   semaphore?: Semaphore;
   /** `content/` — passed to the code issuer so an encrypted PDF is refused at issue. */
   contentRoot?: string;
+  /**
+   * `schema/` — S4a's editor reads `component-registry.json` from here at request time
+   * (once per page open) rather than at boot, so the palette and the types a document is
+   * validated against are the ones the image ships *now*.
+   *
+   * Required, not defaulted: a cwd fallback is a second way to find the schema directory,
+   * and E28-2 refuses a new runtime path site for exactly that reason.
+   */
+  schemaDir: string;
 }
 
 interface Headers {
@@ -214,6 +243,8 @@ export class AdminSurface {
   readonly #pendingTotp = new Map<string, PendingEnrolment>();
   /** Where `content/` is; the code issuer reads a PDF's trailer through it (§7.5). */
   readonly #contentRoot: string;
+  /** Where `schema/` is; the editor reads the component registry from it (S4a). */
+  readonly #schemaDir: string;
 
   constructor(opts: AdminOptions) {
     this.#env = opts.env;
@@ -225,6 +256,9 @@ export class AdminSurface {
     // about what the list is.
     this.#allowlist = opts.env.adminAllowlist;
     this.#contentRoot = opts.contentRoot ?? DEFAULT_CONTENT_ROOT;
+    // `schema/` sits beside `app/` in the repo and beside `dist/` in the image; main.ts
+    // resolves it through `findProjectRoot` and passes it, so this class never guesses.
+    this.#schemaDir = opts.schemaDir;
     this.#idleMs = idleMsFor(this.#allowlist);
     this.sessions = new SessionStore(opts.controlPath, opts.env.sessionKey, opts.env.ipHashKey, opts.env.dbBusyTimeoutMs);
     this.auth = new Auth({
@@ -562,6 +596,33 @@ ${items}
     }
     if (action === 'pages' && req.method === 'GET') {
       this.#pagesList(reply, tenant);
+      return;
+    }
+    // §10.1–§10.3 (S4a): the editor. The page is a GET; every write is origin- and
+    // CSRF-checked before the editor module sees a field, and the three static assets are
+    // served from this origin (a CDN would be a script the image does not ship).
+    if (action === 'editor' && req.method === 'GET') {
+      this.#editorPage(req, reply, tenant, session);
+      return;
+    }
+    if (action === 'editor/save' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      await this.#editorSave(req, reply, tenant, session);
+      return;
+    }
+    if (action === 'editor/pick' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#editorPick(req, reply, tenant);
+      return;
+    }
+    if (action === 'editor/media.json' && req.method === 'GET') {
+      this.#editorMedia(reply, tenant);
+      return;
+    }
+    if (action === 'editor/grapesjs.js' || action === 'editor/grapesjs.css' || action === 'editor/editor.js') {
+      this.#editorAsset(reply, action);
       return;
     }
     // §7.1 / §9: the media library — the thumbnail grid, the search, and the picker that
@@ -933,6 +994,169 @@ ${items}
       `<div class="grid">\n${grid}\n</div>`;
     reply.header('cache-control', 'no-store');
     reply.type('text/html; charset=utf-8').send(page('Media', body));
+  }
+
+  // --- §10.1–§10.3 (S4a): the editor ----------------------------------------
+
+  /**
+   * The editor page. `?page=<id>` opens a stored document; no id opens a blank one.
+   *
+   * The refusal happens **here**, before GrapesJS is handed the body: `loadForEditor()`
+   * runs the same validator the save path runs, so a page that names an unregistered
+   * `data-gjs-type` is `422 SKW_E_RT_COMPONENT_UNKNOWN` with the type in `detail` — and
+   * not a canvas in which the block has already degraded to a div.
+   */
+  #editorPage(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const registry = loadRegistry(this.#schemaDir);
+    const raw = new URL(req.url, 'http://admin.invalid').searchParams.get('page');
+    const db = this.#siteDb(tenant.key);
+    try {
+      const pageRow =
+        raw === null
+          ? null
+          : ((): { record: ReturnType<typeof loadForEditor>; css: string } => {
+              if (!PAGE_ID_RE.test(raw)) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'not a page id');
+              const record = loadForEditor(db, registry, Number(raw));
+              return { record, css: record.bodyCss };
+            })();
+      const body = renderEditorPage({
+        tenant: tenant.key,
+        page:
+          pageRow === null
+            ? null
+            : {
+                id: pageRow.record.id,
+                path: pageRow.record.path,
+                title: pageRow.record.title,
+                status: pageRow.record.status,
+                template: pageRow.record.template,
+                managedBy: pageRow.record.managedBy,
+                bodyHtml: pageRow.record.bodyHtml,
+                rev: pageRow.record.rev,
+              },
+        registry,
+        csrf: this.sessions.csrfToken(session),
+        bodyCss: pageRow?.css ?? registryCss(registry),
+      });
+      reply.header('cache-control', 'no-store');
+      reply.type('text/html; charset=utf-8').send(body);
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Save. The body is JSON (`{id?, path, title, template, html, css}`); `cms_page` is
+   * written through `savePage()`, which validates, canonicalises, validates the canonical
+   * bytes and writes the revision row in one transaction.
+   */
+  async #editorSave(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
+    const registry = loadRegistry(this.#schemaDir);
+    const fields = fieldsOf(req.body);
+    // `html` and `id` are read from the body rather than `fieldsOf`: that helper keeps only
+    // strings, and the boot script sends `id` as a number. Reading it as a string silently
+    // turned every re-save into a create, which the UNIQUE on `cms_page.path` then refused.
+    const body = (req.body ?? {}) as { html?: unknown; id?: unknown };
+    const html = body.html;
+    if (typeof html !== 'string') throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'html is required');
+    const path = fields.path ?? '/';
+    const title = fields.title ?? 'Untitled';
+    const rawId = typeof body.id === 'number' ? String(body.id) : body.id;
+    const id = rawId === undefined || rawId === '' || rawId === null ? null : Number(rawId);
+    if (id !== null && !Number.isInteger(id)) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'id must be an integer');
+
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const result = await savePage({
+        db,
+        registry,
+        pageId: id,
+        path,
+        slug: fields.slug ?? slugOf(path),
+        title,
+        template: fields.template ?? 'page',
+        status: fields.status ?? 'draft',
+        html,
+        css: fields.css ?? '',
+        actorId: session.userId,
+      });
+      const user = this.auth.userById(session.userId);
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: user?.email ?? `user ${session.userId}`,
+        action: result.created ? 'page.create' : 'page.update',
+        targetKind: 'cms_page',
+        targetId: String(result.id),
+        ip: req.socket.remoteAddress ?? '',
+      });
+      reply.header('cache-control', 'no-store');
+      reply.send({
+        tenant: tenant.key,
+        id: result.id,
+        created: result.created,
+        rev: result.rev,
+        bodyHtml: result.bodyHtml,
+        bodySha: result.bodySha,
+        items: result.items,
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  /** The picker: `{html, type, prop, field, key}` -> the document with `data-asset-key` set. */
+  #editorPick(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): void {
+    const fields = fieldsOf(req.body);
+    const html = (req.body as { html?: unknown } | undefined)?.html;
+    if (typeof html !== 'string') throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'html is required');
+    const type = fields.type;
+    const key = fields.key;
+    if (type === undefined || key === undefined) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'type and key are required');
+    }
+    const db = this.#siteDb(tenant.key);
+    try {
+      // The key must name a row: a picker that accepted an arbitrary string would let a
+      // body name an asset that does not exist, and the render would fail at 503.
+      const chosen = pickAsset(db, key);
+      const field = fields.field === 'asset' || fields.field === 'href' ? fields.field : 'text';
+      const target: { type: string; field: 'asset' | 'text' | 'href'; prop?: string } = { type, field };
+      if (fields.prop !== undefined) target.prop = fields.prop;
+      const next = applyPick(html, target, chosen.key);
+      reply.header('cache-control', 'no-store');
+      reply.send({ tenant: tenant.key, key: chosen.key, previewUrl: chosen.previewUrl, html: next });
+    } finally {
+      db.close();
+    }
+  }
+
+  /** The picker's list — keys and canvas-only thumbnails; never a URL a body may store. */
+  #editorMedia(reply: FastifyReply, tenant: Tenant): void {
+    const db = this.#siteDb(tenant.key);
+    try {
+      reply.header('cache-control', 'no-store');
+      reply.send({ tenant: tenant.key, assets: mediaChoices(db) });
+    } finally {
+      db.close();
+    }
+  }
+
+  /** The vendored editor bundle, its stylesheet, and the boot script (a constant). */
+  #editorAsset(reply: FastifyReply, action: string): void {
+    const repoRoot = dirname(this.#schemaDir);
+    if (action === 'editor/editor.js') {
+      reply.header('cache-control', 'no-store');
+      reply.type('text/javascript; charset=utf-8').send(EDITOR_BOOT_JS);
+      return;
+    }
+    if (action === 'editor/grapesjs.css') {
+      reply.header('cache-control', 'public, max-age=86400');
+      reply.type('text/css; charset=utf-8').send(grapesJsCss(repoRoot));
+      return;
+    }
+    reply.header('cache-control', 'public, max-age=86400');
+    reply.type('text/javascript; charset=utf-8').send(grapesJsBundle(repoRoot));
   }
 
   #mediaJson(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): void {

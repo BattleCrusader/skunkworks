@@ -96,6 +96,35 @@ export const HTTP: Record<string, number> = {
   SKW_E_RT_SOURCE_UNKNOWN: 422,
   SKW_E_RT_SOURCE_UNINDEXED: 422,
   SKW_E_RT_SOURCE_BUDGET: 422,
+  // §10.2/§10.3 (S4a): the editor's three refusals. COMPONENT_UNKNOWN is the one that
+  // must fire **before** GrapesJS sees the document — it strips an unregistered type and
+  // degrades the block to a div (176 B -> 110 B), so the evidence no longer exists after
+  // a load. NESTING is the registry's `allowed_children`. PAGE_READONLY is §10.6: a
+  // hand-managed page opens read-only, and the save path says so rather than re-serialising.
+  SKW_E_RT_COMPONENT_UNKNOWN: 422,
+  SKW_E_RT_COMPONENT_NESTING: 422,
+  SKW_E_RT_PAGE_READONLY: 409,
+  // §10.3/§10.5 and §6.3's render half: the four the JSON has always frozen and the app
+  // map did not carry. `test/error-codes.test.ts` now asserts the mirror **both ways**, so
+  // this list and `schema/error-codes.json` cannot drift again.
+  SKW_E_RT_BODY_FORBIDDEN: 422,
+  SKW_E_RT_ROUNDTRIP_UNSTABLE: 422,
+  SKW_E_RT_TEMPLATE_UNKNOWN: 422,
+  SKW_E_RT_SOURCE_TIMEOUT: 504,
+  SKW_E_RT_LOOP_CONGESTED: 503,
+  // §11.3's six pre-flight refusals and the plugin plane's export/trust codes: frozen in
+  // the JSON from S1/S2, first mapped here because S4b's exporters are the caller.
+  SKW_E_EXP_GATED_ASSETS: 409,
+  SKW_E_EXP_MEDIA_GRAPH_OPEN: 409,
+  SKW_E_EXP_PARAMETERISED: 422,
+  SKW_E_EXP_NOT_QUIESCENT: 409,
+  SKW_E_EXP_INSUFFICIENT_DISK: 507,
+  SKW_E_EXP_TENANT_NOT_FOUND: 404,
+  SKW_E_PL_SIGNATURE: 409,
+  SKW_E_PL_REVOKED: 409,
+  SKW_E_PL_TESTS_STALE: 409,
+  SKW_E_PL_NO_EXPORT_CLASS: 409,
+  SKW_E_PL_UNAVAILABLE: 503,
 };
 
 /**

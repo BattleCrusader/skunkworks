@@ -28,6 +28,7 @@ import { loadEnv } from '../app/env.ts';
 import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, header, postRaw } from './helpers/http.ts';
+import { removeContainer, trackContainer } from './helpers/docker.ts';
 
 const SKIP = process.env.SKW_SKIP_DOCKER === '1';
 
@@ -185,7 +186,7 @@ before(async () => {
   );
 
   edgePort = await freePort();
-  container = `skw-nginx-e2e-${process.pid}`;
+  container = trackContainer(`skw-nginx-e2e-${process.pid}`);
   const run = spawnSync(
     'docker',
     [
@@ -236,7 +237,7 @@ before(async () => {
     text = text.replace(/listen 443 ssl;/g, '').replace(/proxy_pass http:\/\/app:3000;/g, `proxy_pass http://${gateway}:${appPort};`);
     writeFileSync(join(c, '10-app.conf'), text);
     const port = await freePort();
-    const name_ = `skw-nginx-e2e-${name}-${process.pid}`;
+    const name_ = trackContainer(`skw-nginx-e2e-${name}-${process.pid}`);
     const run2 = spawnSync(
       'docker',
       [
@@ -269,9 +270,7 @@ before(async () => {
 });
 
 after(async () => {
-  for (const name of [container, allowContainer, denyContainer]) {
-    if (name !== '') spawnSync('docker', ['rm', '-f', name], { encoding: 'utf8' });
-  }
+  for (const name of [container, allowContainer, denyContainer]) removeContainer(name);
   for (const dir of [tmp, accessLog === '' ? '' : dirname(accessLog)]) {
     if (dir !== '') rmSync(dir, { recursive: true, force: true });
   }

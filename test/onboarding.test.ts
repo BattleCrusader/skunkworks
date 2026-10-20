@@ -29,6 +29,7 @@ import { migrateTenant } from '../app/db/migrate.ts';
 import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call } from './helpers/http.ts';
+import { removeContainer, trackContainer } from './helpers/docker.ts';
 
 const SKIP = process.env.SKW_SKIP_DOCKER === '1';
 
@@ -122,7 +123,7 @@ before(async () => {
   );
 
   edgePort = await freePort();
-  container = `skw-onboarding-${process.pid}`;
+  container = trackContainer(`skw-onboarding-${process.pid}`);
   const run = spawnSync(
     'docker',
     [
@@ -177,7 +178,7 @@ function nginx(args: string[]): { status: number; out: string } {
 }
 
 after(async () => {
-  if (container !== '') spawnSync('docker', ['rm', '-f', container], { encoding: 'utf8' });
+  removeContainer(container);
   if (tmp !== '') rmSync(tmp, { recursive: true, force: true });
   if (handle !== undefined) await handle.close();
   if (fixture !== undefined) fixture.cleanup();

@@ -1832,6 +1832,27 @@ consumers read it:
 Adding a component is one file plus one JSON row plus an image release. That is the honest cost of D21 as
 amended: a bespoke interaction is a component release, not a content edit (CEO-2).
 
+### 10.2a The registry's editor fields (S4a)
+
+`schema/component-registry.json` v4 carries the editor half of every entry beside the four columns
+the table holds: `type` (the `data-gjs-type`, always the entry's `name`), `label` and `category`
+(the palette), `editable` (the `data-prop` fields the settings panel may write), `allowed_children`
+(the nesting rule), `html` (the block the palette inserts and the renderer emits) and `css` (one
+rule set per component; `cms_page.body_css` is their concatenation). `cms_component_registry` does
+not hold them: they describe the **editor**, not the render, and a column per editor detail would
+make every palette change a migration on a protected table.
+
+Three refusals are boot gates, not conventions, because each one is silent otherwise:
+
+| a registry that… | is refused with | because |
+|---|---|---|
+| names a `type` that is one of GrapesJS's own (`image`, `link`, `table`, …) | `SKW_E_PLT_INTERNAL`, naming the entry | `addType('image', …)` does not replace the built-in model, which writes `src="data:image/svg+xml;base64,…"` into the body on save (measured, R2 Runtime M1/M2) |
+| declares an `editable` prop its own `html` does not carry | `SKW_E_PLT_INTERNAL`, naming the entry | the settings panel would offer a field that edits nothing |
+| allows a child that is not registered, or is a shell | `SKW_E_PLT_INTERNAL`, naming the entry | `allowed_children` **is** the nesting rule; a typo would silently forbid or silently permit |
+
+The palette is a projection of the file (`palette()` in `app/editor/registry.ts`), never a second
+list: a test adds an entry and the palette grows with no other edit.
+
 ### 10.3 The round-trip gate is a fixpoint
 
 ```

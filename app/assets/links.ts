@@ -43,12 +43,26 @@ export function resolveAssetId(db: Database.Database, key: string): number | und
   return alias?.asset_id;
 }
 
-/** `/media/<key>.<ext>` anywhere in a body, de-duplicated, in first-seen order. */
+/**
+ * `/media/<key>.<ext>` or `data-asset-key="<key>"` anywhere in a body, de-duplicated, in
+ * first-seen order.
+ *
+ * Both spellings, because D17 (S4a) means an editor-authored body names the **key** and the
+ * URL is derived at render: a body that only carried `data-asset-key` would otherwise own no
+ * `cms_asset_link`, and the export's gated-asset refusal (§11.3 refusal 2) would pass over
+ * the very asset it exists to find.
+ */
 export function assetRefsInHtml(html: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
-  const pattern = /\/media\/([a-z0-9][a-z0-9/_.-]*?)\.(?:webp|jpe?g|png|avif|pdf|mp4|mp3|zip)(?=["'?#\s>)]|$)/gi;
+  const pattern = /\/media\/([a-z0-9][a-z0-9/_.-]*?)(?:@[a-z0-9-]+)?\.(?:webp|jpe?g|png|avif|pdf|mp4|mp3|zip)(?=[\"'?#\s>)]|$)/gi;
   for (const match of html.matchAll(pattern)) {
+    const key = (match[1] ?? '').toLowerCase();
+    if (key === '' || !KEY_SHAPE.test(key) || key.includes('..') || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  for (const match of html.matchAll(/data-asset-key="([^"]*)"/gi)) {
     const key = (match[1] ?? '').toLowerCase();
     if (key === '' || !KEY_SHAPE.test(key) || key.includes('..') || seen.has(key)) continue;
     seen.add(key);

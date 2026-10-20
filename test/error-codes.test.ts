@@ -28,6 +28,12 @@ test('every code the app can raise exists in the JSON, with the same status', ()
   for (const [code, status] of Object.entries(HTTP)) {
     assert.equal(codes.http[code], status, `${code} disagrees with schema/error-codes.json`);
   }
+  // Both directions. The one-way check above let sixteen frozen codes (five RT, six EXP,
+  // five PL) live in the JSON and not in the app map, so an AppError for any of them threw
+  // "no HTTP mapping" at the moment it was raised. The mirror is the gate.
+  for (const code of Object.keys(codes.http)) {
+    assert.equal(typeof HTTP[code], 'number', `${code} is frozen in schema/error-codes.json but the app has no mapping`);
+  }
 });
 
 test('every Retry-After the app sends is the frozen value', () => {
@@ -55,7 +61,7 @@ test('the codes S1 raises are all mapped, and the four E-4 additions are part of
   // a Retry-After. The count is the gate: the app map, the JSON and this number move
   // together or the suite is red.
   const total = Object.values(codes.areas).reduce((n, names) => n + names.length, 0);
-  assert.equal(total, 72, `the taxonomy holds ${total} codes, expected 72 (E-16)`);
+  assert.equal(total, 75, `the taxonomy holds ${total} codes, expected 75 (S4a: RT COMPONENT_UNKNOWN, COMPONENT_NESTING, PAGE_READONLY)`);
   for (const code of ['SKW_E_RT_PAGE_NOT_FOUND', 'SKW_E_PLT_INTERNAL', 'SKW_E_PLT_REQUEST_INVALID', 'SKW_E_PLT_BODY_TOO_LARGE']) {
     assert.equal(codes.retry_after?.[code], undefined, `${code} must not carry Retry-After`);
   }
