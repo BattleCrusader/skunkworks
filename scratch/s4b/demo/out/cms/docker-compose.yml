@@ -1,0 +1,99 @@
+# Skunkworks — four services, four cgroups, four trust boundaries (SDS §12.1, C-8).
+#
+# There is no `migrate` service: `app` runs the migration itself and reports per
+# tenant (§2.3, C-10), because a one-shot gate makes one tenant's corruption a
+# fleet-wide outage.
+#
+# `app` publishes NO port. It is reachable only from the nginx network, and the
+# admin surface is a hostname, not a port (C-11, §9.1).
+name: skunkworks
+
+x-app-environment: &app-environment
+  SKW_DATA_DIR: /srv/data
+  SKW_BUILD_ID: ${SKW_BUILD_ID:?SKW_BUILD_ID is required}
+  SKW_EDGE_TOKEN: ${SKW_EDGE_TOKEN:?SKW_EDGE_TOKEN is required}
+  SKW_EDGE_TRUSTED_CIDRS: ${SKW_EDGE_TRUSTED_CIDRS:-127.0.0.1/32,172.16.0.0/12}
+  SKW_SESSION_KEY: ${SKW_SESSION_KEY:?SKW_SESSION_KEY is required}
+  SKW_DOWNLOAD_TOKEN_KEY: ${SKW_DOWNLOAD_TOKEN_KEY:?SKW_DOWNLOAD_TOKEN_KEY is required}
+  SKW_IP_HASH_KEY: ${SKW_IP_HASH_KEY:?SKW_IP_HASH_KEY is required}
+  SKW_ADMIN_ORIGIN: ${SKW_ADMIN_ORIGIN:?SKW_ADMIN_ORIGIN is required}
+  SKW_ARGON2_MAX_CONCURRENT: ${SKW_ARGON2_MAX_CONCURRENT:-4}
+  SKW_DB_POOL_MAX: ${SKW_DB_POOL_MAX:-64}
+  SKW_DB_BUSY_TIMEOUT_MS: ${SKW_DB_BUSY_TIMEOUT_MS:-5000}
+  SKW_DDL_MAX_STATEMENTS: ${SKW_DDL_MAX_STATEMENTS:-8}
+  SKW_RENDER_MODE: ${SKW_RENDER_MODE:-live}
+  SKW_SCHEMA_EDIT: ${SKW_SCHEMA_EDIT:-off}
+  SKW_FLEET_MODE: ${SKW_FLEET_MODE:-1}
+  SKW_SNAPSHOT_MAX_COMBOS: ${SKW_SNAPSHOT_MAX_COMBOS:-1024}
+  SKW_SNAPSHOT_MAX_BYTES: ${SKW_SNAPSHOT_MAX_BYTES:-2097152}
+  SKW_REPOINT_MAX_ROWS: ${SKW_REPOINT_MAX_ROWS:-5000}
+  SKW_BOX_RPS: ${SKW_BOX_RPS:-192}
+  SKW_EMAIL_MODE: ${SKW_EMAIL_MODE:-off}
+  # §9.1a (E-17): the edge reads it to emit allow/deny, the app reads it for TOTP
+  # and the idle window. It must reach both, or they disagree about the control.
+  SKW_ADMIN_ALLOWLIST: ${SKW_ADMIN_ALLOWLIST:-}
+  UV_THREADPOOL_SIZE: "8"
+
+services:
+  nginx:
+    image: nginx:1.31-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./snippets:/etc/nginx/snippets:ro
+      - ./content:/srv/content:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - app
+
+  app:
+    # D10: a digest, never a tag. install.sh pins the released digest.
+    image: ghcr.io/skunkworks/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    restart: unless-stopped
+    expose:
+      - "3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    user: "10001:10001"
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./data:/srv/data
+      - ./content:/srv/content
+      - ./run:/srv/run
+    environment: *app-environment
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+
+  plugin-runner:
+    image: ghcr.io/skunkworks/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./data/plugins:/srv/plugins:ro
+      - ./run:/srv/run
+      - ./data/scratch:/srv/scratch
+
+  acme:
+    image: nginxproxy/acme-companion
+    restart: unless-stopped
+    environment:
+      NGINX_PROXY_CONTAINER: nginx
+      DEFAULT_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    volumes:
+      - ./certs:/etc/nginx/certs
+      - /var/run/docker.sock:/var/run/docker.sock:ro

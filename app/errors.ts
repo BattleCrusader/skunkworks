@@ -124,6 +124,11 @@ export const HTTP: Record<string, number> = {
   SKW_E_EXP_NOT_QUIESCENT: 409,
   SKW_E_EXP_INSUFFICIENT_DISK: 507,
   SKW_E_EXP_TENANT_NOT_FOUND: 404,
+  // S4b: the two the projection raises when a stored row cannot become a page. A body
+  // that is still a document after `unwrapBody()` (§3.2 of the S4a-fix report), and a body
+  // naming a key with no row or no bytes. Both are refusals by name, never a skipped page.
+  SKW_E_EXP_BODY_UNNORMALISABLE: 409,
+  SKW_E_EXP_ASSET_UNRESOLVED: 409,
   SKW_E_PL_SIGNATURE: 409,
   SKW_E_PL_REVOKED: 409,
   SKW_E_PL_TESTS_STALE: 409,

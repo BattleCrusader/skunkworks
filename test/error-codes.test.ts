@@ -62,8 +62,10 @@ test('the codes S1 raises are all mapped, and the four E-4 additions are part of
   // together or the suite is red.
   // S4a-fix: 75 -> 76 — COMPONENT_INVENTORY, the save path's refusal when the canvas's
   // inventory and the locks in the bytes it is about to store disagree.
+  // S4b: 76 -> 78 — EXP BODY_UNNORMALISABLE and ASSET_UNRESOLVED, the projection's two
+  // refusals for a stored row that cannot become a page (never a skipped page).
   const total = Object.values(codes.areas).reduce((n, names) => n + names.length, 0);
-  assert.equal(total, 76, `the taxonomy holds ${total} codes, expected 76 (S4a-fix: RT COMPONENT_INVENTORY)`);
+  assert.equal(total, 78, `the taxonomy holds ${total} codes, expected 78 (S4b: EXP BODY_UNNORMALISABLE, ASSET_UNRESOLVED)`);
   for (const code of ['SKW_E_RT_PAGE_NOT_FOUND', 'SKW_E_PLT_INTERNAL', 'SKW_E_PLT_REQUEST_INVALID', 'SKW_E_PLT_BODY_TOO_LARGE']) {
     assert.equal(codes.retry_after?.[code], undefined, `${code} must not carry Retry-After`);
   }

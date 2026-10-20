@@ -30,6 +30,7 @@ import {
   targetVersion,
 } from './db/migrate.ts';
 import { normalisePagePath, pageMiss } from './render/page.ts';
+import { renderStoredBody } from './render/body.ts';
 import { createRenderData } from './render/data.ts';
 import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
 import { SourceCache } from './sources/cache.ts';
@@ -436,7 +437,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       sessionKey: env.sessionKey,
     });
     if (loaded.page === null) throw pageMiss();
-    const page = loaded.page;
+    // §10.3/§11.2: the stored bytes are a fragment that names **keys**; `renderStoredBody`
+    // unwraps a legacy row and derives every asset URL. It is the same function the three
+    // exporters call, so a page cannot render one way here and another way in a bundle —
+    // and an export gate that breaks this line breaks the served page too (S4b's mutation
+    // proof). Before S4b the serve path never called it, and a live page shipped
+    // `<img data-asset-key="work/one">` with no `src` (D17).
+    const page = { ...loaded.page, bodyHtml: renderStoredBody(db, loaded.page.bodyHtml) };
     // §6: templates receive resolved data through one accessor and never a handle.
     const data = createRenderData(db, { tenantKey: ctx.tenant.key, cache: sources, audience: loaded.preview ? 'preview' : 'render' });
     const handler = await astroHandler();
