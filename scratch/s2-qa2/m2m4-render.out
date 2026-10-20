@@ -1,0 +1,14 @@
+published query source `posts` over u_posts (columns title,slug; where status; limit_max 5)
+  a0. resolve before any drift                   RESOLVED rows=3 limit=3 truncated=false
+  b. limit: "5" (string, as an attribute)        RESOLVED rows=3 limit=3 truncated=false
+  c. limit: 2.7                                  RESOLVED rows=2 limit=2 truncated=false
+  d. limit: 1000 (limit_max 5)                   RESOLVED rows=3 limit=5 truncated=true
+
+dropped u_posts.slug out of band (not through the DDL runner)
+  live columns now: id, title, status, published_at
+  a1. resolve after the drop (allowlist re-check) REFUSED code=SQLITE_ERROR reason=undefined column=undefined param=undefined msg=no such column: "slug" - should this be a string literal in single-quotes?
+
+source `posts` spec still names slug; §6.2 row 1 says the allowlist is re-checked at render
+
+  e0. resolve notes before the in-band drop   RESOLVED rows=1
+  e1. resolve notes after the in-band drop    REFUSED code=SKW_E_RT_SOURCE_UNKNOWN reason=column_not_allowed column=body

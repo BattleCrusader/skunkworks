@@ -1,0 +1,28 @@
+M1 part 1 — a published `view` source, re-pointed out of band
+
+  sqlite_master.sql at publish                 "CREATE VIEW cms_v_posts_public AS SELECT title FROM u_posts WHERE status = 'published'"
+  registry checksum                            3595aa0d25c12ea8…
+  publish view source                          ok published_at=2026-10-20T07:41:29.350Z plan=[] cost_rows=3
+  resolve before the re-point                  RESOLVED rows=[{"title":"Post 1"},{"title":"Post 2"},{"title":"Post 3"}]
+  sqlite_master.sql after re-point             "CREATE VIEW cms_v_posts_public AS SELECT path AS title FROM cms_page"
+  registry checksum (unchanged)                3595aa0d25c12ea8…
+  cms_page rows that must NOT be served        [{"title":"/pricing"}]
+view_checksum tenant=acme relation=cms_v_posts_public registered=3595aa0d25c12ea8 found=7f1881534cf48b0a
+  resolve after the re-point                   REFUSED SKW_E_RT_SOURCE_UNKNOWN reason=view_checksum registered=3595aa0d25c12ea8 found=7f1881534cf48b0a
+  cms_datasource untouched?                    {"key":"view-posts","published":1}
+
+M1 part 2 — a DDL op that changes a published view, through the runner
+
+  publish view source over cms_v_posts_2       ok published_at=2026-10-20T07:41:29.394Z
+  resolve before the DDL                       RESOLVED rows=[{"title":"Post 1"},{"title":"Post 2"},{"title":"Post 3"}]
+  runDdl rename_table                          ops=1 statements=1 audit=[{"from":"ddl.rename_table","to":"u_posts_2"}]
+  view body now names                          "CREATE VIEW cms_v_posts_2 AS SELECT title FROM \"u_posts_2\" WHERE status = 'published'"
+  registry checksum moved?                     YES 32b2c021fe4f… -> 70174426da73…
+  cms_datasource published_at                  {"key":"view-ddl","published_at":null,"is_public":0}
+  audit rows added                             [{"action":"source.view_redefined","target_kind":"view","target_id":"cms_v_posts_2","before_json":"{\"checksum\":\"32b2c021fe4f5117e0bd8f1d6eb33c10184b70dd74e28c06ecb714135e9fa718\"}","after_json":"{\"checksum\":\"70174426da73daf4dd4d9d74e790ada83266787585082cbb535814d932232967\",\"unpublished\":[\"view-ddl\"]}"},{"action":"ddl.rename_table","target_kind":"u_table","target_id":"u_posts_2","before_json":"{\"table\":\"u_posts\"}","after_json":"{\"table\":\"u_posts_2\"}"},{"action":"source.publish","target_kind":"cms_datasource","target_id":"view-ddl","before_json":null,"after_json":"{\"kind\":\"view\",\"is_public\":true,\"plan\":[],\"cost_ms_max\":0.01691700000000651,\"published_at\":\"2026-10-20T07:41:29.394Z\"}"},{"action":"source.publish","target_kind":"cms_datasource","target_id":"view-posts","before_json":null,"after_json":"{\"kind\":\"view\",\"is_public\":true,\"plan\":[],\"cost_ms_max\":0.02708299999999042,\"published_at\":\"2026-10-20T07:41:29.350Z\"}"}]
+  cms_audit count (was 4)                      6
+  resolve after the DDL                        REFUSED SKW_E_RT_SOURCE_UNKNOWN reason=not_published registered=undefined found=undefined
+  republish                                    ok published_at=2026-10-20T07:41:29.409Z
+  resolve after the republish                  RESOLVED rows=[{"title":"Post 1"},{"title":"Post 2"},{"title":"Post 3"}]
+
+view checksum hashing counter: {"viewChecksumHashes":7,"stampMoves":0}
