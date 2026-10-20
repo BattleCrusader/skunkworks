@@ -29,10 +29,22 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 
-const require = createRequire(import.meta.url);
+/**
+ * SQLite, through `node:sqlite` — the SQLite **inside the Node the bundle already
+ * requires**. Before S4c this file lazy-required `better-sqlite3`, which meant the
+ * verifier refused every bundle on a host without a compiler (or silently had no notion
+ * of the render table at all). A verifier that runs only where the product's native
+ * module was built is a verifier that never runs on the host that matters.
+ */
+let SQLite;
+try {
+  ({ DatabaseSync: SQLite } = await import('node:sqlite'));
+} catch (err) {
+  process.stderr.write(`bundle_verify: REFUSAL: node:sqlite is not available (${String(err)})\n`);
+  process.exit(12);
+}
 
 const args = process.argv.slice(2);
 const i = args.indexOf('--bundle');
@@ -76,33 +88,73 @@ function isProtected(relPath) {
 }
 
 /**
- * Rows in `cms_watermark_render`, or 0. `null` means the file is not a database we could
- * open — and a database we cannot read is a refusal, not a pass: the check is the reason
- * this file exists.
+ * Rows in `cms_watermark_render`, or a refusal. A database we cannot read is not a pass:
+ * the check is the reason this file exists.
  */
 function renderRows(path) {
-  let Database;
+  let db;
   try {
-    // Lazy, because a bundle with no database in it must verify on a box where the native
-    // module has not been built yet.
-    Database = require('better-sqlite3');
+    db = new SQLite(path, { readOnly: true });
   } catch (err) {
-    return { rows: null, why: `better-sqlite3 is not installed, so the render table cannot be read (${String(err)})` };
+    refuse(`cannot open ${path}: ${String(err)}`);
   }
   try {
-    const db = new Database(path, { readonly: true, fileMustExist: true });
-    try {
-      const table = db
-        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_watermark_render'`)
-        .get();
-      if (table === undefined) return { rows: 0, why: '' };
-      const n = Number(db.prepare(`SELECT COUNT(*) AS n FROM cms_watermark_render`).get().n);
-      return { rows: n, why: '' };
-    } finally {
-      db.close();
-    }
+    const table = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_watermark_render'`).get();
+    if (table === undefined) return 0;
+    return Number(db.prepare(`SELECT COUNT(*) AS n FROM cms_watermark_render`).get().n);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * S4c: every `cms_plugin_installed` row needs its package under `plugins/<id>/`.
+ *
+ * The row is the claim; the package is the code. A bundle that ships one without the
+ * other installs a site whose plugin tables exist and whose widget 500s on first render.
+ * All violations are returned so one install names all of them.
+ */
+function pluginsWithoutPackages(path) {
+  let db;
+  try {
+    db = new SQLite(path, { readOnly: true });
   } catch (err) {
-    return { rows: null, why: `the database could not be read: ${String(err)}` };
+    refuse(`cannot open ${path}: ${String(err)}`);
+  }
+  try {
+    const table = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_plugin_installed'`)
+      .get();
+    if (table === undefined) return [];
+    const rows = db.prepare('SELECT id, plugin_id FROM cms_plugin_installed ORDER BY id').all();
+    const missing = [];
+    for (const row of rows) {
+      const pkg = join(bundle, 'plugins', String(row.plugin_id), 'plugin.json');
+      if (!existsSync(pkg)) missing.push({ id: Number(row.id), plugin: String(row.plugin_id) });
+    }
+    return missing;
+  } finally {
+    db.close();
+  }
+}
+
+// --- 0. the seed describes the schema it will be applied to (S4c) ----------------
+// `data/control.seed.json` said `schema_version: 3` while `schema/control.sql` declared
+// `PRAGMA user_version = 4`, and nothing read either (S4b report §9.1). A verifier is the
+// one place where two files that disagree can be compared *before* anything is created.
+const seedPath = join(bundle, 'data', 'control.seed.json');
+const controlSql = join(bundle, 'schema', 'control.sql');
+if (existsSync(seedPath)) {
+  if (!existsSync(controlSql)) refuse('data/control.seed.json is present but schema/control.sql is not; the seed cannot be checked');
+  const seed = JSON.parse(readFileSync(seedPath, 'utf8'));
+  const declared = /PRAGMA\s+user_version\s*=\s*(\d+)/i.exec(readFileSync(controlSql, 'utf8'));
+  if (declared === null) refuse('schema/control.sql declares no PRAGMA user_version');
+  const schemaVersion = Number(declared[1]);
+  if (seed.schema_version !== schemaVersion) {
+    refuse(
+      `data/control.seed.json says schema_version ${String(seed.schema_version)} but schema/control.sql declares ${String(schemaVersion)}` +
+        ' — a bundle whose seed and schema disagree seeds a database it cannot describe',
+    );
   }
 }
 
@@ -138,9 +190,16 @@ for (const file of files) {
   const digest = createHash('sha256').update(bytes).digest('hex');
   if (digest !== file.sha256.toLowerCase()) refuse(`sha256 mismatch: ${file.path}`);
   if (/\.(db|sqlite|sqlite3)$/i.test(normalised)) {
-    const { rows, why } = renderRows(full);
-    if (rows === null) refuse(`cannot prove ${file.path} carries no render rows: ${why}`);
+    const rows = renderRows(full);
     if (rows > 0) refuse(`${file.path} carries ${rows} cms_watermark_render row(s); a render never appears in a bundle`);
+    const missing = pluginsWithoutPackages(full);
+    if (missing.length > 0) {
+      refuse(
+        `${file.path}: ${missing
+          .map((m) => `plugin ${m.plugin} (cms_plugin_installed row ${m.id}) has no package at plugins/${m.plugin}/`)
+          .join('; ')} — a plugin row without its code is a site that fails on first render`,
+      );
+    }
   }
   checked += 1;
 }

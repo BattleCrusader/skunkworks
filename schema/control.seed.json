@@ -1,7 +1,7 @@
 {
   "$comment": "E-19 / SDS §11.6: the seed a bundle carries. NOT a fleet file and NOT a credential. One production tenant, its hosts, and one `owner` user that is a CLAIM MARKER: must_change=1, totp_secret NULL, and a password_hash that is a real argon2id hash at the frozen cost (m=19456,t=2,p=1) of 32 random bytes discarded at export — so a verification costs exactly what a real one costs and can never succeed. `install.sh` applies schema/control.sql, seeds exactly these rows in one transaction, then runs `skwctl admin bootstrap`, which is the only step that produces a credential a human holds. No bundle may carry a non-NULL totp_secret (a §11.3 preflight refusal) or a populated user row.",
   "version": 1,
-  "schema_version": 3,
+  "schema_version": 4,
   "tenants": [
     {
       "key": "acme",

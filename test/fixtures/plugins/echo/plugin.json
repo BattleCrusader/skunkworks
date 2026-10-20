@@ -1,0 +1,11 @@
+{
+  "id": "echo",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "description": "S4c's reference package: answers one op, proves the capability gate, and touches nothing it was not granted.",
+  "capabilities": ["util.now", "util.hash", "log.write", "store.query"],
+  "tables": [
+    { "name": "p_echo_note", "export": "rows" }
+  ],
+  "tests": { "entry": "index.mjs", "timeout_s": 5 }
+}

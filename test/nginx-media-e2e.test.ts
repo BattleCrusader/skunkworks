@@ -171,6 +171,7 @@ before(async () => {
   mkdirSync(snippets, { recursive: true });
   const snippet = readFileSync(join(REPO, 'snippets', 'skunk-proxy.conf'), 'utf8');
   writeFileSync(join(snippets, 'skunk-proxy.conf'), snippet.replaceAll('__SKW_EDGE_TOKEN__', EDGE_TOKEN));
+  writeFileSync(join(snippets, 'skunk-csp.conf'), readFileSync(join(REPO, 'snippets', 'skunk-csp.conf')));
   writeFileSync(join(conf, '00-default.conf'), 'server { listen 80 default_server; server_name _; location / { return 404; } }\n');
 
   const gateway = hostGatewayIPv4();

@@ -70,6 +70,10 @@ export const REFUSAL_EXIT: Record<string, number> = {
   SKW_E_PL_EXPORT_FORWARD_NO_TARGET: 23,
   SKW_E_EXP_NOT_QUIESCENT: 24,
   SKW_E_EXP_INSUFFICIENT_DISK: 25,
+  SKW_E_EXP_WRITER_ACTIVE: 26,
+  // S4c: the bundle cannot carry the code a `cms_plugin_installed` row claims. 20 is
+  // this slice's addition to §11.3's list; the refusal is a plugin gap, not a content one.
+  SKW_E_PL_EXPORT_PACKAGE_MISSING: 20,
 };
 
 export interface Refusal {

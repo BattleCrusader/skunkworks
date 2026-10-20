@@ -27,6 +27,7 @@ import { assetFile, type Projection } from './project.ts';
 import { filterLockfile, readSourceLock, resolvedVersion } from './lockfile.ts';
 import { mediaFile } from './static.ts';
 import type { TreeFile } from './tree.ts';
+import { CSP_CONF_FILE, cspConf } from '../render/csp.ts';
 
 export interface AstroOptions {
   projection: Projection;
@@ -213,6 +214,9 @@ export function planAstro(options: AstroOptions): TreeFile[] {
   for (const asset of projection.referenced) {
     files.push({ path: `public/${mediaFile(asset.url)}`, bytes: readFileSync(assetFile(options.contentRoot, asset)) });
   }
+
+  // §10.5 (C-12, S4c): the CSP line, byte-identical to the static tree's and the bundle's.
+  files.push({ path: CSP_CONF_FILE, bytes: cspConf() });
 
   files.push({ path: 'README.md', bytes: README });
   files.push({

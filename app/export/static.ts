@@ -21,6 +21,7 @@ import type { TreeFile } from './tree.ts';
 import { renderDocument } from './document.ts';
 import { renderNotes } from './notes.ts';
 import { assetFile, type Projection } from './project.ts';
+import { CSP_CONF_FILE, cspConf } from '../render/csp.ts';
 
 export interface StaticOptions {
   projection: Projection;
@@ -70,6 +71,10 @@ export function planStatic(options: StaticOptions): TreeFile[] {
   for (const asset of projection.referenced) {
     files.push({ path: mediaFile(asset.url), bytes: readFileSync(assetFile(options.contentRoot, asset)) });
   }
+
+  // §10.5 (C-12, S4c): the CSP this tree must be served with. One line, the same bytes as
+  // the live header and the CMS snippet; `test/csp.test.ts` compares the sha256 of all three.
+  files.push({ path: CSP_CONF_FILE, bytes: cspConf() });
 
   files.push({ path: 'robots.txt', bytes: 'User-agent: *\nAllow: /\n' });
   if (options.origin !== undefined) files.push({ path: 'sitemap.xml', bytes: sitemap(projection, options.origin) });

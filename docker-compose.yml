@@ -74,7 +74,11 @@ services:
       start_period: 20s
 
   plugin-runner:
-    image: ghcr.io/skunkworks/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    # D10: a digest, never a tag. `SKW_RUNNER_IMAGE` exists so a gate can run the image it
+    # has just built (`test/runner-contain.test.ts`) without pretending the published digest
+    # exists locally; a released bundle's compose pins the digest and nothing sets the
+    # variable, so the published artefact is what production pulls.
+    image: ${SKW_RUNNER_IMAGE:-ghcr.io/skunkworks/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000}
     restart: unless-stopped
     network_mode: none
     read_only: true

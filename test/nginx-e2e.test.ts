@@ -134,6 +134,9 @@ before(async () => {
   const snippet = readFileSync(join(REPO, 'snippets', 'skunk-proxy.conf'), 'utf8');
   const rendered = snippet.replaceAll('__SKW_EDGE_TOKEN__', EDGE_TOKEN);
   writeFileSync(join(snippets, 'skunk-proxy.conf'), rendered);
+  // S4c: the generated vhost includes this beside the proxy snippet, and nginx refuses to
+  // load a config whose include does not resolve. The bundle ships both files.
+  writeFileSync(join(snippets, 'skunk-csp.conf'), readFileSync(join(REPO, 'snippets', 'skunk-csp.conf')));
 
   // The edge proof only works if the snippet's token is the app's token. Assert
   // the harness wiring rather than discovering a mismatch as a 421 later.

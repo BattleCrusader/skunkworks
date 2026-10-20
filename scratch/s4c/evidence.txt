@@ -1,0 +1,14 @@
+### control.db
+4
+### tenants
+acme	production	active
+### enrolment
+-rw------- /var/folders/sc/90s9zqm54p5f2mj8tx1bzlx40000gn/T/skw-s4c-a7noJO/data/first-login.txt
+-rw-r--r--  1 cyberdeth  staff  319488 Oct 21 02:42 /var/folders/sc/90s9zqm54p5f2mj8tx1bzlx40000gn/T/skw-s4c-a7noJO/data/tenants/acme/site.db
+### second run
+install: schema: /var/folders/sc/90s9zqm54p5f2mj8tx1bzlx40000gn/T/skw-s4c-a7noJO/data/control.db exists, left alone
+install: seed: tenants already present, left alone
+install: tenant: acme site.db present, left alone
+### bundle_verify
+bundle_verify: 15 file(s) verified, no render tree, no render rows
+### csp hashes

@@ -129,6 +129,10 @@ export const HTTP: Record<string, number> = {
   // naming a key with no row or no bytes. Both are refusals by name, never a skipped page.
   SKW_E_EXP_BODY_UNNORMALISABLE: 409,
   SKW_E_EXP_ASSET_UNRESOLVED: 409,
+  // S4c: a second export of one tenant while the first holds the tenant's export lock.
+  SKW_E_EXP_WRITER_ACTIVE: 409,
+  // S4c: a `cms_plugin_installed` row whose package the bundle does not carry.
+  SKW_E_PL_EXPORT_PACKAGE_MISSING: 409,
   SKW_E_PL_SIGNATURE: 409,
   SKW_E_PL_REVOKED: 409,
   SKW_E_PL_TESTS_STALE: 409,

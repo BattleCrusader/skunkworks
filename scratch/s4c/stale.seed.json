@@ -1,0 +1,43 @@
+{
+  "$comment": "E-19 / SDS \u00a711.6: the seed a bundle carries. NOT a fleet file and NOT a credential. One production tenant, its hosts, and one `owner` user that is a CLAIM MARKER: must_change=1, totp_secret NULL, and a password_hash that is a real argon2id hash at the frozen cost (m=19456,t=2,p=1) of 32 random bytes discarded at export \u2014 so a verification costs exactly what a real one costs and can never succeed. `install.sh` applies schema/control.sql, seeds exactly these rows in one transaction, then runs `skwctl admin bootstrap`, which is the only step that produces a credential a human holds. No bundle may carry a non-NULL totp_secret (a \u00a711.3 preflight refusal) or a populated user row.",
+  "version": 1,
+  "schema_version": 3,
+  "tenants": [
+    {
+      "key": "acme",
+      "mode": "production",
+      "status": "active",
+      "display_name": "Acme",
+      "request_budget_per_min": 600,
+      "storage_quota_bytes": 1073741824,
+      "hosts": [
+        {
+          "host": "acme.test",
+          "kind": "primary",
+          "is_primary": 1,
+          "cert_state": "issued"
+        },
+        {
+          "host": "www.acme.test",
+          "kind": "alias",
+          "is_primary": 0,
+          "cert_state": "issued"
+        }
+      ],
+      "settings": {
+        "site.title": "Acme",
+        "site.locale": "en"
+      }
+    }
+  ],
+  "users": [
+    {
+      "tenant": "acme",
+      "email": "owner@acme.test",
+      "role": "owner",
+      "must_change": 1,
+      "totp_secret": null,
+      "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$JN5EPdyYsCT1SfDh6NEi+Q$enBpf75OKqRG2oStu3bad9DZgnlmWylWvDyrkQZGZjw"
+    }
+  ]
+}

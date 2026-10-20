@@ -99,6 +99,7 @@ before(async () => {
   const rendered = readFileSync(join(REPO, 'snippets', 'skunk-proxy.conf'), 'utf8')
     .replaceAll('__SKW_EDGE_TOKEN__', EDGE_TOKEN);
   writeFileSync(join(snippets, 'skunk-proxy.conf'), rendered);
+  writeFileSync(join(snippets, 'skunk-csp.conf'), readFileSync(join(REPO, 'snippets', 'skunk-csp.conf')));
   writeFileSync(join(conf, '00-default.conf'), 'server { listen 80 default_server; server_name _; location / { return 404; } }\n');
 
   // Step 2 as an operator runs it: the generator CLI against the committed rows.

@@ -2,21 +2,31 @@
 /**
  * `schema/control.seed.json` → `control.db`, one transaction (SDS §11.6, E-19).
  *
- * §3's layout names this file `tools/seed_control.py`. The seed needs the same
- * SQLite the image ships and the same CHECK constraints the DDL declares, and the
- * image's runtime is node: a python implementation would be a second SQLite binding
- * to keep in step with `better-sqlite3`. Recorded as a layout deviation, not as a
- * behaviour change.
+ * §3's layout names this file `tools/seed_control.py`. The seed needs the same SQLite
+ * the image ships and the same CHECK constraints the DDL declares, and the image's
+ * runtime is node: so this is `node:sqlite` — the SQLite **inside the Node the bundle
+ * already requires**, not a second binding to keep in step with `better-sqlite3` and not
+ * the `sqlite3` CLI that a minimal server image does not carry. `install.sh` therefore
+ * depends on `node` alone.
  *
- * Three refusals, each because a bundle that carried the value would be a bundle
- * that leaks:
+ * ## The version gate (S4c)
+ *
+ * The seed carries `schema_version`. Until S4c nothing read it, while
+ * `schema/control.sql` declared `PRAGMA user_version = 4` and the seed still said `3`.
+ * That is worse than a mismatch: it is a trap that reads as documentation, and the first
+ * code to trust either number would have labelled a v4 database with a v3 seed. The seed
+ * now states the version of the DDL it describes and this tool refuses any other —
+ * naming both numbers — before it opens a transaction.
+ *
+ * Three refusals, each because a bundle that carried the value would be a bundle that
+ * leaks:
  *   - a user row with a non-NULL `totp_secret` → §11.3's preflight refusal;
  *   - a user row that is not a claim marker (`must_change=1`, no secret);
  *   - a `tenant.mode` other than `production`.
  *
  * Exit 0 on success, 1 on any refusal, 12 on a seed that cannot be read.
  */
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 
 const EXIT_REFUSED = 1;
@@ -63,8 +73,18 @@ for (const tenant of seed.tenants ?? []) {
   }
 }
 
-const db = new Database(dbPath);
-db.pragma('foreign_keys = ON');
+const db = new DatabaseSync(dbPath, { readOnly: false });
+db.exec('PRAGMA foreign_keys = ON');
+
+// --- the version gate: the seed must describe *this* database --------------
+const { user_version: dbVersion } = db.prepare('PRAGMA user_version').get();
+if (seed.schema_version !== dbVersion) {
+  db.close();
+  refuse(
+    `seed schema_version ${String(seed.schema_version)} does not describe control.db, which is ${String(dbVersion)}` +
+      " — a seed and a schema that disagree would label one database with the other's version",
+  );
+}
 
 const insertTenant = db.prepare(
   `INSERT INTO tenant (key, mode, status, display_name, db_version, storage_quota_bytes, request_budget_per_min)
@@ -79,7 +99,8 @@ const insertUser = db.prepare(
 );
 
 try {
-  const tx = db.transaction(() => {
+  db.exec('BEGIN IMMEDIATE');
+  try {
     const ids = new Map();
     for (const tenant of seed.tenants ?? []) {
       const info = insertTenant.run(
@@ -100,8 +121,11 @@ try {
       if (tenantId === undefined) refuse(`user ${user.email} names tenant ${user.tenant}, which the seed does not define`);
       insertUser.run(tenantId, user.email, user.password_hash, user.role ?? 'owner');
     }
-  });
-  tx();
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
   process.stdout.write(
     `seed_control: ${(seed.tenants ?? []).length} tenant(s), ${(seed.users ?? []).length} claim marker(s), one transaction\n`,
   );

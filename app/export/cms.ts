@@ -37,6 +37,7 @@ import { dirname, join, normalize, sep } from 'node:path';
 
 import { generateAppConf } from '../../tools/nginx_gen.ts';
 import { renderNotes } from './notes.ts';
+import { cspConf } from '../render/csp.ts';
 import { assetFile, symlinkTarget, type Projection } from './project.ts';
 import type { TreeFile } from './tree.ts';
 
@@ -268,7 +269,13 @@ export function planCms(options: CmsOptions): CmsPlan {
   // --- 1. the snapshot ------------------------------------------------------------
   const projectionFile = JSON.parse(readFileSync(join(repoRoot, 'schema', 'export-projection.json'), 'utf8')) as ProjectionFile;
   const before = tableCounts(options.sourceDb);
-  const tmp = join(options.tmpDir, 'site.db');
+  // A **unique** name, not `site.db` (S4c, found while re-exporting from an installed
+  // bundle): `tmpDir` is the data directory, and in a bundle `data/site.db` is the tenant's
+  // shipped database. A temp called `site.db` therefore overwrote the bundle's own source of
+  // truth and then deleted it — visible only when the operator re-cuts a bundle from an
+  // installed tree, which is the normal way to ship an edit. The pid keeps two writers from
+  // sharing it; the export lock already serialises them per tenant.
+  const tmp = join(options.tmpDir, `.export-${tenant.key}-${process.pid}.snapshot.db`);
   rmSync(tmp, { force: true });
   rmSync(`${tmp}-wal`, { force: true });
   rmSync(`${tmp}-shm`, { force: true });
@@ -311,6 +318,7 @@ export function planCms(options: CmsOptions): CmsPlan {
     'schema/site.sql',
     'tools/bundle_verify.mjs',
     'tools/seed_control.mjs',
+    'tools/control_db.mjs',
   ]) {
     files.push({ path, bytes: readFileSync(join(repoRoot, path)) });
   }
@@ -323,6 +331,11 @@ export function planCms(options: CmsOptions): CmsPlan {
     { adminHost, demosHost, boxRps: 192, adminAllowlist: [] },
   );
   files.push({ path: 'nginx/conf.d/10-app.conf', bytes: conf });
+  // §10.5 (C-12, S4c): the same one line the live site sends and the other two targets ship.
+  // `10-app.conf` includes it inside the locations nginx serves itself (`/media/`, the
+  // protected tree); documents proxied from the app already carry the header, and a second
+  // copy on the same response would be two policies where the SDS promises one.
+  files.push({ path: 'snippets/skunk-csp.conf', bytes: cspConf() });
 
   // --- 3. the bytes ---------------------------------------------------------------
   // The bundle ships the whole library (it is the CMS: the client edits it), so every

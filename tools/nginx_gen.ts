@@ -131,6 +131,10 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
     out.push('        alias /srv/content/public/;');
     out.push('        try_files $uri =404;');
     out.push('        add_header Cache-Control "public, max-age=31536000, immutable";');
+    // §10.5 (C-12, S4c): nginx serves these bytes itself, so the policy it sends for them
+    // is this snippet. Proxied documents already carry the header from the app; adding it
+    // here too would put two policies on one response, which is not "one policy".
+    out.push('        include /etc/nginx/snippets/skunk-csp.conf;');
     out.push('    }');
     out.push('');
     // §7.5 (S3d): the stamped per-purchaser renders. A **second** internal location, with
@@ -141,12 +145,14 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
     out.push('        internal;');
     out.push('        alias /srv/content/protected/wm/;');
     out.push('        limit_rate 1m;');
+    out.push('        include /etc/nginx/snippets/skunk-csp.conf;');
     out.push('    }');
     out.push('');
     out.push('    location /__protected/ {');
     out.push('        internal;');
     out.push('        alias /srv/content/media/;');
     out.push('        limit_rate 1m;');
+    out.push('        include /etc/nginx/snippets/skunk-csp.conf;');
     out.push('    }');
     out.push('}');
     out.push('');

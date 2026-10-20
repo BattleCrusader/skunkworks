@@ -31,6 +31,7 @@ import {
 } from './db/migrate.ts';
 import { normalisePagePath, pageMiss } from './render/page.ts';
 import { renderStoredBody } from './render/body.ts';
+import { CSP_HEADER, cspPolicy } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
 import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
 import { SourceCache } from './sources/cache.ts';
@@ -243,6 +244,19 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     });
   }
 
+  // §10.5 (C-12, S4c): the CSP is a property of the document, and the document is this
+  // process's reply. `onSend` is after the payload is produced and before it is written, so
+  // a 404, a 500 and a 200 all carry the same policy — which is the point: the error page is
+  // the page a reflected payload would use. `text/html` only: a JSON body has no scripts to
+  // constrain and a CSP on it is noise in a support bundle.
+  app.addHook('onSend', async (_req, reply, payload) => {
+    const type = reply.getHeader('content-type');
+    if (typeof type === 'string' && type.startsWith('text/html')) {
+      reply.header(CSP_HEADER, cspPolicy());
+    }
+    return payload;
+  });
+
   // D29's login page is a plain HTML form (`enctype=application/x-www-form-urlencoded`)
   // so the surface works with no JavaScript and no extra dependency. The body is
   // parsed as a string and read by `fieldsOf()` in the admin router, which is the
@@ -448,6 +462,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     const data = createRenderData(db, { tenantKey: ctx.tenant.key, cache: sources, audience: loaded.preview ? 'preview' : 'render' });
     const handler = await astroHandler();
     reply.raw.setHeader('cache-control', 'no-store');
+    // §10.5 (C-12): the page path hands the socket to Astro, so the policy has to be on the
+    // raw response before the hijack — the `onSend` hook above never sees this reply.
+    reply.raw.setHeader(CSP_HEADER, cspPolicy());
     reply.hijack();
     await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page, preview: loaded.preview, data });
   }

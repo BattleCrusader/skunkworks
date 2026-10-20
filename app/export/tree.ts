@@ -21,18 +21,55 @@ import type { Stats } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  closeSync,
   existsSync,
   lstatSync,
   lutimesSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   readlinkSync,
+  renameSync,
+  rmSync,
+  statfsSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
+
+/**
+ * A write that ran out of space (S4c).
+ *
+ * `ENOSPC` is the ordinary case; `EDQUOT` is a user quota and `EFBIG` is the file-size
+ * rlimit — three ways the filesystem says "no more bytes", and all three must become the
+ * same named refusal rather than a stack trace at the operator. The export catches this in
+ * `runExport()`, removes the partial tree and refuses with `SKW_E_EXP_INSUFFICIENT_DISK`.
+ */
+export class DiskFullError extends Error {
+  readonly path: string;
+  readonly code: string;
+
+  constructor(path: string, code: string) {
+    super(`the filesystem refused ${path}: ${code}`);
+    this.name = 'DiskFullError';
+    this.path = path;
+    this.code = code;
+  }
+}
+
+const NO_SPACE = new Set(['ENOSPC', 'EDQUOT', 'EFBIG']);
+
+/** Free bytes on the filesystem holding `path`, or `null` when the platform cannot say. */
+export function freeBytes(path: string): number | null {
+  try {
+    const stats = statfsSync(path);
+    return Number(stats.bavail) * Number(stats.bsize);
+  } catch {
+    return null;
+  }
+}
 
 export interface TreeFile {
   /** POSIX path relative to the tree root. */
@@ -78,7 +115,19 @@ export function writeTree(root: string, files: readonly TreeFile[], mtimeMs: num
       lutimesSync(full, mtimeMs / 1000, mtimeMs / 1000);
       continue;
     }
-    writeFileSync(full, file.bytes ?? '');
+    // Atomic per file: a write that dies half-way (ENOSPC, a killed process) must never
+    // leave a short file at the path a client will read. The temporary lives beside the
+    // target so the rename is the same filesystem and therefore atomic.
+    const temp = `${full}.skw-tmp-${process.pid}`;
+    try {
+      writeFileSync(temp, file.bytes ?? '');
+      renameSync(temp, full);
+    } catch (err) {
+      rmSync(temp, { force: true });
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (NO_SPACE.has(code)) throw new DiskFullError(full, code);
+      throw err;
+    }
     chmodSync(full, file.mode ?? 0o644);
     utimesSync(full, mtimeMs / 1000, mtimeMs / 1000);
   }
