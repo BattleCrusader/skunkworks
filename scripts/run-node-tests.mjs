@@ -12,8 +12,11 @@
  * gate.
  *
  * Behaviour:
- *   - runs `node --test --test-concurrency=1 --test-timeout=15000 <files>`,
+ *   - runs `node --test --test-concurrency=1 --test-timeout=<ms> <files>`,
  *     streaming the child's output unchanged;
+ *   - `--timeout=<ms>` sets that budget (default 15000). `make test` passes the
+ *     value derived from the measured worst-case idle file runtime and states the
+ *     derivation beside it; `make test-perf` passes its own, larger one;
  *   - fails when the TAP summary says any test was skipped or cancelled, or
  *     when there is no summary at all;
  *   - the only escape is `SKW_ALLOW_SKIP=1`, which is single-purpose, must be
@@ -21,13 +24,28 @@
  *     cannot be mistaken for a gate result;
  *   - exits with the child's status otherwise, so a red test stays red.
  *
- * `--test-timeout=15000` lives here rather than in the Makefile so that there
- * is exactly one way the suite is invoked (E-8: a gate that regresses into a
- * wait is red in under 20 s).
+ * The timeout lives here rather than in the Makefile so that there is exactly one
+ * way the suite is invoked (E-8: a gate that regresses into a wait is red with a
+ * named failure instead of a CI job timeout).
  */
 import { spawn } from 'node:child_process';
 
-const files = process.argv.slice(2);
+/** `--timeout=<ms>` is the only flag; everything else is a test file. */
+let timeoutMs = 15_000;
+const files = [];
+for (const arg of process.argv.slice(2)) {
+  const flag = /^--timeout=(\d+)$/.exec(arg);
+  if (flag !== null) {
+    timeoutMs = Number(flag[1]);
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000) {
+      process.stderr.write(`run-node-tests: --timeout must be an integer >= 1000, got ${JSON.stringify(flag[1])}\n`);
+      process.exit(2);
+    }
+    continue;
+  }
+  files.push(arg);
+}
+
 if (files.length === 0) {
   process.stderr.write('run-node-tests: no test files given\n');
   process.exit(2);
@@ -51,7 +69,7 @@ const child = spawn(
   // pipe, but node 26 defaults to the `spec` reporter (`ℹ tests 2`, not `# tests 2`),
   // and a summary this process cannot read would look like "the child produced
   // nothing" on half the machines that run the gate.
-  ['--test', '--test-reporter=tap', '--test-concurrency=1', '--test-timeout=15000', ...files],
+  ['--test', '--test-reporter=tap', '--test-concurrency=1', `--test-timeout=${timeoutMs}`, ...files],
   { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv },
 );
 

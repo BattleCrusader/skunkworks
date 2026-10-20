@@ -4,11 +4,12 @@
 # same thing spelled the way a human thinks about it. Both run every check and
 # exit non-zero on failure.
 
-.PHONY: help test verify verify-toolchain verify-gitignore verify-schema verify-claims \
+.PHONY: help test test-perf verify verify-toolchain verify-gitignore verify-schema verify-claims \
         verify-claims-modern verify-frozen verify-s1 build typecheck diagrams
 
 help:
-	@echo "make test                run every verification check (canonical)"
+	@echo "make test                run every verification check (canonical, deterministic)"
+	@echo "make test-perf           the performance gate: wall-clock assertions, IDLE BOX ONLY"
 	@echo "make verify              alias of make test"
 	@echo "make verify-toolchain    assert \$$(PYTHON) imports argon2 and sqlite3 (E-15)"
 	@echo "make verify-schema       generate both DDL files, apply them to real SQLite, run every negative test"
@@ -80,15 +81,42 @@ typecheck:
 	@npx tsc -p tsconfig.json --noEmit
 	@npx tsc -p tsconfig.test.json --noEmit
 
-# --test-timeout=15000 (E-8): a gate that regresses into a wait is red in under 20 s,
-# with a named failure, instead of a CI job timeout.
+# --- the two node gates, and why there are two -------------------------------------
 #
-# scripts/run-node-tests.mjs (G3, `S1-qa.md` §7): a skip is a failure on the node side
-# too, exactly as E-15 already required of verify_claims.py. `SKW_SKIP_DOCKER=1` alone
-# can no longer buy a green gate; the only escape is `SKW_ALLOW_SKIP=1`, which is never
-# set here and prints a banner that says the run proved nothing.
+# `make test` is **deterministic**: it asserts correctness, structure and counts, and never a
+# wall-clock value. `make test-perf` holds every assertion that measures time or a rate, because
+# those measure the box: `S2-qa.md` D12 recorded test/sources.test.ts timing out at 15000 ms
+# against a 10.47 s idle runtime under 6× CPU load, `test/integration/three-hosts.test.ts` losing
+# a 17 MiB response at 14×, and a loaded `hermes verify` recording 13 of 300 failing.
+#
+# TEST_TIMEOUT_MS is derived, not guessed: the worst-case **idle** per-file runtime on this box
+# after the perf split is test/ddl-runner.test.ts at 8.99 s, and 40000 is 4.4× that (the old 15000
+# was 1.5× the old worst case, test/sources.test.ts at 10.26 s, which is why moderate load killed
+# it). Both budgets matter: node applies --test-timeout to each test *and* to the file-level
+# subtest, so a file whose total exceeds it fails even when every test inside it fits.
+TEST_TIMEOUT_MS ?= 40000
+PERF_TIMEOUT_MS ?= 180000
+
+TEST_FILES := $(shell find test -name '*.test.ts' -not -path 'test/perf/*' | sort)
+PERF_FILES := $(shell find test/perf -name '*.perf.test.ts' | sort)
+
+# --test-timeout belongs to scripts/run-node-tests.mjs so that there is exactly one way the suite
+# is invoked (E-8). The runner makes a skip a failure on the node side too, exactly as E-15
+# requires of verify_claims.py. `SKW_SKIP_DOCKER=1` alone can no longer buy a green gate; the only
+# escape is `SKW_ALLOW_SKIP=1`, which is never set here.
 verify-s1: verify-toolchain build typecheck
-	@node scripts/run-node-tests.mjs $(shell find test -name '*.test.ts' | sort)
+	@node scripts/run-node-tests.mjs --timeout=$(TEST_TIMEOUT_MS) $(TEST_FILES)
+
+# The performance gate. Not part of `make test`, and it says what it is before it runs: these
+# assertions are only meaningful on a box that is not already busy. The load-average guard refuses
+# to pretend (`SKW_PERF_FORCE=1` overrides it, and the banner then says the numbers are not a
+# measurement).
+test-perf: verify-toolchain typecheck
+	@printf 'make test-perf: PERFORMANCE GATE — %s\n' "wall-clock assertions, not correctness"
+	@node scripts/perf-preflight.mjs
+	@node scripts/run-node-tests.mjs --timeout=$(PERF_TIMEOUT_MS) $(PERF_FILES)
+	@printf 'make test-perf: covers the rate/timing assertions only. Not covered: plan, allowlist,\n'
+	@printf '  budget-refusal, body-shape and count assertions — those are `make test`.\n'
 
 diagrams:
 	@plantuml -tpng -charset UTF-8 docs/sds/diagrams/*.puml docs/debate/diagrams/*.puml

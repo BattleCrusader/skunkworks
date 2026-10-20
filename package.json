@@ -10,7 +10,8 @@
     "migrate": "node dist/app/db/migrate.js --tenant all",
     "start": "node dist/app/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "node --test --test-concurrency=1 $(find test -name '*.test.ts' | sort)"
+    "test": "node --test --test-concurrency=1 $(find test -name '*.test.ts' -not -path 'test/perf/*' | sort)",
+    "test:perf": "node --test --test-concurrency=1 test/perf/login-timing.perf.test.ts test/perf/sources-cost.perf.test.ts"
   },
   "dependencies": {
     "@astrojs/node": "^11.1.9",

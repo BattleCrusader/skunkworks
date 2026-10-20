@@ -108,6 +108,31 @@ export interface CompileOptions {
   checkAllowlist?: boolean;
 }
 
+/**
+ * The request-level `limit`, and the one rule about it: **an integer, or a refusal**.
+ *
+ * `data-limit` is an HTML attribute, so it arrives as a string, and the old shape here
+ * (`typeof requested === 'number' && Number.isFinite(...)`) had two answers for one rule:
+ * `'5'` fell through to `limit_default` and served silently, `5.5` was floored with no
+ * refusal, and only `-1` refused — for a message that named no parameter. QA measured all
+ * three (`S2-qa.md` §3.3, M5) while §6.2 claimed the refusal existed.
+ *
+ * The refusal is the same code, reason and detail every other invalid parameter produces
+ * (`param_invalid`, `detail.param`), which is why this is a code fix and not a taxonomy
+ * change. Clamping to `limit_max` stays, because asking for too many rows is a request the
+ * product answers with `data-truncated` — asking for *five and a half* rows is not a number
+ * of rows at all.
+ */
+export function requestLimit(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw sourceUnknown('param_invalid', `limit must be an integer, got ${JSON.stringify(value)}`, { param: 'limit' });
+  }
+  if (value < 1) {
+    throw sourceUnknown('param_invalid', `limit must be at least 1, got ${String(value)}`, { param: 'limit' });
+  }
+  return value;
+}
+
 export function compile(spec: SourceSpec, allowed: Allowlist, request: Record<string, unknown>, opts: CompileOptions = {}): Compiled {
   if (opts.checkAllowlist !== false) assertWithinAllowlist(spec, allowed);
 
@@ -136,9 +161,8 @@ export function compile(spec: SourceSpec, allowed: Allowlist, request: Record<st
   const requested = request.limit;
   let limit = spec.limitDefault;
   let truncated = false;
-  if (typeof requested === 'number' && Number.isFinite(requested)) {
-    const wanted = Math.floor(requested);
-    if (wanted < 1) throw sourceUnknown('param_invalid', 'limit must be at least 1', { param: 'limit' });
+  if (requested !== undefined) {
+    const wanted = requestLimit(requested);
     if (wanted > spec.limitMax) {
       limit = spec.limitMax;
       truncated = true;

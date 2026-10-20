@@ -69,14 +69,18 @@ export interface RawPostOptions {
  * writes are still queued, and the EPIPE surfaces from a WriteWrap callback as an
  * uncaught exception rather than a request 'error'. A raw socket handles it on
  * its own 'error' handler, which is what curl does too.
+ *
+ * **Attempts, and why there are eight.** A server that answers 413 and closes while the body is
+ * still in flight may RST and discard the response it just wrote; that is a transport artefact, not
+ * a statement about the app. On a loaded box it is not rare: `S2-qa.md` D12 lost the response at
+ * 14× CPU load with three attempts. Retrying the *request* does not weaken the assertion — every
+ * attempt that produces a response must carry the documented status and code, and a run where no
+ * attempt produces one is still a failure, with the count in the message. Eight attempts at
+ * 17 MiB is ~140 MiB of writes in the worst case, which is why the count is bounded and reported
+ * rather than a `while (true)`.
  */
 export function postRaw(opts: RawPostOptions): Promise<Res> {
-  // A server that answers 413 and closes while the body is still in flight may RST
-  // and discard the response it just wrote; that is a transport artefact, not a
-  // statement about the app. Retrying the *request* does not weaken the assertion —
-  // every attempt still has to come back with the documented status and code — and
-  // the pump stops as soon as any byte of response arrives, which is what makes the
-  // first attempt succeed almost always.
+  const ATTEMPTS = 8;
   const attempt = (): Promise<Res | null> =>
     new Promise((resolve) => {
       const sock = connect(opts.port, '127.0.0.1');
@@ -136,10 +140,10 @@ export function postRaw(opts: RawPostOptions): Promise<Res> {
     });
 
   return (async (): Promise<Res> => {
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < ATTEMPTS; i += 1) {
       const res = await attempt();
       if (res !== null) return res;
     }
-    throw new Error(`no HTTP response to a ${opts.bytes}-byte body after 3 attempts`);
+    throw new Error(`no HTTP response to a ${opts.bytes}-byte body after ${ATTEMPTS} attempts`);
   })();
 }

@@ -87,12 +87,17 @@ export function lastEndedDay(atMs: number = Date.now()): string {
  * The series is bounded by the data: a tenant's first audit day is the earliest `ts` in its own
  * file, and the newest day that can have an answer is the one that just ended. A day with rows and
  * no seal is `UNSEALED`; a day with no rows needs no seal and is `empty`.
+ *
+ * `fromDay` bounds the walk from below, and it is what makes the health field's cost a constant
+ * instead of a function of the tenant's age (§9.6a(d)). The tick and `--heal` pass nothing, so
+ * they still see the whole series; the CLI's `--days` window is its own read of the same rule.
  */
 export function scanGaps(
   db: Database.Database,
   control: Database.Database,
   tenantKey: string,
   throughDay: string,
+  fromDay?: string,
 ): SealGap[] {
   const first = db.prepare('SELECT min(substr(ts, 1, 10)) AS d FROM cms_audit').get() as { d: string | null };
   if (first.d === null) return [];
@@ -107,7 +112,8 @@ export function scanGaps(
   // A corrupt `ts` could otherwise make this loop unbounded. The cap is a refusal to hang on bad
   // data, and it is visible: the scan starts at `throughDay - (MAX_SCAN_DAYS - 1)` at the earliest.
   const MAX_SCAN_DAYS = 4000;
-  const floor = addUtcDays(throughDay, -(MAX_SCAN_DAYS - 1));
+  let floor = addUtcDays(throughDay, -(MAX_SCAN_DAYS - 1));
+  if (fromDay !== undefined && fromDay > floor) floor = fromDay;
   for (let day = first.d > floor ? first.d : floor; day <= throughDay; day = addUtcDays(day, 1)) {
     if (sealed.has(day)) continue;
     const rows = rowsOnDay(db, day);
@@ -309,9 +315,53 @@ export interface SealSummary {
   late_days: number;
 }
 
+/**
+ * The health field's lookback, in days — and it is a decision, not a loop bound.
+ *
+ * `sealSummary` used to call `sealStatus({days: 1})`, so `unsealed` was structurally at most
+ * yesterday and E-20(d)'s own example was unreachable (`S2-qa.md` M6). A gap three days back — the
+ * ordinary shape of a deploy or a paused VM straddling midnight — read as a green series.
+ *
+ * **400 days, because that is the widest window the operator's CLI accepts** (`skwctl audit status
+ * --days` is `1..400`). The field must not be narrower than the surface next to it, and a second
+ * number would be a second answer to "which days exist". The bound itself is required because this
+ * field is served from a 30 s cache on an admin route: "since the tenant's first audit row" grows
+ * without limit with the age of the box, and a dashboard poll must not get slower every month. A
+ * gap older than 400 days is outside every surface the product offers; `--days 400` is the widest
+ * read by design, and widening it is a CLI change, not a hidden scan.
+ */
+export const SEAL_HEALTH_LOOKBACK_DAYS = 400;
+
+/**
+ * The health payload: every day that should have been sealed and was not, inside the lookback.
+ *
+ * The rule for "should have been sealed" is `scanGaps`' — the same one the tick and `--heal` use —
+ * so this is one answer to that question, not a second one. What differs is only the window: from
+ * `min(a tenant's first audit day, lastEnded - (lookback - 1))` through the last day that ended.
+ * Today is deliberately not in it: it has not ended and cannot be sealed (§9.6a step 1).
+ */
 export function sealSummary(dataDir: string, tenantKey: string, atMs: number = Date.now()): SealSummary {
-  const report = sealStatus({ dataDir, tenantKey, days: 1, atMs });
-  return { last_sealed_day: report.last_sealed_day, unsealed: report.unsealed, late_days: report.late_days };
+  const lastEnded = lastEndedDay(atMs);
+  const from = addUtcDays(lastEnded, -(SEAL_HEALTH_LOOKBACK_DAYS - 1));
+  const control = new Database(`${dataDir}/control.db`);
+  const db = openAdminWrite(`${dataDir}/tenants/${tenantKey}/site.db`);
+  try {
+    const gaps = scanGaps(db, control, tenantKey, lastEnded, from);
+    const summary = control
+      .prepare(
+        `SELECT max(day) AS last_day, sum(CASE WHEN late = 1 THEN 1 ELSE 0 END) AS late
+           FROM audit_seal WHERE tenant_key = ?`,
+      )
+      .get(tenantKey) as { last_day: string | null; late: number | null };
+    return {
+      last_sealed_day: summary.last_day,
+      unsealed: gaps.filter((gap) => gap.state === 'UNSEALED').map((gap) => gap.day),
+      late_days: Number(summary.late ?? 0),
+    };
+  } finally {
+    db.close();
+    control.close();
+  }
 }
 
 export interface HealDay {

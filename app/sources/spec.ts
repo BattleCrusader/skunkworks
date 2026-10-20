@@ -126,10 +126,23 @@ function asArray(value: unknown, what: string): unknown[] {
   return value;
 }
 
+/**
+ * A limit carried by the **spec** (`limit_max`, `limit_default`), under the same rule as the
+ * request-level one: an integer between 1 and `MAX_LIMIT`, or a refusal.
+ *
+ * The reason and detail are `param_invalid` / `param: 'limit'` rather than the generic
+ * `reason: 'spec'`, because §6.2 says the limit rule is enforced at **publish and render** and
+ * the publish gate's only limit is this one (`publishSource` measures at `limit_max`). One rule
+ * with one refusal shape is the whole point of E-23's row; `detail.field` names which of the
+ * two spec fields was wrong, so the message is still specific.
+ */
 function asLimit(value: unknown, fallback: number, what: string): number {
   if (value === undefined) return fallback;
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
-    throw sourceUnknown('spec', `${what} must be an integer between 1 and ${MAX_LIMIT}`);
+    throw sourceUnknown('param_invalid', `${what} must be an integer between 1 and ${MAX_LIMIT}`, {
+      param: 'limit',
+      field: what,
+    });
   }
   return value;
 }
