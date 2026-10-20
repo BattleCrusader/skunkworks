@@ -93,6 +93,37 @@ export const WITNESSES: readonly Witness[] = [
     tests: ['V1-1'],
     refuses: 'a view whose definition is not the one the source was published against',
   },
+  // §7.4 / C-7 (S3c) — the money plane. Four mechanisms, each with the gate that would
+  // notice if it were removed, and each proven to fail under mutation in
+  // `scratch/s3c/mutations.ts`.
+  {
+    mechanism: 'consumeUse',
+    source: 'app/download/ledger.ts',
+    file: 'test/download-consume.test.ts',
+    tests: ['C1', 'C3'],
+    refuses: 'a second use for one jti under eight concurrent processes, and a spend past max_uses',
+  },
+  {
+    mechanism: 'verifyToken',
+    source: 'app/download/token.ts',
+    file: 'test/download-redeem.test.ts',
+    tests: ['R5', 'R5b'],
+    refuses: 'a MAC that is not 32 bytes (401, never 500), and a token for another client or asset',
+  },
+  {
+    mechanism: 'redeem',
+    source: 'app/download/plane.ts',
+    file: 'test/perf/download-timing.perf.test.ts',
+    tests: ['P-S3c-1'],
+    refuses: 'an unknown selector that is faster than a wrong secret — the oracle the dummy verify closes',
+  },
+  {
+    mechanism: 'assertGateable',
+    source: 'app/download/code.ts',
+    file: 'test/download-codes.test.ts',
+    tests: ['I4'],
+    refuses: 'a code for an encrypted PDF (by flag or by trailer) and for an asset with a public URL',
+  },
 ];
 
 const WITNESS_LINE = /Exclusive witness: (\S+) ([A-Za-z0-9][A-Za-z0-9-]*(?:, ?[A-Za-z0-9][A-Za-z0-9-]*)*)/;

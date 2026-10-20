@@ -70,6 +70,8 @@ import {
   type TableInfo,
 } from './crud.ts';
 import { openAdminWrite, openRenderRead } from '../db/classes.ts';
+import { DEFAULT_CONTENT_ROOT } from '../assets/store.ts';
+import { handleCodes } from '../download/adminCodes.ts';
 import type { Env } from '../env.ts';
 import { AppError } from '../errors.ts';
 import { PREVIEW_PARAM, PREVIEW_TTL_MS, mintPreviewToken } from '../render/preview.ts';
@@ -107,6 +109,14 @@ export interface AdminOptions {
   controlPath: string;
   tenants: TenantMap;
   adminHost: string | null;
+  /**
+   * The process-wide argon2 semaphore (§7.2: `SKW_ARGON2_MAX_CONCURRENT=4`). Shared
+   * with the download plane so the two verifiers cannot add up to 8 concurrent
+   * 19 MiB hashes — 4 is a memory budget, not a per-surface one.
+   */
+  semaphore?: Semaphore;
+  /** `content/` — passed to the code issuer so an encrypted PDF is refused at issue. */
+  contentRoot?: string;
 }
 
 interface Headers {
@@ -202,6 +212,8 @@ export class AdminSurface {
    * working, so a mistyped enrolment cannot lock anybody out.
    */
   readonly #pendingTotp = new Map<string, PendingEnrolment>();
+  /** Where `content/` is; the code issuer reads a PDF's trailer through it (§7.5). */
+  readonly #contentRoot: string;
 
   constructor(opts: AdminOptions) {
     this.#env = opts.env;
@@ -212,13 +224,14 @@ export class AdminSurface {
     // second way to set this value, so the app cannot disagree with the edge
     // about what the list is.
     this.#allowlist = opts.env.adminAllowlist;
+    this.#contentRoot = opts.contentRoot ?? DEFAULT_CONTENT_ROOT;
     this.#idleMs = idleMsFor(this.#allowlist);
     this.sessions = new SessionStore(opts.controlPath, opts.env.sessionKey, opts.env.ipHashKey, opts.env.dbBusyTimeoutMs);
     this.auth = new Auth({
       controlPath: opts.controlPath,
       fleetMode: opts.env.fleetMode,
       allowlist: this.#allowlist,
-      semaphore: new Semaphore(opts.env.argon2MaxConcurrent),
+      semaphore: opts.semaphore ?? new Semaphore(opts.env.argon2MaxConcurrent),
       busyTimeoutMs: opts.env.dbBusyTimeoutMs,
     });
   }
@@ -560,6 +573,19 @@ ${items}
     }
     if (action === 'media.json' && req.method === 'GET') {
       this.#mediaJson(req, reply, tenant);
+      return;
+    }
+    // §7.6 (S3c): the access-code screen. A POST is origin- and CSRF-checked here, before
+    // the module that mints a code sees a field.
+    if (action === 'codes' || action.startsWith('codes/')) {
+      if (req.method !== 'GET' && req.method !== 'POST') {
+        throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'codes is a GET or a POST');
+      }
+      if (req.method === 'POST') {
+        this.#assertOrigin(req);
+        this.#assertCsrf(req, session);
+      }
+      await this.#codesRoute(req, reply, tenant, action);
       return;
     }
     if (action.startsWith('pages/') && req.method === 'GET') {
@@ -932,6 +958,50 @@ ${items}
       }));
       reply.header('cache-control', 'no-store');
       reply.send({ tenant: tenant.key, q, assets: rows });
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * §7.6's screen, and the audit rows it writes. The audit is in `control.db` (the
+   * same table the rest of the admin surface writes): "who issued a code for which
+   * asset, and when" is exactly the question a dispute asks.
+   */
+  async #codesRoute(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    tenant: Tenant,
+    action: string,
+  ): Promise<void> {
+    const session = this.#requireSession(req);
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const out = await handleCodes(
+        {
+          db,
+          tenantKey: tenant.key,
+          contentRoot: this.#contentRoot,
+          csrf: this.sessions.csrfToken(session),
+          atMs: Date.now(),
+        },
+        action,
+        fieldsOf(req.body),
+      );
+      if (req.method === 'POST') {
+        const user = this.auth.userById(session.userId);
+        this.#audit({
+          tenantId: tenant.id,
+          userId: session.userId,
+          label: user?.email ?? `user ${session.userId}`,
+          action: action.startsWith('codes/new') || action.startsWith('codes/csv') ? 'code.issue' : `code.${action.split('/').pop() ?? 'update'}`,
+          targetKind: 'cms_download_code',
+          targetId: /^codes\/(\d+)\//.exec(action)?.[1] ?? 'batch',
+          ip: req.socket.remoteAddress ?? '',
+        });
+      }
+      reply.header('cache-control', 'no-store');
+      reply.code(out.status).type('text/html; charset=utf-8').send(out.html);
     } finally {
       db.close();
     }

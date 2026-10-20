@@ -36,6 +36,10 @@ export const HTTP: Record<string, number> = {
   SKW_E_DM_FK_VIOLATION: 409,
   SKW_E_DM_COLUMN_IMMUTABLE: 409,
   SKW_E_DM_ASSET_IN_USE: 409,
+  // §7.5 (S3c): an asset that cannot be gated — an owner-password PDF (`encrypted=1`)
+  // or one whose `access_class` already gives it a public URL. Refused at **issue**,
+  // naming the asset, so the failure happens where a human is present.
+  SKW_E_DM_ASSET_UNSTAMPABLE: 422,
   // §4.4: a DDL statement the AST refuses, before any SQL is emitted.
   SKW_E_DM_DDL_REJECTED: 422,
   // §9.4: the transaction committed a schema the four allowed prefixes do not
@@ -52,6 +56,13 @@ export const HTTP: Record<string, number> = {
   SKW_E_SEC_CSRF: 403,
   SKW_E_SEC_AUTH_INVALID: 401,
   SKW_E_SEC_CODE_INVALID: 401,
+  // §7.4 (S3c): the download token's own two refusals. FORMAT/MAC/CLAIMS are one code —
+  // there is nothing an attacker can do with the difference — and a token that is valid
+  // but belongs to another client or another asset is `TOKEN_MISMATCH`.
+  SKW_E_SEC_TOKEN_INVALID: 401,
+  SKW_E_SEC_TOKEN_MISMATCH: 401,
+  // §7.4: `uses` reached `max_uses`. 410 Gone, not 403: the entitlement existed and is spent.
+  SKW_E_SEC_USES_EXHAUSTED: 410,
   SKW_E_SEC_RATE_LIMITED: 429,
   SKW_E_SEC_ROLE_DISABLED: 403,
   // §7.5 (S3a): every upload that the sniff, the SVG rule or the filename rule refuses.
@@ -63,6 +74,9 @@ export const HTTP: Record<string, number> = {
   SKW_E_SEC_AUDIT_SEAL: 500,
   // RT — the render plane (§4.3 E-4): a resolved tenant with no page row
   SKW_E_RT_PAGE_NOT_FOUND: 404,
+  // §7.4 (S3c): the row exists, the blob does not. 503, and never a silent nginx 404 —
+  // the buyer's code is not spent, and the log names the asset that vanished.
+  SKW_E_RT_ASSET_MISSING: 503,
   // §6.1/§6.2 (S2e): the Data Source plane. UNKNOWN covers an unknown key, an
   // unregistered relation, a column outside the allowlist and C-18's `function`
   // kind; UNINDEXED covers a where/order/group_by column with no usable index and

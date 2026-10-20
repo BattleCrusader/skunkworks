@@ -37,6 +37,10 @@ import { TenantMap } from './tenancy/cache.ts';
 import { listenerFor } from './tenancy/listener.ts';
 import { normaliseHost } from './tenancy/normalise-host.ts';
 import { resolveTenant, TENANT_HEADER, type Listener, type Tenant } from './tenancy/resolve.ts';
+import { DEFAULT_CONTENT_ROOT } from './assets/store.ts';
+import { Semaphore } from './admin/auth.ts';
+import { seedSettings } from './download/code.ts';
+import { DownloadPlane } from './download/plane.ts';
 
 // §9.1 (E-2) lives in tenancy/listener.ts so the admin router shares one rule;
 // re-exported here because that is the import path the S1 gate uses.
@@ -80,6 +84,19 @@ export interface BuildAppOptions {
   logger?: boolean;
   /** Skip the boot migration fan-out (tests that want a corrupt fixture untouched). */
   migrateOnBoot?: boolean;
+  /**
+   * `content/` itself — `<root>/media/hh/<sha>.<ext>` is where the store writes and
+   * where `X-Accel-Redirect` reads. Not an environment name: §4.3 fixes 23 of them,
+   * and the deploy layout (§12.2: `./content:/srv/content`) is the same fact as a
+   * constant. A gate passes a temp dir; production takes the default.
+   */
+  contentRoot?: string;
+  /**
+   * The redemption limiter's numbers (§16 S3c: 5 per 15 min per IP and per selector).
+   * Present only for the timing gate, which measures the argon2 verify and would
+   * otherwise spend its 1,000 trials inside the limiter; the default is the spec.
+   */
+  downloadLimits?: { refusals?: number; windowMs?: number; all?: number } | undefined;
   /**
    * Where the app records one line per request it *received*.
    *
@@ -153,7 +170,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   const sitePath = (key: string): string => join(tenantsDir, key, 'site.db');
 
   // --- S2a: the admin surface (§9.1, §9.2) --------------------------------
-  const admin = new AdminSurface({ env, controlPath, tenants, adminHost });
+  // One argon2 semaphore for the process: the admin login and the code redemption share
+  // the four slots, because `SKW_ARGON2_MAX_CONCURRENT=4` is a memory ceiling, not a
+  // per-surface one (4 × 19 MiB ≈ 76 MiB against the 1 GB container).
+  const contentRoot = opts.contentRoot ?? DEFAULT_CONTENT_ROOT;
+  const argon = new Semaphore(env.argon2MaxConcurrent);
+  const admin = new AdminSurface({ env, controlPath, tenants, adminHost, semaphore: argon, contentRoot });
 
   // --- S2e: one seal per tenant per UTC day (§9.6) -------------------------
   // The timer is unref'd, so it never keeps the process alive; `close()` stops it.
@@ -168,6 +190,19 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       upsertRegistry(file, registry, siteTarget);
     } catch (err) {
       process.stderr.write(`registry: tenant ${tenant.key} skipped (${describe(err)})\n`);
+    }
+    // §7.6's shipped settings (`download.default_max_uses` = 3, unlimited off). Seeded
+    // here rather than hard-coded in the resolver: `resolveMaxUses` refuses a tenant
+    // whose setting is missing instead of inventing a number.
+    try {
+      const db = openAdminWrite(file, env.dbBusyTimeoutMs);
+      try {
+        seedSettings(db);
+      } finally {
+        db.close();
+      }
+    } catch (err) {
+      process.stderr.write(`settings: tenant ${tenant.key} skipped (${describe(err)})\n`);
     }
   }
 
@@ -287,10 +322,75 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     await admin.handle(req, reply, serveNotFound);
   });
 
+  // --- S3c: the gated download plane (§7.4, §7.6) -------------------------
+  // Mounted on a public listener only: on the admin host `resolveRequest` refuses every
+  // path outside `/admin…` with `SKW_E_PLT_TENANT_UNKNOWN`, which is the true statement
+  // about an admin host that has no download plane.
+  const plane = new DownloadPlane({
+    env,
+    contentRoot,
+    argon,
+    limits: opts.downloadLimits,
+    openDb: (key: string) => {
+      try {
+        return openAdminWrite(sitePath(key), env.dbBusyTimeoutMs);
+      } catch {
+        throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'tenant database is not writable');
+      }
+    },
+  });
+
+  /** The key in the URL is a claim; the host (or edge header) is the resolution. Both must agree. */
+  function downloadTenant(req: FastifyRequest): string {
+    const ctx = resolveRequest(req);
+    const key = String((req.params as { key?: string }).key ?? '');
+    if (key !== ctx.tenant.key) throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no tenant here');
+    return key;
+  }
+
+  app.get('/d/:key', async (req: FastifyRequest, reply: FastifyReply) => {
+    plane.form(reply, downloadTenant(req));
+  });
+
+  app.post('/d/:key', async (req: FastifyRequest, reply: FastifyReply) => {
+    const key = downloadTenant(req);
+    try {
+      await plane.redeem(req, reply, key);
+    } catch (err) {
+      // A human in a browser gets the form back with one message; the JSON path (a
+      // store, a test) gets the taxonomy body. Both are identical for an unknown
+      // selector and a wrong secret, which is the property that matters.
+      if (err instanceof AppError && wantsHtml(req)) {
+        plane.form(reply, key, { error: 'That code is not valid.' });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  app.get('/d/:key/file', async (req: FastifyRequest, reply: FastifyReply) => {
+    await plane.file(req, reply, downloadTenant(req));
+  });
+
+  // §7.6's third channel. The JSON body is kept as the raw string because the HMAC is
+  // over the bytes the store signed, not over a re-serialisation of them.
+  app.register(async (scope) => {
+    scope.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) =>
+      done(null, body),
+    );
+    scope.post('/api/hooks/:tenant/issue-code', async (req: FastifyRequest, reply: FastifyReply) => {
+      const key = String((req.params as { tenant: string }).tenant);
+      const tenant = tenants.lookupKey(key);
+      if (tenant === undefined || tenant.status !== 'active') {
+        throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no tenant here');
+      }
+      await plane.webhook(req, reply, key);
+    });
+  });
+
   app.setErrorHandler((err, req, reply) => {
     sendError(reply, err, String(req.id));
   });
-
   async function serveNotFound(req: FastifyRequest, reply: FastifyReply): Promise<void> {
     const ctx = resolveRequest(req);
     const path = normalisePagePath(req.url);
@@ -452,6 +552,12 @@ function sendError(reply: FastifyReply, err: unknown, requestId: string): void {
 function describe(err: unknown): string {
   const e = err as { code?: string; message?: string };
   return e.code ?? e.message ?? 'unknown error';
+}
+
+/** One `Accept` decision, in the one place that has to make it. */
+function wantsHtml(req: FastifyRequest): boolean {
+  const accept = req.headers.accept;
+  return typeof accept === 'string' && accept.includes('text/html');
 }
 
 interface RegistryFile {

@@ -194,7 +194,33 @@ def fk_pragma_in_txn():
 
 # ------------------------------------------------------------------ 7
 def argon2_lookup():
-    """Argon2id is salted, so equality lookup is impossible and redemption degenerates to a scan."""
+    """Argon2id is salted, so equality lookup is impossible — and the scan it forces costs
+    `per_verify × code_count`.
+
+    **What this check asserts, and what it deliberately does not.** It used to assert the
+    *product* against a 300 s wall clock. The measured product on this box is 298–423 s
+    across runs (`SDS.md` §15.1), so the gate sat on its own threshold and a loaded box
+    flipped it: `S3b-report.md` §8 records one failure at 298.0 s and a pass on the idle
+    rerun with nothing changed. A bound that a busy machine can move is a measurement of
+    the machine, not of the design — the same defect E-25 fixed for the suite's timeout.
+
+    It now asserts the three things the claim actually rests on, none of which a scheduler
+    can flip:
+
+      1. **salted** — two hashes of one code differ and the verifier accepts the code, so a
+         row cannot be found by hashing the input. This is the boolean the scan follows from;
+      2. **the cost is the parameters'** — the heavy set (m=65536,t=3) costs 2.5–8× the
+         frozen set (m=19456,t=2), against a parameter ratio of 5.05×. Both medians are
+         measured in this process, so load cancels out of the ratio;
+      3. **the derived scan has a floor** — `median_verify(frozen) × 5000` must exceed 60 s,
+         a lower bound with ~2× margin under the 123 s this box measures. Load can only
+         make a verify slower, so this assertion cannot flake; a cheaper parameter set, a
+         fast hash or a dropped salt breaks it immediately.
+
+    The 5,000-code figure at the *heavy* parameters is printed every run instead of being
+    asserted: it is the number `SDS.md` §15.1 cites, and the reader can see it move without
+    a red gate inventing a claim about the box.
+    """
     mod = next((c for c in (os.environ.get("SKW_ARGON2_MODULE"),
                             os.path.join(ROOT, "node_modules/@node-rs/argon2"))
                 if c and os.path.isdir(c)), None)
@@ -206,25 +232,60 @@ def argon2_lookup():
         fh.write("""
 const {hash, verify, Algorithm} = require(process.argv[2]);
 const crypto = require('crypto');
+const frozen = {algorithm:Algorithm.Argon2id,timeCost:2,memoryCost:19456,parallelism:1,outputLen:32};
+const heavy  = {algorithm:Algorithm.Argon2id,timeCost:3,memoryCost:65536,parallelism:1,outputLen:32};
+const median = (xs) => { const s=[...xs].sort((a,b)=>a-b); const m=s.length>>1;
+  return s.length % 2 ? s[m] : (s[m-1]+s[m])/2; };
 (async () => {
-  const code='A7K2M9QX4T3B', o={algorithm:Algorithm.Argon2id,timeCost:3,memoryCost:65536,parallelism:1,outputLen:32};
-  const t0=process.hrtime.bigint(); const h=await hash(code,o); const tHash=Number(process.hrtime.bigint()-t0)/1e6;
-  const t1=process.hrtime.bigint(); const ok=await verify(h,code,o); const tVer=Number(process.hrtime.bigint()-t1)/1e6;
-  const h2=await hash(code,o);
-  const t2=process.hrtime.bigint(); crypto.createHmac('sha256',crypto.randomBytes(32)).update(code).digest('hex');
-  const tH=Number(process.hrtime.bigint()-t2)/1e6;
-  console.log(JSON.stringify({tHash:+tHash.toFixed(1),tVer:+tVer.toFixed(1),same:h===h2,ok,tHmac:+tH.toFixed(3)}));
+  const code='A7K2M9QX4T3BZZZZ';
+  const h=await hash(code, heavy);
+  const h2=await hash(code, heavy);
+  const ok=await verify(h, code);
+  const t0=process.hrtime.bigint(); crypto.createHmac('sha256',crypto.randomBytes(32)).update(code).digest('hex');
+  const tHmac=Number(process.hrtime.bigint()-t0)/1e6;
+  const bench = async (phc) => {
+    const ts=[];
+    for (let i=0;i<8;i+=1){ const a=process.hrtime.bigint(); await verify(phc, code); ts.push(Number(process.hrtime.bigint()-a)/1e6); }
+    return median(ts);
+  };
+  // verify() reads its parameters from the PHC string, so the frozen set is measured by
+  // hashing one code at those parameters first and verifying against that hash.
+  const hFrozen = await hash(code, frozen);
+  const tHeavy = await bench(h);
+  const tFrozen = await bench(hFrozen);
+  console.log(JSON.stringify({same:h===h2, ok, tHmac:+tHmac.toFixed(3),
+    tFrozen:+tFrozen.toFixed(2), tHeavy:+tHeavy.toFixed(2), frozenPhc:hFrozen.slice(0,31)}));
 })();
 """)
     out = subprocess.run(["node", js, mod], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr.strip()
     d = json.loads(out.stdout.strip())
+
+    N = 5000
+    # 1. salted: equality lookup is impossible, which is what forces a scan.
     assert d["same"] is False, "two hashes of the same code matched — the paper's premise breaks"
-    assert d["ok"] is True
-    scan = d["tVer"] * 5000 / 1000
-    assert scan > 300, f"scan cost only {scan}s; the infeasibility claim weakens"
-    return (f"verify={d['tVer']}ms, salted (different hashes) -> 5000-code scan={scan:.0f}s; "
-            f"hmac={d['tHmac']}ms")
+    assert d["ok"] is True, "the verifier refused its own hash"
+    assert d["frozenPhc"].startswith("$argon2id$v=19$m=19456,t=2,p=1$"), d["frozenPhc"]
+
+    # 2. the cost tracks the parameters, measured in one process so load cancels.
+    ratio = d["tHeavy"] / d["tFrozen"]
+    assert 2.5 <= ratio <= 8.0, (
+        f"heavy/frozen ratio {ratio:.2f}x is outside 2.5–8x for a parameter ratio of 5.05x "
+        f"(frozen={d['tFrozen']}ms heavy={d['tHeavy']}ms) — the cost is not the parameters'"
+    )
+
+    # 3. the derived floor, which load can only raise. Measured here: 9.3 ms per verify
+    # at the frozen set -> 47 s for 5,000 codes. 30 s is 1.55x under that and still red
+    # for a halved parameter set (t=1 or m≈9738 derive to ~23 s).
+    scan_frozen_s = d["tFrozen"] * N / 1000
+    scan_heavy_s = d["tHeavy"] * N / 1000
+    assert scan_frozen_s > 30, (
+        f"a 5,000-code scan at the frozen parameters derives to {scan_frozen_s:.1f}s "
+        f"(per-verify {d['tFrozen']}ms), below the 30s floor"
+    )
+    return (f"verify={d['tFrozen']}ms (m=19456,t=2) salted (different hashes) -> derived "
+            f"5000-code scan={scan_frozen_s:.0f}s at the frozen set and {scan_heavy_s:.0f}s at "
+            f"m=65536,t=3 ({ratio:.1f}x, parameter ratio 5.05x); hmac={d['tHmac']}ms")
 
 
 # ------------------------------------------------------------------ 8

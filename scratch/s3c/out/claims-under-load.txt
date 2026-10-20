@@ -1,0 +1,29 @@
+PASS  1 schema/ER parity + negative tests                      v3: 36 entities == 36 CREATE TABLE; r1-data-model.png 192754 B; er-data-model.png 192754 B
+PASS  2 cp loses data, VACUUM INTO keeps it                    cp=no such table; VACUUM INTO rows=1000 user_version=9 views=1 jm=delete wal_before=28872B
+PASS  3 key immutable by FK, not by app                        referenced rename REJECTED, unreferenced rename ACCEPTED
+PASS  4 partial unique index breaks FK parent                  foreign key mismatch - "u_p" referencing "cms_asset"
+PASS  5 sqlite_sequence survives restore, not rebuild          seq 5->3 across rebuild; restored -> next id 6
+PASS  6 PRAGMA foreign_keys is a no-op in a txn                inside txn=1, after commit=1 (silently ignored)
+PASS  7 argon2id equality lookup is impossible                 verify=12.4ms (m=19456,t=2) salted (different hashes) -> derived 5000-code scan=62s at the frozen set and 346s at m=65536,t=3 (5.6x, parameter ratio 5.05x); hmac=1.143ms
+PASS  8 readonly is not a tenancy boundary                     readonly handle read 1 foreign row(s): buyer@acme.com
+PASS  9  r2 amendments apply to a populated v1                 user_version 2, integrity ok, fk_check 0, revisions=2, seq cms_page=3, 3 triggers all registered
+PASS  10 root path '/' is insertable                           v1 REJECTED '/' (homepage uninsertable) and ACCEPTED to_path='//evil.example'; amended accepts '/', rejects '/a/', '/../x', '/x//y' and '//evil.example', '/a/../b', '/x/'
+PASS  11 storage_path is generated, sha256 immutable           cannot INSERT into generated column "storage_path"; cannot UPDATE generated column "storage_path"; sha256 -> SKW_E_DM_COLUMN_IMMUTABLE
+PASS  12 asset delete guard holds with foreign_keys=OFF        fk=0 python -> SKW_E_DM_ASSET_IN_USE; cli rc=19 -> Error: stepping, SKW_E_DM_ASSET_IN_USE (19); unreferenced delete OK with fk=1, derived rows cascaded {'cms_asset_variant': 0, 'cms_asset_alias': 0, 'cms_watermark_render': 0}
+PASS  13 rebuild with fk=ON cascade-deletes children           revisions before=2; DROP with fk=ON -> 0 (cascade deleted); rebuild with fk=OFF -> 2
+PASS  14 dedupe write order: 24 requests, 1 download           24 concurrent requests, one jti: update-first uses=24 (events=1); insert-first uses=1 (events=1)
+PASS  15 (jti) WHERE kind='first' tolerates NULL               3 NULL-jti denials accepted; (J1,'first') twice -> UNIQUE constraint failed: cms_download_event.jti; (J1,'range') accepted; null=4
+PASS  16 export projection is the reproducible unit            27/27 tables classified {'filtered': 2, 'rows': 18, 'empty': 7}; vac==vac b26f34701b4a; after volatile rows file 2bfa78326573 (differs) but projection b08ae3480472 (identical); content change -> 085500b7398b (differs)
+PASS  17 argon2 parameter cost on this box                     m=19456,t=2,p=1 min=23.3 med=38.8ms; m=65536,t=3,p=1 min=208.5 med=217.0ms (5.6x)
+PASS  18 an unanchored audit chain proves nothing              tamper row 2 + recompute chain -> unanchored chain verifies (True); anchored head mismatches (7885b109.. -> c57f64d3..)
+PASS  19 delete-guard cost, indexed vs not                     200k referencing rows, unreferenced delete: no index 12.44 ms, indexed 0.063 ms (n=5 each)
+PASS  20 migration chain v1->v3 converges on site.sql          27 tables / 5 triggers identical on both paths (table text + trigger bodies), control 9 tables at v4 with a 9-column segment seal, no session pragma; codes-in-file -> REJECTED (legacy_12_char_codes_have_no_v3_selector)
+PASS  21 selector seek + argon2 verifier (C-6)                 5000 issued, 17 selector collisions resolved by retry; seek p50=5.29us (plan SEARCH, 1000 lookups); argon2 m=19456,t=2 real=38.6ms dummy=36.5ms; duplicate -> UNIQUE constraint failed: cms_download_code.code_selector
+PASS  22 redemption on the v3 tables (C-7)                     24 concurrent threads, one jti -> uses=1, first rows=1; cap 2 reached -> J3 outcome=denied_quota uses=2 (0 rows updated); Range row writes=1, uses=2
+PASS  23 export projection is a union over the live DB (C-5)   29/29 live tables classified (core 27, u_ 1, p_ 1); modes used=['empty', 'filtered', 'rows']; manifest without export -> SKW_E_PL_NO_EXPORT_CLASS for ['p_contact_message']
+PASS  24 plugin table class + asset guard (C-13/O-36)          guard -> SKW_E_DM_ASSET_IN_USE; without it the delete leaves 1 dangling asset_key (registered guard rows before drop=1)
+PASS  25 audit chain needs a daily seal (C-21)                 10000 rows chained 101.7ms, 2 segments verified, sealed 259us; grew by 5 rows on 2026-10-22 in 309us -> 2026-10-20 still ok (head db0d9418..); row 9990 deleted -> walk ok but rows=9989 of 9990 and head b83e1487.. of db0d9418.. -> SKW_E_SEC_AUDIT_SEAL, while 2026-10-21 stays ok
+PASS  26 body ban + list loop contract (C-12/C-4)              DB rejected 5 body vectors (script element, style element, html comment, javascript: url, srcdoc); loop: deterministic, text escaped, [data-empty] on zero rows, clamp 99->50 with data-truncated; unknown shell 'docs-v2' -> SKW_E_RT_TEMPLATE_UNKNOWN (4 shells shipped)
+PASS  27 connection classes: query_only is not tenancy (C-15)  query_only: VACUUM INTO -> attempt to write a readonly database; temp trigger -> attempt to write a readonly database; ATTACH -> ALLOWED: main,temp,other; exporter class wrote 8192 B
+
+27/27 passed, 0 skipped, 0 failed

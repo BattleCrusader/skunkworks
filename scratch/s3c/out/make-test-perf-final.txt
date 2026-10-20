@@ -1,0 +1,7 @@
+verify-toolchain: /usr/bin/python3 -> python 3.9.6, sqlite 3.43.2, argon2 ok
+make test-perf: PERFORMANCE GATE — wall-clock assertions, not correctness
+  box: 8 cpus, 1-min load average 12.98
+  REFUSED: load 12.98 on 8 cpus — this box is oversubscribed, and a
+  busy box makes a wall-clock gate red for its own reasons.
+  Re-run on an idle box, or set SKW_PERF_FORCE=1 to run anyway (and say so when you quote the numbers).
+make: *** [test-perf] Error 2

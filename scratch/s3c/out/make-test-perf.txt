@@ -1,0 +1,68 @@
+verify-toolchain: /usr/bin/python3 -> python 3.9.6, sqlite 3.43.2, argon2 ok
+make test-perf: PERFORMANCE GATE — wall-clock assertions, not correctness
+  box: 8 cpus, 1-min load average 3.41
+TAP version 13
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+#   200/1000 trials
+#   400/1000 trials
+#   600/1000 trials
+#   800/1000 trials
+#   1000/1000 trials
+#   medians: unknown-selector 11.03 ms, wrong-secret 11.04 ms (1.002x; tolerance 0.2x), p10 10.62/10.63 ms, p90 12.99/12.84 ms over 1000 trials each
+# Subtest: P-S3c-1. unknown selector vs wrong secret: 1,000 trials each, medians within 20%
+ok 1 - P-S3c-1. unknown selector vs wrong secret: 1,000 trials each, medians within 20%
+  ---
+  duration_ms: 23935.125708
+  type: 'test'
+  ...
+#   random-selector median 12.17 ms over 50 trials
+# Subtest: P-S3c-2 — the same trials against a selector that never existed cost the same as a real one
+ok 2 - P-S3c-2 — the same trials against a selector that never existed cost the same as a real one
+  ---
+  duration_ms: 631.306625
+  type: 'test'
+  ...
+# migrate: tenant broken failed (SQLITE_NOTADB) — serving 503 alone
+# registry: tenant broken skipped (SQLITE_NOTADB)
+# settings: tenant broken skipped (SQLITE_NOTADB)
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# P-4 medians {"wrong_password":11.241958,"unknown_email":11.0837085,"wrong_totp":11.4325415} ratio 1.031 | wrong_password median=11.24 p10=10.45 p90=12.52 | unknown_email median=11.08 p10=10.20 p90=12.12 | wrong_totp median=11.43 p10=10.58 p90=12.88
+# Subtest: P-4. three login failure causes are indistinguishable in time on an idle box
+ok 3 - P-4. three login failure causes are indistinguishable in time on an idle box
+  ---
+  duration_ms: 2317.686167
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# P-1 cost_ms_max 0.0308 0.0146 0.0145 0.0184 0.0454 ms (budget 1.5)
+# P-2 expensive view cost_ms_max 42.662083000000166 ms (ceiling 1.5)
+# Subtest: P-1. an ordinary query source publishes under the real 1.5 ms ceiling, five times
+ok 4 - P-1. an ordinary query source publishes under the real 1.5 ms ceiling, five times
+  ---
+  duration_ms: 88.544875
+  type: 'test'
+  ...
+# Subtest: P-2. the ceiling still refuses an expensive view body, measured against the real budget
+ok 5 - P-2. the ceiling still refuses an expensive view body, measured against the real budget
+  ---
+  duration_ms: 9769.722292
+  type: 'test'
+  ...
+# P-3 admin publish cost_ms_max 0.0248 ms
+# Subtest: P-3. the admin publish route returns the measured report under the real ceiling
+ok 6 - P-3. the admin publish route returns the measured report under the real ceiling
+  ---
+  duration_ms: 9.529458
+  type: 'test'
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 37587.428125
+make test-perf: covers the rate/timing assertions only. Not covered: plan, allowlist,
+  budget-refusal, body-shape and count assertions — those are `make test`.

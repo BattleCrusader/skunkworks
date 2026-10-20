@@ -1,0 +1,189 @@
+TAP version 13
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: I1 — a code is 16 Crockford characters; the row holds the selector and an argon2id hash
+ok 1 - I1 — a code is 16 Crockford characters; the row holds the selector and an argon2id hash
+  ---
+  duration_ms: 98.258416
+  type: 'test'
+  ...
+# Subtest: I2 — max_uses resolves per issue, then the tenant setting, and a missing setting is a refusal
+ok 2 - I2 — max_uses resolves per issue, then the tenant setting, and a missing setting is a refusal
+  ---
+  duration_ms: 1.242292
+  type: 'test'
+  ...
+# Subtest: I3 — unlimited needs the tenant toggle and the per-issue confirmation
+ok 3 - I3 — unlimited needs the tenant toggle and the per-issue confirmation
+  ---
+  duration_ms: 0.641291
+  type: 'test'
+  ...
+# Subtest: I4. an encrypted PDF is refused at issue, naming the asset
+ok 4 - I4. an encrypted PDF is refused at issue, naming the asset
+  ---
+  duration_ms: 2.342541
+  type: 'test'
+  ...
+# Subtest: I5 — CSV: a blank max_uses uses the tenant default, and one bad line issues nothing
+ok 5 - I5 — CSV: a blank max_uses uses the tenant default, and one bad line issues nothing
+  ---
+  duration_ms: 25.903
+  type: 'test'
+  ...
+# Subtest: I6 — the signed webhook: good signature issues, a replayed order is 409, a bad one is 401
+ok 6 - I6 — the signed webhook: good signature issues, a replayed order is 409, a bad one is 401
+  ---
+  duration_ms: 20.321167
+  type: 'test'
+  ...
+# Subtest: I7 — reissue revokes the old row and mints a new code
+ok 7 - I7 — reissue revokes the old row and mints a new code
+  ---
+  duration_ms: 25.103167
+  type: 'test'
+  ...
+# Subtest: I8 — the admin screen issues, shows the plaintext once, and lists the codes
+ok 8 - I8 — the admin screen issues, shows the plaintext once, and lists the codes
+  ---
+  duration_ms: 21.52425
+  type: 'test'
+  ...
+# Subtest: C1. 8 processes, one jti: one redemption, seven continuations, one row
+ok 9 - C1. 8 processes, one jti: one redemption, seven continuations, one row
+  ---
+  duration_ms: 1663.192083
+  type: 'test'
+  ...
+# Subtest: C2 — 8 processes, two jti: two uses, two rows
+ok 10 - C2 — 8 processes, two jti: two uses, two rows
+  ---
+  duration_ms: 1668.992125
+  type: 'test'
+  ...
+# Subtest: C3. 8 processes, 8 jti, max_uses=2: exactly two spend and six are denied
+ok 11 - C3. 8 processes, 8 jti, max_uses=2: exactly two spend and six are denied
+  ---
+  duration_ms: 1812.567917
+  type: 'test'
+  ...
+# Subtest: C4 — a quota denial is not a continuation: the same jti retried is denied again
+ok 12 - C4 — a quota denial is not a continuation: the same jti retried is denied again
+  ---
+  duration_ms: 6.4385
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# \# R1 8 parallel ranges -> 200 x8, uses=1, event rows=1 (kinds first:ok), bytes_declared=200
+# Subtest: R1 — 8 parallel Range requests under one token spend exactly one use and write one row
+ok 13 - R1 — 8 parallel Range requests under one token spend exactly one use and write one row
+  ---
+  duration_ms: 96.613416
+  type: 'test'
+  ...
+# Subtest: R2 — two different tokens spend two uses and write two rows
+ok 14 - R2 — two different tokens spend two uses and write two rows
+  ---
+  duration_ms: 39.659209
+  type: 'test'
+  ...
+# Subtest: R3 — Range: bytes=1- cannot bypass the counter once the use is spent
+ok 15 - R3 — Range: bytes=1- cannot bypass the counter once the use is spent
+  ---
+  duration_ms: 39.949042
+  type: 'test'
+  ...
+# Subtest: R3b — an oversized range is clamped, still spends one use, and bytes_declared is the file
+ok 16 - R3b — an oversized range is clamped, still spends one use, and bytes_declared is the file
+  ---
+  duration_ms: 23.570417
+  type: 'test'
+  ...
+# Subtest: R3c — an unsatisfiable range is 416, writes no event and spends nothing
+ok 17 - R3c — an unsatisfiable range is 416, writes no event and spends nothing
+  ---
+  duration_ms: 24.597958
+  type: 'test'
+  ...
+# Subtest: R4 — an unknown selector and a wrong secret are indistinguishable
+ok 18 - R4 — an unknown selector and a wrong secret are indistinguishable
+  ---
+  duration_ms: 33.690583
+  type: 'test'
+  ...
+# Subtest: R5. a garbage or oversized token is 401, never 500
+ok 19 - R5. a garbage or oversized token is 401, never 500
+  ---
+  duration_ms: 2.636875
+  type: 'test'
+  ...
+# Subtest: R5b. a token minted for another client, asset or clock is refused
+ok 20 - R5b. a token minted for another client, asset or clock is refused
+  ---
+  duration_ms: 23.91625
+  type: 'test'
+  ...
+# Subtest: R6 — 报告.pdf downloads with filename*=UTF-8''… and status 200
+ok 21 - R6 — 报告.pdf downloads with filename*=UTF-8''… and status 200
+  ---
+  duration_ms: 22.817459
+  type: 'test'
+  ...
+# Subtest: R7 — bytes_declared is the authorised length; bytes_sent stays NULL
+ok 22 - R7 — bytes_declared is the authorised length; bytes_sent stays NULL
+  ---
+  duration_ms: 45.679
+  type: 'test'
+  ...
+# Subtest: R8 — a missing blob is 503 SKW_E_RT_ASSET_MISSING and spends nothing
+ok 23 - R8 — a missing blob is 503 SKW_E_RT_ASSET_MISSING and spends nothing
+  ---
+  duration_ms: 24.027208
+  type: 'test'
+  ...
+# Subtest: R9 — a code with max_uses NULL is unlimited only behind the toggle and the confirmation
+ok 24 - R9 — a code with max_uses NULL is unlimited only behind the toggle and the confirmation
+  ---
+  duration_ms: 48.205167
+  type: 'test'
+  ...
+# Subtest: R10 — lowering max_uses below uses blocks the next redemption immediately
+ok 25 - R10 — lowering max_uses below uses blocks the next redemption immediately
+  ---
+  duration_ms: 36.321417
+  type: 'test'
+  ...
+# Subtest: R10b — a revoked code stops a token that was already minted
+ok 26 - R10b — a revoked code stops a token that was already minted
+  ---
+  duration_ms: 23.690083
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: R11 — the form is served to a browser and a bad code comes back as the same form
+ok 27 - R11 — the form is served to a browser and a bad code comes back as the same form
+  ---
+  duration_ms: 11.455459
+  type: 'test'
+  ...
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# Subtest: R12 — the limiter: 5 refusals per 15 minutes per IP, and the 6th attempt is 429
+ok 28 - R12 — the limiter: 5 refusals per 15 minutes per IP, and the 6th attempt is 429
+  ---
+  duration_ms: 72.2935
+  type: 'test'
+  ...
+# Subtest: R12b — the IP window closes on its own, across six different selectors
+ok 29 - R12b — the IP window closes on its own, across six different selectors
+  ---
+  duration_ms: 62.399042
+  type: 'test'
+  ...
+1..29
+# tests 29
+# suites 0
+# pass 29
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6443.549791

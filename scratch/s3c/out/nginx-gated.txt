@@ -1,0 +1,39 @@
+TAP version 13
+# plugin.sock: not bound (S4 owns the plugin runner; SDS §2.3 step 6)
+# \# G1 200 200 B sha256 25be815f content-length 200 bytes_declared 200 bytes_sent null uses=1
+# Subtest: G1 — a redeemed cookie downloads the stored PDF through the edge, byte-identical
+ok 1 - G1 — a redeemed cookie downloads the stored PDF through the edge, byte-identical
+  ---
+  duration_ms: 875.853084
+  type: 'test'
+  ...
+# \# G2 GET /__protected/25/25be815f5174b97f2d2959165c3da86002efe3d808bdee910d637b8691c2032d.pdf -> 404 (internal)
+# Subtest: G2 — /__protected/ is internal: a direct request is nginx's 404
+ok 2 - G2 — /__protected/ is internal: a direct request is nginx's 404
+  ---
+  duration_ms: 0.858458
+  type: 'test'
+  ...
+# \# G3 206 100 B range bytes 100-199/200 uses=2
+# Subtest: G3 — Range: bytes=100-199 through the edge is a 206 with exactly those bytes
+ok 3 - G3 — Range: bytes=100-199 through the edge is a 206 with exactly those bytes
+  ---
+  duration_ms: 25.270083
+  type: 'test'
+  ...
+# \# G4 8 parallel ranges -> 206 x8, one use (2 -> 3), event rows 2 -> 3
+# Subtest: G4 — 8 parallel ranges through the edge: one use, eight correct slices
+ok 4 - G4 — 8 parallel ranges through the edge: one use, eight correct slices
+  ---
+  duration_ms: 35.2105
+  type: 'test'
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2154.505208
