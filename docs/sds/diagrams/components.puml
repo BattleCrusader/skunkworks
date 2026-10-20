@@ -1,0 +1,73 @@
+@startuml
+/' docs/sds/diagrams/components.puml — services, processes and the four trust boundaries.
+   Implements: SDS §2, §12, §13. Register: C-8 (fourth service), C-15 (connection classes),
+   C-25 (demo host never serves admin), O-03 (tenant volume is rw; root fs is ro). '/
+title Skunkworks — services, processes, trust boundaries (v1)
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam ArrowColor #555555
+skinparam nodesep 22
+skinparam ranksep 26
+top to bottom direction
+
+actor "Visitor / buyer" as V
+actor "Tenant admin" as A
+actor "Operator" as O
+
+node "nginx  — published :80 :443" as NGX #EAF2FB {
+  component "snippets/skunk-proxy.conf\nX-Skunkworks-Edge: <token>\nX-Skunkworks-Tenant: \"\"" as SNIP
+  component "/media/  ->  content/public/\nsymlink farm, public only" as MEDIA
+  component "/__protected/  internal\n64-hex guard, Range, limit_rate" as PROT
+  component "limit_req zone=tenant\nrate=min(20, SKW_BOX_RPS/hot)" as RATE
+}
+
+node "app  — ONE Node 22 process, expose only" as APP #EAF7EE {
+  component "Fastify\n/admin/t/<key>/*  /api/*  /d/*" as FA
+  component "Astro SSR (middleware)\nrender-read only" as ASTRO
+  component "resolveTenant()\nheader | host | session" as RES
+  component "exportSnapshot()\nexporter class" as EXP
+  component "argon2 semaphore\nSKW_ARGON2_MAX_CONCURRENT=4" as SEM
+}
+
+node "plugin-runner  — network_mode: none" as RUN #FFF6E5 {
+  component "node --permission child\none per installed package" as CHILD
+  component "run/plugin.sock\nJSON lines, 14 ops" as SOCK
+}
+
+node "acme  — acme-companion" as ACME #F4F0FB {
+  component "per-host HTTP-01\nno wildcard" as CERT
+}
+
+database "control.db  (global)\ntenant · domain · user_account\nsession · audit_log · audit_seal" as CTL
+database "tenants/<key>/site.db\ncms_* · u_* · p_*" as TEN
+folder "tenants/<key>/content/\nmedia/ · public/" as CONT
+
+V -down-> NGX : https
+A -down-> NGX : https (admin host)
+O -down-> NGX : https (fleet)
+NGX -down-> APP : proxy_pass\nedge token + Host
+NGX -down-> MEDIA : bytes, no Node
+NGX -down-> PROT : X-Accel-Redirect
+APP -down-> CTL : tenant, session, seal
+APP -down-> TEN : render-read\nquery_only=1
+APP -down-> RUN : socket only
+ACME -down-> NGX : cert files
+TEN -[hidden]down-> CONT
+
+legend right
+  |= Boundary |= What crosses it |= What enforces it |
+  | **B1** edge -> app | a caller-supplied tenant key | nginx overwrites the header with ""; a non-empty value is honoured only with a matching `X-Skunkworks-Edge` **and** a trusted peer; failures are 421 (C-1, steps 1-2) |
+  | **B2** plugin -> host | any file, socket, tenant, or SQL | netns (`network_mode: none`) + no `--allow-addons` + no child/worker + one cgroup. `new Database()` fails `ERR_DLOPEN_DISABLED` (C-8) |
+  | **B3** tenant -> tenant | a cross-tenant read | a **permission** boundary, not a construction: one file per tenant, no request value in a path, no SQL text on a pooled handle. `query_only` blocks `VACUUM INTO` and temp triggers but **not** `ATTACH` (check 27) |
+  | **B4** demo -> admin | a privilege escalation | demos at `demos.<domain>/demo/<key>/`, admin at `admin.<domain>`; a host serving tenant HTML never serves the admin listener (C-25) |
+end legend
+
+note bottom of RUN
+  A plugin that hangs or dies cannot take a page down:
+  no plugin code is on the render path (P-1). A 2 s
+  per-op timeout and a circuit breaker bound the damage
+  to the endpoint that called it.
+end note
+
+@enduml

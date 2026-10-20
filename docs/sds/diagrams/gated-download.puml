@@ -1,0 +1,113 @@
+@startuml
+/' docs/sds/diagrams/gated-download.puml — code entry to bytes, one redemption.
+   Implements: SDS §7. Register: C-6 (selector + argon2), C-7 (jti is the unit), C-14
+   (bytes_declared vs bytes_sent), C-16 (watermark), C-17 (one byte tree, /__protected/). '/
+title Gated download — code, selector, argon2, one redemption, X-Accel-Redirect, Range
+
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam maxMessageSize 130
+
+actor "Buyer" as B
+participant "nginx" as N
+participant "app  /d/<key>" as APP
+participant "site.db" as DB
+participant "watermark worker" as WM
+participant "nginx  internal\n/__protected/" as P
+
+== Enter the code (never in a query string) ==
+
+B -> N : POST /d/<key>   code=<16 chars>
+N -> APP : proxied, edge token
+APP -> APP : normalise: Crockford base32, upper, 16 chars\nselector = first 4, secret = last 12
+APP -> DB : SELECT code_hash, id, max_uses, uses, revoked_at\n  FROM cms_download_code WHERE code_selector = ?
+note right of DB
+  20-bit selector, plaintext, UNIQUE.
+  Measured 2.02 us over 5,000 rows;
+  this box 6.08 us p50 (check 21).
+  ~12 collisions per 5,000 issuances —
+  the issuer retries, the lookup never does.
+end note
+alt selector matched
+  APP -> APP : argon2id verify(code, code_hash)\n  m=19456, t=2, p=1  |  semaphore 4
+else selector absent
+  APP -> APP : dummy verify at the SAME parameters
+end
+note over APP
+  Both paths return the same status, the same body, and exactly one
+  cms_download_event row (C-6). A skipped dummy verify is a 0 ms
+  existence oracle; check 21 asserts both paths cost > 5 ms.
+end note
+
+== Mint the token ==
+
+APP -> APP : jti = 128-bit hex\npayload = {jti,cid,aid,iat,exp,iph,uah}\ntoken = v1.<b64url(payload)>.<b64url(HMAC-SHA256(SKW_DOWNLOAD_TOKEN_KEY,...))>
+APP --> B : 200 + Set-Cookie: __Host-sk-dl-<tenant>=<token>\n  Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600
+note right of B
+  __Host- requires Path=/ and no Domain
+  (RFC 6265bis 4.1.3). The tenant key is in
+  the NAME so a shared origin cannot shadow
+  it; the asset binding is in the token (aid).
+end note
+
+== Redeem, once per token ==
+
+B -> N : GET /d/<key>/file   Cookie: __Host-sk-dl-<tenant>\nRange: bytes=0-1048575
+N -> APP : proxied
+APP -> APP : 1 split on "." exactly 3 parts\n2 require "v1"\n3 b64url MAC, require EXACTLY 32 bytes\n4 timingSafeEqual   (no JSON.parse before this)\n5 exp-iat=600 and iat <= now+30\n6 iph/uah match  7 aid matches the route
+alt token invalid
+  APP --> B : 401 SKW_E_SEC_TOKEN_INVALID\n+ one kind='denied' event row (jti may be NULL)
+end
+
+APP -> DB : BEGIN IMMEDIATE
+APP -> DB : INSERT INTO cms_download_event(jti,kind,code_id,asset_id,\n  bytes_declared,ip_hash,ua_hash,outcome)\n  VALUES(?, 'first', ?, ?, ?, ?, ?, 'ok') ON CONFLICT DO NOTHING
+note right of DB
+  INSERT FIRST. The unique index
+  (jti) WHERE kind='first' is the gate;
+  update-first spends 24 uses for one
+  download (measured, checks 14 and 22).
+end note
+alt changes() = 1  (first byte of this redemption)
+  APP -> DB : UPDATE cms_download_code SET uses=uses+1, last_used_at=?\n  WHERE id=? AND revoked_at IS NULL\n    AND (max_uses IS NULL OR uses < max_uses)
+  alt 0 rows updated
+    APP -> DB : UPDATE cms_download_event SET outcome='denied_quota'\n  WHERE jti=? AND kind='first'
+    APP --> B : 410 SKW_E_SEC_USES_EXHAUSTED
+  end
+else changes() = 0  (a continuation under the same jti)
+  APP -> APP : served, consumes nothing
+end
+
+== Offload: the app never sees a byte ==
+
+APP -> APP : stat the target file\nmissing -> 503 SKW_E_RT_ASSET_MISSING (never a silent nginx 404)
+APP -> WM : if the asset needs stamping: stamp within a 2000 ms budget
+alt watermark fails or times out
+  WM --> APP : error
+  APP --> B : 503 SKW_E_SEC_WATERMARK_FAILED\n+ denied_watermark event, fail closed, no redirect
+end
+APP -> DB : COMMIT
+APP --> N : 200, empty body\nX-Accel-Redirect: /__protected/<sha256>.<ext>\nContent-Disposition: attachment; filename="ascii"; filename*=UTF-8''...
+N -> P : internal alias of content/media/\n64-hex guard, Range honored, limit_rate 1m
+P --> B : 206 Partial Content / 200, bytes
+note over APP, P
+  The app writes bytes_declared (Content-Length it authorised).
+  bytes_sent stays NULL: it is filled only from the nginx access
+  log, and v1 does not wire that ingest (C-14). A NOT NULL 0
+  would be a fabrication in a chargeback.
+end note
+
+== Continuation grace ==
+
+B -> N : GET /d/<key>/file   (token now expired, same jti)
+N -> APP : proxied
+APP -> APP : MAC verifies, iph/uah/aid match,\na kind='first' event exists for this jti,\ncode not revoked, now-iat <= 21600 s
+APP --> N : 200 + X-Accel-Redirect   (no second use spent)
+note right of APP
+  This is what lets a 1 GiB download finish
+  under limit_rate 1m (1,024 s) without
+  spending a second use, while a leaked
+  token buys one asset for at most six
+  hours on one IP/UA pair.
+end note
+
+@enduml

@@ -1,0 +1,89 @@
+@startuml
+/' docs/sds/diagrams/request-lifecycle.puml — one public request, from socket to bytes.
+   Implements: SDS §5. Register: C-1 (frozen header contract, 10 steps), C-2 (nginx strips,
+   app emits), C-10 (control gate hard, tenant gate soft), C-25 (demo host never admin). '/
+title Request lifecycle — tenant resolution and the frozen header contract
+
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam maxMessageSize 120
+
+participant "Browser" as B
+participant "nginx" as N
+participant "app\nresolveTenant()" as R
+participant "control.db" as C
+participant "site.db" as S
+participant "Astro SSR" as A
+
+== Edge: exactly one stripper, one token, one empty header ==
+
+B -> N : GET /pricing?plan=pro\nHost: acme.com
+N -> N : map $host $tenant\nmap $request_uri $demo_key
+alt path-prefix location  /demo/<key>/
+  N -> N : rewrite ^/demo/<key>/(.*)$ /$1 break\nstrip ONCE, here
+  N -> N : X-Skunkworks-Tenant: $demo_key\nX-Forwarded-Prefix: /demo/$demo_key
+else host-routed location  (the normal case)
+  N -> N : X-Skunkworks-Tenant: ""\nno rewrite, URI preserved byte for byte
+end
+N -> N : X-Skunkworks-Edge: <SKW_EDGE_TOKEN>\nX-Real-IP, X-Forwarded-For/Proto/Host
+note right of N
+  The snippet is included inside **every**
+  location that contains proxy_pass;
+  a CI check asserts
+  count(proxy_pass) == count(include).
+end note
+
+N -> R : proxied request
+
+== Resolution: ten steps, no default tenant, one code per failure ==
+
+R -> R : peer = socket.remoteAddress\nhdr = X-Skunkworks-Tenant\nedge = X-Skunkworks-Edge
+alt step 1-2: peer untrusted with any X-Skunkworks-* header,\nOR hdr non-empty and edge != SKW_EDGE_TOKEN
+  R --> B : 421 SKW_E_PLT_EDGE_PROOF
+else step 3-4: hdr non-empty and (fails ^[a-z0-9][a-z0-9-]{0,62}$,\ncontains a comma, or disagrees with X-Forwarded-Prefix)
+  R --> B : 400 SKW_E_PLT_TENANT_HEADER
+else step 5: hdr non-empty and valid
+  R -> R : tenant = hdr, via='header'
+else step 6: hdr absent or "" and the public listener
+  R -> C : domain.host = normalise(Host)
+  note right of R
+    normalise = lowercase, strip :port,
+    strip trailing dot, domainToASCII,
+    reject outside [a-z0-9.-].
+    Host is parsed here and nowhere else.
+  end note
+else step 7: hdr absent or "" and the admin listener
+  R -> C : tenant = session.tenant_id
+  note right of R
+    /admin/t/<key>/... The admin ignores
+    Host for tenancy and 421s if
+    X-Skunkworks-Tenant is present at all
+    (step 8, C-11).
+  end note
+end
+C --> R : tenant row  (status, mode, db_version)
+alt step 9: status in (suspended, archived)
+  R --> B : 404 SKW_E_PLT_TENANT_UNKNOWN
+else step 10: db cannot be opened / SQLITE_BUSY past timeout
+  R --> B : 503 SKW_E_PLT_TENANT_UNAVAILABLE
+else step 10: user_version < tenant.db_version
+  R --> B : 503 SKW_E_DM_SCHEMA_STALE\nRetry-After: 5\n+ lazy repair of THAT tenant
+end
+
+== Render: read-only, no SQL text, no store ==
+
+R -> S : connection class render-read\nreadonly=true, PRAGMA query_only=1,\nforeign_keys=1, busy_timeout
+R -> S : SELECT ... FROM cms_page WHERE path = ?
+S --> R : page row  (body_html, body_css, template, rev)
+R -> R : resolve shell in cms_component_registry\nunknown -> 500 (publish should have refused it)
+R -> S : source rows for every list / datasource\nkey = (tenant, source, rev, sha256(params))
+R -> A : render(page, rows, tenant.prefix)
+A --> R : HTML + islands
+R --> B : 200, Cache-Control: no-store\nCSP: script-src 'self' (byte-identical in all 3 SKUs)
+note over B, A
+  Every URL emitted goes through site.url() / site.asset(), which prepend
+  tenant.prefix (from X-Forwarded-Prefix and nowhere else) exactly once.
+  Astro's `base` cannot do it per request — measured (C-2).
+end note
+
+@enduml

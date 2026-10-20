@@ -1,0 +1,96 @@
+@startuml
+/' docs/sds/diagrams/export-pipeline.puml — one content model, three SKUs, refusals before bytes.
+   Implements: SDS §11. Register: C-5 (projection union), C-15 (exporter class), C-22
+   (enumerated snapshot, pinned clock, refusal), O-18/O-19 (VACUUM INTO + quiescence counts),
+   O-24 (lockfile + CI build), O-20 (PII classes). '/
+title Export pipeline — three SKUs from one content model
+
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam activityBorderColor #555555
+skinparam activityBackgroundColor #FDFDFD
+
+start
+
+:operator: export <tenant> --target cms|astro|static;
+
+:open an **exporter** connection\n(short-lived, never pooled, never in a transaction);
+note right
+  The only class permitted to run VACUUM INTO (C-15).
+  The render class is query_only=1 and cannot.
+end note
+
+:wal_checkpoint(TRUNCATE);
+:quiescence: count every exported table\nsource-before, source-after, snapshot-in;
+if (all three agree within 5 attempts?) then (yes)
+else (no)
+  :refuse SKW_E_EXP_NOT_QUIESCENT;
+  stop
+endif
+note right
+  O-19: a cp-built bundle with a manifest measured from
+  the copy passes 27/27 checks and serves 201 of 241
+  pages. Counts are the gate; a manifest is not.
+end note
+
+:VACUUM INTO data/site.db   (the only correct copy);
+:apply the projection union;
+note right
+  set(tables in sqlite_master) ==
+  core (schema/export-projection.json)
+  + u_* (prefix rule: rows)
+  + p_<id>_* (installed manifest tables[].export)
+  Anything left over is a build failure (C-5).
+  modes: rows | empty | filtered
+end note
+
+:classify every file\ncontent | media | pii | secret | db | infra;
+:pin the clock: SKW_EXPORT_NOW;
+
+if (target == cms) then (yes)
+  :preflight: gated assets present?;
+  if (gated assets?) then (yes)
+    :refuse SKW_E_EXP_GATED_ASSETS (named keys);
+    stop
+  endif
+  :write compose (4 services, pinned digests)\n.env (generated secrets, never populated in the bundle)\ndata/control.seed.json (1 tenant, mode=production,\n  1 owner with must_change=1)\ncontent/ · data/site.db · install.sh;
+elseif (target == astro) then (yes)
+  :preflight: gated assets? forms without an action URL?\nparameterised sources with a `free` param in a link?;
+  if (any refusal?) then (yes)
+    :refuse: SKW_E_EXP_GATED_ASSETS |\nSKW_E_PL_EXPORT_FORWARD_NO_TARGET |\nSKW_E_EXP_PARAMETERISED;
+    stop
+  endif
+  :enumerate each source's declared parameter domains\n(cross product <= SKW_SNAPSHOT_MAX_COMBOS = 1024,\n <= 2 MB per source);
+  :generate src/pages/*.astro + src/content/*.json snapshots\n+ package.json + the package-lock.json it resolved\n+ README with the exact deploy commands;
+  :CI runs npm ci && npm run build on the generated target\nand records the build id in BUNDLE.json;
+else (static)
+  :same preflight, and the same enumeration;
+  :render one .html per (path, parameter combination)\n+ assets/ + robots.txt + sitemap.xml;
+  :two exports of one DB at one SKW_EXPORT_NOW are byte-identical\n(asserted on the projection digest, check 16);
+endif
+
+:exclude, in every target:
+content/protected/wm/**  (per-buyer renders, class pii)
+content/sources/**       (never shipped)
+data/control.db, any -wal or -shm, a populated .env;
+note right
+  O-08 measured a naive bundle at 8,739,862 B and the
+  sealed one at 224,983 B on the same fixture. Both
+  numbers come from the same run.
+end note
+
+:write BUNDLE.json (schema skunkworks/site-bundle/v3)\ncreated_at · export_now · tenant{key,mode,db_version}\nhosts · image{app_digest,runner_digest} · projection_version\nsource_counts · files[] with sha256+class · plugins[]\nrefusals[] · notes[];
+:generate EXPORT-NOTES.md from notes[];
+:ship cold: journal_mode=delete (what VACUUM INTO produces);
+
+:install.sh --verify  (pinned image, bundle mounted :ro);
+if (BUNDLE.json present, every sha256 matches,\nno -wal in the tree, source_counts match?) then (yes)
+  :exit 0;
+else (no)
+  :exit 12;
+  stop
+endif
+
+stop
+
+@enduml

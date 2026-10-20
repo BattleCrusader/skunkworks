@@ -12,52 +12,55 @@ skinparam class {
   ArrowColor #444444
 }
 
-package "control.db  (global, never exported)" {
+title Skunkworks schema v3  (generated from one spec)
+
+package "control.db  (global, never exported, user_version 2)" {
   entity tenant as "tenant" <<control>> {
     id : INTEGER <<PK>>
     key : TEXT <<UQ>>
-    mode : TEXT
-    status : TEXT
-    display_name : TEXT
-    db_version : INTEGER
-    storage_quota_bytes : INTEGER
-    request_budget_per_min : INTEGER
+    mode : TEXT <<NN>>
+    status : TEXT <<NN>>
+    display_name : TEXT <<NN>>
+    db_version : INTEGER <<NN>>
+    storage_quota_bytes : INTEGER <<NN>>
+    request_budget_per_min : INTEGER <<NN>>
     demo_expires_at : TEXT
-    created_at : TEXT
+    created_at : TEXT <<NN>>
     archived_at : TEXT
   }
   entity domain as "domain" <<control>> {
     id : INTEGER <<PK>>
     host : TEXT <<UQ>>
     tenant_id : INTEGER <<FK>>
-    kind : TEXT
-    is_primary : INTEGER
-    cert_state : TEXT
-    created_at : TEXT
+    kind : TEXT <<NN>>
+    is_primary : INTEGER <<NN>>
+    cert_state : TEXT <<NN>>
+    created_at : TEXT <<NN>>
   }
   entity user_account as "user_account" <<control>> {
     id : INTEGER <<PK>>
     tenant_id : INTEGER <<FK>>
-    email : TEXT
-    password_hash : TEXT
-    role : TEXT
+    email : TEXT <<NN>>
+    password_hash : TEXT <<NN>>
+    role : TEXT <<NN>>
     totp_secret : TEXT
+    must_change : INTEGER <<NN>>
     reset_token_hash : TEXT
     reset_expires_at : TEXT
-    failed_logins : INTEGER
+    failed_logins : INTEGER <<NN>>
     locked_until : TEXT
-    created_at : TEXT
+    created_at : TEXT <<NN>>
     last_login_at : TEXT
   }
   entity session as "session" <<control>> {
     id : TEXT <<PK>>
     user_id : INTEGER <<FK>>
     tenant_id : INTEGER <<FK>>
-    csrf_secret : TEXT
-    ip_hash : TEXT
-    ua_hash : TEXT
-    created_at : TEXT
-    expires_at : TEXT
+    csrf_secret : TEXT <<NN>>
+    ip_hash : TEXT <<NN>>
+    ua_hash : TEXT <<NN>>
+    created_at : TEXT <<NN>>
+    expires_at : TEXT <<NN>>
     rotated_from : TEXT
     revoked_at : TEXT
   }
@@ -65,228 +68,322 @@ package "control.db  (global, never exported)" {
     id : INTEGER <<PK>>
     tenant_id : INTEGER
     actor_user_id : INTEGER
-    actor_label : TEXT
-    action : TEXT
+    actor_label : TEXT <<NN>>
+    action : TEXT <<NN>>
     target_kind : TEXT
     target_id : TEXT
     before_json : TEXT
     after_json : TEXT
     ip_hash : TEXT
-    ts : TEXT
+    ts : TEXT <<NN>>
+  }
+  entity audit_seal as "audit_seal" <<control>> {
+    tenant_key : TEXT <<NN>>
+    day : TEXT <<NN>>
+    rows : INTEGER <<NN>>
+    head : TEXT <<NN>>
+    sealed_at : TEXT <<NN>>
   }
   entity deploy_token as "deploy_token" <<control>> {
     id : INTEGER <<PK>>
     tenant_id : INTEGER <<FK>>
     token_hash : TEXT <<UQ>>
-    label : TEXT
-    expires_at : TEXT
+    label : TEXT <<NN>>
+    expires_at : TEXT <<NN>>
     revoked_at : TEXT
     last_used_at : TEXT
-    created_at : TEXT
+    created_at : TEXT <<NN>>
   }
   entity control_migration as "control_migration" <<control>> {
     id : INTEGER <<PK>>
     tag : TEXT <<UQ>>
-    checksum : TEXT
-    applied_at : TEXT
+    checksum : TEXT <<NN>>
+    applied_at : TEXT <<NN>>
   }
 }
 
-package "tenants/<key>/site.db  (one file per tenant)" {
+package "tenants/<key>/site.db  (one file per tenant, user_version 3)" {
   entity cms_settings as "cms_settings" <<site>> {
     key : TEXT <<PK>>
-    value_json : TEXT
-    type : TEXT
-    updated_at : TEXT
+    value_json : TEXT <<NN>>
+    type : TEXT <<NN>>
+    updated_at : TEXT <<NN>>
     updated_by : INTEGER
+  }
+  entity cms_component_registry as "cms_component_registry" <<site>> {
+    name : TEXT <<PK>>
+    kind : TEXT <<NN>>
+    renderer : TEXT <<NN>>
+    repeat_child : TEXT
+    bindings_json : TEXT <<NN>>
+    props_schema_json : TEXT <<NN>>
+    limit_max : INTEGER
+    version : TEXT <<NN>>
   }
   entity cms_page as "cms_page" <<site>> {
     id : INTEGER <<PK>>
     path : TEXT <<UQ>>
-    slug : TEXT
-    title : TEXT
-    status : TEXT
-    template : TEXT
-    body_html : TEXT
-    css : TEXT
+    slug : TEXT <<NN>>
+    title : TEXT <<NN>>
+    status : TEXT <<NN>>
+    template : TEXT <<NN>>
+    body_html : TEXT <<NN>>
+    body_css : TEXT <<NN>>
+    rev : INTEGER <<NN>>
+    body_sha : TEXT <<NN>>
+    managed_by : TEXT <<NN>>
     seo_json : TEXT
-    etag : TEXT
     published_at : TEXT
-    created_at : TEXT
-    updated_at : TEXT
+    created_at : TEXT <<NN>>
+    updated_at : TEXT <<NN>>
     updated_by : INTEGER
   }
   entity cms_page_revision as "cms_page_revision" <<site>> {
     id : INTEGER <<PK>>
     page_id : INTEGER <<FK>>
-    body_html : TEXT
-    css : TEXT
+    rev : INTEGER <<NN>>
+    body_html : TEXT <<NN>>
+    body_css : TEXT <<NN>>
     note : TEXT
-    created_at : TEXT
+    created_at : TEXT <<NN>>
     created_by : INTEGER
   }
   entity cms_nav as "cms_nav" <<site>> {
     id : INTEGER <<PK>>
-    location : TEXT
+    location : TEXT <<NN>>
     parent_id : INTEGER <<FK>>
-    label : TEXT
-    href_kind : TEXT
-    href_target : TEXT
-    position : INTEGER
-    visible : INTEGER
+    label : TEXT <<NN>>
+    href_kind : TEXT <<NN>>
+    href_target : TEXT <<NN>>
+    position : INTEGER <<NN>>
+    visible : INTEGER <<NN>>
   }
   entity cms_asset as "cms_asset" <<site>> {
     id : INTEGER <<PK>>
     key : TEXT <<UQ>>
-    filename : TEXT
-    mime : TEXT
-    bytes : INTEGER
-    sha256 : TEXT
-    kind : TEXT
-    access_class : TEXT
-    storage_path : TEXT
+    filename : TEXT <<NN>>
+    mime : TEXT <<NN>>
+    bytes : INTEGER <<NN>>
+    sha256 : TEXT <<NN>>
+    kind : TEXT <<NN>>
+    access_class : TEXT <<NN>>
+    storage_path : TEXT <<GEN>>
     width : INTEGER
     height : INTEGER
     alt_text : TEXT
     caption : TEXT
+    encrypted : INTEGER <<NN>>
     watermark_asset_id : INTEGER <<FK>>
     watermark_spec_json : TEXT
     frozen_at : TEXT
-    created_at : TEXT
+    created_at : TEXT <<NN>>
     created_by : INTEGER
   }
   entity cms_asset_alias as "cms_asset_alias" <<site>> {
     key : TEXT <<PK>>
     asset_id : INTEGER <<FK>>
-    created_at : TEXT
+    created_at : TEXT <<NN>>
   }
   entity cms_asset_variant as "cms_asset_variant" <<site>> {
     id : INTEGER <<PK>>
     asset_id : INTEGER <<FK>>
-    label : TEXT
-    format : TEXT
-    width : INTEGER
-    height : INTEGER
-    bytes : INTEGER
-    sha256 : TEXT
-    storage_path : TEXT
+    label : TEXT <<NN>>
+    format : TEXT <<NN>>
+    width : INTEGER <<NN>>
+    height : INTEGER <<NN>>
+    bytes : INTEGER <<NN>>
+    sha256 : TEXT <<NN>>
+    storage_path : TEXT <<NN>>
   }
   entity cms_asset_link as "cms_asset_link" <<site>> {
     id : INTEGER <<PK>>
     asset_id : INTEGER <<FK>>
-    owner_kind : TEXT
-    owner_id : INTEGER
-    created_at : TEXT
+    owner_kind : TEXT <<NN>>
+    owner_id : INTEGER <<NN>>
+    created_at : TEXT <<NN>>
   }
   entity cms_asset_bundle as "cms_asset_bundle" <<site>> {
     id : INTEGER <<PK>>
     key : TEXT <<UQ>>
-    title : TEXT
+    title : TEXT <<NN>>
     note : TEXT
-    created_at : TEXT
+    created_at : TEXT <<NN>>
   }
   entity cms_asset_bundle_item as "cms_asset_bundle_item" <<site>> {
     bundle_id : INTEGER <<FK>>
     asset_id : INTEGER <<FK>>
-    position : INTEGER
+    position : INTEGER <<NN>>
   }
   entity cms_download_code as "cms_download_code" <<site>> {
     id : INTEGER <<PK>>
-    code_lookup : TEXT <<UQ>>
-    code_hash : TEXT
+    code_selector : TEXT <<UQ>>
+    code_hash : TEXT <<NN>>
     asset_id : INTEGER <<FK>>
     bundle_id : INTEGER <<FK>>
     max_uses : INTEGER
-    uses : INTEGER
+    uses : INTEGER <<NN>>
     expires_at : TEXT
     issued_to_email : TEXT
     order_ref : TEXT
     revoked_at : TEXT
-    created_at : TEXT
     last_used_at : TEXT
+    created_at : TEXT <<NN>>
+  }
+  entity cms_download_code_archive as "cms_download_code_archive" <<site>> {
+    id : INTEGER <<PK>>
+    code_id : INTEGER <<FK>>
+    pruned_through : TEXT <<NN>>
+    uses : INTEGER <<NN>>
+    first_events : INTEGER <<NN>>
+    range_events : INTEGER <<NN>>
+    archived_at : TEXT <<NN>>
   }
   entity cms_download_event as "cms_download_event" <<site>> {
     id : INTEGER <<PK>>
     code_id : INTEGER <<FK>>
     asset_id : INTEGER <<FK>>
+    jti : TEXT
+    kind : TEXT <<NN>>
+    bytes_declared : INTEGER <<NN>>
+    bytes_sent : INTEGER
     ip_hash : TEXT
     ua_hash : TEXT
-    bytes_sent : INTEGER
-    ranged : INTEGER
-    outcome : TEXT
-    ts : TEXT
+    outcome : TEXT <<NN>>
+    ts : TEXT <<NN>>
   }
   entity cms_watermark_render as "cms_watermark_render" <<site>> {
     id : INTEGER <<PK>>
     asset_id : INTEGER <<FK>>
-    spec_sha : TEXT
-    source_sha : TEXT
-    bytes : INTEGER
-    path : TEXT
-    created_at : TEXT
+    spec_sha : TEXT <<NN>>
+    source_sha : TEXT <<NN>>
+    bytes : INTEGER <<NN>>
+    path : TEXT <<NN>>
+    expires_at : TEXT <<NN>>
+    created_at : TEXT <<NN>>
   }
   entity cms_form as "cms_form" <<site>> {
     id : INTEGER <<PK>>
     key : TEXT <<UQ>>
-    title : TEXT
-    fields_json : TEXT
-    mode : TEXT
+    title : TEXT <<NN>>
+    fields_json : TEXT <<NN>>
+    mode : TEXT <<NN>>
     action_url : TEXT
     notify_email : TEXT
-    created_at : TEXT
+    created_at : TEXT <<NN>>
   }
   entity cms_form_submission as "cms_form_submission" <<site>> {
     id : INTEGER <<PK>>
     form_id : INTEGER <<FK>>
-    payload_json : TEXT
+    payload_json : TEXT <<NN>>
     ip_hash : TEXT
-    spam_score : REAL
-    state : TEXT
-    ts : TEXT
+    spam_score : REAL <<NN>>
+    state : TEXT <<NN>>
+    ts : TEXT <<NN>>
   }
   entity cms_datasource as "cms_datasource" <<site>> {
     id : INTEGER <<PK>>
     key : TEXT <<UQ>>
-    kind : TEXT
-    spec_json : TEXT
-    is_public : INTEGER
-    ttl_s : INTEGER
-    created_at : TEXT
+    kind : TEXT <<NN>>
+    spec_json : TEXT <<NN>>
+    aggregate_json : TEXT
+    group_by_json : TEXT
+    params_json : TEXT <<NN>>
+    is_public : INTEGER <<NN>>
+    ttl_s : INTEGER <<NN>>
+    cost_ms_p95 : REAL
+    cost_ms_max : REAL
+    cost_rows : INTEGER
+    cost_measured_at : TEXT
+    cost_plan : TEXT
+    created_at : TEXT <<NN>>
     published_at : TEXT
     published_by : INTEGER
   }
   entity cms_view_registry as "cms_view_registry" <<site>> {
     name : TEXT <<PK>>
-    checksum : TEXT
-    created_at : TEXT
+    checksum : TEXT <<NN>>
+    created_at : TEXT <<NN>>
   }
   entity cms_table_registry as "cms_table_registry" <<site>> {
     id : INTEGER <<PK>>
     table_name : TEXT <<UQ>>
-    ddl_version : INTEGER
-    column_count : INTEGER
-    created_at : TEXT
+    table_class : TEXT <<NN>>
+    plugin_id : TEXT
+    ddl_version : INTEGER <<NN>>
+    column_count : INTEGER <<NN>>
+    index_count : INTEGER <<NN>>
+    columns_json : TEXT <<NN>>
+    created_at : TEXT <<NN>>
     created_by : INTEGER
     notes : TEXT
+  }
+  entity cms_trigger_registry as "cms_trigger_registry" <<site>> {
+    name : TEXT <<PK>>
+    table_name : TEXT <<NN>>
+    purpose : TEXT <<NN>>
+    checksum : TEXT <<NN>>
+    created_at : TEXT <<NN>>
   }
   entity cms_audit as "cms_audit" <<site>> {
     id : INTEGER <<PK>>
     actor_user_id : INTEGER
-    actor_label : TEXT
-    action : TEXT
+    actor_label : TEXT <<NN>>
+    action : TEXT <<NN>>
     target_kind : TEXT
     target_id : TEXT
     before_json : TEXT
     after_json : TEXT
-    ts : TEXT
+    prev_hash : TEXT <<NN>>
+    hash : TEXT <<NN>>
+    ts : TEXT <<NN>>
   }
   entity cms_redirect as "cms_redirect" <<site>> {
     id : INTEGER <<PK>>
     from_path : TEXT <<UQ>>
-    to_path : TEXT
-    status : INTEGER
-    created_at : TEXT
-    hits : INTEGER
+    to_path : TEXT <<NN>>
+    status : INTEGER <<NN>>
+    created_at : TEXT <<NN>>
+    hits : INTEGER <<NN>>
+  }
+  entity cms_plugin_installed as "cms_plugin_installed" <<site>> {
+    id : INTEGER <<PK>>
+    plugin_id : TEXT <<UQ>>
+    version : TEXT <<NN>>
+    manifest_json : TEXT <<NN>>
+    root_hash : TEXT <<NN>>
+    publisher : TEXT <<NN>>
+    publisher_key_fingerprint : TEXT
+    signature_state : TEXT <<NN>>
+    enabled : INTEGER <<NN>>
+    test_report_sha : TEXT
+    runner_image_digest : TEXT
+    installed_at : TEXT <<NN>>
+    enabled_at : TEXT
+  }
+  entity cms_plugin_migration as "cms_plugin_migration" <<site>> {
+    id : INTEGER <<PK>>
+    plugin_id : TEXT <<NN>>
+    version : TEXT <<NN>>
+    seq : INTEGER <<NN>>
+    checksum : TEXT <<NN>>
+    duration_ms : INTEGER
+    applied_at : TEXT <<NN>>
+  }
+  entity cms_plugin_setting as "cms_plugin_setting" <<site>> {
+    plugin_id : TEXT <<FK>>
+    key : TEXT <<NN>>
+    value_json : TEXT <<NN>>
+    type : TEXT <<NN>>
+    secret : INTEGER <<NN>>
+    updated_at : TEXT <<NN>>
+    updated_by : INTEGER
+  }
+  entity cms_plugin_revoked as "cms_plugin_revoked" <<site>> {
+    root_hash : TEXT <<PK>>
+    plugin_id : TEXT <<NN>>
+    reason : TEXT
+    revoked_by : INTEGER
+    revoked_at : TEXT <<NN>>
   }
 }
 
@@ -300,20 +397,28 @@ cms_asset ||--o{ cms_download_event : "asset_id"
 cms_asset ||--o{ cms_watermark_render : "asset_id"
 cms_asset_bundle ||--o{ cms_asset_bundle_item : "bundle_id"
 cms_asset_bundle ||--o{ cms_download_code : "bundle_id"
+cms_download_code ||--o{ cms_download_code_archive : "code_id"
 cms_download_code ||--o{ cms_download_event : "code_id"
 cms_form ||--o{ cms_form_submission : "form_id"
 cms_nav ||--o{ cms_nav : "parent_id"
 cms_page ||--o{ cms_page_revision : "page_id"
+cms_plugin_installed ||--o{ cms_plugin_setting : "plugin_id"
 tenant ||--o{ deploy_token : "tenant_id"
 tenant ||--o{ domain : "tenant_id"
 tenant ||--o{ session : "tenant_id"
 tenant ||--o{ user_account : "tenant_id"
-tenant ||..o{ cms_audit : "rows carry tenant via file, not FK"
+tenant ||..o{ audit_seal : "daily anchor, no FK"
+tenant ||..o{ cms_audit : "topology: rows carry tenant via file"
 user_account ||--o{ session : "user_id"
 
-note bottom of tenant
-  FK arrows are real SQLite foreign keys.
-  The dotted line is topology, not a constraint:
-  control.tenant and site.cms_* never share a connection.
-end note
+legend bottom
+  |= Class |= Pattern |= Owner |= DDL authority |
+  | core | cms_* | the image | image migrations only; the runner refuses |
+  | plugin-system | cms_plugin_* | the image | image migrations only |
+  | user | u_* | the tenant's admin | the DDL runner: typed AST, <=8 statements |
+  | plugin | p_<id>_* | the plugin's declarations | the host migration executor only |
+  |||||
+  | **Loop contract** | cms_component_registry kind='list' carries exactly one [data-repeat] child and a clamp (C-4). kind='shell' is what cms_page.template resolves against (C-23). |
+  | **Export class** | a p_<id>_* table's class comes from cms_plugin_installed.manifest_json.tables[].export; there is no fourth class (C-5). |
+end legend
 @enduml

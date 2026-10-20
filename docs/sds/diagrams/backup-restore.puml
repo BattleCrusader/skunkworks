@@ -1,0 +1,77 @@
+@startuml
+/' docs/sds/diagrams/backup-restore.puml — backup, restore, and what each one can lose.
+   Implements: SDS §12 and §14. Register: C-15 (exporter class), C-21 (audit seal),
+   O-18 (cp loses data), O-22 (ship cold, verify immutable), C-10 (per-tenant repair). '/
+title Backup and restore — one copy path, and the failure each step prevents
+
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam maxMessageSize 130
+
+participant "cron / operator" as CR
+participant "app  backupTenant(key)" as APP
+participant "site.db  (live)" as DB
+participant "backups/<key>/" as BK
+participant "verify  (pinned image)" as VF
+
+== Nightly backup — no cp, ever ==
+
+CR -> APP : backupTenant(acme)
+APP -> DB : BEGIN: PRAGMA wal_checkpoint(TRUNCATE)
+note right of DB
+  A cp of a live WAL database loses every
+  write since the last checkpoint, silently
+  (measured: cp=no such table). This is the
+  first of four measurements that killed cp.
+end note
+APP -> APP : open an **exporter** connection\nnever pooled, never inside a transaction
+APP -> DB : VACUUM INTO backups/acme/site-<ts>.db
+DB --> BK : one consistent file\n(journal_mode=delete, user_version carried)
+APP -> APP : sha256 the file, write site-<ts>.json\n{bytes, sha256, user_version, build_id, tables[], rows}
+APP -> APP : write the audit seal for the day\n(UPDATE/INSERT into control.db audit_seal)
+note right of APP
+  C-21: one audit_seal(tenant_key, day, rows, head)
+  per tenant per UTC day, in control.db — the copy
+  the tenant's own writable file cannot rewrite.
+  Measured: 10,000 rows chained 60 ms, verified
+  37 ms, seal 60 us, 32.1 KB per tenant-year.
+end note
+
+== Restore — verify before you overwrite anything ==
+
+CR -> VF : restore <file> --into tenants/acme/site.db
+VF -> VF : open with ?immutable=1 (a read-only verify must be possible,\nwhich is why the bundle ships cold — O-22)
+VF -> VF : PRAGMA integrity_check · foreign_key_check\nPRAGMA application_id == 0x534B5701\nPRAGMA user_version vs tenant.db_version
+alt any check fails
+  VF --> CR : exit 12, nothing overwritten
+end
+VF -> BK : keep the displaced file as site-<ts>.pre-restore.db
+VF -> DB : atomic rename into place, then PRAGMA journal_mode=WAL
+note right of DB
+  Setting WAL before verification is what made a
+  read-only verify impossible in round 2
+  (measured 4.8 ms to set it inside the gate).
+end note
+VF --> CR : exit 0, tenant serves
+
+== The three failures this design accepts ==
+
+note over CR, VF
+  **F1 a stale tenant is loud, not wrong.** user_version below
+  tenant.db_version -> 503 SKW_E_DM_SCHEMA_STALE with Retry-After: 5
+  and a lazy repair of that one tenant. control.db failing to migrate
+  is the opposite: startup is refused with exit 15, because every
+  request needs the tenant map (C-10).
+
+  **F2 a bundle never contains the fleet.** data/control.db, any
+  -wal/-shm, content/protected/wm/ and content/sources/ are excluded
+  from every target; a bundle carries control.seed.json (one tenant,
+  mode=production, one owner with must_change=1).
+
+  **F3 a restore rolls back everything since the backup.** An uninstall
+  archive is the same whole-file VACUUM INTO, so restoring it undoes
+  other changes made in between. A table-scoped archive is deferred
+  with a named experiment (O-40), not silently promised.
+end note
+
+@enduml

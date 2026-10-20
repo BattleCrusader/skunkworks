@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Ad-hoc verification of the claims in docs/debate/r1-data-model.md. NOT a test suite.
+"""Every claim make test stands behind, re-derived against a real SQLite engine.
 
-Re-derives, from scratch, the eight facts the position paper leans on. Each check asserts on
-observed output, so a silent regression in the schema — or a measurement that no longer
-reproduces — fails loudly here instead of shipping in the paper.
+Checks 1-8 are round-1 facts, 9-19 are round-2 measurements, 20-27 are the round-3 register's v3
+invariants (docs/sds/00-adjudication.md). Each check asserts on observed output, so a silent
+regression in the schema — or a measurement that no longer reproduces — fails loudly here instead
+of shipping in the SDS.
 
     python3 scripts/model/verify_claims.py
     exit 0 = all pass · 1 = a claim failed · 2 = a claim could not be checked here
 """
-import hashlib, json, os, re, shutil, sqlite3, statistics, subprocess, sys, tempfile, threading, time
+import hashlib, json, os, random, re, shutil, sqlite3, statistics, subprocess, sys, tempfile, threading, time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 WORK: str = ""  # set by main(); module-level so the checks can stay zero-arg
@@ -38,28 +39,41 @@ def fresh(name):
 
 # ------------------------------------------------------------------ 1
 def schema_parity():
-    """The DDL applies, the negative tests hold, and the .puml has exactly the DDL's tables."""
+    """The DDL applies, the v3 negative tests hold, and each .puml has exactly the DDL's tables.
+
+    Counts are derived from the generator's spec, not typed in, so adding a table cannot leave a
+    stale assertion behind.
+    """
     subprocess.run([sys.executable, os.path.join(ROOT, "scripts/model/gen_schema.py")],
                    capture_output=True, text=True, check=True)
     val = subprocess.run([sys.executable, os.path.join(ROOT, "scripts/model/validate_schema.py")],
                          capture_output=True, text=True)
     assert val.returncode == 0, val.stdout + val.stderr
-    assert "ERRORS: none" in val.stdout, val.stdout
-    site = next(l for l in val.stdout.splitlines() if l.startswith("site.db:"))
-    assert "20 tables" in site and "14 FK clauses" in site and "fk_check=0" in site, site
+    assert "FAILURES: none" in val.stdout, val.stdout
 
-    puml = open(os.path.join(ROOT, "docs/debate/diagrams/r1-data-model.puml")).read()
-    entities = {l.split("entity ")[1].split(" as ")[0]
-                for l in puml.splitlines() if l.strip().startswith("entity ")}
+    sys.path.insert(0, os.path.join(ROOT, "scripts/model"))
+    import gen_schema
+    for dbname, spec in (("control.db", gen_schema.CONTROL), ("site.db", gen_schema.SITE)):
+        line = next(l for l in val.stdout.splitlines() if l.startswith(dbname + ":"))
+        fks = sum(1 for t in spec.values() for c in t["cols"] if c[2] and "REFERENCES" in c[2])
+        assert f"{len(spec)} tables" in line, (dbname, line)
+        assert f"{fks} FK clauses" in line and "fk_check=0" in line, (dbname, line)
+
     ddl = set()
     for f in ("schema/control.sql", "schema/site.sql"):
         with open(os.path.join(ROOT, f)) as fh:
             ddl |= {l.split()[2] for l in fh if l.startswith("CREATE TABLE ")}
-    assert entities == ddl, f"puml-only={entities - ddl} ddl-only={ddl - entities}"
-
-    png = os.path.join(ROOT, "docs/debate/diagrams/r1-data-model.png")
-    assert os.path.getsize(png) > 50_000, "png missing or stale"
-    return f"{len(ddl)} entities == {len(ddl)} CREATE TABLE, png {os.path.getsize(png)} B"
+    sizes = []
+    for rel in ("docs/debate/diagrams/r1-data-model", "docs/sds/diagrams/er-data-model"):
+        puml = open(os.path.join(ROOT, rel + ".puml")).read()
+        entities = {l.split("entity ")[1].split(" as ")[0]
+                    for l in puml.splitlines() if l.strip().startswith("entity ")}
+        assert entities == ddl, f"{rel}: puml-only={entities - ddl} ddl-only={ddl - entities}"
+        png = os.path.join(ROOT, rel + ".png")
+        assert os.path.getsize(png) > 50_000, f"{rel}.png missing or stale"
+        sizes.append(f"{os.path.basename(rel)}.png {os.path.getsize(png)} B")
+    return (f"v{gen_schema.SCHEMA_VERSION}: {len(ddl)} entities == {len(ddl)} CREATE TABLE; "
+            + "; ".join(sizes))
 
 
 # ------------------------------------------------------------------ 2
@@ -238,19 +252,30 @@ def readonly_attach():
 # Each check below settles a dispute raised in round 2 and is named in
 # docs/debate/r2-data-model.md §5 by number. Nothing here is a proposal that has not run.
 
-SITE_SQL = os.path.join(ROOT, "schema/site.sql")
+SITE_SQL = os.path.join(ROOT, "schema/site.sql")          # the v3 target, regenerated from one spec
+CONTROL_SQL = os.path.join(ROOT, "schema/control.sql")    # the v2 control plane
+V1_SITE = os.path.join(ROOT, "schema/history/v1-baseline.sql")
+V1_CONTROL = os.path.join(ROOT, "schema/history/v1-control-baseline.sql")
 AMENDMENTS = os.path.join(ROOT, "schema/r2-amendments.sql")
+AMENDMENTS3 = os.path.join(ROOT, "schema/r3-amendments.sql")
+CONTROL_R2 = os.path.join(ROOT, "schema/control-r2.sql")
 PROJECTION = os.path.join(ROOT, "schema/export-projection.json")
+COMPONENTS = os.path.join(ROOT, "schema/component-registry.json")
+CODES = os.path.join(ROOT, "schema/error-codes.json")
+
+# A real argon2id PHC string. Not a credential: it is the shape the v3 CHECK demands, and using it
+# in fixtures proves the migration can carry a row that the new constraint accepts.
+ARGON_PHC = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0c2E$" + "A" * 43
 
 
-def v1_fixture(name="r2base.db"):
+def v1_fixture(name="r2base.db", codes=1):
     """A user_version=1 site.db with one of everything the amendments touch.
 
     Three pages, the highest one deleted, so sqlite_sequence (3) is ahead of max(id) (2): that is the
     state in which a rebuild without the counter carry-forward reissues an id (R1 M5).
     """
     c, p = fresh(name)
-    c.executescript(open(SITE_SQL).read())
+    c.executescript(open(V1_SITE).read())
     c.execute("INSERT INTO cms_asset(key,filename,mime,bytes,sha256,kind,storage_path,width,height)"
               " VALUES('banner-home','b.jpg','image/jpeg',10,?,'image','content/media/ab/x.jpg',10,10)",
               ("ab" * 32,))
@@ -269,32 +294,49 @@ def v1_fixture(name="r2base.db"):
     c.execute("INSERT INTO cms_asset_variant(asset_id,label,format,width,height,bytes,sha256,storage_path)"
               " VALUES(1,'thumb','webp',1,1,5,'ee','x')")
     c.execute("INSERT INTO cms_asset_alias(key,asset_id) VALUES('old-banner',1)")
-    c.execute("INSERT INTO cms_download_code(code_lookup,code_hash,asset_id) VALUES(?,'h',1)",
-              ("f" * 64,))
+    if codes:
+        c.execute("INSERT INTO cms_download_code(code_lookup,code_hash,asset_id) VALUES(?,?,1)",
+                  ("f" * 64, ARGON_PHC))
     c.execute("INSERT INTO cms_download_event(code_id,asset_id,bytes_sent,ranged,outcome)"
-              " VALUES(1,1,123,0,'ok')")
+              " VALUES(?,1,123,0,'ok')", (1 if codes else None,))
     c.execute("INSERT INTO cms_watermark_render(asset_id,spec_sha,source_sha,bytes,path)"
               " VALUES(1,'s','src',1,'p')")
     return c, p
 
 
 _AMENDED = {}
+_V2 = {}
 
 
-def amended(name="r2.db"):
-    """v1 fixture + schema/r2-amendments.sql, built once per run."""
-    if name not in _AMENDED:
-        c, p = v1_fixture(name + ".base")
+def v2(name="r2.db", codes=1):
+    """v1 fixture + schema/r2-amendments.sql only — the state a round-2 tenant runs.
+
+    `codes=0` builds the same file without a cms_download_code row, which is the only state r3 will
+    migrate (see check 20's refusal half).
+    """
+    if name not in _V2:
+        c, p = v1_fixture(name + ".v2base", codes=codes)
         c.close()
         c = sqlite3.connect(p, isolation_level=None)
         c.executescript(open(AMENDMENTS).read())
+        _V2[name] = (c, p)
+    return _V2[name]
+
+
+def amended(name="r3.db"):
+    """v1 fixture + r2 amendments + r3 amendments — the v3 schema a Builder implements."""
+    if name not in _AMENDED:
+        c, p = v2(name + ".base", codes=0)
+        c.close()
+        c = sqlite3.connect(p, isolation_level=None)
+        c.executescript(open(AMENDMENTS3).read())
         _AMENDED[name] = (c, p)
     return _AMENDED[name]
 
 
 def r2_amendments_apply():
     """The amendment file applies to a populated v1 file and preserves every row it must."""
-    c, p = amended()
+    c, p = v2()
     assert c.execute("PRAGMA user_version").fetchone()[0] == 2
     assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -320,7 +362,7 @@ def r2_amendments_apply():
 def root_path_accepted():
     """Path columns are canonical: '/' insertable, '//evil' and '..' rejected (page + redirect)."""
     c, _ = fresh("root.db")
-    c.executescript(open(SITE_SQL).read())
+    c.executescript(open(V1_SITE).read())
     v1 = None
     try:
         c.execute("INSERT INTO cms_page(path,slug,title,etag) VALUES('/','home','Home','e')")
@@ -380,6 +422,7 @@ def generated_path_is_unwritable():
         raise AssertionError("sha256 update was not blocked")
     except sqlite3.IntegrityError as e:
         sha_err = str(e)
+    assert "SKW_E_DM_COLUMN_IMMUTABLE" in sha_err, sha_err
     return f"{errs[0]}; {errs[1]}; sha256 -> {sha_err}"
 
 
@@ -394,10 +437,10 @@ def trigger_guard_without_fk():
         c.execute("DELETE FROM cms_asset WHERE key='banner-home'")
     except sqlite3.IntegrityError as e:
         py_err = str(e)
-    assert py_err == "DM_E_ASSET_IN_USE", py_err
+    assert py_err == "SKW_E_DM_ASSET_IN_USE", py_err
     cli = subprocess.run(["sqlite3", p, "DELETE FROM cms_asset WHERE key='banner-home';"],
                          capture_output=True, text=True)
-    assert cli.returncode != 0 and "DM_E_ASSET_IN_USE" in (cli.stderr or ""), (cli.returncode, cli.stderr)
+    assert cli.returncode != 0 and "SKW_E_DM_ASSET_IN_USE" in (cli.stderr or ""), (cli.returncode, cli.stderr)
     live = c.execute("SELECT count(*) FROM cms_asset WHERE key='banner-home'").fetchone()[0]
     assert live == 1, "asset disappeared despite the guard"
     # Derived rows cascade only with the pragma ON — with it OFF a CASCADE child is orphaned, not
@@ -421,9 +464,9 @@ def rebuild_cascade_hazard():
     def build(name):
         c, p = fresh(name)
         c.executescript(open(SITE_SQL).read())
-        c.execute("INSERT INTO cms_page(path,slug,title,etag) VALUES('/home','home','Home','e')")
-        c.execute("INSERT INTO cms_page_revision(page_id,body_html,css) VALUES(1,'<p>v1</p>','')")
-        c.execute("INSERT INTO cms_page_revision(page_id,body_html,css) VALUES(1,'<p>v2</p>','')")
+        c.execute("INSERT INTO cms_page(path,slug,title) VALUES('/home','home','Home')")
+        c.execute("INSERT INTO cms_page_revision(page_id,body_html,body_css) VALUES(1,'<p>v1</p>','')")
+        c.execute("INSERT INTO cms_page_revision(page_id,body_html,body_css) VALUES(1,'<p>v2</p>','')")
         return c
 
     on = build("casc_on.db")
@@ -431,7 +474,7 @@ def rebuild_cascade_hazard():
     on.execute("BEGIN IMMEDIATE")
     on.execute("CREATE TABLE cms_page_new(id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE,"
                " slug TEXT, title TEXT, status TEXT, template TEXT, body_html TEXT, body_css TEXT)")
-    on.execute("INSERT INTO cms_page_new SELECT id,path,slug,title,status,template,body_html,css"
+    on.execute("INSERT INTO cms_page_new SELECT id,path,slug,title,status,template,body_html,body_css"
                " FROM cms_page")
     before = on.execute("SELECT count(*) FROM cms_page_revision").fetchone()[0]
     on.execute("DROP TABLE cms_page")
@@ -444,7 +487,7 @@ def rebuild_cascade_hazard():
     off.execute("BEGIN IMMEDIATE")
     off.execute("CREATE TABLE cms_page_new(id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE,"
                 " slug TEXT, title TEXT, status TEXT, template TEXT, body_html TEXT, body_css TEXT)")
-    off.execute("INSERT INTO cms_page_new SELECT id,path,slug,title,status,template,body_html,css"
+    off.execute("INSERT INTO cms_page_new SELECT id,path,slug,title,status,template,body_html,body_css"
                 " FROM cms_page")
     off.execute("DROP TABLE cms_page")
     off.execute("ALTER TABLE cms_page_new RENAME TO cms_page")
@@ -517,12 +560,14 @@ def partial_unique_jti():
     """(jti) WHERE kind='first' constrains the first row only and tolerates NULL jti."""
     c, _ = amended("jti.db")
     for _ in range(3):
-        c.execute("INSERT INTO cms_download_event(jti,kind,outcome) VALUES(NULL,'denied','denied_token')")
-    c.execute("INSERT INTO cms_download_event(jti,kind,outcome) VALUES('J1','first','ok')")
-    c.execute("INSERT INTO cms_download_event(jti,kind,outcome) VALUES('J1','range','ok')")
+        c.execute("INSERT INTO cms_download_event(jti,kind,outcome,bytes_declared)"
+                  " VALUES(NULL,'denied','denied_token',0)")
+    c.execute("INSERT INTO cms_download_event(jti,kind,outcome,bytes_declared) VALUES('J1','first','ok',1)")
+    c.execute("INSERT INTO cms_download_event(jti,kind,outcome,bytes_declared) VALUES('J1','range','ok',1)")
     dup = None
     try:
-        c.execute("INSERT INTO cms_download_event(jti,kind,outcome) VALUES('J1','first','ok')")
+        c.execute("INSERT INTO cms_download_event(jti,kind,outcome,bytes_declared)"
+                  " VALUES('J1','first','ok',1)")
     except sqlite3.IntegrityError as e:
         dup = str(e)
     assert dup and "UNIQUE" in dup, dup
@@ -536,12 +581,14 @@ def export_projection_reproducible():
     proj = json.load(open(PROJECTION))
     ddl = {l.split()[2] for l in open(SITE_SQL) if l.startswith("CREATE TABLE ")}
     assert ddl == set(proj["tables"]), f"unclassified={ddl - set(proj['tables'])} stale={set(proj['tables']) - ddl}"
+    assert set(proj["prefix_rules"]) == {"u_", "p_"}, proj["prefix_rules"]
+    assert proj["version"] == 2 and proj["schema_version"] == 3, (proj["version"], proj["schema_version"])
 
     c, p = fresh("proj_src.db")
     c.executescript(open(SITE_SQL).read())
-    c.execute("INSERT INTO cms_page(path,slug,title,etag) VALUES('/home','home','Home','e')")
-    c.execute("INSERT INTO cms_asset(key,filename,mime,bytes,sha256,kind,storage_path,width,height)"
-              " VALUES('banner-home','b.jpg','image/jpeg',10,?,'image','x',10,10)", ("ab" * 32,))
+    c.execute("INSERT INTO cms_page(path,slug,title) VALUES('/home','home','Home')")
+    c.execute("INSERT INTO cms_asset(key,filename,mime,bytes,sha256,kind,width,height)"
+              " VALUES('banner-home','b.jpg','image/jpeg',10,?,'image',10,10)", ("ab" * 32,))
     c.execute("INSERT INTO cms_settings(key,value_json,type) VALUES('site.name','\"Acme\"','string')")
     c.execute("INSERT INTO cms_settings(key,value_json,type) VALUES('demo.banner','true','bool')")
     c.execute("INSERT INTO cms_form(key,title,fields_json) VALUES('contact','Contact','[]')")
@@ -575,7 +622,8 @@ def export_projection_reproducible():
     e1 = vac("e1.db")
     e1b = vac("e1b.db")
     # volatile rows: a download event, an audit row, a form submission, a watermark render
-    c.execute("INSERT INTO cms_download_event(asset_id,outcome) VALUES(1,'ok')")
+    c.execute("INSERT INTO cms_download_event(asset_id,outcome,bytes_declared,kind)"
+              " VALUES(1,'ok',1,'first')")
     c.execute("INSERT INTO cms_audit(actor_label,action) VALUES('op@us','page.save')")
     c.execute("INSERT INTO cms_form_submission(form_id,payload_json) VALUES(1,'{\"a\":1}')")
     e2 = vac("e2.db")
@@ -587,7 +635,10 @@ def export_projection_reproducible():
     assert sha(e1) != sha(e2), "volatile rows did not change the file — the claim under test is moot"
     assert digest(e1) == digest(e2), "projection digest moved on volatile-only rows"
     assert digest(e1) != digest(e3), "projection digest ignored a content change"
-    return (f"{len(ddl)}/{len(ddl)} tables classified; vac==vac {sha(e1)[:12]}; "
+    modes = {}
+    for t in proj["tables"].values():
+        modes[t["mode"]] = modes.get(t["mode"], 0) + 1
+    return (f"{len(ddl)}/{len(ddl)} tables classified {modes}; vac==vac {sha(e1)[:12]}; "
             f"after volatile rows file {sha(e2)[:12]} (differs) but projection {digest(e2)[:12]} "
             f"(identical); content change -> {digest(e3)[:12]} (differs)")
 
@@ -680,6 +731,474 @@ def asset_guard_cost():
             f"indexed {out[True]:.3f} ms (n=5 each)")
 
 
+
+# ================================================================ R3 additions
+# Each check settles a v3 invariant from docs/sds/00-adjudication.md. Named by the register entry
+# it implements, so the SDS's traceability table can point at a running check.
+
+def migration_chain_converges():
+    """C-6..C-23: v1 -> r2 -> r3 lands on exactly the schema site.sql generates; a v2 file with an
+    access code refuses to migrate, and the refusal names its reason."""
+    def shape(path, scripts):
+        c, _ = fresh(path)
+        for sc in scripts:
+            c.executescript(open(sc).read())
+        tabs = {r[0] for r in c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+        cols = {t: {(r[1], r[2].upper(), r[3]) for r in c.execute(f"PRAGMA table_info('{t}')")}
+                for t in tabs}
+        trg = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
+        return c, tabs, cols, trg
+
+    chain, ct, cc, cg = shape("conv_chain.db", [V1_SITE, AMENDMENTS, AMENDMENTS3])
+    fresh_db, ft, fc, fg = shape("conv_fresh.db", [SITE_SQL])
+    assert chain.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert fresh_db.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert ct == ft, f"table drift: chain-only={ct - ft} fresh-only={ft - ct}"
+    drift = {t: sorted(cc[t] ^ fc[t]) for t in ct if cc[t] ^ fc[t]}
+    assert not drift, f"column drift (name,type,notnull): {drift}"
+    assert cg == fg, f"trigger drift: {cg ^ fg}"
+    assert chain.execute("PRAGMA foreign_key_check").fetchall() == []
+    ctrl_chain, _, _, _ = shape("conv_control.db", [V1_CONTROL, CONTROL_R2])
+    ctrl_fresh, _, _, _ = shape("conv_control_fresh.db", [CONTROL_SQL])
+    assert ctrl_chain.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert (ctrl_chain.execute("PRAGMA user_version").fetchone()[0]
+            == ctrl_fresh.execute("PRAGMA user_version").fetchone()[0])
+    # control-plane convergence
+    a_t = {r[0] for r in ctrl_chain.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    b_t = {r[0] for r in ctrl_fresh.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    assert a_t == b_t, f"control table drift: {a_t ^ b_t}"
+
+    # the refusal half: a v2 file that HAS a code row cannot reach v3
+    legacy, _ = v2("conv_legacy.db", codes=1)
+    legacy.close()
+    c = sqlite3.connect(os.path.join(WORK, "conv_legacy.db.v2base"), isolation_level=None)
+    err = None
+    try:
+        c.executescript(open(AMENDMENTS3).read())
+    except sqlite3.IntegrityError as e:
+        err = str(e)
+    finally:
+        c.close()
+    assert err and "legacy_12_char_codes_have_no_v3_selector" in err, err
+    return (f"{len(ct)} tables / {len(cg)} triggers identical on both paths; user_version 3; "
+            f"codes-in-file -> REJECTED ({err.split(':')[-1].strip()})")
+
+
+def selector_lookup_and_argon2():
+    """C-6: a 4-char selector seeks in microseconds; argon2 is the only barrier, and an unmatched
+    selector costs a dummy verify at the same parameters."""
+    try:
+        from argon2.low_level import hash_secret_raw, Type
+    except ImportError:
+        raise Skip("pip install argon2-cffi")
+    import statistics as st
+
+    c, _ = fresh("codes.db")
+    c.executescript(open(SITE_SQL).read())
+    c.execute("INSERT INTO cms_asset(key,filename,mime,bytes,sha256,kind)"
+              " VALUES('book','b.pdf','application/pdf',1,?,'document')", ("cd" * 32,))
+    alpha = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    taken, collisions = set(), 0
+    c.execute("BEGIN")
+    while len(taken) < 5000:
+        sel = "".join(random.choice(alpha) for _ in range(4))
+        try:
+            c.execute("INSERT INTO cms_download_code(code_selector,code_hash,asset_id)"
+                      " VALUES(?,?,1)", (sel, ARGON_PHC))
+            taken.add(sel)
+        except sqlite3.IntegrityError:
+            collisions += 1
+    c.execute("COMMIT")
+    rows = [(s, ARGON_PHC) for s in taken]
+    plan = " ".join(r[3] for r in c.execute(
+        "EXPLAIN QUERY PLAN SELECT code_hash FROM cms_download_code WHERE code_selector='ABCD'"))
+    assert "SEARCH" in plan and "cms_download_code" in plan, plan
+    ts = []
+    for sel, _ in rows[:1000]:
+        t0 = time.perf_counter()
+        c.execute("SELECT code_hash FROM cms_download_code WHERE code_selector=?", (sel,)).fetchone()
+        ts.append((time.perf_counter() - t0) * 1e6)
+
+    # one real code: 16 Crockford characters, argon2id at the frozen parameters
+    code = "A7K2M9QX4T3BZZZZ"
+    opt = dict(time_cost=2, memory_cost=19456, parallelism=1, hash_len=32, type=Type.ID)
+    salt = os.urandom(16)
+    real = hash_secret_raw(code.encode(), salt, **opt).hex()
+    real_phc = ARGON_PHC
+    del real  # only its cost matters here; the PHC shape is what the CHECK demands
+    t_real, t_dummy = [], []
+    for _ in range(5):
+        t0 = time.perf_counter()
+        hash_secret_raw(code.encode(), salt, **opt)
+        t_real.append((time.perf_counter() - t0) * 1000)
+        t0 = time.perf_counter()
+        hash_secret_raw(os.urandom(16).hex().encode(), salt, **opt)
+        t_dummy.append((time.perf_counter() - t0) * 1000)
+    assert st.median(t_real) > 5 and st.median(t_dummy) > 5, (t_real, t_dummy)
+
+    # the retry loop again, on one issuance, against the same 5,000
+    tries, pick = 0, None
+    while pick is None:
+        tries += 1
+        cand = "".join(random.choice(alpha) for _ in range(4))
+        if cand not in taken:
+            pick = cand
+    c.execute("INSERT INTO cms_download_code(code_selector,code_hash,asset_id) VALUES(?,?,1)",
+              (pick, real_phc))
+    dup = None
+    try:
+        c.execute("INSERT INTO cms_download_code(code_selector,code_hash,asset_id) VALUES(?,?,1)",
+                  (pick, real_phc))
+    except sqlite3.IntegrityError as e:
+        dup = str(e)
+    assert dup and "UNIQUE" in dup, dup
+    c.close()
+    return (f"5000 issued, {collisions} selector collisions resolved by retry; seek "
+            f"p50={st.median(ts):.2f}us (plan SEARCH, {len(ts)} lookups); argon2 m=19456,t=2 "
+            f"real={st.median(t_real):.1f}ms dummy={st.median(t_dummy):.1f}ms; duplicate -> {dup}")
+
+
+def redemption_on_real_schema():
+    """C-7: on the v3 tables, 24 concurrent requests with one jti spend one use; a quota denial
+    writes an event but does not spend; a Range continuation never spends."""
+    N = 24
+    c, db = amended("redeem.db")
+    c.close()
+    d = sqlite3.connect(db, isolation_level=None)
+    d.execute("PRAGMA busy_timeout=10000")
+    d.execute("INSERT INTO cms_download_code(code_selector,code_hash,asset_id,max_uses,uses)"
+              " VALUES('AAAA',?,1,2,0)", (ARGON_PHC,))
+    code_id = d.execute("SELECT id FROM cms_download_code WHERE code_selector='AAAA'").fetchone()[0]
+    d.close()
+    errs = []
+
+    def worker():
+        try:
+            k = sqlite3.connect(db, isolation_level=None, timeout=10)
+            k.execute("PRAGMA busy_timeout=10000")
+            k.execute("BEGIN IMMEDIATE")
+            cur = k.execute("INSERT INTO cms_download_event(jti,kind,code_id,asset_id,bytes_declared,"
+                            "outcome) VALUES('J1','first',?,1,100,'ok') ON CONFLICT DO NOTHING",
+                            (code_id,))
+            if cur.rowcount == 1:
+                k.execute("UPDATE cms_download_code SET uses=uses+1 WHERE id=? AND revoked_at IS NULL"
+                          " AND (max_uses IS NULL OR uses < max_uses)", (code_id,))
+            k.execute("COMMIT")
+            k.close()
+        except Exception as e:  # pragma: no cover
+            errs.append(f"{type(e).__name__}: {e}")
+
+    ts = [threading.Thread(target=worker) for _ in range(N)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert not errs, errs
+    d = sqlite3.connect(db, isolation_level=None)
+    uses = d.execute("SELECT uses FROM cms_download_code WHERE id=?", (code_id,)).fetchone()[0]
+    events = d.execute("SELECT count(*) FROM cms_download_event WHERE jti='J1'").fetchone()[0]
+    assert (uses, events) == (1, 1), (uses, events)
+
+    # a second redemption of the SAME token is a different jti, and the cap of 2 lets it through
+    d.execute("BEGIN IMMEDIATE")
+    cur = d.execute("INSERT INTO cms_download_event(jti,kind,code_id,asset_id,bytes_declared,outcome)"
+                    " VALUES('J2','first',?,1,100,'ok') ON CONFLICT DO NOTHING", (code_id,))
+    if cur.rowcount == 1:
+        d.execute("UPDATE cms_download_code SET uses=uses+1 WHERE id=? AND revoked_at IS NULL"
+                  " AND (max_uses IS NULL OR uses < max_uses)", (code_id,))
+    d.execute("COMMIT")
+    # a third is over the cap: the ledger row is written, the counter does not move, the outcome is
+    # rewritten to denied_quota in the same transaction
+    d.execute("BEGIN IMMEDIATE")
+    cur = d.execute("INSERT INTO cms_download_event(jti,kind,code_id,asset_id,bytes_declared,outcome)"
+                    " VALUES('J3','first',?,1,100,'ok') ON CONFLICT DO NOTHING", (code_id,))
+    changed = 0
+    if cur.rowcount == 1:
+        changed = d.execute("UPDATE cms_download_code SET uses=uses+1 WHERE id=? AND revoked_at IS NULL"
+                            " AND (max_uses IS NULL OR uses < max_uses)", (code_id,)).rowcount
+        if changed == 0:
+            d.execute("UPDATE cms_download_event SET outcome='denied_quota'"
+                      " WHERE jti='J3' AND kind='first'")
+    d.execute("COMMIT")
+    uses2 = d.execute("SELECT uses FROM cms_download_code WHERE id=?", (code_id,)).fetchone()[0]
+    j3 = d.execute("SELECT outcome FROM cms_download_event WHERE jti='J3'").fetchone()[0]
+    # a Range continuation under an existing jti writes a row and spends nothing
+    d.execute("INSERT INTO cms_download_event(jti,kind,code_id,asset_id,bytes_declared,outcome)"
+              " VALUES('J1','range',?,1,50,'ok')", (code_id,))
+    uses3 = d.execute("SELECT uses FROM cms_download_code WHERE id=?", (code_id,)).fetchone()[0]
+    ranged = d.execute("SELECT count(*) FROM cms_download_event WHERE kind='range'").fetchone()[0]
+    d.close()
+    assert uses2 == 2 and j3 == "denied_quota" and changed == 0, (uses2, j3, changed)
+    assert uses3 == uses2 and ranged == 1, (uses3, ranged)
+    return (f"{N} concurrent threads, one jti -> uses={uses}, first rows={events}; cap 2 reached -> "
+            f"J3 outcome={j3} uses={uses2} (0 rows updated); Range row writes={ranged}, uses={uses3}")
+
+
+def projection_union_over_live_db():
+    """C-5: the completeness rule is a union over the database, not a set difference over one file.
+    A plugin table's class comes from its installed manifest; an absent class is a refusal."""
+    proj = json.load(open(PROJECTION))
+    modes = {"rows", "empty", "filtered"}
+    c, _ = fresh("union.db")
+    c.executescript(open(SITE_SQL).read())
+    c.execute("CREATE TABLE u_post(id INTEGER PRIMARY KEY, title TEXT)")
+    c.execute("CREATE TABLE p_contact_message(id INTEGER PRIMARY KEY, body TEXT, asset_key TEXT)")
+    c.execute("INSERT INTO cms_table_registry(table_name,table_class,plugin_id,column_count,columns_json)"
+              " VALUES('u_post','user',NULL,2,'[]'),('p_contact_message','plugin','contact',3,'[]')")
+    manifest = {"id": "contact", "version": "1.4.0",
+                "tables": [{"name": "p_contact_message", "export": "rows"}]}
+    c.execute("INSERT INTO cms_plugin_installed(plugin_id,version,manifest_json,root_hash,publisher,"
+              "signature_state,enabled,test_report_sha) VALUES('contact','1.4.0',?,?,'acme-labs',"
+              "'first_party',1,?)", (json.dumps(manifest), "a" * 64, "b" * 64))
+
+    def classify(con):
+        core = set(proj["tables"])
+        live = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+        declared = {}
+        for pid, mj in con.execute(
+                "SELECT plugin_id, manifest_json FROM cms_plugin_installed WHERE enabled=1"):
+            for t in json.loads(mj).get("tables", []):
+                declared[t["name"]] = (pid, t.get("export"))
+        classified, unclassified, classless = {}, [], []
+        for t in live:
+            if t in core:
+                classified[t] = proj["tables"][t]["mode"]
+            elif t.startswith("u_"):
+                classified[t] = proj["prefix_rules"]["u_"]["mode"]
+            elif t.startswith("p_"):
+                pid, cls = declared.get(t, (None, None))
+                if cls is None:
+                    classless.append(t)
+                else:
+                    classified[t] = cls
+            else:
+                unclassified.append(t)
+        return live, classified, unclassified, classless
+
+    live, classified, unclassified, classless = classify(c)
+    assert not unclassified, f"tables in no class: {unclassified}"
+    assert not classless, f"plugin tables with no export class: {classless}"
+    assert set(classified) == live, (live - set(classified))
+    assert set(classified.values()) <= modes, set(classified.values()) - modes
+
+    # the negative halves: a core table dropped from the JSON, and a manifest with no class
+    c.execute("UPDATE cms_plugin_installed SET manifest_json=? WHERE plugin_id='contact'",
+              (json.dumps({"id": "contact", "tables": [{"name": "p_contact_message"}]}),))
+    _, _, _, classless2 = classify(c)
+    assert classless2 == ["p_contact_message"], classless2
+    c.close()
+    return (f"{len(live)}/{len(live)} live tables classified (core {len(proj['tables'])}, "
+            f"u_ {1}, p_ {1}); modes used={sorted(set(classified.values()))}; "
+            f"manifest without export -> SKW_E_PL_NO_EXPORT_CLASS for {classless2}")
+
+
+def plugin_table_class_and_guard():
+    """C-13/O-36: a plugin table with an asset_key column gets a delete guard in the same
+    transaction, and the guard fires with foreign_keys OFF."""
+    c, _ = fresh("pluginguard.db")
+    c.executescript(open(SITE_SQL).read())
+    c.execute("INSERT INTO cms_asset(key,filename,mime,bytes,sha256,kind)"
+              " VALUES('brochure','b.pdf','application/pdf',1,?,'document')", ("ef" * 32,))
+    c.execute("CREATE TABLE p_contact_message(id INTEGER PRIMARY KEY, body TEXT,"
+              " asset_key TEXT REFERENCES cms_asset(key) ON UPDATE RESTRICT ON DELETE RESTRICT)")
+    c.execute("CREATE TRIGGER trg_asset_guard_p_contact_p_contact_message BEFORE DELETE ON cms_asset"
+              " WHEN EXISTS (SELECT 1 FROM p_contact_message WHERE asset_key = OLD.key)"
+              " BEGIN SELECT RAISE(ABORT,'SKW_E_DM_ASSET_IN_USE'); END")
+    c.execute("INSERT INTO cms_trigger_registry(name,table_name,purpose,checksum)"
+              " VALUES('trg_asset_guard_p_contact_p_contact_message','cms_asset',"
+              "'asset_delete_guard','v3')")
+    c.execute("INSERT INTO p_contact_message(body,asset_key) VALUES('hi','brochure')")
+    c.execute("PRAGMA foreign_keys=OFF")
+    err = None
+    try:
+        c.execute("DELETE FROM cms_asset WHERE key='brochure'")
+    except sqlite3.IntegrityError as e:
+        err = str(e)
+    assert err == "SKW_E_DM_ASSET_IN_USE", err
+
+    # the same table WITHOUT the guard: the delete succeeds and leaves a dangling key, which is the
+    # failure the guard exists to prevent
+    c.execute("DROP TRIGGER trg_asset_guard_p_contact_p_contact_message")
+    c.execute("DELETE FROM cms_asset WHERE key='brochure'")
+    dangling = c.execute("SELECT count(*) FROM p_contact_message m LEFT JOIN cms_asset a"
+                         " ON a.key=m.asset_key WHERE a.key IS NULL").fetchone()[0]
+    reg = c.execute("SELECT count(*) FROM cms_trigger_registry WHERE name LIKE 'trg_asset_guard_p_%'"
+                    ).fetchone()[0]
+    c.close()
+    assert dangling == 1, dangling
+    return (f"guard -> {err}; without it the delete leaves {dangling} dangling asset_key "
+            f"(registered guard rows before drop={reg})")
+
+
+def audit_chain_and_seal():
+    """C-21: a chain in the tenant's own file cannot detect a deleted tail; the daily seal can."""
+    import hashlib as H
+    c, _ = fresh("audit.db")
+    c.executescript(open(SITE_SQL).read())
+    N = 10000
+    prev, rows = "", []
+    t0 = time.perf_counter()
+    c.execute("BEGIN")
+    for i in range(N):
+        rec = {"actor": "op@us", "action": "page.save", "target": f"/p{i}"}
+        h = H.sha256((prev + json.dumps(rec, sort_keys=True)).encode()).hexdigest()
+        rows.append((i + 1, rec["actor"], rec["action"], rec["target"], prev, h))
+        prev = h
+    c.executemany("INSERT INTO cms_audit(id,actor_label,action,target_id,prev_hash,hash)"
+                  " VALUES(?,?,?,?,?,?)", rows)
+    c.execute(f"UPDATE sqlite_sequence SET seq={N} WHERE name='cms_audit'")
+    c.execute("COMMIT")
+    chain_ms = (time.perf_counter() - t0) * 1000
+
+    def verify(con):
+        prev2 = ""
+        for r in con.execute("SELECT actor_label,action,target_id,prev_hash,hash FROM cms_audit"
+                             " ORDER BY id"):
+            rec = {"actor": r[0], "action": r[1], "target": r[2]}
+            h = H.sha256((prev2 + json.dumps(rec, sort_keys=True)).encode()).hexdigest()
+            if h != r[4] or r[3] != prev2:
+                return None, prev2
+            prev2 = h
+        return True, prev2
+
+    t0 = time.perf_counter()
+    ok, head = verify(c)
+    verify_ms = (time.perf_counter() - t0) * 1000
+    assert ok and head == prev, (ok, head, prev)
+
+    # the seal lives in control.db — here, in its own file
+    ctl, _ = fresh("audit_ctl.db")
+    ctl.executescript(open(CONTROL_SQL).read())
+    t0 = time.perf_counter()
+    ctl.execute("INSERT INTO audit_seal(tenant_key,day,rows,head) VALUES('acme','2026-10-20',?,?)",
+                (N, head))
+    seal_ms = (time.perf_counter() - t0) * 1000
+
+    # delete the tail: the chain still verifies, the seal does not
+    c.execute("DROP TRIGGER trg_cms_audit_no_delete")
+    c.execute("DELETE FROM cms_audit WHERE id > ?", (N - 5,))
+    ok2, head2 = verify(c)
+    assert ok2, "the shortened chain did not verify — the test premise is wrong"
+    sealed = ctl.execute("SELECT rows, head FROM audit_seal WHERE tenant_key='acme'"
+                         " AND day='2026-10-20'").fetchone()
+    count_now = c.execute("SELECT count(*) FROM cms_audit").fetchone()[0]
+    mismatch = (count_now != sealed[0]) or (head2 != sealed[1])
+    assert mismatch, "the seal failed to detect a deleted tail"
+    c.close()
+    ctl.close()
+    return (f"{N} rows chained {chain_ms:.1f}ms, verified {verify_ms:.1f}ms, sealed {seal_ms * 1000:.0f}us; "
+            f"tail deleted -> chain verifies ({ok2}) but seal says rows={sealed[0]} head={sealed[1][:8]}.. "
+            f"vs {count_now}/{head2[:8]}.. -> SKW_E_SEC_AUDIT_SEAL")
+
+
+def body_ban_and_loop_contract():
+    """C-12/I8 and C-4: the CHECK bans what SQL can express; the loop is a registered type with one
+    [data-repeat] child, and text bindings are text nodes, never markup."""
+    c, _ = amended("i8.db")
+    banned = {
+        "<p>x</p><script>alert(1)</script>": "script element",
+        "<p>x</p><STYLE>p{}</STYLE>": "style element",
+        "<div><!-- comment --></div>": "html comment",
+        "<a href=\"javascript:alert(1)\">x</a>": "javascript: url",
+        "<iframe srcdoc=\"<b>x</b>\"></iframe>": "srcdoc",
+    }
+    rejected = []
+    for body, label in banned.items():
+        try:
+            c.execute("INSERT INTO cms_page(path,slug,title,body_html) VALUES(?,?,?,?)",
+                      (f"/{label.replace(' ', '-')}", "z", "Z", body))
+            raise AssertionError(f"body ban missed {label}")
+        except sqlite3.IntegrityError:
+            rejected.append(label)
+    c.close()
+
+    # reference implementation of the `list` contract; the Builder's TS must match these behaviours
+    comp = {x["name"]: x for x in json.load(open(COMPONENTS))["components"]}
+    lst = comp["list"]
+    assert lst["repeat_child"] == "[data-repeat]" and lst["limit_max"] == 50
+
+    def esc(s):
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def expand(tpl_child, rows, limit, limit_max, empty_html):
+        n = len(rows)
+        clamp = max(0, min(limit, limit_max))
+        shown = rows[:clamp]
+        truncated = n > clamp
+        out = "".join(tpl_child.replace("{{title}}", esc(r["title"]))
+                                .replace("{{href}}", "/" + r["slug"]) for r in shown)
+        if not shown:
+            out = empty_html
+        return out, truncated
+
+    child = '<article data-repeat><h2>{{title}}</h2><a href="{{href}}">read</a></article>'
+    rows = [{"title": "One", "slug": "one"}, {"title": "<script>x</script>", "slug": "two"}]
+    once, _ = expand(child, rows, 3, lst["limit_max"], "<p>No posts yet.</p>")
+    twice, _ = expand(child, rows, 3, lst["limit_max"], "<p>No posts yet.</p>")
+    assert once == twice, "expansion is not deterministic"
+    assert "<script>" not in once and "&lt;script&gt;" in once, once
+    empty, _ = expand(child, [], 3, lst["limit_max"], "<p>No posts yet.</p>")
+    assert empty == "<p>No posts yet.</p>", empty
+    _, trunc_hi = expand(child, rows, 99, lst["limit_max"], "")
+    _, trunc_no = expand(child, rows, 2, lst["limit_max"], "")
+    assert trunc_hi is False and trunc_no is False, (trunc_hi, trunc_no)
+    many = [{"title": f"t{i}", "slug": f"s{i}"} for i in range(60)]
+    out60, trunc60 = expand(child, many, 99, lst["limit_max"], "")
+    assert trunc60 is True and out60.count("<article") == 50, (trunc60, out60.count("<article"))
+
+    # shell resolution: template is a slug checked against kind='shell'
+    shells = {n for n, x in comp.items() if x["kind"] == "shell"}
+    assert "page" in shells and "docs-v2" not in shells, shells
+    code = "SKW_E_RT_TEMPLATE_UNKNOWN" if "docs-v2" not in shells else None
+    return (f"DB rejected {len(rejected)} body vectors ({', '.join(rejected)}); loop: deterministic, "
+            f"text escaped, [data-empty] on zero rows, clamp 99->50 with data-truncated; "
+            f"unknown shell 'docs-v2' -> {code} ({len(shells)} shells shipped)")
+
+
+def connection_classes():
+    """C-15: query_only closes VACUUM INTO and temp triggers but NOT ATTACH — which is why the
+    render class is never handed SQL text, and why the exporter is a separate class."""
+    c, p = fresh("connclass.db")
+    c.execute("CREATE TABLE t(x INTEGER)")
+    c.execute("INSERT INTO t VALUES(1)")
+    c.close()
+    ro = sqlite3.connect(f"file:{p}?mode=ro", uri=True, isolation_level=None)
+    ro.execute("PRAGMA query_only=1")
+    vac = tmp = att = None
+    try:
+        ro.execute("VACUUM INTO ?", (os.path.join(WORK, "stolen.db"),))
+        vac = "ALLOWED"
+    except sqlite3.Error as e:
+        vac = str(e)
+    try:
+        ro.execute("CREATE TEMP TABLE scratch(x)")
+        ro.execute("CREATE TEMP TRIGGER trg_scratch AFTER INSERT ON t BEGIN SELECT 1; END")
+        tmp = "ALLOWED"
+    except sqlite3.Error as e:
+        tmp = str(e)
+    try:
+        ro.execute(f"ATTACH DATABASE '{p}' AS other")
+        att = "ALLOWED: " + ",".join(r[1] for r in ro.execute("PRAGMA database_list"))
+    except sqlite3.Error as e:
+        att = str(e)
+    ro.close()
+    ex = sqlite3.connect(p, isolation_level=None)
+    ex.execute("PRAGMA query_only=0")
+    ex.execute("VACUUM INTO ?", (os.path.join(WORK, "exported.db"),))
+    exported = os.path.exists(os.path.join(WORK, "exported.db"))
+    ex.close()
+    assert "readonly" in vac.lower() or "read-only" in vac.lower(), vac
+    assert "readonly" in tmp.lower() or "read-only" in tmp.lower(), tmp
+    assert att.startswith("ALLOWED"), att
+    assert exported, "the exporter class could not VACUUM INTO"
+    return (f"query_only: VACUUM INTO -> {vac}; temp trigger -> {tmp}; ATTACH -> {att}; "
+            f"exporter class wrote {os.path.getsize(os.path.join(WORK, 'exported.db'))} B")
+
+
 CHECKS = [
     ("1 schema/ER parity + negative tests", schema_parity),
     ("2 cp loses data, VACUUM INTO keeps it", cp_loses_data),
@@ -701,6 +1220,15 @@ CHECKS = [
     ("17 argon2 parameter cost on this box", argon2_param_cost),
     ("18 an unanchored audit chain proves nothing", audit_chain_needs_an_anchor),
     ("19 delete-guard cost, indexed vs not", asset_guard_cost),
+    # ---- R3 (register v3) ----
+    ("20 migration chain v1->v3 converges on site.sql", migration_chain_converges),
+    ("21 selector seek + argon2 verifier (C-6)", selector_lookup_and_argon2),
+    ("22 redemption on the v3 tables (C-7)", redemption_on_real_schema),
+    ("23 export projection is a union over the live DB (C-5)", projection_union_over_live_db),
+    ("24 plugin table class + asset guard (C-13/O-36)", plugin_table_class_and_guard),
+    ("25 audit chain needs a daily seal (C-21)", audit_chain_and_seal),
+    ("26 body ban + list loop contract (C-12/C-4)", body_ban_and_loop_contract),
+    ("27 connection classes: query_only is not tenancy (C-15)", connection_classes),
 ]
 
 

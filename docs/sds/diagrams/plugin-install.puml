@@ -1,0 +1,106 @@
+@startuml
+/' docs/sds/diagrams/plugin-install.puml — package to enabled plugin, then containment at runtime.
+   Implements: SDS §8. Register: C-8 (fourth service), C-9 (no publisher CA, D27),
+   C-13 (migration grammar), O-36 (asset guard per plugin table), O-37 (test report),
+   O-44 (write-only secrets). '/
+title Plugin install, enable, and the RPC containment boundary
+
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam maxMessageSize 130
+
+actor "Tenant owner" as O
+participant "app  admin" as APP
+participant "plugin-runner" as RUN
+participant "site.db" as DB
+participant "data/trust/" as TR
+
+== Install: signature, then review, then DDL ==
+
+O -> APP : upload plugin-<id>-<version>.tar.gz
+APP -> APP : verify package root signature\nfirst-party: the key baked into the image\nthird-party: a key the OWNER imported
+APP -> TR : read publishers.json (per-install, written only by the owner)\nread revoked.json (local to the install)
+alt signature unknown or root revoked
+  APP --> O : 409 SKW_E_PL_SIGNATURE / SKW_E_PL_REVOKED
+end
+note right of APP
+  There is **no publisher CA** (C-9 / D27).
+  Our key verifies first-party packages only;
+  no key we hold signs, countersigns or revokes
+  a third party. The fingerprint is shown
+  beside every capability on this screen.
+end note
+
+APP -> APP : validate plugin.json\nid ^[a-z][a-z0-9]{1,19}$ · cms range · tables[] · settings[]\nadmin forms · public endpoints · capabilities
+APP -> APP : require test-report.json whose runner_image_digest\nmatches this image
+alt report missing or stale
+  APP --> O : 409 SKW_E_PL_TESTS_STALE
+end
+
+APP -> RUN : run the plugin's own tests against a scratch site.db\n(same image, same containment)
+RUN --> APP : test-report.json
+
+APP -> DB : BEGIN IMMEDIATE
+APP -> DB : apply forward-only migrations through the HOST executor\nops subset: create_table · add_column · create_index · drop_index\n  NO drop_table, NO rename, NO drop_column (grammar, not policy)
+APP -> DB : CREATE TABLE p_<id>_*  (prefix CHECK GLOB 'p_?*')\n+ trg_asset_guard_p_<id>_<table> for every asset_key column\n+ row in cms_trigger_registry (purpose='asset_delete_guard')
+APP -> DB : row in cms_plugin_migration(plugin_id, version, seq)\nrow in cms_table_registry(table_class='plugin')
+APP -> DB : row in cms_plugin_installed(enabled=0, manifest_json, root_hash)
+APP -> DB : postcondition: every table is cms_* | u_* | p_* | sqlite_* -> else ABORT
+APP -> DB : COMMIT
+note right of DB
+  A p_* table's export class comes from
+  manifest_json.tables[].export. No class ->
+  install refused, SKW_E_PL_NO_EXPORT_CLASS,
+  because a table nobody classified cannot be
+  sold (C-5).
+end note
+
+== Enable ==
+
+O -> APP : enable  (capabilities listed, fingerprints shown)
+APP -> APP : secrets are write-only: settings.get -> null,\nsettings.has -> boolean, admin shows ••••••
+APP -> DB : UPDATE cms_plugin_installed SET enabled=1, enabled_at=?
+APP -> RUN : spawn one node --permission child for this package
+note right of RUN
+  --allow-fs-read limited to the package and its scratch dir.
+  No --allow-addons, no --allow-child-process, no --allow-worker.
+  Container: network_mode: none, read_only: true,
+  cap_drop: [ALL], pids_limit: 64.
+  With addons on, ATTACH to a sibling tenant succeeds —
+  measured. With them off, new Database() fails
+  ERR_DLOPEN_DISABLED.
+end note
+
+== Runtime: 14 operations, no fifth door ==
+
+O -> APP : a page posts to the plugin's public endpoint
+APP -> RUN : store.insert(table,row)   row<=32KiB, <=24 declared columns
+RUN --> APP : ok
+APP -> DB : the HOST writes the row (the plugin never holds a handle)
+APP --> O : 200
+
+note over APP, RUN
+  **Operations that exist (14):**
+  store.insert · store.update · store.delete · store.query · store.count
+  settings.get · settings.has · settings.set · assets.resolve · mail.send
+  log.write · util.now · util.random · util.hash
+end note
+note over APP, RUN
+  **Absent by decision, each absence a control:**
+  sql · exec · prepare · db · attach · fs.* · net.* · http.* · fetch · env
+  require/import outside the package · worker · spawn
+  assets.write · assets.upload · mail.raw · tenant.* · cms.*
+  store.raw · store.join · cron · stream
+end note
+
+alt plugin hangs or dies
+  APP -> RUN : 2 s per-op timeout, circuit breaker opens
+  APP --> O : 503 SKW_E_PL_UNAVAILABLE on that endpoint only
+  note right of APP
+    No plugin code is on the render path, so a
+    broken plugin degrades one endpoint. It
+    cannot take a page down (P-1).
+  end note
+end
+
+@enduml
