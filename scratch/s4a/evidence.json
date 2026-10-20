@@ -1,0 +1,843 @@
+{
+  "components": [
+    {
+      "name": "hero",
+      "bodyWrapper": true,
+      "type": "hero",
+      "kind": "block",
+      "path": "/c/hero",
+      "pageId": 3,
+      "registryHtml": "<section class=\"hero\" data-gjs-type=\"hero\" data-align=\"left\"><div class=\"hero__inner\"><h1 class=\"hero__title\" data-prop=\"title\">A headline that says what this is</h1><p class=\"hero__subtitle\" data-prop=\"subtitle\">One sentence about who it is for.</p><img class=\"hero__image\" data-prop=\"image\" data-asset-key=\"banner/home\" alt=\"\"><a class=\"btn btn--primary\" data-prop=\"cta\" href=\"/contact\">Talk to us</a></div></section>",
+      "canvasHtml": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"ilzh\" data-gjs-type=\"wrapper\"><section data-gjs-highlightable=\"true\" id=\"itfb\" data-gjs-type=\"hero\" draggable=\"true\" data-align=\"left\" class=\"hero\"><div data-gjs-highlightable=\"true\" id=\"ihf7\" data-gjs-type=\"default\" draggable=\"true\" class=\"hero__inner\"><h1 data-gjs-highlightable=\"true\" id=\"i5tg\" data-gjs-type=\"text\" draggable=\"true\" data-prop=\"title\" class=\"hero__title\">A headline that says what this is</h1><p data-gjs-highlightable=\"true\" id=\"iwc6\" data-gjs-type=\"text\" draggable=\"true\" data-prop=\"subtitle\" class=\"hero__subtitle\">One sentence about who it is for.</p><img id=\"iw9l\" data-gjs-type=\"image\" draggable=\"true\" data-prop=\"image\" data-asset-key=\"banner/home\" alt=\"\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3R5bGU9ImZpbGw6IHJnYmEoMCwwLDAsMC4xNSk7IHRyYW5zZm9ybTogc2NhbGUoMC43NSkiPgogICAgICAgIDxwYXRoIGQ9Ik04LjUgMTMuNWwyLjUgMyAzLjUtNC41IDQuNSA2SDVtMTYgMVY1YTIgMiAwIDAgMC0yLTJINWMtMS4xIDAtMiAuOS0yIDJ2MTRjMCAxLjEuOSAyIDIgMmgxNGMxLjEgMCAyLS45IDItMnoiPjwvcGF0aD4KICAgICAgPC9zdmc+\" class=\"hero__image gjs-plh-image\"><a data-gjs-highlightable=\"true\" id=\"iyeh9\" data-gjs-type=\"link\" draggable=\"true\" data-prop=\"cta\" href=\"/contact\" class=\"btn btn--primary\">Talk to us</a></div></section></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"></div></div><div class=\"gjs-js-cont\"></div>",
+      "grapesHtmlBeforeSave": "<body><section data-gjs-type=\"hero\" data-align=\"left\" class=\"hero\"><div class=\"hero__inner\"><h1 data-prop=\"title\" class=\"hero__title\">A headline that says what this is</h1><p data-prop=\"subtitle\" class=\"hero__subtitle\">One sentence about who it is for.</p><img data-prop=\"image\" data-asset-key=\"banner/home\" alt=\"\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3R5bGU9ImZpbGw6IHJnYmEoMCwwLDAsMC4xNSk7IHRyYW5zZm9ybTogc2NhbGUoMC43NSkiPgogICAgICAgIDxwYXRoIGQ9Ik04LjUgMTMuNWwyLjUgMyAzLjUtNC41IDQuNSA2SDVtMTYgMVY1YTIgMiAwIDAgMC0yLTJINWMtMS4xIDAtMiAuOS0yIDJ2MTRjMCAxLjEuOSAyIDIgMmgxNGMxLjEgMCAyLS45IDItMnoiPjwvcGF0aD4KICAgICAgPC9zdmc+\" class=\"hero__image\"/><a data-prop=\"cta\" href=\"/contact\" class=\"btn btn--primary\">Talk to us</a></div></section></body>",
+      "b1": "<body>\n  <section data-gjs-type=\"hero\" class=\"hero\" data-align=\"left\">\n    <div class=\"hero__inner\">\n      <h1 class=\"hero__title\" data-prop=\"title\">A headline that says what this is</h1>\n      <p class=\"hero__subtitle\" data-prop=\"subtitle\">One sentence about who it is for.</p>\n      <img class=\"hero__image\" data-asset-key=\"banner/home\" data-prop=\"image\" alt />\n      <a class=\"btn btn--primary\" data-prop=\"cta\" href=\"/contact\">Talk to us</a>\n    </div>\n  </section>\n</body>",
+      "b2": "<body>\n  <section data-gjs-type=\"hero\" class=\"hero\" data-align=\"left\">\n    <div class=\"hero__inner\">\n      <h1 class=\"hero__title\" data-prop=\"title\">A headline that says what this is</h1>\n      <p class=\"hero__subtitle\" data-prop=\"subtitle\">One sentence about who it is for.</p>\n      <img class=\"hero__image\" data-asset-key=\"banner/home\" data-prop=\"image\" alt />\n      <a class=\"btn btn--primary\" data-prop=\"cta\" href=\"/contact\">Talk to us</a>\n    </div>\n  </section>\n</body>",
+      "b1Sha": "f9a61b9319264d554ebc01406ea22a57a856e6d2d470f22a024eeb2bb6027ee9",
+      "b2Sha": "f9a61b9319264d554ebc01406ea22a57a856e6d2d470f22a024eeb2bb6027ee9",
+      "grapesHtmlOnReload": "<body><section data-gjs-type=\"hero\" data-align=\"left\" class=\"hero\"><div class=\"hero__inner\"><h1 data-prop=\"title\" class=\"hero__title\">A headline that says what this is</h1><p data-prop=\"subtitle\" class=\"hero__subtitle\">One sentence about who it is for.</p><img data-asset-key=\"banner/home\" data-prop=\"image\" alt=\"\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3R5bGU9ImZpbGw6IHJnYmEoMCwwLDAsMC4xNSk7IHRyYW5zZm9ybTogc2NhbGUoMC43NSkiPgogICAgICAgIDxwYXRoIGQ9Ik04LjUgMTMuNWwyLjUgMyAzLjUtNC41IDQuNSA2SDVtMTYgMVY1YTIgMiAwIDAgMC0yLTJINWMtMS4xIDAtMiAuOS0yIDJ2MTRjMCAxLjEuOSAyIDIgMmgxNGMxLjEgMCAyLS45IDItMnoiPjwvcGF0aD4KICAgICAgPC9zdmc+\" class=\"hero__image\"/><a data-prop=\"cta\" href=\"/contact\" class=\"btn btn--primary\">Talk to us</a></div></section></body>",
+      "locksB1": {
+        "type": [
+          "hero"
+        ],
+        "props": [
+          "title",
+          "subtitle",
+          "image",
+          "cta"
+        ],
+        "keys": [
+          "banner/home"
+        ],
+        "tags": [
+          "body",
+          "section",
+          "div",
+          "h1",
+          "p",
+          "img",
+          "a"
+        ]
+      },
+      "locksExpected": {
+        "type": [
+          "hero"
+        ],
+        "props": [
+          "title",
+          "subtitle",
+          "image",
+          "cta"
+        ],
+        "keys": [
+          "banner/home"
+        ],
+        "tags": [
+          "section",
+          "div",
+          "h1",
+          "p",
+          "img",
+          "a"
+        ]
+      },
+      "typeOk": true,
+      "propsOk": true,
+      "keysOk": true,
+      "fixpoint": true,
+      "verdict": "survived",
+      "save1Status": {
+        "tenant": "acme",
+        "id": 3,
+        "created": false,
+        "rev": 1,
+        "bodyHtml": "<body>\n  <section data-gjs-type=\"hero\" class=\"hero\" data-align=\"left\">\n    <div class=\"hero__inner\">\n      <h1 class=\"hero__title\" data-prop=\"title\">A headline that says what this is</h1>\n      <p class=\"hero__subtitle\" data-prop=\"subtitle\">One sentence about who it is for.</p>\n      <img class=\"hero__image\" data-asset-key=\"banner/home\" data-prop=\"image\" alt />\n      <a class=\"btn btn--primary\" data-prop=\"cta\" href=\"/contact\">Talk to us</a>\n    </div>\n  </section>\n</body>",
+        "bodySha": "f9a61b9319264d554ebc01406ea22a57a856e6d2d470f22a024eeb2bb6027ee9",
+        "items": {}
+      },
+      "save2Status": {
+        "tenant": "acme",
+        "id": 3,
+        "created": false,
+        "rev": 2,
+        "bodyHtml": "<body>\n  <section data-gjs-type=\"hero\" class=\"hero\" data-align=\"left\">\n    <div class=\"hero__inner\">\n      <h1 class=\"hero__title\" data-prop=\"title\">A headline that says what this is</h1>\n      <p class=\"hero__subtitle\" data-prop=\"subtitle\">One sentence about who it is for.</p>\n      <img class=\"hero__image\" data-asset-key=\"banner/home\" data-prop=\"image\" alt />\n      <a class=\"btn btn--primary\" data-prop=\"cta\" href=\"/contact\">Talk to us</a>\n    </div>\n  </section>\n</body>",
+        "bodySha": "f9a61b9319264d554ebc01406ea22a57a856e6d2d470f22a024eeb2bb6027ee9",
+        "items": {}
+      }
+    },
+    {
+      "name": "prose",
+      "bodyWrapper": true,
+      "type": "prose",
+      "kind": "block",
+      "path": "/c/prose",
+      "pageId": 4,
+      "registryHtml": "<div class=\"prose\" data-gjs-type=\"prose\"><p data-prop=\"body\">Write the paragraph here.</p></div>",
+      "canvasHtml": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"izey\" data-gjs-type=\"wrapper\"><div data-gjs-highlightable=\"true\" id=\"i74r\" data-gjs-type=\"prose\" draggable=\"true\" class=\"prose\"><p data-gjs-highlightable=\"true\" id=\"ibvy\" data-gjs-type=\"text\" draggable=\"true\" data-prop=\"body\">Write the paragraph here.</p></div></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"></div></div><div class=\"gjs-js-cont\"></div>",
+      "grapesHtmlBeforeSave": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\">Write the paragraph here.</p></div></body>",
+      "b1": "<body>\n  <div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\">Write the paragraph here.</p></div>\n</body>",
+      "b2": "<body>\n  <div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\">Write the paragraph here.</p></div>\n</body>",
+      "b1Sha": "3b451074a6b09ff4cb2588657302534bae3d16f413c64fb48f48bfd9f8f98b4f",
+      "b2Sha": "3b451074a6b09ff4cb2588657302534bae3d16f413c64fb48f48bfd9f8f98b4f",
+      "grapesHtmlOnReload": "<body><div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\">Write the paragraph here.</p></div></body>",
+      "locksB1": {
+        "type": [
+          "prose"
+        ],
+        "props": [
+          "body"
+        ],
+        "keys": [],
+        "tags": [
+          "body",
+          "div",
+          "p"
+        ]
+      },
+      "locksExpected": {
+        "type": [
+          "prose"
+        ],
+        "props": [
+          "body"
+        ],
+        "keys": [],
+        "tags": [
+          "div",
+          "p"
+        ]
+      },
+      "typeOk": true,
+      "propsOk": true,
+      "keysOk": true,
+      "fixpoint": true,
+      "verdict": "survived",
+      "save1Status": {
+        "tenant": "acme",
+        "id": 4,
+        "created": false,
+        "rev": 1,
+        "bodyHtml": "<body>\n  <div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\">Write the paragraph here.</p></div>\n</body>",
+        "bodySha": "3b451074a6b09ff4cb2588657302534bae3d16f413c64fb48f48bfd9f8f98b4f",
+        "items": {}
+      },
+      "save2Status": {
+        "tenant": "acme",
+        "id": 4,
+        "created": false,
+        "rev": 2,
+        "bodyHtml": "<body>\n  <div data-gjs-type=\"prose\" class=\"prose\"><p data-prop=\"body\">Write the paragraph here.</p></div>\n</body>",
+        "bodySha": "3b451074a6b09ff4cb2588657302534bae3d16f413c64fb48f48bfd9f8f98b4f",
+        "items": {}
+      }
+    },
+    {
+      "name": "figure",
+      "bodyWrapper": true,
+      "type": "figure",
+      "kind": "block",
+      "path": "/c/figure",
+      "pageId": 5,
+      "registryHtml": "<figure class=\"figure\" data-gjs-type=\"figure\" data-ratio=\"4:3\"><img data-prop=\"src\" data-asset-key=\"banner/home\" alt=\"\"><figcaption data-prop=\"caption\">Caption</figcaption></figure>",
+      "canvasHtml": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"ij3e\" data-gjs-type=\"wrapper\"><figure data-gjs-highlightable=\"true\" id=\"ibkk\" data-gjs-type=\"figure\" draggable=\"true\" data-ratio=\"4:3\" class=\"figure\"><img id=\"i91g\" data-gjs-type=\"image\" draggable=\"true\" data-prop=\"src\" data-asset-key=\"banner/home\" alt=\"\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3R5bGU9ImZpbGw6IHJnYmEoMCwwLDAsMC4xNSk7IHRyYW5zZm9ybTogc2NhbGUoMC43NSkiPgogICAgICAgIDxwYXRoIGQ9Ik04LjUgMTMuNWwyLjUgMyAzLjUtNC41IDQuNSA2SDVtMTYgMVY1YTIgMiAwIDAgMC0yLTJINWMtMS4xIDAtMiAuOS0yIDJ2MTRjMCAxLjEuOSAyIDIgMmgxNGMxLjEgMCAyLS45IDItMnoiPjwvcGF0aD4KICAgICAgPC9zdmc+\" class=\"gjs-plh-image\"><figcaption data-gjs-highlightable=\"true\" id=\"ipab\" data-gjs-type=\"text\" draggable=\"true\" data-prop=\"caption\">Caption</figcaption></figure></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"></div></div><div class=\"gjs-js-cont\"></div>",
+      "grapesHtmlBeforeSave": "<body><figure data-gjs-type=\"figure\" data-ratio=\"4:3\" class=\"figure\"><img data-prop=\"src\" data-asset-key=\"banner/home\" alt=\"\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3R5bGU9ImZpbGw6IHJnYmEoMCwwLDAsMC4xNSk7IHRyYW5zZm9ybTogc2NhbGUoMC43NSkiPgogICAgICAgIDxwYXRoIGQ9Ik04LjUgMTMuNWwyLjUgMyAzLjUtNC41IDQuNSA2SDVtMTYgMVY1YTIgMiAwIDAgMC0yLTJINWMtMS4xIDAtMiAuOS0yIDJ2MTRjMCAxLjEuOSAyIDIgMmgxNGMxLjEgMCAyLS45IDItMnoiPjwvcGF0aD4KICAgICAgPC9zdmc+\"/><figcaption data-prop=\"caption\">Caption</figcaption></figure></body>",
+      "b1": "<body>\n  <figure data-gjs-type=\"figure\" class=\"figure\" data-ratio=\"4:3\">\n    <img data-asset-key=\"banner/home\" data-prop=\"src\" alt />\n    <figcaption data-prop=\"caption\">Caption</figcaption>\n  </figure>\n</body>",
+      "b2": "<body>\n  <figure data-gjs-type=\"figure\" class=\"figure\" data-ratio=\"4:3\">\n    <img data-asset-key=\"banner/home\" data-prop=\"src\" alt />\n    <figcaption data-prop=\"caption\">Caption</figcaption>\n  </figure>\n</body>",
+      "b1Sha": "5aeda7b7c1973f19c9f1b414b21a42e9e1d87ee43b96729c51b7a5e14ca533fa",
+      "b2Sha": "5aeda7b7c1973f19c9f1b414b21a42e9e1d87ee43b96729c51b7a5e14ca533fa",
+      "grapesHtmlOnReload": "<body><figure data-gjs-type=\"figure\" data-ratio=\"4:3\" class=\"figure\"><img data-asset-key=\"banner/home\" data-prop=\"src\" alt=\"\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3R5bGU9ImZpbGw6IHJnYmEoMCwwLDAsMC4xNSk7IHRyYW5zZm9ybTogc2NhbGUoMC43NSkiPgogICAgICAgIDxwYXRoIGQ9Ik04LjUgMTMuNWwyLjUgMyAzLjUtNC41IDQuNSA2SDVtMTYgMVY1YTIgMiAwIDAgMC0yLTJINWMtMS4xIDAtMiAuOS0yIDJ2MTRjMCAxLjEuOSAyIDIgMmgxNGMxLjEgMCAyLS45IDItMnoiPjwvcGF0aD4KICAgICAgPC9zdmc+\"/><figcaption data-prop=\"caption\">Caption</figcaption></figure></body>",
+      "locksB1": {
+        "type": [
+          "figure"
+        ],
+        "props": [
+          "src",
+          "caption"
+        ],
+        "keys": [
+          "banner/home"
+        ],
+        "tags": [
+          "body",
+          "figure",
+          "img",
+          "figcaption"
+        ]
+      },
+      "locksExpected": {
+        "type": [
+          "figure"
+        ],
+        "props": [
+          "src",
+          "caption"
+        ],
+        "keys": [
+          "banner/home"
+        ],
+        "tags": [
+          "figure",
+          "img",
+          "figcaption"
+        ]
+      },
+      "typeOk": true,
+      "propsOk": true,
+      "keysOk": true,
+      "fixpoint": true,
+      "verdict": "survived",
+      "save1Status": {
+        "tenant": "acme",
+        "id": 5,
+        "created": false,
+        "rev": 1,
+        "bodyHtml": "<body>\n  <figure data-gjs-type=\"figure\" class=\"figure\" data-ratio=\"4:3\">\n    <img data-asset-key=\"banner/home\" data-prop=\"src\" alt />\n    <figcaption data-prop=\"caption\">Caption</figcaption>\n  </figure>\n</body>",
+        "bodySha": "5aeda7b7c1973f19c9f1b414b21a42e9e1d87ee43b96729c51b7a5e14ca533fa",
+        "items": {}
+      },
+      "save2Status": {
+        "tenant": "acme",
+        "id": 5,
+        "created": false,
+        "rev": 2,
+        "bodyHtml": "<body>\n  <figure data-gjs-type=\"figure\" class=\"figure\" data-ratio=\"4:3\">\n    <img data-asset-key=\"banner/home\" data-prop=\"src\" alt />\n    <figcaption data-prop=\"caption\">Caption</figcaption>\n  </figure>\n</body>",
+        "bodySha": "5aeda7b7c1973f19c9f1b414b21a42e9e1d87ee43b96729c51b7a5e14ca533fa",
+        "items": {}
+      }
+    },
+    {
+      "name": "gallery",
+      "bodyWrapper": true,
+      "type": "gallery",
+      "kind": "block",
+      "path": "/c/gallery",
+      "pageId": 6,
+      "registryHtml": "<div class=\"gallery\" data-gjs-type=\"gallery\" data-columns=\"3\"><figure class=\"gallery__item\"><img data-prop=\"src\" data-asset-key=\"banner/home\" alt=\"\"></figure></div>",
+      "canvasHtml": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"ifu6\" data-gjs-type=\"wrapper\"><div data-gjs-highlightable=\"true\" id=\"ii3g\" data-gjs-type=\"gallery\" draggable=\"true\" data-columns=\"3\" class=\"gallery\"><figure data-gjs-highlightable=\"true\" id=\"ixpg\" data-gjs-type=\"default\" draggable=\"true\" class=\"gallery__item\"><img id=\"iafb\" data-gjs-type=\"image\" draggable=\"true\" data-prop=\"src\" data-asset-key=\"banner/home\" alt=\"\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3R5bGU9ImZpbGw6IHJnYmEoMCwwLDAsMC4xNSk7IHRyYW5zZm9ybTogc2NhbGUoMC43NSkiPgogICAgICAgIDxwYXRoIGQ9Ik04LjUgMTMuNWwyLjUgMyAzLjUtNC41IDQuNSA2SDVtMTYgMVY1YTIgMiAwIDAgMC0yLTJINWMtMS4xIDAtMiAuOS0yIDJ2MTRjMCAxLjEuOSAyIDIgMmgxNGMxLjEgMCAyLS45IDItMnoiPjwvcGF0aD4KICAgICAgPC9zdmc+\" class=\"gjs-plh-image\"></figure></div></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"></div></div><div class=\"gjs-js-cont\"></div>",
+      "grapesHtmlBeforeSave": "<body><div data-gjs-type=\"gallery\" data-columns=\"3\" class=\"gallery\"><figure class=\"gallery__item\"><img data-prop=\"src\" data-asset-key=\"banner/home\" alt=\"\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3R5bGU9ImZpbGw6IHJnYmEoMCwwLDAsMC4xNSk7IHRyYW5zZm9ybTogc2NhbGUoMC43NSkiPgogICAgICAgIDxwYXRoIGQ9Ik04LjUgMTMuNWwyLjUgMyAzLjUtNC41IDQuNSA2SDVtMTYgMVY1YTIgMiAwIDAgMC0yLTJINWMtMS4xIDAtMiAuOS0yIDJ2MTRjMCAxLjEuOSAyIDIgMmgxNGMxLjEgMCAyLS45IDItMnoiPjwvcGF0aD4KICAgICAgPC9zdmc+\"/></figure></div></body>",
+      "b1": "<body>\n  <div data-gjs-type=\"gallery\" class=\"gallery\" data-columns=\"3\">\n    <figure class=\"gallery__item\"><img data-asset-key=\"banner/home\" data-prop=\"src\" alt /></figure>\n  </div>\n</body>",
+      "b2": "<body>\n  <div data-gjs-type=\"gallery\" class=\"gallery\" data-columns=\"3\">\n    <figure class=\"gallery__item\"><img data-asset-key=\"banner/home\" data-prop=\"src\" alt /></figure>\n  </div>\n</body>",
+      "b1Sha": "1c4d9a41e9258ae49b4e903a9ce36637b7666d38c59a7b91eee80c017ac233f6",
+      "b2Sha": "1c4d9a41e9258ae49b4e903a9ce36637b7666d38c59a7b91eee80c017ac233f6",
+      "grapesHtmlOnReload": "<body><div data-gjs-type=\"gallery\" data-columns=\"3\" class=\"gallery\"><figure class=\"gallery__item\"><img data-asset-key=\"banner/home\" data-prop=\"src\" alt=\"\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3R5bGU9ImZpbGw6IHJnYmEoMCwwLDAsMC4xNSk7IHRyYW5zZm9ybTogc2NhbGUoMC43NSkiPgogICAgICAgIDxwYXRoIGQ9Ik04LjUgMTMuNWwyLjUgMyAzLjUtNC41IDQuNSA2SDVtMTYgMVY1YTIgMiAwIDAgMC0yLTJINWMtMS4xIDAtMiAuOS0yIDJ2MTRjMCAxLjEuOSAyIDIgMmgxNGMxLjEgMCAyLS45IDItMnoiPjwvcGF0aD4KICAgICAgPC9zdmc+\"/></figure></div></body>",
+      "locksB1": {
+        "type": [
+          "gallery"
+        ],
+        "props": [
+          "src"
+        ],
+        "keys": [
+          "banner/home"
+        ],
+        "tags": [
+          "body",
+          "div",
+          "figure",
+          "img"
+        ]
+      },
+      "locksExpected": {
+        "type": [
+          "gallery"
+        ],
+        "props": [
+          "src"
+        ],
+        "keys": [
+          "banner/home"
+        ],
+        "tags": [
+          "div",
+          "figure",
+          "img"
+        ]
+      },
+      "typeOk": true,
+      "propsOk": true,
+      "keysOk": true,
+      "fixpoint": true,
+      "verdict": "survived",
+      "save1Status": {
+        "tenant": "acme",
+        "id": 6,
+        "created": false,
+        "rev": 1,
+        "bodyHtml": "<body>\n  <div data-gjs-type=\"gallery\" class=\"gallery\" data-columns=\"3\">\n    <figure class=\"gallery__item\"><img data-asset-key=\"banner/home\" data-prop=\"src\" alt /></figure>\n  </div>\n</body>",
+        "bodySha": "1c4d9a41e9258ae49b4e903a9ce36637b7666d38c59a7b91eee80c017ac233f6",
+        "items": {}
+      },
+      "save2Status": {
+        "tenant": "acme",
+        "id": 6,
+        "created": false,
+        "rev": 2,
+        "bodyHtml": "<body>\n  <div data-gjs-type=\"gallery\" class=\"gallery\" data-columns=\"3\">\n    <figure class=\"gallery__item\"><img data-asset-key=\"banner/home\" data-prop=\"src\" alt /></figure>\n  </div>\n</body>",
+        "bodySha": "1c4d9a41e9258ae49b4e903a9ce36637b7666d38c59a7b91eee80c017ac233f6",
+        "items": {}
+      }
+    },
+    {
+      "name": "download-button",
+      "bodyWrapper": true,
+      "type": "download-button",
+      "kind": "block",
+      "path": "/c/download-button",
+      "pageId": 7,
+      "registryHtml": "<p class=\"download\" data-gjs-type=\"download-button\"><a class=\"btn\" data-prop=\"href\" data-asset-key=\"vault/book\" href=\"/d/vault-book\"><span data-prop=\"label\">Download the book</span></a></p>",
+      "canvasHtml": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"iyby\" data-gjs-type=\"wrapper\"><p data-gjs-highlightable=\"true\" id=\"ia9h\" data-gjs-type=\"download-button\" draggable=\"true\" class=\"download\"><a data-gjs-highlightable=\"true\" id=\"in6i\" data-gjs-type=\"link\" draggable=\"true\" data-prop=\"href\" data-asset-key=\"vault/book\" href=\"/d/vault-book\" class=\"btn\"><span id=\"ibff\" data-gjs-type=\"text\" draggable=\"true\" data-prop=\"label\">Download the book</span></a></p></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"></div></div><div class=\"gjs-js-cont\"></div>",
+      "grapesHtmlBeforeSave": "<body><p data-gjs-type=\"download-button\" class=\"download\"><a data-prop=\"href\" data-asset-key=\"vault/book\" href=\"/d/vault-book\" class=\"btn\"><span data-prop=\"label\">Download the book</span></a></p></body>",
+      "b1": "<body>\n  <p data-gjs-type=\"download-button\" class=\"download\">\n    <a class=\"btn\" data-asset-key=\"vault/book\" data-prop=\"href\">\n      <span data-prop=\"label\">Download the book</span>\n    </a>\n  </p>\n</body>",
+      "b2": "<body>\n  <p data-gjs-type=\"download-button\" class=\"download\">\n    <a class=\"btn\" data-asset-key=\"vault/book\" data-prop=\"href\">\n      <span data-prop=\"label\">Download the book</span>\n    </a>\n  </p>\n</body>",
+      "b1Sha": "b6214134dd313615b72f20a6d1160a94e3a9728ab0fdc9c8e9d9c52df69ce2d9",
+      "b2Sha": "b6214134dd313615b72f20a6d1160a94e3a9728ab0fdc9c8e9d9c52df69ce2d9",
+      "grapesHtmlOnReload": "<body><p data-gjs-type=\"download-button\" class=\"download\"><a data-asset-key=\"vault/book\" data-prop=\"href\" class=\"btn\"><span data-prop=\"label\">Download the book</span></a></p></body>",
+      "locksB1": {
+        "type": [
+          "download-button"
+        ],
+        "props": [
+          "href",
+          "label"
+        ],
+        "keys": [
+          "vault/book"
+        ],
+        "tags": [
+          "body",
+          "p",
+          "a",
+          "span"
+        ]
+      },
+      "locksExpected": {
+        "type": [
+          "download-button"
+        ],
+        "props": [
+          "href",
+          "label"
+        ],
+        "keys": [
+          "vault/book"
+        ],
+        "tags": [
+          "p",
+          "a",
+          "span"
+        ]
+      },
+      "typeOk": true,
+      "propsOk": true,
+      "keysOk": true,
+      "fixpoint": true,
+      "verdict": "survived",
+      "save1Status": {
+        "tenant": "acme",
+        "id": 7,
+        "created": false,
+        "rev": 1,
+        "bodyHtml": "<body>\n  <p data-gjs-type=\"download-button\" class=\"download\">\n    <a class=\"btn\" data-asset-key=\"vault/book\" data-prop=\"href\">\n      <span data-prop=\"label\">Download the book</span>\n    </a>\n  </p>\n</body>",
+        "bodySha": "b6214134dd313615b72f20a6d1160a94e3a9728ab0fdc9c8e9d9c52df69ce2d9",
+        "items": {}
+      },
+      "save2Status": {
+        "tenant": "acme",
+        "id": 7,
+        "created": false,
+        "rev": 2,
+        "bodyHtml": "<body>\n  <p data-gjs-type=\"download-button\" class=\"download\">\n    <a class=\"btn\" data-asset-key=\"vault/book\" data-prop=\"href\">\n      <span data-prop=\"label\">Download the book</span>\n    </a>\n  </p>\n</body>",
+        "bodySha": "b6214134dd313615b72f20a6d1160a94e3a9728ab0fdc9c8e9d9c52df69ce2d9",
+        "items": {}
+      }
+    },
+    {
+      "name": "cta",
+      "bodyWrapper": true,
+      "type": "cta",
+      "kind": "block",
+      "path": "/c/cta",
+      "pageId": 8,
+      "registryHtml": "<aside class=\"cta\" data-gjs-type=\"cta\"><p class=\"cta__title\" data-prop=\"title\">Ready when you are.</p><a class=\"btn\" data-prop=\"target\" href=\"/contact\">Get in touch</a></aside>",
+      "canvasHtml": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"iias\" data-gjs-type=\"wrapper\"><aside data-gjs-highlightable=\"true\" id=\"i58k\" data-gjs-type=\"cta\" draggable=\"true\" class=\"cta\"><p data-gjs-highlightable=\"true\" id=\"i0xr\" data-gjs-type=\"text\" draggable=\"true\" data-prop=\"title\" class=\"cta__title\">Ready when you are.</p><a data-gjs-highlightable=\"true\" id=\"i9mf\" data-gjs-type=\"link\" draggable=\"true\" data-prop=\"target\" href=\"/contact\" class=\"btn\">Get in touch</a></aside></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"></div></div><div class=\"gjs-js-cont\"></div>",
+      "grapesHtmlBeforeSave": "<body><aside data-gjs-type=\"cta\" class=\"cta\"><p data-prop=\"title\" class=\"cta__title\">Ready when you are.</p><a data-prop=\"target\" href=\"/contact\" class=\"btn\">Get in touch</a></aside></body>",
+      "b1": "<body>\n  <aside data-gjs-type=\"cta\" class=\"cta\">\n    <p class=\"cta__title\" data-prop=\"title\">Ready when you are.</p>\n    <a class=\"btn\" data-prop=\"target\" href=\"/contact\">Get in touch</a>\n  </aside>\n</body>",
+      "b2": "<body>\n  <aside data-gjs-type=\"cta\" class=\"cta\">\n    <p class=\"cta__title\" data-prop=\"title\">Ready when you are.</p>\n    <a class=\"btn\" data-prop=\"target\" href=\"/contact\">Get in touch</a>\n  </aside>\n</body>",
+      "b1Sha": "2c2dd66a175a4299ae04eac63a6b3277c34eaa79382fefaf762a84e55081d0e6",
+      "b2Sha": "2c2dd66a175a4299ae04eac63a6b3277c34eaa79382fefaf762a84e55081d0e6",
+      "grapesHtmlOnReload": "<body><aside data-gjs-type=\"cta\" class=\"cta\"><p data-prop=\"title\" class=\"cta__title\">Ready when you are.</p><a data-prop=\"target\" href=\"/contact\" class=\"btn\">Get in touch</a></aside></body>",
+      "locksB1": {
+        "type": [
+          "cta"
+        ],
+        "props": [
+          "title",
+          "target"
+        ],
+        "keys": [],
+        "tags": [
+          "body",
+          "aside",
+          "p",
+          "a"
+        ]
+      },
+      "locksExpected": {
+        "type": [
+          "cta"
+        ],
+        "props": [
+          "title",
+          "target"
+        ],
+        "keys": [],
+        "tags": [
+          "aside",
+          "p",
+          "a"
+        ]
+      },
+      "typeOk": true,
+      "propsOk": true,
+      "keysOk": true,
+      "fixpoint": true,
+      "verdict": "survived",
+      "save1Status": {
+        "tenant": "acme",
+        "id": 8,
+        "created": false,
+        "rev": 1,
+        "bodyHtml": "<body>\n  <aside data-gjs-type=\"cta\" class=\"cta\">\n    <p class=\"cta__title\" data-prop=\"title\">Ready when you are.</p>\n    <a class=\"btn\" data-prop=\"target\" href=\"/contact\">Get in touch</a>\n  </aside>\n</body>",
+        "bodySha": "2c2dd66a175a4299ae04eac63a6b3277c34eaa79382fefaf762a84e55081d0e6",
+        "items": {}
+      },
+      "save2Status": {
+        "tenant": "acme",
+        "id": 8,
+        "created": false,
+        "rev": 2,
+        "bodyHtml": "<body>\n  <aside data-gjs-type=\"cta\" class=\"cta\">\n    <p class=\"cta__title\" data-prop=\"title\">Ready when you are.</p>\n    <a class=\"btn\" data-prop=\"target\" href=\"/contact\">Get in touch</a>\n  </aside>\n</body>",
+        "bodySha": "2c2dd66a175a4299ae04eac63a6b3277c34eaa79382fefaf762a84e55081d0e6",
+        "items": {}
+      }
+    },
+    {
+      "name": "form",
+      "bodyWrapper": true,
+      "type": "form",
+      "kind": "block",
+      "path": "/c/form",
+      "pageId": 9,
+      "registryHtml": "<form class=\"form\" data-gjs-type=\"form\" data-form=\"contact\"><label class=\"form__label\">Email<input class=\"form__input\" name=\"email\" type=\"email\" data-prop=\"email\" placeholder=\"you@example.com\"></label><button class=\"btn\" type=\"submit\">Send</button></form>",
+      "canvasHtml": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"ibri\" data-gjs-type=\"wrapper\"><form data-gjs-highlightable=\"true\" id=\"i8kj\" data-gjs-type=\"form\" draggable=\"true\" data-form=\"contact\" class=\"form\"><label data-gjs-highlightable=\"true\" id=\"il88\" data-gjs-type=\"label\" draggable=\"true\" class=\"form__label\">Email<input id=\"ih63\" data-gjs-type=\"default\" draggable=\"true\" name=\"email\" type=\"email\" data-prop=\"email\" placeholder=\"you@example.com\" class=\"form__input\"></label><button data-gjs-highlightable=\"true\" id=\"izcb\" data-gjs-type=\"text\" draggable=\"true\" type=\"submit\" class=\"btn\">Send</button></form></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"></div></div><div class=\"gjs-js-cont\"></div>",
+      "grapesHtmlBeforeSave": "<body><form data-gjs-type=\"form\" data-form=\"contact\" class=\"form\"><label class=\"form__label\">Email<input name=\"email\" type=\"email\" data-prop=\"email\" placeholder=\"you@example.com\" class=\"form__input\"/></label><button type=\"submit\" class=\"btn\">Send</button></form></body>",
+      "b1": "<body>\n  <form data-gjs-type=\"form\" class=\"form\" data-form=\"contact\">\n    <label class=\"form__label\">\n      Email\n      <input\n        class=\"form__input\"\n        data-prop=\"email\"\n        name=\"email\"\n        placeholder=\"you@example.com\"\n        type=\"email\"\n      />\n    </label>\n    <button class=\"btn\" type=\"submit\">Send</button>\n  </form>\n</body>",
+      "b2": "<body>\n  <form data-gjs-type=\"form\" class=\"form\" data-form=\"contact\">\n    <label class=\"form__label\">\n      Email\n      <input\n        class=\"form__input\"\n        data-prop=\"email\"\n        name=\"email\"\n        placeholder=\"you@example.com\"\n        type=\"email\"\n      />\n    </label>\n    <button class=\"btn\" type=\"submit\">Send</button>\n  </form>\n</body>",
+      "b1Sha": "9155b74e9ca3181d90d0a7db130c268b5bb29a773c793ab7a4656d458129a836",
+      "b2Sha": "9155b74e9ca3181d90d0a7db130c268b5bb29a773c793ab7a4656d458129a836",
+      "grapesHtmlOnReload": "<body><form data-gjs-type=\"form\" data-form=\"contact\" class=\"form\"><label class=\"form__label\">\n      Email\n      <input data-prop=\"email\" name=\"email\" placeholder=\"you@example.com\" type=\"email\" class=\"form__input\"/></label><button type=\"submit\" class=\"btn\">Send</button></form></body>",
+      "locksB1": {
+        "type": [
+          "form"
+        ],
+        "props": [
+          "email"
+        ],
+        "keys": [],
+        "tags": [
+          "body",
+          "form",
+          "label",
+          "input",
+          "button"
+        ]
+      },
+      "locksExpected": {
+        "type": [
+          "form"
+        ],
+        "props": [
+          "email"
+        ],
+        "keys": [],
+        "tags": [
+          "form",
+          "label",
+          "input",
+          "button"
+        ]
+      },
+      "typeOk": true,
+      "propsOk": true,
+      "keysOk": true,
+      "fixpoint": true,
+      "verdict": "survived",
+      "save1Status": {
+        "tenant": "acme",
+        "id": 9,
+        "created": false,
+        "rev": 1,
+        "bodyHtml": "<body>\n  <form data-gjs-type=\"form\" class=\"form\" data-form=\"contact\">\n    <label class=\"form__label\">\n      Email\n      <input\n        class=\"form__input\"\n        data-prop=\"email\"\n        name=\"email\"\n        placeholder=\"you@example.com\"\n        type=\"email\"\n      />\n    </label>\n    <button class=\"btn\" type=\"submit\">Send</button>\n  </form>\n</body>",
+        "bodySha": "9155b74e9ca3181d90d0a7db130c268b5bb29a773c793ab7a4656d458129a836",
+        "items": {}
+      },
+      "save2Status": {
+        "tenant": "acme",
+        "id": 9,
+        "created": false,
+        "rev": 2,
+        "bodyHtml": "<body>\n  <form data-gjs-type=\"form\" class=\"form\" data-form=\"contact\">\n    <label class=\"form__label\">\n      Email\n      <input\n        class=\"form__input\"\n        data-prop=\"email\"\n        name=\"email\"\n        placeholder=\"you@example.com\"\n        type=\"email\"\n      />\n    </label>\n    <button class=\"btn\" type=\"submit\">Send</button>\n  </form>\n</body>",
+        "bodySha": "9155b74e9ca3181d90d0a7db130c268b5bb29a773c793ab7a4656d458129a836",
+        "items": {}
+      }
+    },
+    {
+      "name": "embed",
+      "bodyWrapper": true,
+      "type": "embed",
+      "kind": "block",
+      "path": "/c/embed",
+      "pageId": 10,
+      "registryHtml": "<div class=\"embed\" data-gjs-type=\"embed\"><p class=\"embed__label\" data-prop=\"src\">https://example.com/embed</p></div>",
+      "canvasHtml": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"iax8\" data-gjs-type=\"wrapper\"><div data-gjs-highlightable=\"true\" id=\"ieuj\" data-gjs-type=\"embed\" draggable=\"true\" class=\"embed\"><p data-gjs-highlightable=\"true\" id=\"ikfm\" data-gjs-type=\"text\" draggable=\"true\" data-prop=\"src\" class=\"embed__label\">https://example.com/embed</p></div></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"></div></div><div class=\"gjs-js-cont\"></div>",
+      "grapesHtmlBeforeSave": "<body><div data-gjs-type=\"embed\" class=\"embed\"><p data-prop=\"src\" class=\"embed__label\">https://example.com/embed</p></div></body>",
+      "b1": "<body>\n  <div data-gjs-type=\"embed\" class=\"embed\">\n    <p class=\"embed__label\" data-prop=\"src\">https://example.com/embed</p>\n  </div>\n</body>",
+      "b2": "<body>\n  <div data-gjs-type=\"embed\" class=\"embed\">\n    <p class=\"embed__label\" data-prop=\"src\">https://example.com/embed</p>\n  </div>\n</body>",
+      "b1Sha": "0f3b0285b2cd29e55551c9f06b8eff297748b117c923ada1189473215cedcb4f",
+      "b2Sha": "0f3b0285b2cd29e55551c9f06b8eff297748b117c923ada1189473215cedcb4f",
+      "grapesHtmlOnReload": "<body><div data-gjs-type=\"embed\" class=\"embed\"><p data-prop=\"src\" class=\"embed__label\">https://example.com/embed</p></div></body>",
+      "locksB1": {
+        "type": [
+          "embed"
+        ],
+        "props": [
+          "src"
+        ],
+        "keys": [],
+        "tags": [
+          "body",
+          "div",
+          "p"
+        ]
+      },
+      "locksExpected": {
+        "type": [
+          "embed"
+        ],
+        "props": [
+          "src"
+        ],
+        "keys": [],
+        "tags": [
+          "div",
+          "p"
+        ]
+      },
+      "typeOk": true,
+      "propsOk": true,
+      "keysOk": true,
+      "fixpoint": true,
+      "verdict": "survived",
+      "save1Status": {
+        "tenant": "acme",
+        "id": 10,
+        "created": false,
+        "rev": 1,
+        "bodyHtml": "<body>\n  <div data-gjs-type=\"embed\" class=\"embed\">\n    <p class=\"embed__label\" data-prop=\"src\">https://example.com/embed</p>\n  </div>\n</body>",
+        "bodySha": "0f3b0285b2cd29e55551c9f06b8eff297748b117c923ada1189473215cedcb4f",
+        "items": {}
+      },
+      "save2Status": {
+        "tenant": "acme",
+        "id": 10,
+        "created": false,
+        "rev": 2,
+        "bodyHtml": "<body>\n  <div data-gjs-type=\"embed\" class=\"embed\">\n    <p class=\"embed__label\" data-prop=\"src\">https://example.com/embed</p>\n  </div>\n</body>",
+        "bodySha": "0f3b0285b2cd29e55551c9f06b8eff297748b117c923ada1189473215cedcb4f",
+        "items": {}
+      }
+    },
+    {
+      "name": "list",
+      "bodyWrapper": true,
+      "type": "list",
+      "kind": "list",
+      "path": "/c/list",
+      "pageId": 11,
+      "registryHtml": "<div class=\"list\" data-gjs-type=\"list\" data-source=\"posts\" data-limit=\"3\"><article class=\"card\" data-repeat><h3 class=\"card__title\" data-bind-title=\"title\">Post title</h3><a class=\"card__link\" data-bind-href-slug=\"slug\" href=\"/blog/post\">Read</a></article><p class=\"list__empty\" data-empty>No posts yet.</p></div>",
+      "canvasHtml": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"iy0t\" data-gjs-type=\"wrapper\"><div data-gjs-highlightable=\"true\" id=\"izj6\" data-gjs-type=\"list\" draggable=\"true\" data-source=\"posts\" data-limit=\"3\" class=\"list\"><article data-gjs-highlightable=\"true\" id=\"idc4\" data-gjs-type=\"default\" draggable=\"true\" data-repeat=\"\" class=\"card\"><h3 data-gjs-highlightable=\"true\" id=\"i935\" data-gjs-type=\"text\" draggable=\"true\" data-bind-title=\"title\" class=\"card__title\">Post title</h3><a data-gjs-highlightable=\"true\" id=\"ixi9\" data-gjs-type=\"link\" draggable=\"true\" data-bind-href-slug=\"slug\" href=\"/blog/post\" class=\"card__link\">Read</a></article><p data-gjs-highlightable=\"true\" id=\"igkt\" data-gjs-type=\"text\" draggable=\"true\" data-empty=\"\" class=\"list__empty\">No posts yet.</p></div></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"></div></div><div class=\"gjs-js-cont\"></div>",
+      "grapesHtmlBeforeSave": "<body><div data-gjs-type=\"list\" data-source=\"posts\" data-limit=\"3\" class=\"list\"><article data-repeat=\"\" class=\"card\"><h3 data-bind-title=\"title\" class=\"card__title\">Post title</h3><a data-bind-href-slug=\"slug\" href=\"/blog/post\" class=\"card__link\">Read</a></article><p data-empty=\"\" class=\"list__empty\">No posts yet.</p></div></body>",
+      "b1": "<body>\n  <div data-gjs-type=\"list\" class=\"list\" data-limit=\"3\" data-source=\"posts\">\n    <article class=\"card\" data-item-position=\"0\" data-repeat>\n      <h3 class=\"card__title\" data-bind-title=\"title\">Post title</h3>\n      <a class=\"card__link\" data-bind-href-slug=\"slug\" href=\"/blog/post\">Read</a>\n    </article>\n    <p class=\"list__empty\" data-empty>No posts yet.</p>\n  </div>\n</body>",
+      "b2": "<body>\n  <div data-gjs-type=\"list\" class=\"list\" data-limit=\"3\" data-source=\"posts\">\n    <article class=\"card\" data-item-position=\"0\" data-repeat>\n      <h3 class=\"card__title\" data-bind-title=\"title\">Post title</h3>\n      <a class=\"card__link\" data-bind-href-slug=\"slug\" href=\"/blog/post\">Read</a>\n    </article>\n    <p class=\"list__empty\" data-empty>No posts yet.</p>\n  </div>\n</body>",
+      "b1Sha": "06dc03fac84989802df599f79147102d9d2552b6d893fa1ab6634a1b3ef68d81",
+      "b2Sha": "06dc03fac84989802df599f79147102d9d2552b6d893fa1ab6634a1b3ef68d81",
+      "grapesHtmlOnReload": "<body><div data-gjs-type=\"list\" data-limit=\"3\" data-source=\"posts\" class=\"list\"><article data-item-position=\"0\" data-repeat=\"\" class=\"card\"><h3 data-bind-title=\"title\" class=\"card__title\">Post title</h3><a data-bind-href-slug=\"slug\" href=\"/blog/post\" class=\"card__link\">Read</a></article><p data-empty=\"\" class=\"list__empty\">No posts yet.</p></div></body>",
+      "locksB1": {
+        "type": [
+          "list"
+        ],
+        "props": [],
+        "keys": [],
+        "tags": [
+          "body",
+          "div",
+          "article",
+          "h3",
+          "a",
+          "p"
+        ]
+      },
+      "locksExpected": {
+        "type": [
+          "list"
+        ],
+        "props": [],
+        "keys": [],
+        "tags": [
+          "div",
+          "article",
+          "h3",
+          "a",
+          "p"
+        ]
+      },
+      "typeOk": true,
+      "propsOk": true,
+      "keysOk": true,
+      "fixpoint": true,
+      "verdict": "survived",
+      "save1Status": {
+        "tenant": "acme",
+        "id": 11,
+        "created": false,
+        "rev": 1,
+        "bodyHtml": "<body>\n  <div data-gjs-type=\"list\" class=\"list\" data-limit=\"3\" data-source=\"posts\">\n    <article class=\"card\" data-item-position=\"0\" data-repeat>\n      <h3 class=\"card__title\" data-bind-title=\"title\">Post title</h3>\n      <a class=\"card__link\" data-bind-href-slug=\"slug\" href=\"/blog/post\">Read</a>\n    </article>\n    <p class=\"list__empty\" data-empty>No posts yet.</p>\n  </div>\n</body>",
+        "bodySha": "06dc03fac84989802df599f79147102d9d2552b6d893fa1ab6634a1b3ef68d81",
+        "items": {
+          "list": [
+            {
+              "position": 0,
+              "html": "<article class=\"card\" data-item-position=\"0\" data-repeat>\n      <h3 class=\"card__title\" data-bind-title=\"title\">Post title</h3>\n      <a class=\"card__link\" data-bind-href-slug=\"slug\" href=\"/blog/post\">Read</a>\n    </article>"
+            }
+          ]
+        }
+      },
+      "save2Status": {
+        "tenant": "acme",
+        "id": 11,
+        "created": false,
+        "rev": 2,
+        "bodyHtml": "<body>\n  <div data-gjs-type=\"list\" class=\"list\" data-limit=\"3\" data-source=\"posts\">\n    <article class=\"card\" data-item-position=\"0\" data-repeat>\n      <h3 class=\"card__title\" data-bind-title=\"title\">Post title</h3>\n      <a class=\"card__link\" data-bind-href-slug=\"slug\" href=\"/blog/post\">Read</a>\n    </article>\n    <p class=\"list__empty\" data-empty>No posts yet.</p>\n  </div>\n</body>",
+        "bodySha": "06dc03fac84989802df599f79147102d9d2552b6d893fa1ab6634a1b3ef68d81",
+        "items": {
+          "list": [
+            {
+              "position": 0,
+              "html": "<article class=\"card\" data-item-position=\"0\" data-repeat>\n      <h3 class=\"card__title\" data-bind-title=\"title\">Post title</h3>\n      <a class=\"card__link\" data-bind-href-slug=\"slug\" href=\"/blog/post\">Read</a>\n    </article>"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "copy-email",
+      "bodyWrapper": true,
+      "type": "copy-email",
+      "kind": "island",
+      "path": "/c/copy-email",
+      "pageId": 12,
+      "registryHtml": "<button class=\"island island--copy-email\" data-gjs-type=\"copy-email\" data-island=\"copy-email\" data-props=\"{&quot;address&quot;:&quot;hello@example.com&quot;}\" type=\"button\" data-prop=\"address\">Copy email</button>",
+      "canvasHtml": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"ijbi\" data-gjs-type=\"wrapper\"><button data-gjs-highlightable=\"true\" id=\"is97\" data-gjs-type=\"copy-email\" draggable=\"true\" data-island=\"copy-email\" data-props=\"{&quot;address&quot;:&quot;hello@example.com&quot;}\" type=\"button\" data-prop=\"address\" class=\"island island--copy-email\">Copy email</button></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"></div></div><div class=\"gjs-js-cont\"></div>",
+      "grapesHtmlBeforeSave": "<body><button data-gjs-type=\"copy-email\" data-island=\"copy-email\" data-props=\"{&quot;address&quot;:&quot;hello@example.com&quot;}\" type=\"button\" data-prop=\"address\" class=\"island island--copy-email\">Copy email</button></body>",
+      "b1": "<body>\n  <button\n    data-gjs-type=\"copy-email\"\n    class=\"island island--copy-email\"\n    data-island=\"copy-email\"\n    data-prop=\"address\"\n    data-props='{\"address\":\"hello@example.com\"}'\n    type=\"button\"\n  >\n    Copy email\n  </button>\n</body>",
+      "b2": "<body>\n  <button\n    data-gjs-type=\"copy-email\"\n    class=\"island island--copy-email\"\n    data-island=\"copy-email\"\n    data-prop=\"address\"\n    data-props='{\"address\":\"hello@example.com\"}'\n    type=\"button\"\n  >\n    Copy email\n  </button>\n</body>",
+      "b1Sha": "f6f703b923a892baf059d3c2271d0f3e80aaaeea22edad98842bca541cda024f",
+      "b2Sha": "f6f703b923a892baf059d3c2271d0f3e80aaaeea22edad98842bca541cda024f",
+      "grapesHtmlOnReload": "<body><button data-gjs-type=\"copy-email\" data-island=\"copy-email\" data-prop=\"address\" data-props=\"{&quot;address&quot;:&quot;hello@example.com&quot;}\" type=\"button\" class=\"island island--copy-email\">\n    Copy email\n  </button></body>",
+      "locksB1": {
+        "type": [
+          "copy-email"
+        ],
+        "props": [
+          "address"
+        ],
+        "keys": [],
+        "tags": [
+          "body",
+          "button"
+        ]
+      },
+      "locksExpected": {
+        "type": [
+          "copy-email"
+        ],
+        "props": [],
+        "keys": [],
+        "tags": [
+          "button"
+        ]
+      },
+      "typeOk": true,
+      "propsOk": true,
+      "keysOk": true,
+      "fixpoint": true,
+      "verdict": "survived",
+      "save1Status": {
+        "tenant": "acme",
+        "id": 12,
+        "created": false,
+        "rev": 1,
+        "bodyHtml": "<body>\n  <button\n    data-gjs-type=\"copy-email\"\n    class=\"island island--copy-email\"\n    data-island=\"copy-email\"\n    data-prop=\"address\"\n    data-props='{\"address\":\"hello@example.com\"}'\n    type=\"button\"\n  >\n    Copy email\n  </button>\n</body>",
+        "bodySha": "f6f703b923a892baf059d3c2271d0f3e80aaaeea22edad98842bca541cda024f",
+        "items": {}
+      },
+      "save2Status": {
+        "tenant": "acme",
+        "id": 12,
+        "created": false,
+        "rev": 2,
+        "bodyHtml": "<body>\n  <button\n    data-gjs-type=\"copy-email\"\n    class=\"island island--copy-email\"\n    data-island=\"copy-email\"\n    data-prop=\"address\"\n    data-props='{\"address\":\"hello@example.com\"}'\n    type=\"button\"\n  >\n    Copy email\n  </button>\n</body>",
+        "bodySha": "f6f703b923a892baf059d3c2271d0f3e80aaaeea22edad98842bca541cda024f",
+        "items": {}
+      }
+    }
+  ],
+  "unregistered": {
+    "load": {
+      "url": "/admin/t/acme/editor?page=2",
+      "httpStatus": 422,
+      "body": {
+        "error": {
+          "code": "SKW_E_RT_COMPONENT_UNKNOWN",
+          "requestId": "a2a48dac-ba2f-4fac-a559-5472b7eb4c19",
+          "message": "no component is registered for data-gjs-type=\"carousel\"",
+          "detail": {
+            "tag": "div",
+            "type": "carousel",
+            "known": [
+              "hero",
+              "prose",
+              "figure",
+              "gallery",
+              "download-button",
+              "cta",
+              "form",
+              "embed",
+              "list",
+              "copy-email"
+            ]
+          }
+        }
+      },
+      "canvas": {
+        "gjs": false,
+        "grapes": "undefined"
+      }
+    },
+    "save": {
+      "submitted": "<div data-gjs-type=\"carousel\"><p>slides</p></div>",
+      "status": 422,
+      "body": {
+        "error": {
+          "code": "SKW_E_RT_COMPONENT_UNKNOWN",
+          "requestId": "a55e8800-3b96-4880-a5bd-20b42bb7dc93",
+          "message": "no component is registered for data-gjs-type=\"carousel\"",
+          "detail": {
+            "tag": "div",
+            "type": "carousel",
+            "known": [
+              "hero",
+              "prose",
+              "figure",
+              "gallery",
+              "download-button",
+              "cta",
+              "form",
+              "embed",
+              "list",
+              "copy-email"
+            ]
+          }
+        }
+      },
+      "rowsWritten": 0
+    },
+    "inCanvas": {
+      "before": "<div data-gjs-type=\"carousel\"><p>slides</p></div>",
+      "after": "<body><div><p>slides</p></div></body>",
+      "bytesBefore": 49,
+      "bytesAfter": 37,
+      "canvasHtml": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"igse\" data-gjs-type=\"wrapper\"><div data-gjs-highlightable=\"true\" id=\"i28h\" data-gjs-type=\"carousel\" draggable=\"true\"><p data-gjs-highlightable=\"true\" id=\"i30g\" data-gjs-type=\"text\" draggable=\"true\">slides</p></div></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"></div></div><div class=\"gjs-js-cont\"></div>",
+      "save": {
+        "tenant": "acme",
+        "id": 13,
+        "created": true,
+        "rev": 0,
+        "bodyHtml": "<body>\n  <div><p>slides</p></div>\n</body>",
+        "bodySha": "c6f40cc603c09cb918bef9efbeba4e7793a89a9ee12b4c4ce01796dd78553264",
+        "items": {}
+      }
+    }
+  },
+  "picker": {
+    "settingsPanel": "Image\nsrcbanner/home\ncaption",
+    "pickStatus": 200,
+    "pickResponse": {
+      "tenant": "acme",
+      "key": "gallery/one",
+      "previewUrl": "/media/gallery/one.jpg?v=cdcdcdcd",
+      "html": "<body><figure data-gjs-type=\"figure\" class=\"figure\" data-ratio=\"4:3\"><img data-asset-key=\"gallery/one\" data-prop=\"src\" alt><figcaption data-prop=\"caption\">Caption</figcaption></figure></body>"
+    },
+    "canvasAfterPick": "<style>\n      \n    body { background-color: #fff }\n    * ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1) }\n    * ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2) }\n    * ::-webkit-scrollbar { width: 10px }\n  \n\n      \n\n      [data-gjs-type=\"wrapper\"] {\n        min-height: 100vh;\n        padding-top: 0.001em;\n      }\n\n      .gjs-dashed *[data-gjs-highlightable] {\n        outline: 1px dashed rgba(170,170,170,0.7);\n        outline-offset: -2px;\n      }\n\n      .gjs-selected {\n        outline: 2px solid #3b97e3 !important;\n        outline-offset: -2px;\n      }\n\n      .gjs-selected-parent {\n        outline: 2px solid #ffca6f !important\n      }\n\n      .gjs-no-select {\n        user-select: none;\n        -webkit-user-select:none;\n        -moz-user-select: none;\n      }\n\n      .gjs-freezed {\n        opacity: 0.5;\n        pointer-events: none;\n      }\n\n      .gjs-no-pointer {\n        pointer-events: none;\n      }\n\n      .gjs-pointer-init {\n        pointer-events: initial;\n      }\n\n      .gjs-plh-image {\n        background: #f5f5f5;\n        border: none;\n        height: 100px;\n        width: 100px;\n        display: block;\n        outline: 3px solid #ffca6f;\n        cursor: pointer;\n        outline-offset: -2px\n      }\n\n      .gjs-grabbing {\n        cursor: grabbing;\n        cursor: -webkit-grabbing;\n      }\n\n      .gjs-is__grabbing {\n        overflow-x: hidden;\n      }\n\n      .gjs-is__grabbing,\n      .gjs-is__grabbing * {\n        cursor: grabbing !important;\n      }\n\n      \n      * { box-sizing: border-box; } body {margin: 0;}\n    </style><div data-gjs-highlightable=\"true\" id=\"ifkg\" data-gjs-type=\"wrapper\"><figure data-gjs-highlightable=\"true\" id=\"i3ll\" data-gjs-type=\"figure\" draggable=\"true\" data-ratio=\"4:3\" class=\"figure\"><img id=\"iomm\" data-gjs-type=\"image\" draggable=\"true\" data-asset-key=\"gallery/one\" data-prop=\"src\" alt=\"\" src=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3R5bGU9ImZpbGw6IHJnYmEoMCwwLDAsMC4xNSk7IHRyYW5zZm9ybTogc2NhbGUoMC43NSkiPgogICAgICAgIDxwYXRoIGQ9Ik04LjUgMTMuNWwyLjUgMyAzLjUtNC41IDQuNSA2SDVtMTYgMVY1YTIgMiAwIDAgMC0yLTJINWMtMS4xIDAtMiAuOS0yIDJ2MTRjMCAxLjEuOSAyIDIgMmgxNGMxLjEgMCAyLS45IDItMnoiPjwvcGF0aD4KICAgICAgPC9zdmc+\" class=\"gjs-plh-image\"><figcaption data-gjs-highlightable=\"true\" id=\"iisk\" data-gjs-type=\"text\" draggable=\"true\" data-prop=\"caption\">Caption</figcaption></figure></div><div class=\"gjs-css-rules\"><div id=\"gjs-css-rules\"><style></style></div></div><div class=\"gjs-js-cont\"></div>",
+    "saveResponseStatus": {
+      "tenant": "acme",
+      "id": 14,
+      "created": false,
+      "rev": 1,
+      "bodyHtml": "<body>\n  <figure data-gjs-type=\"figure\" class=\"figure\" data-ratio=\"4:3\">\n    <img data-asset-key=\"gallery/one\" data-prop=\"src\" alt />\n    <figcaption data-prop=\"caption\">Caption</figcaption>\n  </figure>\n</body>",
+      "bodySha": "da4fde8ecc47860c327dba7b4a0c84033c49bd9a83ad778e4a1a09c57368216e",
+      "items": {}
+    },
+    "stored": "<body>\n  <figure data-gjs-type=\"figure\" class=\"figure\" data-ratio=\"4:3\">\n    <img data-asset-key=\"gallery/one\" data-prop=\"src\" alt />\n    <figcaption data-prop=\"caption\">Caption</figcaption>\n  </figure>\n</body>",
+    "storedHasKey": true,
+    "storedHasMediaUrl": false,
+    "previewUrlWasUrl": true
+  },
+  "palette": [
+    "hero",
+    "prose",
+    "figure",
+    "gallery",
+    "download-button",
+    "cta",
+    "form",
+    "embed",
+    "list",
+    "copy-email"
+  ],
+  "console": [
+    "error: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)",
+    "error: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)",
+    "warning: Component type 'carousel' not found {attrs: Object, options: Object, level: warning}"
+  ],
+  "browser": "chromium 151.0.7922.34"
+}

@@ -1,0 +1,63 @@
+{
+  "port": 52776,
+  "base": "http://localhost:52776",
+  "dir": "/Volumes/Backup/Development/skunkworks/scratch/s4a/skw-s1-rSPzUz",
+  "siteDb": "/Volumes/Backup/Development/skunkworks/scratch/s4a/skw-s1-rSPzUz/tenants/acme/site.db",
+  "controlDb": "/Volumes/Backup/Development/skunkworks/scratch/s4a/skw-s1-rSPzUz/control.db",
+  "email": "owner@acme.test",
+  "password": "correct-horse-battery-staple",
+  "totpSecret": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+  "csrf": "1ygN8vRVTSfyMBz6u045NPzgrP7ZDfwuBsFqppig1BE",
+  "palette": [
+    {
+      "type": "hero",
+      "label": "Hero",
+      "kind": "block"
+    },
+    {
+      "type": "prose",
+      "label": "Prose",
+      "kind": "block"
+    },
+    {
+      "type": "figure",
+      "label": "Image",
+      "kind": "block"
+    },
+    {
+      "type": "gallery",
+      "label": "Gallery",
+      "kind": "block"
+    },
+    {
+      "type": "download-button",
+      "label": "Download button",
+      "kind": "block"
+    },
+    {
+      "type": "cta",
+      "label": "Call to action",
+      "kind": "block"
+    },
+    {
+      "type": "form",
+      "label": "Form",
+      "kind": "block"
+    },
+    {
+      "type": "embed",
+      "label": "Embed",
+      "kind": "block"
+    },
+    {
+      "type": "list",
+      "label": "List (repeating)",
+      "kind": "list"
+    },
+    {
+      "type": "copy-email",
+      "label": "Copy email",
+      "kind": "island"
+    }
+  ]
+}
