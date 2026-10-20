@@ -1,0 +1,27 @@
+{
+  "name": "skunkworks",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && astro build",
+    "migrate": "node dist/app/db/migrate.js --tenant all",
+    "start": "node dist/app/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "node --test --test-concurrency=1 $(find test -name '*.test.ts' | sort)"
+  },
+  "dependencies": {
+    "@astrojs/node": "^11.1.9",
+    "astro": "^7.4.1",
+    "better-sqlite3": "^13.0.3",
+    "fastify": "^5.12.7"
+  },
+  "devDependencies": {
+    "@node-rs/argon2": "^2.2.2",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

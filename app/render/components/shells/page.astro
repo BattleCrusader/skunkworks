@@ -1,0 +1,32 @@
+---
+/**
+ * The default shell (§3: app/render/components/shells/page.astro).
+ *
+ * It receives an already-loaded cms_page record from the app: the Astro layer
+ * never opens a database (§2.2 — render-read handles belong to the app, and the
+ * bundle has no SQLite).
+ */
+interface PageLike {
+  title: string;
+  bodyHtml: string;
+  bodyCss: string;
+  path: string;
+}
+interface Props {
+  page: PageLike;
+  tenantKey: string;
+}
+const { page, tenantKey } = Astro.props as Props;
+---
+<!doctype html>
+<html lang="en" data-tenant={tenantKey}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{page.title}</title>
+    {page.bodyCss ? <style set:html={page.bodyCss} /> : null}
+  </head>
+  <body data-page-path={page.path}>
+    <main set:html={page.bodyHtml} />
+  </body>
+</html>

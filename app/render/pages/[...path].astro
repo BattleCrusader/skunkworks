@@ -1,0 +1,12 @@
+---
+export const prerender = false;
+import PageShell from '../components/shells/page.astro';
+
+interface Locals {
+  tenantKey: string;
+  path: string;
+  page: { title: string; bodyHtml: string; bodyCss: string; path: string };
+}
+const { tenantKey, page } = Astro.locals as unknown as Locals;
+---
+<PageShell page={page} tenantKey={tenantKey} />

@@ -1,0 +1,390 @@
+/**
+ * The app: boot order of SDS §2.3, then one Fastify process with the Astro SSR
+ * shell mounted in middleware mode (§2, §16 S1).
+ *
+ * Boot order, in order:
+ *   1. read the environment; refuse ^SK_|^SKUNK_; refuse without the six keys
+ *   2. assert SKW_ARGON2_MAX_CONCURRENT=4 and UV_THREADPOOL_SIZE=8
+ *   3. open control.db; if it cannot be opened or migrated, exit 15 naming it
+ *   4. run `migrate --tenant all`; app starts regardless (C-10)
+ *   5. upsert the component registry into each tenant's cms_component_registry
+ *   6. bind run/plugin.sock and spawn one child per package  <- NOT S1 (S4)
+ */
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { BootRefusal, adminHostOf, loadEnv, type Env } from './env.ts';
+import { AppError, errorBody } from './errors.ts';
+import { RenderPool, openAdminWrite } from './db/classes.ts';
+import {
+  EXIT_CONTROL_FAILED,
+  findProjectRoot,
+  migrateControl,
+  migrateTenant,
+  runMigrations,
+  targetVersion,
+} from './db/migrate.ts';
+import { loadPage, normalisePagePath, pageMiss } from './render/page.ts';
+import { TenantMap } from './tenancy/cache.ts';
+import { normaliseHost } from './tenancy/normalise-host.ts';
+import { resolveTenant, TENANT_HEADER, type Listener, type Tenant } from './tenancy/resolve.ts';
+
+type AstroHandler = (
+  req: FastifyRequest['raw'],
+  res: FastifyReply['raw'],
+  next?: (err?: unknown) => void,
+  locals?: object,
+) => void | Promise<void>;
+
+export interface AppHandle {
+  app: FastifyInstance;
+  env: Env;
+  close(): Promise<void>;
+}
+
+export interface BuildAppOptions {
+  env: Env;
+  schemaDir?: string;
+  astroEntry?: string;
+  logger?: boolean;
+  /** Skip the boot migration fan-out (tests that want a corrupt fixture untouched). */
+  migrateOnBoot?: boolean;
+}
+
+/** §9.2: every admin URL is /admin/t/<key>/…; §9.1: one listener, one origin. */
+export function listenerFor(pathname: string, host: string | null, adminHost: string | null): Listener {
+  if (adminHost !== null && host === adminHost) return 'admin';
+  if (pathname === '/admin' || pathname.startsWith('/admin/')) return 'admin';
+  return 'public';
+}
+
+interface RequestContext {
+  listener: Listener;
+  tenant: Tenant;
+  via: 'header' | 'host' | 'session';
+  prefix: string | null;
+  pathname: string;
+}
+
+export function schemaDirFrom(metaUrl: string): string {
+  return join(findProjectRoot(dirname(fileURLToPath(metaUrl))), 'schema');
+}
+
+export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
+  const env = opts.env;
+  const schemaDir = opts.schemaDir ?? schemaDirFrom(import.meta.url);
+  const dataDir = env.dataDir;
+  const controlPath = join(dataDir, 'control.db');
+  const tenantsDir = join(dataDir, 'tenants');
+  const adminHost = adminHostOf(env.adminOrigin);
+
+  // --- step 3: control.db is a boot gate (C-10) -----------------------------
+  const control = migrateControl(controlPath, schemaDir);
+  if (!control.ok) {
+    throw new BootRefusal(
+      `control.db could not be migrated: ${control.error ?? 'unknown'} (SDS \u00a72.3 step 3, C-10)`,
+      EXIT_CONTROL_FAILED,
+    );
+  }
+
+  // --- step 4: per-tenant fan-out; never a boot gate ------------------------
+  let migrationReport = null;
+  if (opts.migrateOnBoot !== false) {
+    migrationReport = runMigrations({ dataDir, tenant: 'all', schemaDir });
+    for (const t of migrationReport.tenants) {
+      if (!t.ok) {
+        process.stderr.write(`migrate: tenant ${t.key} failed (${t.error ?? 'unknown'}) — serving 503 alone\n`);
+      }
+    }
+    for (const key of migrationReport.migrated) {
+      process.stdout.write(`migrate: tenant ${key} ${migrationReport.tenants.find((t) => t.key === key)?.action}\n`);
+    }
+  }
+
+  const tenants = new TenantMap(controlPath, { busyTimeoutMs: env.dbBusyTimeoutMs });
+  const pool = new RenderPool(env.dbPoolMax, env.dbBusyTimeoutMs);
+  const sitePath = (key: string): string => join(tenantsDir, key, 'site.db');
+
+  // --- step 5: component registry, one transaction per tenant --------------
+  const registry = readComponentRegistry(schemaDir);
+  const siteTarget = targetVersion(join(schemaDir, 'site.sql'));
+  for (const tenant of tenants.all()) {
+    const file = sitePath(tenant.key);
+    try {
+      upsertRegistry(file, registry, siteTarget);
+    } catch (err) {
+      process.stderr.write(`registry: tenant ${tenant.key} skipped (${describe(err)})\n`);
+    }
+  }
+
+  // --- step 6 is S4: no plugin socket in S1 ---------------------------------
+  process.stdout.write('plugin.sock: not bound (S4 owns the plugin runner; SDS \u00a72.3 step 6)\n');
+
+  const app = Fastify({
+    logger: opts.logger ?? false,
+    genReqId: () => randomUUID(),
+    trustProxy: false,
+    bodyLimit: 16 * 1024 * 1024,
+  });
+
+  const started = Date.now();
+
+  app.get('/healthz', async () => ({ build: env.buildId, uptime: Math.round((Date.now() - started) / 1000) }));
+
+  app.get('/readyz', async (_req, reply) => {
+    // "opens control.db, reads a revision, performs one scratch write" (§9.5) —
+    // a read-only filesystem must fail here, which a read-only probe cannot detect.
+    const probe = openAdminWrite(controlPath, env.dbBusyTimeoutMs);
+    let revision: number;
+    try {
+      revision = Number(probe.pragma('user_version', { simple: true }));
+    } finally {
+      probe.close();
+    }
+    const scratch = join(dataDir, 'logs', '.readyz');
+    mkdirSync(dirname(scratch), { recursive: true });
+    writeFileSync(scratch, `${Date.now()}\n`);
+    unlinkSync(scratch);
+    reply.header('cache-control', 'no-store');
+    return { ready: true, revision };
+  });
+
+  // /whoami is the probe the SDS itself measures (§5.5, C-2 T24). It is the only
+  // route that echoes the resolution, and it is what the prefix gate reads.
+  app.register(async (scope) => {
+    scope.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => done(null, body));
+    const whoami = async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
+      const ctx = resolveRequest(req);
+      const raw = req.headers[TENANT_HEADER];
+      const url = req.url;
+      const q = url.indexOf('?');
+      const body = typeof req.body === 'string' ? req.body : '';
+      reply.header('cache-control', 'no-store');
+      reply.send({
+        path: ctx.pathname,
+        tenant_header: raw === undefined ? null : Array.isArray(raw) ? raw.join(',') : raw,
+        tenant: ctx.tenant.key,
+        via: ctx.via,
+        prefix: ctx.prefix,
+        method: req.method,
+        query: q === -1 ? '' : url.slice(q + 1),
+        url,
+        body_bytes: Buffer.byteLength(body),
+      });
+    };
+    scope.get('/whoami', whoami);
+    scope.post('/whoami', whoami);
+  });
+
+  app.setErrorHandler((err, req, reply) => {
+    sendError(reply, err, String(req.id));
+  });
+
+  app.setNotFoundHandler(async (req, reply) => {
+    const ctx = resolveRequest(req);
+    const path = normalisePagePath(req.url);
+    if (path === null) throw pageMiss();
+    const db = getSiteDb(ctx.tenant);
+    const page = loadPage(db, path);
+    if (page === null) throw pageMiss();
+    const handler = await astroHandler();
+    reply.raw.setHeader('cache-control', 'no-store');
+    reply.hijack();
+    await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page });
+  });
+
+  let cachedHandler: AstroHandler | undefined;
+  async function astroHandler(): Promise<AstroHandler> {
+    if (cachedHandler !== undefined) return cachedHandler;
+    const entry = opts.astroEntry ?? join(findProjectRoot(), 'build', 'astro', 'server', 'entry.mjs');
+    // A build artifact inside the image, never a tenant-writable path (§13).
+    const mod = (await import(entry)) as { handler: AstroHandler };
+    cachedHandler = mod.handler;
+    return cachedHandler;
+  }
+
+  function getSiteDb(tenant: Tenant): ReturnType<RenderPool['get']> {
+    const file = sitePath(tenant.key);
+    try {
+      return pool.get(file);
+    } catch (err) {
+      throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'tenant database is not readable', describe(err));
+    }
+  }
+
+  function probe(tenant: Tenant): 'ok' | 'stale' | 'busy' | 'unavailable' {
+    const file = sitePath(tenant.key);
+    try {
+      const db = pool.get(file);
+      const version = Number(db.pragma('user_version', { simple: true }));
+      if (version < tenant.dbVersion) {
+        // §2.3 step 4: repaired lazily on the tenant's next request.
+        const repaired = migrateTenant(file, tenant.key, schemaDir);
+        pool.discard(file);
+        if (repaired.ok) {
+          const again = pool.get(file);
+          const v2 = Number(again.pragma('user_version', { simple: true }));
+          if (v2 >= tenant.dbVersion) return 'ok';
+        }
+        return 'stale';
+      }
+      return 'ok';
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      pool.discard(file);
+      if (code === 'SQLITE_BUSY' || code === 'SQLITE_BUSY_SNAPSHOT') return 'busy';
+      return 'unavailable';
+    }
+  }
+
+  function resolveRequest(req: FastifyRequest): RequestContext {
+    const pathname = pathnameOf(req.url);
+    const host = normaliseHost(req.headers.host);
+    const listener = listenerFor(pathname, host, adminHost);
+
+    // §5.6 / C-25: a host that serves tenant-authored HTML never serves the
+    // admin listener. Checked before step 7 so it cannot be shadowed by a session.
+    if (listener === 'admin' && host !== null) {
+      const mapped = tenants.lookupHost(host);
+      if (mapped !== undefined && mapped.mode === 'demo') {
+        throw new AppError('SKW_E_PLT_EDGE_PROOF', 'a demo host never serves the admin listener');
+      }
+    }
+
+    const headers: Record<string, string | string[] | undefined> = {};
+    for (const [k, v] of Object.entries(req.headers)) headers[k.toLowerCase()] = v;
+
+    const result = resolveTenant(
+      { peer: req.socket.remoteAddress ?? '', host: req.headers.host, headers, listener, session: null },
+      {
+        edgeToken: env.edgeToken,
+        trustedCidrs: env.edgeTrustedCidrs,
+        lookupHost: (h) => tenants.lookupHost(h),
+        lookupKey: (k) => tenants.lookupKey(k),
+        lookupId: (id) => tenants.lookupId(id),
+        probe,
+      },
+    );
+    if (!result.ok) throw result.error;
+    return { listener, tenant: result.tenant, via: result.via, prefix: result.prefix, pathname };
+  }
+
+  async function close(): Promise<void> {
+    pool.close();
+    tenants.close();
+    await app.close();
+  }
+
+  return { app, env, close };
+}
+
+function pathnameOf(url: string): string {
+  const q = url.indexOf('?');
+  return q === -1 ? url : url.slice(0, q);
+}
+
+function sendError(reply: FastifyReply, err: unknown, requestId: string): void {
+  if (err instanceof AppError) {
+    if (err.retryAfter !== undefined) reply.header('retry-after', String(err.retryAfter));
+    reply.code(err.status).type('application/json; charset=utf-8');
+    void reply.send(errorBody(err, requestId));
+    return;
+  }
+  // Never a stack, never a path, never a key (§4.3).
+  const e = err as { statusCode?: number };
+  const status = typeof e.statusCode === 'number' && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500;
+  reply.code(status).type('application/json; charset=utf-8');
+  void reply.send({ error: { code: 'SKW_E_PLT_TENANT_UNAVAILABLE', requestId } });
+}
+
+function describe(err: unknown): string {
+  const e = err as { code?: string; message?: string };
+  return e.code ?? e.message ?? 'unknown error';
+}
+
+interface RegistryFile {
+  components: {
+    name: string;
+    kind: string;
+    renderer: string;
+    version: string;
+    bindings?: unknown;
+    props?: unknown;
+    repeat_child?: string;
+    limit_max?: number;
+  }[];
+}
+
+function readComponentRegistry(schemaDir: string): RegistryFile {
+  return JSON.parse(readFileSync(join(schemaDir, 'component-registry.json'), 'utf8')) as RegistryFile;
+}
+
+/** §2.3 step 5: upsert the image's registry inside one transaction. */
+function upsertRegistry(file: string, registry: RegistryFile, expectedVersion: number): void {
+  const db = openAdminWrite(file);
+  try {
+    const version = Number(db.pragma('user_version', { simple: true }));
+    if (version !== expectedVersion) return;
+    const insert = db.prepare(
+      `INSERT INTO cms_component_registry
+         (name, kind, renderer, repeat_child, bindings_json, props_schema_json, limit_max, version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET
+         kind = excluded.kind, renderer = excluded.renderer, repeat_child = excluded.repeat_child,
+         bindings_json = excluded.bindings_json, props_schema_json = excluded.props_schema_json,
+         limit_max = excluded.limit_max, version = excluded.version`,
+    );
+    const tx = db.transaction(() => {
+      for (const c of registry.components) {
+        insert.run(
+          c.name,
+          c.kind,
+          c.renderer,
+          c.repeat_child ?? null,
+          JSON.stringify(c.bindings ?? []),
+          JSON.stringify(c.props ?? {}),
+          c.limit_max ?? null,
+          c.version,
+        );
+      }
+    });
+    tx();
+  } finally {
+    db.close();
+  }
+}
+
+export async function start(): Promise<void> {
+  const env = loadEnv();
+  const handle = await buildApp({ env });
+  await handle.app.listen({ port: env.port, host: '0.0.0.0' });
+  process.stdout.write(`skunkworks app listening on :${env.port} build=${env.buildId}\n`);
+
+  const shutdown = async (signal: string): Promise<void> => {
+    process.stdout.write(`shutting down on ${signal}\n`);
+    await handle.close();
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+}
+
+function isMain(metaUrl: string): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  return fileURLToPath(metaUrl) === entry;
+}
+
+if (isMain(import.meta.url)) {
+  start().catch((err: unknown) => {
+    if (err instanceof BootRefusal) {
+      process.stderr.write(`${err.message}\n`);
+      process.exit(err.exitCode);
+    }
+    process.stderr.write(`refusing to start: ${describe(err)}\n`);
+    process.exit(1);
+  });
+}

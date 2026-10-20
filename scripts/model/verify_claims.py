@@ -308,6 +308,20 @@ _AMENDED = {}
 _V2 = {}
 
 
+def apply_chain(c, path):
+    """Apply a frozen amendment file.
+
+    r3 rebuilds cms_download_code by DROP + RENAME while trg_cms_asset_delete_guard still names
+    the table. SQLite >= 3.25 re-parses every trigger on ALTER TABLE ... RENAME and fails with
+    "no such table: main.cms_download_code"; 3.43 tolerated it, 3.50+ does not, so this check
+    passed or failed depending on which python3 was first on PATH. legacy_alter_table restores
+    the rename semantics the frozen file was written for. The convergence assertion below is
+    unchanged: the chain must still land exactly on schema/site.sql.
+    """
+    c.execute("PRAGMA legacy_alter_table = ON")
+    c.executescript(open(path).read())
+
+
 def v2(name="r2.db", codes=1):
     """v1 fixture + schema/r2-amendments.sql only — the state a round-2 tenant runs.
 
@@ -318,7 +332,7 @@ def v2(name="r2.db", codes=1):
         c, p = v1_fixture(name + ".v2base", codes=codes)
         c.close()
         c = sqlite3.connect(p, isolation_level=None)
-        c.executescript(open(AMENDMENTS).read())
+        apply_chain(c, AMENDMENTS)
         _V2[name] = (c, p)
     return _V2[name]
 
@@ -329,7 +343,7 @@ def amended(name="r3.db"):
         c, p = v2(name + ".base", codes=0)
         c.close()
         c = sqlite3.connect(p, isolation_level=None)
-        c.executescript(open(AMENDMENTS3).read())
+        apply_chain(c, AMENDMENTS3)
         _AMENDED[name] = (c, p)
     return _AMENDED[name]
 
@@ -742,7 +756,7 @@ def migration_chain_converges():
     def shape(path, scripts):
         c, _ = fresh(path)
         for sc in scripts:
-            c.executescript(open(sc).read())
+            apply_chain(c, sc)
         tabs = {r[0] for r in c.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
         cols = {t: {(r[1], r[2].upper(), r[3]) for r in c.execute(f"PRAGMA table_info('{t}')")}
@@ -777,7 +791,7 @@ def migration_chain_converges():
     c = sqlite3.connect(os.path.join(WORK, "conv_legacy.db.v2base"), isolation_level=None)
     err = None
     try:
-        c.executescript(open(AMENDMENTS3).read())
+        apply_chain(c, AMENDMENTS3)
     except sqlite3.IntegrityError as e:
         err = str(e)
     finally:
