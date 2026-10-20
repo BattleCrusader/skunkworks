@@ -87,8 +87,23 @@ after(() => {
 });
 
 test('O1 — plugin install puts the package where compose mounts it, and the exporter ships it to a client', () => {
-  const installed = skwctl(['plugin', 'install', source, '--tenant', 'acme', '--test-report', report, '--runner-digest', 'sha256:cli-test', '--enable']);
+  // S4f: an unsigned package needs the flag, and the flag is loud. `contact` is built by this
+  // gate without a signature, which is exactly the operator case the flag exists for.
+  const installed = skwctl([
+    'plugin',
+    'install',
+    source,
+    '--tenant',
+    'acme',
+    '--test-report',
+    report,
+    '--runner-digest',
+    'sha256:cli-test',
+    '--allow-unsigned',
+    '--enable',
+  ]);
   assert.equal(installed.status, 0, `${installed.stderr}\n${installed.stdout}`);
+  assert.match(installed.stdout, /\*\*\* UNSIGNED/);
   assert.match(installed.stdout, /plugin: installed id=contact version=1\.4\.0 .*enabled=yes/);
   // The code is not live until the runner reloads its registry; a green install that did not
   // say so is how a plugin 500s on the client's first render.
@@ -155,7 +170,7 @@ test('O3 — refusals are named and write nothing', () => {
 
   const untested = join(fixture.dir, 'packages', 'untested');
   packageAt(untested, 'untested', false);
-  const refused = skwctl(['plugin', 'install', untested, '--tenant', 'acme', '--runner-digest', 'sha256:cli-test', '--enable']);
+  const refused = skwctl(['plugin', 'install', untested, '--tenant', 'acme', '--runner-digest', 'sha256:cli-test', '--allow-unsigned', '--enable']);
   assert.equal(refused.status, 1, `${refused.stderr}\n${refused.stdout}`);
   assert.match(refused.stderr, /REFUSAL: PLUGIN_REFUSED: SKW_E_PL_TESTS_STALE: no test report/);
   assert.equal(existsSync(join(fixture.dir, 'plugins', 'untested')), false, 'a refused install copies nothing');
@@ -189,7 +204,19 @@ function packageWithTable(dir: string, id: string, table: string): void {
 test('O4 — install → uninstall archives the plugin’s rows, drops its tables, and leaves the box clean', () => {
   const source = join(fixture.dir, 'packages', 'guestbook');
   packageWithTable(source, 'guestbook', 'p_guestbook_note');
-  const installed = skwctl(['plugin', 'install', source, '--tenant', 'acme', '--test-report', report, '--runner-digest', 'sha256:cli-test', '--enable']);
+  const installed = skwctl([
+    'plugin',
+    'install',
+    source,
+    '--tenant',
+    'acme',
+    '--test-report',
+    report,
+    '--runner-digest',
+    'sha256:cli-test',
+    '--allow-unsigned',
+    '--enable',
+  ]);
   assert.equal(installed.status, 0, `${installed.stderr}\n${installed.stdout}`);
 
   // Two rows and a setting, written by the host (the only writer §8.3 allows).

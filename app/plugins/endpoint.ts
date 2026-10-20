@@ -85,11 +85,20 @@ export async function runEndpoint(plugins: PluginHost, req: EndpointRequest): Pr
   const query: Record<string, string> = {};
   if (q !== -1) for (const [k, v] of new URLSearchParams(req.url.slice(q + 1))) query[k] = v;
   try {
-    return await plugins.invoke(req.tenant, req.plugin, req.endpoint, {
-      method: req.method,
-      query,
-      body,
-    });
+    return await plugins.invoke(
+      req.tenant,
+      req.plugin,
+      req.endpoint,
+      {
+        method: req.method,
+        query,
+        body,
+      },
+      // The grant this request is authorised by: the row `assertEnabled()` just read. The
+      // runner refuses anything outside it before the host is asked, so the two layers see
+      // one value and the second one does not depend on the first.
+      row.manifest.capabilities ?? [],
+    );
   } catch (err) {
     // The runner's refusals arrive as `Error("SKW_E_PL_…: detail")` because they cross a
     // socket, and an `Error` that reaches Fastify's handler is a 500. §8.6's contract is
@@ -110,12 +119,17 @@ export async function runEndpoint(plugins: PluginHost, req: EndpointRequest): Pr
  * installed and one that is installed-but-disabled must NOT look the same on the wire, so
  * the caller needs to tell "no row" (404) from "row, disabled" (503).
  */
-function installedRow(db: Database.Database, plugin: string): { manifest: { endpoints?: { name: string; method: string }[] } } | undefined {
+function installedRow(
+  db: Database.Database,
+  plugin: string,
+): { manifest: { endpoints?: { name: string; method: string }[]; capabilities?: string[] } } | undefined {
   const table = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_plugin_installed'`).get();
   if (table === undefined) return undefined;
   const row = db.prepare('SELECT manifest_json FROM cms_plugin_installed WHERE plugin_id = ?').get(plugin) as
     | { manifest_json: string }
     | undefined;
   if (row === undefined) return undefined;
-  return { manifest: JSON.parse(row.manifest_json) as { endpoints?: { name: string; method: string }[] } };
+  return {
+    manifest: JSON.parse(row.manifest_json) as { endpoints?: { name: string; method: string }[]; capabilities?: string[] },
+  };
 }

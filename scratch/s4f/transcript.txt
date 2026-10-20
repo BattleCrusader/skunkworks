@@ -1,0 +1,85 @@
+### 1. two publisher keypairs, and the fingerprint of each
+plugin_sign: wrote scratch/s4f/live/pubA.key (0600) and scratch/s4f/live/pubA.pub
+plugin_sign: fingerprint spki-sha256:641e3fb1dc0e1228a3b1fdb52907cd0a7280e9f970ab7f55dbcc8f32ade2b689
+plugin_sign: wrote scratch/s4f/live/pubB.key (0600) and scratch/s4f/live/pubB.pub
+plugin_sign: fingerprint spki-sha256:fd512212aae5ee59439bb57fad82996706aaa3ec56295b89d45964fac062fa40
+
+### 2. a package, signed by A
+plugin_sign: signed notes@1.0.0 as acme-labs key spki-sha256:641e3fb1dc0e1228a3b1fdb52907cd0a7280e9f970ab7f55dbcc8f32ade2b689
+plugin_sign: 2 file(s), root cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96
+plugin_sign: signature scratch/s4f/live/notes-1.0.0.sig.json
+root_hash=cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96
+
+### 3. the tenant owner imports A, and the store is 0600
+plugin: imported publisher=acme-labs fingerprint=spki-sha256:641e3fb1dc0e1228a3b1fdb52907cd0a7280e9f970ab7f55dbcc8f32ade2b689
+plugin: 1 key(s) in scratch/s4f/live/data/trust/publishers.json (0600); this file is the install's whole trust decision
+-rw------- scratch/s4f/live/data/trust/publishers.json
+plugin: publisher=acme-labs fingerprint=spki-sha256:641e3fb1dc0e1228a3b1fdb52907cd0a7280e9f970ab7f55dbcc8f32ade2b689 imported_at=2026-10-20T18:41:15.604Z by=skwctl
+
+### 4. install with --signature: the screen, then the install
+
+install screen — notes@1.0.0
+  what it is       S4d's third-party reference package: one table, one setting, five declared host ops. Its code reaches the host only through skw.call().
+  publisher        acme-labs
+  key fingerprint  spki-sha256:641e3fb1dc0e1228a3b1fdb52907cd0a7280e9f970ab7f55dbcc8f32ade2b689   [imported by the tenant owner into data/trust/publishers.json]
+  first-party      no
+  signature        ed25519 over 2 file(s), root cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96
+  test report      2026-10-21T00:00:00.000Z  sha256:eadc8d1918af48bb…  runner sha256:live
+  capabilities     5 granted:
+                     store.insert    write a row into one of its own tables
+                     store.query     read rows from its own tables
+                     settings.get    read its own settings
+                     settings.set    write its own settings
+                     assets.resolve  look up a media library item by key
+  tables           p_notes_note  (exports: rows)
+  settings         signature (string), api_token (secret, write-only)
+  public URLs      GET /_plugin/notes/list, POST /_plugin/notes/sign
+
+plugin: installed id=notes version=1.0.0 root=cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96 enabled=yes package=scratch/s4f/live/data/plugins/notes
+plugin: the runner scans scratch/s4f/live/data/plugins at start; restart the runner service to load notes
+
+### 5. one byte more in index.mjs: refused, naming the file
+REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the package was edited after it was signed: index.mjs
+exit=1
+
+### 6. unsigned: refused without the flag, installed with it
+REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: echo is not signed by any key this install trusts; pass --allow-unsigned to install it anyway (the install is audited as unsigned)
+exit=1
+--- with --allow-unsigned ---
+
+install screen — echo@1.0.0
+  what it is       S4c's reference package: answers one op, proves the capability gate, and touches nothing it was not granted.
+  publisher        unsigned
+  key fingerprint  (none — unsigned)
+  first-party      no — and unsigned
+  signature        none — no key vouches for these bytes
+  test report      2026-10-21T00:00:00.000Z  sha256:f9ce0b9af98e0dc0…  runner sha256:live
+  capabilities     4 granted:
+                     util.now        read the clock
+                     util.hash       hash a value
+                     log.write       write a line to the runner log
+                     store.query     read rows from its own tables
+  tables           p_echo_note  (exports: rows)
+
+  *** UNSIGNED — no key this install trusts vouches for this package.            ***
+  *** You passed --allow-unsigned. The install row is signature_state=unsigned    ***
+  *** and the audit chain records allow_unsigned=true.                           ***
+
+plugin: installed id=echo version=1.0.0 root=798ac0352d55959d427dea31d255c314b70fdff80d82b81a3af6bb5212a8c8d3 enabled=yes package=scratch/s4f/live/data/plugins/echo
+plugin: *** UNSIGNED *** this package is not vouched for by any key; the audit row records allow_unsigned=true
+plugin: the runner scans scratch/s4f/live/data/plugins at start; restart the runner service to load echo
+exit=0
+
+### 7. a package signed by B, while A is the imported key: both fingerprints
+REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the package was signed by spki-sha256:fd512212aae5ee59439bb57fad82996706aaa3ec56295b89d45964fac062fa40 but acme-labs is trusted as spki-sha256:641e3fb1dc0e1228a3b1fdb52907cd0a7280e9f970ab7f55dbcc8f32ade2b689
+exit=1
+
+### 8. the rows, and the audit entry for the unsigned install
+{"plugin_id":"notes","version":"1.0.0","publisher":"acme-labs","publisher_key_fingerprint":"spki-sha256:641e3fb1dc0e1228a3b1fdb52907cd0a7280e9f970ab7f55dbcc8f32ade2b689","signature_state":"imported","enabled":1}
+{"plugin_id":"echo","version":"1.0.0","publisher":"unsigned","publisher_key_fingerprint":null,"signature_state":"unsigned","enabled":1}
+audit: plugin.install notes {"version":"1.0.0","root_hash":"cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96","enabled":true,"publisher":"acme-labs","publisher_key_fingerprint":"spki-sha256:641e3fb1dc0e1228a3b1fdb52907cd0a7280e9f970ab7f55dbcc8f32ade2b689","signature_state":"imported","allow_unsigned":false}
+audit: plugin.install echo {"version":"1.0.0","root_hash":"798ac0352d55959d427dea31d255c314b70fdff80d82b81a3af6bb5212a8c8d3","enabled":true,"publisher":"unsigned","publisher_key_fingerprint":null,"signature_state":"unsigned","allow_unsigned":true}
+
+### 9. a package that is not installed cannot be enabled
+plugin: tenant=acme row=1 id=notes version=1.0.0 enabled=yes root=cf4e41d155afb5d71dd4e278511e3886cfa795bdacbaadaf02895bc2f2823e96
+plugin: tenant=acme row=2 id=echo version=1.0.0 enabled=yes root=798ac0352d55959d427dea31d255c314b70fdff80d82b81a3af6bb5212a8c8d3

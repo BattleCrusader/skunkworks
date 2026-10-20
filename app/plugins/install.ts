@@ -21,7 +21,7 @@
  * inserts `cms_plugin_installed`. The package is copied before the transaction and the
  * copy is removed if the transaction refuses, so a refused install leaves no code.
  */
-import { createHash, verify as verifySignature } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -38,6 +38,14 @@ import {
   tableStatements,
   type Manifest,
 } from './protocol.ts';
+import {
+  installScreen,
+  trustDirFor,
+  verifyPackageSignature,
+  type InstallScreen,
+  type SignatureState,
+  type VerifiedPackage,
+} from './trust.ts';
 
 export interface TestReport {
   plugin: string;
@@ -54,18 +62,24 @@ export interface InstallRequest {
   pluginsRoot: string;
   /** The package directory to install. */
   sourceDir: string;
+  /**
+   * §8.5/D27: the detached `plugin.sig.json`. Absent means the package offers no
+   * signature — legal only with `allowUnsigned`, and never `first_party`.
+   */
+  signaturePath?: string;
+  /**
+   * The loud flag. Without it an unsigned package is `SKW_E_PL_SIGNATURE`; with it the
+   * install prints what it is doing and the audit row records that it was passed.
+   */
+  allowUnsigned?: boolean;
+  /** `<data>/trust`; defaults to the install beside this tenant's database. */
+  trustDir?: string;
+  /** The image's key, overridable only by a gate. Production passes nothing. */
+  firstPartyKeys?: string[];
   /** `test-report.json` from the packager. Absent is a refusal, not a warning. */
   testReportPath?: string;
   /** The digest of the runner image that will run it; a report for another image is stale. */
   runnerImageDigest?: string;
-  /** The digest the report claims, read back by the gate. */
-  publisher?: string;
-  signatureState?: 'first_party' | 'imported' | 'unsigned';
-  /** SPKI PEM public keys trusted for `first_party` / `imported`. */
-  firstPartyKeys?: string[];
-  publisherKeys?: { fingerprint: string; spki: string }[];
-  /** Base64 Ed25519 signature over the package root hash (hex). */
-  signature?: string;
   enable?: boolean;
   now?: string;
 }
@@ -79,7 +93,23 @@ export interface InstallResult {
   tables: string[];
   capabilities: string[];
   package_dir: string;
+  signature_state: SignatureState;
+  publisher: string;
+  publisher_key_fingerprint: string | null;
+  /** True only when `allowUnsigned` was passed — the audit row repeats it. */
+  unsigned: boolean;
+  /** §8.5's screen: what an operator decides on, and what the CLI prints before enable. */
+  screen: InstallScreen;
 }
+
+export interface InspectedPackage {
+  root_hash: string;
+  test_report_sha: string;
+  verified: VerifiedPackage;
+  screen: InstallScreen;
+  manifest: Manifest;
+}
+
 
 function refuse(code: string, message: string, detail?: Record<string, unknown>): never {
   throw new AppError(code, message, detail ?? {});
@@ -88,6 +118,18 @@ function refuse(code: string, message: string, detail?: Record<string, unknown>)
 function sha256(bytes: Buffer | string): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
+
+/**
+ * A **synchronous** pause. `better-sqlite3` is synchronous, so an `await setTimeout` is not
+ * available at this point in the uninstall and a child process would be absurd for 20 ms.
+ */
+function pause(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** 25 × 20 ms: a request in the other process is finishing, not holding the WAL for a second. */
+const CHECKPOINT_ATTEMPTS = 25;
+const CHECKPOINT_PAUSE_MS = 20;
 
 /** A report for another package or another image is stale; there is no "close enough". */
 export function readTestReport(path: string, root: string, digest: string): { sha: string; report: TestReport } {
@@ -118,29 +160,94 @@ export function readTestReport(path: string, root: string, digest: string): { sh
   return { sha: sha256(bytes), report };
 }
 
-function verifyPackageSignature(input: InstallRequest, root: string): { state: 'first_party' | 'imported' | 'unsigned'; fingerprint: string | null } {
-  const state = input.signatureState ?? 'unsigned';
-  if (state === 'unsigned') return { state, fingerprint: null };
-  if (typeof input.signature !== 'string' || input.signature === '') {
-    refuse('SKW_E_PL_SIGNATURE', `signature_state=${state} but the install carries no signature`);
+/**
+ * §8.5's matrix, in the order the SDS states it: **signature, revocation, test report,
+ * schema range, export class, migration**. Nothing is written here.
+ *
+ * This is the function the install screen is built from, and `installPlugin()` runs it
+ * again immediately before writing — so the screen an operator reads describes the bytes
+ * that are about to be installed, not bytes that were there when the screen was printed.
+ */
+export function inspectPackage(input: InstallRequest): InspectedPackage {
+  const source = readManifest(input.sourceDir);
+  const { root } = packageRootHash(input.sourceDir);
+  const digest = input.runnerImageDigest ?? process.env.SKW_RUNNER_IMAGE_DIGEST ?? 'dev';
+
+  // 1. signature (D27). An unsigned package is a refusal unless the operator said so, and
+  //    saying so is recorded, never inferred.
+  const verified = verifyPackageSignature({
+    dir: input.sourceDir,
+    ...(input.signaturePath === undefined ? {} : { signaturePath: input.signaturePath }),
+    trustDir: input.trustDir ?? trustDirFor(input.siteDb),
+    ...(input.firstPartyKeys === undefined ? {} : { firstPartyKeys: input.firstPartyKeys }),
+    manifest: source,
+  });
+  if (verified.state === 'unsigned' && input.allowUnsigned !== true) {
+    // A package that ships a signature beside it and an operator who forgot the flag is the
+    // one case where "pass --allow-unsigned" is the wrong next step: say that the signature is
+    // there, so the flag is chosen deliberately rather than as the shortest way past a refusal.
+    const hint = [join(input.sourceDir, 'plugin.sig.json'), join(input.sourceDir, '..', `${source.id}-${source.version}.sig.json`)].find(
+      (candidate) => existsSync(candidate),
+    );
+    refuse(
+      'SKW_E_PL_SIGNATURE',
+      hint === undefined
+        ? `${source.id} is not signed by any key this install trusts; pass --allow-unsigned to install it anyway (the install is audited as unsigned)`
+        : `${source.id} offers no signature; one is present at ${hint} — pass --signature ${hint} (or --allow-unsigned to install unsigned code deliberately)`,
+      { plugin: source.id, reason: 'unsigned', flag: '--allow-unsigned', signature_present: hint ?? null },
+    );
   }
-  const spki = state === 'first_party' ? (input.firstPartyKeys ?? []) : (input.publisherKeys ?? []).map((k) => k.spki);
-  if (spki.length === 0) {
-    refuse('SKW_E_PL_SIGNATURE', state === 'first_party' ? 'no first-party key in this image' : 'no publisher key was imported for this install');
-  }
-  const signature = Buffer.from(input.signature, 'base64');
-  const signed = Buffer.from(root, 'utf8');
-  for (const pem of spki) {
-    try {
-      if (verifySignature(null, signed, pem, signature)) {
-        const fingerprint = sha256(Buffer.from(pem));
-        return { state, fingerprint: (state === 'imported' ? input.publisherKeys?.find((k) => k.spki === pem)?.fingerprint : undefined) ?? fingerprint };
-      }
-    } catch {
-      /* the next key; a malformed key is not a valid signature */
+
+  const db = openAdminWrite(input.siteDb, 5000);
+  try {
+    // 2. revocation.
+    const revoked = db.prepare('SELECT plugin_id, reason FROM cms_plugin_revoked WHERE root_hash = ?').get(root) as
+      | { plugin_id: string; reason: string | null }
+      | undefined;
+    if (revoked !== undefined) {
+      refuse('SKW_E_PL_REVOKED', `package root ${root} is revoked on this install`, { plugin: revoked.plugin_id, reason: revoked.reason });
     }
+
+    // 3. the test report.
+    const report = readTestReport(input.testReportPath ?? join(input.sourceDir, 'test-report.json'), root, digest);
+
+    // 4. schema range.
+    const siteVersion = Number(db.pragma('user_version', { simple: true }));
+    if (source.requires?.site_db_min !== undefined && siteVersion < source.requires.site_db_min) {
+      refuse('SKW_E_PL_SCHEMA', `${source.id} needs site.db >= ${source.requires.site_db_min}; this tenant is ${siteVersion}`);
+    }
+    if (source.requires?.site_db_max !== undefined && siteVersion > source.requires.site_db_max) {
+      refuse('SKW_E_PL_SCHEMA', `${source.id} supports site.db <= ${source.requires.site_db_max}; this tenant is ${siteVersion}`);
+    }
+
+    // 5. export class.
+    for (const table of source.tables) {
+      if (!['rows', 'empty', 'filtered', 'secret'].includes(table.export)) {
+        refuse('SKW_E_PL_NO_EXPORT_CLASS', `${source.id}: table ${table.name} has no export class`);
+      }
+    }
+
+    // 6. the downgrade path: a different root under the same id is uninstall-first (§8.2).
+    const existing = db.prepare('SELECT root_hash, enabled FROM cms_plugin_installed WHERE plugin_id = ?').get(source.id) as
+      | { root_hash: string; enabled: number }
+      | undefined;
+    if (existing !== undefined && existing.root_hash !== root) {
+      refuse('SKW_E_PL_SCHEMA', `${source.id} is installed at root ${existing.root_hash}; uninstall it before installing ${root}`, {
+        installed_root_hash: existing.root_hash,
+        package_root_hash: root,
+      });
+    }
+
+    const screen = installScreen({
+      manifest: source,
+      verified,
+      root,
+      report: { sha256: report.sha, ran_at: report.report.ran_at, runner_image_digest: report.report.runner_image_digest },
+    });
+    return { root_hash: root, test_report_sha: report.sha, verified, screen, manifest: source };
+  } finally {
+    db.close();
   }
-  refuse('SKW_E_PL_SIGNATURE', `the signature does not verify against any ${state} key for root ${root}`);
 }
 
 /**
@@ -149,35 +256,22 @@ function verifyPackageSignature(input: InstallRequest, root: string): { state: '
  * path), because two roots for one id would make `cms_plugin_installed` a lie.
  */
 export function installPlugin(input: InstallRequest): InstallResult {
-  const source = readManifest(input.sourceDir);
+  const inspected = inspectPackage(input);
+  const source = inspected.manifest;
   const { root, files } = packageRootHash(input.sourceDir);
+  if (root !== inspected.root_hash) {
+    // The screen was built from other bytes. Refusing is the only honest answer: an
+    // operator who approved a screen approved a package, not a directory.
+    refuse('SKW_E_PL_SIGNATURE', `the package changed while it was being installed (${inspected.root_hash} → ${root})`, {
+      screened_root_hash: inspected.root_hash,
+      package_root_hash: root,
+    });
+  }
   const digest = input.runnerImageDigest ?? process.env.SKW_RUNNER_IMAGE_DIGEST ?? 'dev';
+  const verified = inspected.verified;
+  const report = { sha: inspected.test_report_sha };
   const db = openAdminWrite(input.siteDb, 5000);
   try {
-    const revoked = db.prepare('SELECT plugin_id, reason FROM cms_plugin_revoked WHERE root_hash = ?').get(root) as
-      | { plugin_id: string; reason: string | null }
-      | undefined;
-    if (revoked !== undefined) {
-      refuse('SKW_E_PL_REVOKED', `package root ${root} is revoked on this install`, { plugin: revoked.plugin_id, reason: revoked.reason });
-    }
-    const signature = verifyPackageSignature(input, root);
-
-    // §8.5's order: signature, revocation, test report, schema, export class, migration.
-    const report = readTestReport(input.testReportPath ?? join(input.sourceDir, 'test-report.json'), root, digest);
-
-    const siteVersion = Number(db.pragma('user_version', { simple: true }));
-    if (source.requires?.site_db_min !== undefined && siteVersion < source.requires.site_db_min) {
-      refuse('SKW_E_PL_SCHEMA', `${source.id} needs site.db >= ${source.requires.site_db_min}; this tenant is ${siteVersion}`);
-    }
-    if (source.requires?.site_db_max !== undefined && siteVersion > source.requires.site_db_max) {
-      refuse('SKW_E_PL_SCHEMA', `${source.id} supports site.db <= ${source.requires.site_db_max}; this tenant is ${siteVersion}`);
-    }
-    for (const table of source.tables) {
-      if (!['rows', 'empty', 'filtered', 'secret'].includes(table.export)) {
-        refuse('SKW_E_PL_NO_EXPORT_CLASS', `${source.id}: table ${table.name} has no export class`);
-      }
-    }
-
     const existing = db.prepare('SELECT root_hash, enabled FROM cms_plugin_installed WHERE plugin_id = ?').get(source.id) as
       | { root_hash: string; enabled: number }
       | undefined;
@@ -239,9 +333,9 @@ export function installPlugin(input: InstallRequest): InstallResult {
         source.version,
         JSON.stringify(source),
         root,
-        input.publisher ?? signature.state,
-        signature.fingerprint,
-        signature.state,
+        verified.publisher,
+        verified.fingerprint,
+        verified.state,
         enabled ? 1 : 0,
         report.sha,
         digest,
@@ -263,6 +357,11 @@ export function installPlugin(input: InstallRequest): InstallResult {
       tables: source.tables.map((t) => t.name),
       capabilities: source.capabilities,
       package_dir: target,
+      signature_state: verified.state,
+      publisher: verified.publisher,
+      publisher_key_fingerprint: verified.fingerprint,
+      unsigned: verified.state === 'unsigned',
+      screen: inspected.screen,
     };
   } finally {
     db.close();
@@ -466,12 +565,21 @@ export function uninstallPlugin(input: UninstallRequest): UninstallResult {
     // process** holding its own `-shm` index; after a DDL commit it can serve one more request
     // from a snapshot that predates the drop (measured through the composed gate: `200` on the
     // URL that had just been uninstalled). A TRUNCATE checkpoint makes the new schema the one
-    // every reader opens next, and it is what a CLI should do anyway after a destructive
-    // change. A busy reader can refuse; that is not a reason to fail the uninstall.
+    // every reader opens next.
+    //
+    // `wal_checkpoint` **returns** `{busy, log, checkpointed}` — it does not throw when a
+    // reader is mid-request, so the old `try/catch` was dead code and a busy checkpoint was
+    // silently skipped (measured: C4 red under `npm run test`, 200 for an uninstalled
+    // package). The row is read, and the attempt is repeated while a reader finishes.
     try {
-      db.pragma('wal_checkpoint(TRUNCATE)');
+      for (let attempt = 0; attempt < CHECKPOINT_ATTEMPTS; attempt += 1) {
+        const rows = db.pragma('wal_checkpoint(TRUNCATE)') as { busy: number }[];
+        if (rows[0] === undefined || rows[0].busy === 0) break;
+        pause(CHECKPOINT_PAUSE_MS);
+      }
     } catch {
-      /* a concurrent reader holds the WAL; the next checkpoint will do it */
+      /* a hard pragma error (a corrupt -shm, a closed handle) is not a reason to fail an
+         uninstall that has already committed; the next writer's checkpoint will fold it */
     }
 
     // After COMMIT: a crash before this leaves a package tree with no row, which the next

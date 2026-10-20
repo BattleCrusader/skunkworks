@@ -16,17 +16,21 @@
  *
  * ## What this slice does and does not do
  *
- * Implemented and proven here: the socket, the manifest validation, the capability gate, the
- * child spawn, the four ops that need no host (`util.now`, `util.random`, `util.hash`,
- * `log.write`), `plugin.invoke` (how a plugin's code actually runs), the 2 s op budget, and a
- * named refusal for every failure.
+ * Implemented and proven here: the socket, the manifest validation, the capability gate **at
+ * both hops** (see below), the child spawn, the four ops that need no host (`util.now`,
+ * `util.random`, `util.hash`, `log.write`), `plugin.invoke` (how a plugin's code actually
+ * runs), the 2 s op budget, and a named refusal for every failure.
  *
- * **Not** implemented: the ten ops that need the host (`store.*`, `settings.*`,
- * `assets.resolve`, `mail.send`). They are authorised against the manifest and then refused
- * with `SKW_E_PL_UNAVAILABLE` because the app-side client (the other end of this socket) is
- * not wired yet — `app/main.ts` step 6 still says "S4 owns the plugin runner". A runner that
- * pretended to answer `store.insert` by writing a file would be a second, unaudited data
- * path; the refusal is the honest half.
+ * ## Two capability gates, deliberately
+ *
+ * The host re-checks every host op against the tenant's installed row
+ * (`app/plugins/host.ts`), and this process refuses the same op **before the host is
+ * called**. They are not redundant: the host check is the authority, this one is the
+ * defence in depth, and the difference is what a buggy or compromised host child buys. The
+ * grant travels with the invoke (`plugin.invoke.granted`), because a grant belongs to a
+ * (tenant, package) pair and only the app can read the row; this process intersects it with
+ * its own read of the manifest, so a host that asks for more than the manifest declares
+ * gets the intersection and not the request.
  *
  * ## Every refusal names the plugin
  *
@@ -399,11 +403,25 @@ const HOST_TIMEOUT_MS = 2000;
  * The binding is set by `invokeSerial()` and cleared in its `finally`; a child that asks
  * for `store.query` outside an invoke gets `PL_UNAVAILABLE` rather than a guess about
  * which tenant it meant.
+ *
+ * **The runner's own capability check.** `binding.granted` is the intersection of what the
+ * app sent with this package's manifest here, and an op outside it is refused *before* a
+ * `host.call` frame is written. The host checks the same thing against the tenant's row;
+ * this check is what still holds if the host does not, and the `host.call` count is what
+ * makes the two layers separately observable — a refusal here means the host was never
+ * asked.
  */
 function forwardHost(pkg, frame) {
   const binding = pkg.binding;
   if (binding === null || binding.socket === null) {
     return Promise.reject(new Error('SKW_E_PL_UNAVAILABLE: no host channel is bound to this invoke'));
+  }
+  const op = typeof frame.op === 'string' ? frame.op : '';
+  if (!binding.granted.has(op)) {
+    log(`refusal plugin=${pkg.manifest.id} code=SKW_E_PL_REJECTED: ${JSON.stringify(op)} is not in the granted capability set (${[...binding.granted].join(',') || 'empty'}); the host was not called`);
+    return Promise.reject(
+      new Error(`SKW_E_PL_REJECTED: ${op} is not in ${pkg.manifest.id}'s granted capabilities at the runner; the host was not called`),
+    );
   }
   const socket = binding.socket;
   const id = `h${pkg.nextHostId++}`;
@@ -414,7 +432,7 @@ function forwardHost(pkg, frame) {
     }, HOST_TIMEOUT_MS);
     socket.hostPending.set(id, { resolve, reject, timer });
     socket.write(
-      `${JSON.stringify({ type: 'host.call', id, tenant: binding.tenant, plugin: pkg.manifest.id, op: frame.op, args: frame.args ?? {} })}\n`,
+      `${JSON.stringify({ type: 'host.call', id, tenant: binding.tenant, plugin: pkg.manifest.id, op, args: frame.args ?? {} })}\n`,
     );
   });
 }
@@ -423,10 +441,15 @@ function forwardHost(pkg, frame) {
  * §14 F4: one package has one in-flight invoke. The tenant binding is a property of
  * that invoke, so two tenants calling the same widget at once cannot have their host
  * ops routed to each other's database. The queue is per package, not per container.
+ *
+ * `granted` is the capability set the app sent for this (tenant, package) — the same value
+ * the host will check against its row. It is stored on the binding and it dies with the
+ * invoke, so a grant can never leak to the next caller.
  */
-function invokeSerial(pkg, tenant, op, args, socket) {
+function invokeSerial(pkg, tenant, op, args, socket, granted) {
   const run = async () => {
-    pkg.binding = { tenant, socket };
+    pkg.binding = { tenant, socket, granted };
+    log(`invoke plugin=${pkg.manifest.id} tenant=${tenant} op=${op} granted=${granted.size}/${pkg.manifest.capabilities.length}`);
     try {
       return await ask(pkg, op, args);
     } finally {
@@ -492,7 +515,19 @@ function handle(line, socket) {
     if (tenant === '') {
       return { reply: refused(id, name, 'SKW_E_PL_ROW', 'plugin.invoke needs the host tenant binding'), close: false };
     }
-    return { reply: '', close: false, invoke: { id, pkg, op: innerOp, args: inner.args ?? {}, tenant, socket } };
+    // The grant, and why it is required rather than defaulted: a runner that falls back to
+    // "the manifest is the grant" cannot tell an app that forgot to send one from an app
+    // that meant to send nothing, and the fallback would be the wider of the two.
+    if (!Array.isArray(request.granted)) {
+      return {
+        reply: refused(id, name, 'SKW_E_PL_ROW', 'plugin.invoke needs the granted capability set (the app owns the grant)'),
+        close: false,
+      };
+    }
+    // Intersection, not substitution: the app can narrow this package's manifest but never
+    // widen it — the manifest read here is the one on disk in this container.
+    const granted = new Set(request.granted.map(String).filter((cap) => pkg.manifest.capabilities.includes(cap)));
+    return { reply: '', close: false, invoke: { id, pkg, op: innerOp, args: inner.args ?? {}, tenant, socket, granted } };
   }
 
   if (!ALL_OPS.has(op)) {
@@ -547,8 +582,8 @@ function attach(socket) {
       }
       const result = handle(line, socket);
       if (result.invoke !== undefined) {
-        const { id, pkg, op, args, tenant } = result.invoke;
-        invokeSerial(pkg, tenant, op, args, socket).then(
+        const { id, pkg, op, args, tenant, granted } = result.invoke;
+        invokeSerial(pkg, tenant, op, args, socket, granted).then(
           (value) => socket.write(`${JSON.stringify({ id, ok: true, plugin: pkg.manifest.id, result: value ?? null })}\n`),
           (err) => {
             const message = err instanceof Error ? err.message : String(err);

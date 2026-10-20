@@ -46,14 +46,15 @@
  */
 import Database from 'better-sqlite3';
 import { hash } from '@node-rs/argon2';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ARGON2_OPTIONS, Semaphore } from '../admin/auth.ts';
 import { appendAudit, verifyChain, verifyAgainstSeal } from '../audit/chain.ts';
 import { AppError } from '../errors.ts';
-import { installPlugin, installedPlugins, uninstallPlugin } from '../plugins/install.ts';
+import { installPlugin, inspectPackage, installedPlugins, uninstallPlugin } from '../plugins/install.ts';
+import { importPublisherKey, readTrustStore, type InstallScreen } from '../plugins/trust.ts';
 import { healGaps, lastEndedDay, sealDay, sealStatus } from '../audit/scheduler.ts';
 import { SESSION_ABSOLUTE_MS } from '../admin/session.ts';
 import { TOTP_PARAMETERS, groupOf, newPassword, newSecret, otpauthUri } from '../admin/totp.ts';
@@ -674,6 +675,68 @@ async function audit(ctx: CliContext, verb: string | undefined, flags: Map<strin
 }
 
 /**
+ * §8.5's install screen, rendered for a person who is not a developer.
+ *
+ * The order is the spec's: publisher and fingerprint, every capability in plain words, every
+ * table and whether it exports, whether the package is first-party, and the test report's
+ * timestamp and digest. Nothing here is generated from the package's own strings except the
+ * ids — the plain words come from `CAPABILITY_TEXT`, so a package cannot describe its own
+ * power in its own language.
+ */
+function screenLines(screen: InstallScreen): string[] {
+  const lines: string[] = [];
+  const pad = (label: string): string => `  ${label.padEnd(17)}`;
+  lines.push('');
+  lines.push(`install screen — ${screen.plugin}@${screen.version}`);
+  if (screen.description !== null) lines.push(`${pad('what it is')}${screen.description}`);
+  lines.push(`${pad('publisher')}${screen.publisher}`);
+  lines.push(
+    `${pad('key fingerprint')}${screen.publisher_key_fingerprint ?? '(none — unsigned)'}` +
+      (screen.key_source === 'image'
+        ? '   [the key baked into this image]'
+        : screen.key_source === 'imported'
+          ? '   [imported by the tenant owner into data/trust/publishers.json]'
+          : ''),
+  );
+  lines.push(`${pad('first-party')}${screen.first_party ? 'yes' : screen.unsigned ? 'no — and unsigned' : 'no'}`);
+  lines.push(
+    `${pad('signature')}${
+      screen.signature === null
+        ? 'none — no key vouches for these bytes'
+        : `${screen.signature.algorithm} over ${screen.signature.files} file(s), root ${screen.signature.root_hash}`
+    }`,
+  );
+  lines.push(
+    `${pad('test report')}${screen.test_report.ran_at}  sha256:${screen.test_report.sha256.slice(0, 16)}…  runner ${screen.test_report.runner_image_digest}`,
+  );
+  if (screen.capabilities.length === 0) {
+    lines.push(`${pad('capabilities')}none — it can reach neither this site's data nor its mailer`);
+  } else {
+    lines.push(`${pad('capabilities')}${screen.capabilities.length} granted:`);
+    for (const cap of screen.capabilities) lines.push(`                     ${cap.op.padEnd(16)}${cap.plain}`);
+  }
+  if (screen.tables.length === 0) {
+    lines.push(`${pad('tables')}none`);
+  } else {
+    for (const table of screen.tables) lines.push(`${pad('tables')}${table.name}  (exports: ${table.export})`);
+  }
+  if (screen.settings.length > 0) {
+    lines.push(`${pad('settings')}${screen.settings.map((s) => `${s.key} (${s.type}${s.secret ? ', write-only' : ''})`).join(', ')}`);
+  }
+  if (screen.endpoints.length > 0) {
+    lines.push(`${pad('public URLs')}${screen.endpoints.map((e) => `${e.method} /_plugin/${screen.plugin}/${e.name}`).join(', ')}`);
+  }
+  if (screen.unsigned) {
+    lines.push('');
+    lines.push('  *** UNSIGNED — no key this install trusts vouches for this package.            ***');
+    lines.push('  *** You passed --allow-unsigned. The install row is signature_state=unsigned    ***');
+    lines.push('  *** and the audit chain records allow_unsigned=true.                           ***');
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
  * `skwctl plugin …` — the operator surface S4d lacked.
  *
  * §8.2's install row is an operator decision: which third-party code runs on the client's
@@ -702,16 +765,26 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
     if (sourceDir === undefined) throw new Refusal('USAGE', 'plugin install needs a package directory');
     const reportFlag = args.flags.get('test-report');
     const digestFlag = args.flags.get('runner-digest');
+    const signatureFlag = args.flags.get('signature');
+    const allowUnsigned = args.flags.get('allow-unsigned') === true;
+    const trustDir = join(ctx.env.dataDir, 'trust');
+    const base = {
+      siteDb,
+      pluginsRoot,
+      sourceDir,
+      trustDir,
+      ...(typeof reportFlag === 'string' ? { testReportPath: reportFlag } : {}),
+      ...(typeof digestFlag === 'string' ? { runnerImageDigest: digestFlag } : {}),
+      ...(typeof signatureFlag === 'string' ? { signaturePath: signatureFlag } : {}),
+    };
     let result;
     try {
-      result = installPlugin({
-        siteDb,
-        pluginsRoot,
-        sourceDir,
-        ...(typeof reportFlag === 'string' ? { testReportPath: reportFlag } : {}),
-        ...(typeof digestFlag === 'string' ? { runnerImageDigest: digestFlag } : {}),
-        enable: args.flags.get('enable') === true,
-      });
+      // §8.5's screen, **before** anything is enabled: the trust decision is a decision, and
+      // a decision printed after the write is a receipt. `inspectPackage` runs the whole
+      // matrix and writes nothing; `installPlugin` then runs it again on the same bytes.
+      const inspected = inspectPackage({ ...base, allowUnsigned });
+      for (const line of screenLines(inspected.screen)) ctx.stdout(line);
+      result = installPlugin({ ...base, allowUnsigned, enable: args.flags.get('enable') === true });
     } catch (err) {
       if (err instanceof AppError) throw new Refusal('PLUGIN_REFUSED', `${err.code}: ${err.message}`);
       throw err;
@@ -725,6 +798,12 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
         version: result.version,
         root_hash: result.root_hash,
         enabled: result.enabled,
+        publisher: result.publisher,
+        publisher_key_fingerprint: result.publisher_key_fingerprint,
+        signature_state: result.signature_state,
+        // D27: the one fact that must survive a later reading of the chain. `true` here is an
+        // operator who chose to run code nobody vouched for, and the report quotes this row.
+        allow_unsigned: result.unsigned,
       });
     } finally {
       db.close();
@@ -734,12 +813,67 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
         result.enabled ? 'yes' : 'no'
       } package=${result.package_dir}`,
     );
+    if (result.unsigned) {
+      ctx.stdout('plugin: *** UNSIGNED *** this package is not vouched for by any key; the audit row records allow_unsigned=true');
+    }
     // The runner scans `<data>/plugins` **at start** (runner/server.mjs) and holds the
     // package list; the app reads the row per request, but the code is not loaded until
     // the runner restarts. Say so, rather than leaving a green install that 500s on first
     // render — the exact failure mode `bundle_verify` refuses for.
     ctx.stdout(`plugin: the runner scans ${pluginsRoot} at start; restart the runner service to load ${result.plugin}`);
     return EXIT_OK;
+  }
+
+  if (verb === 'trust') {
+    const action = args.command[2];
+    const trustDir = join(ctx.env.dataDir, 'trust');
+    if (action === 'import') {
+      const keyPath = args.command[3];
+      if (keyPath === undefined) throw new Refusal('USAGE', 'plugin trust import needs a public key file (SPKI PEM, as `openssl pkey -pubout` writes)');
+      const publisherFlag = args.flags.get('publisher');
+      if (typeof publisherFlag !== 'string') throw new Refusal('USAGE', 'plugin trust import needs --publisher <id>');
+      if (!existsSync(keyPath)) throw new Refusal('USAGE', `no such key file: ${keyPath}`);
+      let imported;
+      try {
+        imported = importPublisherKey({
+          trustDir,
+          publisher: publisherFlag,
+          spkiPem: readFileSync(keyPath, 'utf8'),
+          importedBy: actor.label,
+          ...(args.flags.get('replace') === true ? { replace: true } : {}),
+        });
+      } catch (err) {
+        if (err instanceof AppError) throw new Refusal('PLUGIN_REFUSED', `${err.code}: ${err.message}`);
+        throw err;
+      }
+      const db = openAdminWrite(siteDb, ctx.env.dbBusyTimeoutMs);
+      try {
+        appendAudit(db, actor, 'plugin.trust.import', 'plugin_publisher', imported.key.id, imported.replaced, {
+          fingerprint: imported.key.fingerprint,
+          trust_file: join(trustDir, 'publishers.json'),
+        });
+      } finally {
+        db.close();
+      }
+      ctx.stdout(`plugin: imported publisher=${imported.key.id} fingerprint=${imported.key.fingerprint}`);
+      ctx.stdout(`plugin: ${imported.total} key(s) in ${join(trustDir, 'publishers.json')} (0600); this file is the install's whole trust decision`);
+      if (imported.replaced !== null) {
+        ctx.stdout(`plugin: replaced ${imported.replaced.fingerprint} — packages signed by that key are now refused`);
+      }
+      return EXIT_OK;
+    }
+    if (action === 'list') {
+      const keys = readTrustStore(trustDir);
+      if (keys.length === 0) {
+        ctx.stdout(`plugin: tenant=${tenant} no publisher keys imported; only first-party packages verify`);
+        return EXIT_OK;
+      }
+      for (const key of keys) {
+        ctx.stdout(`plugin: publisher=${key.id} fingerprint=${key.fingerprint} imported_at=${key.imported_at} by=${key.imported_by}`);
+      }
+      return EXIT_OK;
+    }
+    throw new Refusal('USAGE', 'usage: skwctl plugin trust (import <key.pem> --publisher <id> [--replace] | list) --tenant <key>');
   }
 
   if (verb === 'enable' || verb === 'disable') {
@@ -842,7 +976,7 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
 
   throw new Refusal(
     'USAGE',
-    'usage: skwctl plugin (install <dir> [--test-report <path>] [--runner-digest <sha>] [--enable] | enable <id> | disable <id> | uninstall <id> [--archive-dir <dir>] | list) --tenant <key>',
+    'usage: skwctl plugin (install <dir> [--signature <file>] [--allow-unsigned] [--test-report <path>] [--runner-digest <sha>] [--enable] | trust (import <key.pem> --publisher <id> [--replace] | list) | enable <id> | disable <id> | uninstall <id> [--archive-dir <dir>] | list) --tenant <key>',
   );
 }
 
@@ -850,7 +984,7 @@ export async function run(argv: readonly string[], ctx: CliContext): Promise<num
   if (argv.length === 0) {
     throw new Refusal(
       'USAGE',
-      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N] | plugin (install <dir> | enable <id> | disable <id> | uninstall <id> | list) --tenant <key>>',
+      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N] | plugin (install <dir> | trust (import <key.pem> --publisher <id> | list) | enable <id> | disable <id> | uninstall <id> | list) --tenant <key>>',
     );
   }
   const args = parseArgs(argv);

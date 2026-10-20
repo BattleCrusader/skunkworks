@@ -176,7 +176,7 @@ test('R4 — a host op has no direct entry point: it can only be raised by a pac
 
 test('R8 — a package\'s own code reaches a host over the socket, inside --network none', () => {
   const [res] = call([
-    { id: 1, op: 'plugin.invoke', plugin: 'notes', tenant: 'acme', args: { op: 'list', args: {} } },
+    { id: 1, op: 'plugin.invoke', plugin: 'notes', tenant: 'acme', granted: ['store.query'], args: { op: 'list', args: {} } },
   ]) as { ok: boolean; plugin?: string; result?: { count?: number; rows?: { body?: string }[] } }[];
   assert.equal(res?.ok, true, JSON.stringify(res));
   assert.equal(res?.plugin, 'notes');
@@ -186,14 +186,14 @@ test('R8 — a package\'s own code reaches a host over the socket, inside --netw
 
 test('R9 — the same package\'s network reach is refused in this netns', () => {
   const [res] = call([
-    { id: 1, op: 'plugin.invoke', plugin: 'notes', tenant: 'acme', args: { op: 'reach', args: {} } },
+    { id: 1, op: 'plugin.invoke', plugin: 'notes', tenant: 'acme', granted: [], args: { op: 'reach', args: {} } },
   ]) as { ok: boolean; result?: string }[];
   assert.equal(res?.ok, true, JSON.stringify(res));
   assert.equal(res?.result, 'ENETUNREACH');
 });
 
 test('R5 — plugin code runs in the child, and its result comes back over the socket', () => {
-  const [res] = call([{ id: 1, op: 'plugin.invoke', plugin: 'echo', tenant: 'acme', args: { op: 'render', args: { text: 'hi' } } }]) as {
+  const [res] = call([{ id: 1, op: 'plugin.invoke', plugin: 'echo', tenant: 'acme', granted: [], args: { op: 'render', args: { text: 'hi' } } }]) as {
     ok: boolean;
     plugin?: string;
     result?: { text?: string };
@@ -204,7 +204,7 @@ test('R5 — plugin code runs in the child, and its result comes back over the s
 });
 
 test('R6 — a plugin that opens a socket is refused, and the refusal names the package', () => {
-  const [res] = call([{ id: 1, op: 'plugin.invoke', plugin: 'probenet', tenant: 'acme', args: { op: 'reach', args: {} } }]) as {
+  const [res] = call([{ id: 1, op: 'plugin.invoke', plugin: 'probenet', tenant: 'acme', granted: [], args: { op: 'reach', args: {} } }]) as {
     ok: boolean;
     plugin?: string;
     result?: Record<string, string>;

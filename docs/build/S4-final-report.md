@@ -420,3 +420,258 @@ bash scratch/s4e-mutations.sh              # the six mutation records
 
 Artifacts: `scratch/s4e-transcript.txt`, `scratch/s4e-mutations/` (logs + backups),
 `scratch/s4e-first-boot-*.log`, `scratch/s4e-composed-*.log`, `scratch/s4e-runner-memory-*.log`.
+
+---
+
+## 10. S4f — the trust surface, the second capability gate, and two errata
+
+**Verdict: the three items §8 left open are closed, and S4 GO is not blocked by any of them.**
+`make test` is green at **566 tests / 566 pass / 0 fail / 0 skipped, exit 0, 178.90 s** (S4e: 554),
+`verify-dist` **6/6** and the leak audit clean. No commit was made, no gate was weakened, `SKW_ALLOW_SKIP`
+was never set, and no test asserts a wall-clock value outside `test/perf`.
+
+| # | Item | State | The gate that holds it |
+|---|---|---|---|
+| 1 | §8.5's install screen and D27's signature flags | **closed** | `test/plugin-trust.test.ts` T1–T6; the transcript in §10.1 |
+| 2 | the runner does not enforce capabilities on host calls | **closed** | `test/plugin-capability.test.ts` C1–C2b, plus two mutations (§10.2) |
+| 3 | E-29 and E-30 | **closed** | `docs/sds/02-errata.md` §13; `make verify-frozen` green |
+
+### 10.1 The trust surface — D27 made real
+
+**What was missing.** `skwctl plugin install` had no `--signature`, no `--publisher`, no `--allow-unsigned`, and
+no trust store to consult. `installPlugin()` accepted a `signatureState: 'first_party' | 'imported'` plus a raw
+base64 signature **over the root hash only** — and nothing in the product ever passed either. Unsigned was not the
+fallback; it was the only path, and the screen §8.5 calls "the trust decision" did not exist.
+
+**What exists now.**
+
+- **`app/plugins/trust.ts`** — `skw-plugin-signature/1`, a detached `plugin.sig.json` beside the package. It is
+  detached on purpose: `packageRootHash()` is the package's identity (it is what `cms_plugin_revoked`,
+  `BUNDLE.json.plugins[].root_hash` and `tools/bundle_verify.mjs` compare), and a signature file *inside* the
+  package would have to be excluded from that walk in three places, where one drifting copy turns every signed
+  install into a root mismatch.
+- **What the signature covers:** publisher id, key fingerprint, `plugin.json`'s own sha256, the path and sha256 of
+  **every file**, and the root over that list. A root alone can only say "something changed"; the file list is what
+  makes the refusal name the file.
+- **`<data>/trust/publishers.json`** (`skw-trust/1`, 0600) — written by `skwctl plugin trust import <key.pem>
+  --publisher <id>` and by nothing else. A different key under an already-imported publisher is **refused**, naming
+  both fingerprints, unless `--replace` is passed: a silent key replacement is what a supply-chain swap looks like.
+- **One key baked into the image** (`FIRST_PARTY_SPKI_PEM`, Ed25519 SPKI). A package whose publisher is
+  `skunkworks` and whose signature verifies against it is `first_party` with no operator action. The constant in
+  this tree is a **placeholder that fails closed**: it was generated for this slice and no private half is retained
+  anywhere in the repository, so today no package can be signed as first-party — the safe direction, and a
+  release-pipeline step rather than a code gap (see §10.5). The gate proves the path with a fixture keypair
+  (`firstPartyKeys`, a library-only override) and pins the image key by fingerprint, so replacing the constant is a
+  one-line change that no gate has to be taught.
+- **Unsigned is refused** (`SKW_E_PL_SIGNATURE`, message names `--allow-unsigned`) unless the flag is passed; with
+  it the install is `signature_state='unsigned'`, the banner is printed twice (screen and result line), and the
+  audit row carries `allow_unsigned: true`.
+- **The screen** (§8.5, before anything is enabled): publisher, key fingerprint and where the key came from, every
+  capability in plain words, every table with its export class, settings, public URLs, the test report's timestamp
+  and digest, and the root. `inspectPackage()` runs the whole matrix and writes nothing; the CLI prints the screen
+  and only then calls `installPlugin()`, which re-verifies and refuses if the bytes changed in between.
+- **`tools/plugin_sign.ts`** — the packager's half: `--keygen`, and `--dir/--key/--publisher/--out`. It imports the
+  statement builder from `app/plugins/trust.ts`, so the signer and the verifier cannot drift into two canonical
+  encodings that agree on the happy path and disagree on a path nobody tests.
+
+**Proof — one operator session** (`scratch/s4f/trust-transcript.sh` → `scratch/s4f/transcript.txt`; real commands,
+the fingerprints of that run):
+
+```
+### 3. the tenant owner imports A, and the store is 0600
+plugin: imported publisher=acme-labs fingerprint=spki-sha256:641e3fb1dc0e1228a3b1fdb52907cd0a7280e9f970ab7f55dbcc8f32ade2b689
+plugin: 1 key(s) in …/data/trust/publishers.json (0600); this file is the install's whole trust decision
+-rw------- …/data/trust/publishers.json
+
+### 4. install with --signature: the screen, then the install
+install screen — notes@1.0.0
+  what it is       S4d's third-party reference package: one table, one setting, five declared host ops. …
+  publisher        acme-labs
+  key fingerprint  spki-sha256:641e3fb1…b689   [imported by the tenant owner into data/trust/publishers.json]
+  first-party      no
+  signature        ed25519 over 2 file(s), root cf4e41d1…3e96
+  test report      2026-10-21T00:00:00.000Z  sha256:eadc8d1918af48bb…  runner sha256:live
+  capabilities     5 granted:
+                   store.insert    write a row into one of its own tables
+                   store.query     read rows from its own tables
+                   settings.get    read its own settings
+                   settings.set    write its own settings
+                   assets.resolve  look up a media library item by key
+  tables           p_notes_note  (exports: rows)
+  settings         signature (string), api_token (secret, write-only)
+  public URLs      GET /_plugin/notes/list, POST /_plugin/notes/sign
+plugin: installed id=notes version=1.0.0 root=cf4e41d1…3e96 enabled=yes package=…/data/plugins/notes
+
+### 5. one byte more in index.mjs: refused, naming the file
+REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the package was edited after it was signed: index.mjs
+exit=1
+
+### 6. unsigned: refused without the flag, installed with it
+REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: echo is not signed by any key this install trusts; pass
+  --allow-unsigned to install it anyway (the install is audited as unsigned)
+exit=1
+--- with --allow-unsigned ---
+  *** UNSIGNED — no key this install trusts vouches for this package.            ***
+  *** You passed --allow-unsigned. The install row is signature_state=unsigned    ***
+  *** and the audit chain records allow_unsigned=true.                           ***
+plugin: installed id=echo version=1.0.0 root=798ac035…c8d3 enabled=yes
+plugin: *** UNSIGNED *** this package is not vouched for by any key; the audit row records allow_unsigned=true
+
+### 7. a package signed by B, while A is the imported key: both fingerprints
+REFUSAL: PLUGIN_REFUSED: SKW_E_PL_SIGNATURE: the package was signed by
+  spki-sha256:fd512212…fa40 but acme-labs is trusted as spki-sha256:641e3fb1…b689
+exit=1
+
+### 8. the rows, and the audit entry for the unsigned install
+{"plugin_id":"notes","version":"1.0.0","publisher":"acme-labs","publisher_key_fingerprint":"spki-sha256:641e3fb1…b689","signature_state":"imported","enabled":1}
+{"plugin_id":"echo","version":"1.0.0","publisher":"unsigned","publisher_key_fingerprint":null,"signature_state":"unsigned","enabled":1}
+audit: plugin.install echo {…,"publisher":"unsigned","publisher_key_fingerprint":null,"signature_state":"unsigned","allow_unsigned":true}
+```
+
+`test/plugin-trust.test.ts` is the same four facts as gates, plus two the transcript does not drive: **T2** also
+edits `plugin.json` (the manifest is the grant — the refusal names `plugin.json`) and asserts that a file **added**
+after signing is refused too, and **T5** asserts the image key's fingerprint is the pinned value and that a package
+claiming `publisher: skunkworks` with another key is refused naming both — first-party cannot be self-declared.
+
+**Two limits, stated rather than implied.** (1) `publishers.json` is **one file per install**, not one per tenant,
+because §8.5 names `data/trust/publishers.json`; an operator's import is therefore visible to every tenant's
+install screen, and the screen says which key it is. Per-tenant trust is a v2 decision, not a silence. (2) The
+signature is **detached and is not shipped in an export**: a bundle's integrity claim is `BUNDLE.json` plus the
+package root, which is what `bundle_verify` checks. Provenance across a bundle hand-off is not claimed here.
+
+### 10.2 Defence in depth in the runner — and why the second gate is not a copy of the first
+
+`forwardHost()` used to forward whatever the child asked for; `app/plugins/host.ts` re-checked it. One line, in the
+process that trusts the package least, for the child that is the least trusted thing in the system — a bug in that
+one `if` was the whole distance between a plugin and a tenant's rows.
+
+**What changed.** The grant travels with the invoke: `plugin.invoke` now **requires** `granted: string[]`
+(`app/plugins/host.ts` sends the row's capabilities; `endpoint.ts` passes the row it already read; a caller with no
+row gets the **empty** set, never the manifest's). `runner/server.mjs` intersects it with its own read of the
+manifest — a host can narrow, never widen — stores it on the invoke's binding (it dies with the invoke, so no grant
+can leak to the next caller), logs `invoke … granted=N/M`, and `forwardHost()` refuses any op outside it
+**before writing a `host.call` frame**. Absence of `granted` is `SKW_E_PL_ROW`, not a fallback: a runner that
+defaulted to "the manifest is the grant" could not tell an app that forgot from an app that meant to send nothing,
+and the fallback would be the wider of the two.
+
+**The proof is two mutations, each restored by hash** (`scratch/s4f/capability-mutations.sh`, logs in
+`scratch/s4f/mutations/`). Each gate fails **only** on the layer it names:
+
+| mutation | C1 (runner) | C1c (intersection) | C2 (host) | C2b (no grant) |
+|---|---|---|---|---|
+| **M1** runner's `binding.granted.has(op)` disabled | **red** | **red** | green | green |
+| **M2** host's `capabilities.includes(op)` disabled | green | green | **red** | green |
+| restored (`sha256` identical=yes both) | green | green | green | green |
+
+The red lines are the interesting part:
+
+```
+M1  not ok 1 - C1 … 'SKW_E_PL_PLUGIN_ERROR' !== 'SKW_E_PL_REJECTED'
+        (with the runner's check gone, the package's store.insert reaches the host, the host answers
+         for a table it may write, and the invoke fails later as a plugin error instead)
+M2  not ok 4 - C2 … the host must refuse an undeclared op:
+        {"type":"host.result","id":"h1","ok":true,"result":{"changes":1}}
+        (with the host's check gone, store.delete SUCCEEDS: one row deleted, and the gate's
+         post-condition — the row is still there — is what makes that visible)
+```
+
+C1 has no `host.ts` in the loop (the test *is* the host, a raw socket client that counts `host.call` frames: zero
+for the ungranted op, one for the granted read before it) and C2 has no `server.mjs` in the loop (a fake runner
+writes `host.call` frames itself, exactly as a compromised runner would). Neither case can pass by way of the
+other. C1b is the positive control that the gate is not "refuse everything": with the op granted, both frames are
+forwarded and the invoke succeeds.
+
+### 10.3 Errata E-29 and E-30
+
+Written in the established shape in `docs/sds/02-errata.md` **§13** (four labelled parts per item — defect,
+verbatim drop-in, the test that must change, severity — plus builder items and a traceability table):
+
+- **E-29** — §12.5/§12.3's "`listen 443 ssl` only when `cert_state='issued'`" is what produced the dead first boot:
+  a bundle cannot carry a private key, so a cold install is `pending` by construction, so the old rule left no 443
+  listener at all and never used the self-signed pair the installer mints. The drop-in makes both listeners
+  unconditional and the state a comment, and it names §16's S4 row 12 as owed text ("serves on 80" → "serves 443
+  with the self-signed pair while pending").
+- **E-30** — §8.4's "Cost, accepted" and §13.3's first bullet both assert "it cannot starve the host" while
+  `Memory=0` and `memory.max=max`. The drop-ins state the real bound (one shared cgroup at 384 MiB, no swap escape,
+  `PL_OOM` naming the ceiling, container survives, child restarted) and keep the honest limitation: per-plugin
+  **accounting** is absent and is not claimed.
+- Neither supersedes a frozen contract: `check_frozen.py` quotes neither sentence and still reports
+  `pointers: 23/23` (§13's item 5 moves `range(1, 24)` → `range(1, 31)`, landing E-24..E-30's owed pointer lines,
+  because E-28's item 8 has not run).
+
+### 10.4 What changed
+
+| file | change |
+|---|---|
+| `app/plugins/trust.ts` (new) | `skw-plugin-signature/1`: statement, verify (signature → key → every file → root), trust store (`skw-trust/1`, 0600), import/refuse-on-replacement, the image key, `CAPABILITY_TEXT` (14 ops in plain words), `installScreen()`, `trustDirFor()` |
+| `app/plugins/install.ts` | `inspectPackage()` = §8.5's matrix with no writes, in the spec's order (signature, revocation, report, schema, export class, downgrade); `allowUnsigned`; `InstallResult` carries `signature_state`/`publisher`/`publisher_key_fingerprint`/`unsigned`/`screen`; the root is recomputed before writing and a change refuses; uninstall now **reads** `wal_checkpoint`'s `{busy}` result and retries instead of trusting a `try/catch` that could never fire (§10.5) |
+| `app/plugins/protocol.ts` | §8.1's optional `publisher` block, validated (`id`, `key_id` as `spki-sha256:<64 hex>`) |
+| `app/cli/skwctl.ts` | `plugin trust import|list`; `install --signature/--allow-unsigned`; the §8.5 screen printed **before** the install; the audit row gains `publisher`, `publisher_key_fingerprint`, `signature_state`, `allow_unsigned` |
+| `app/plugins/host.ts` | `invoke()` sends `granted`; a caller with no row sends `[]`; `grantFor()` reads the row when the caller did not |
+| `app/plugins/endpoint.ts` | passes the row it already read as the grant |
+| `runner/server.mjs` | `plugin.invoke` requires `granted`, intersects with the manifest, binds it to the invoke, logs `granted=N/M`; `forwardHost()` refuses outside it before any `host.call`; the stale "host client is not wired" header comment corrected |
+| `tools/plugin_sign.ts` (new) | `--keygen`, and signing from the same statement builder the verifier uses |
+| `test/plugin-trust.test.ts` (new) | T1–T6 |
+| `test/plugin-capability.test.ts` (new) | C1, C1b, C1c, C2, C2b |
+| `test/plugin-host.test.ts` E6 (new) | the strict uninstall ⇒ 404 on the first request, on a coherent filesystem (§10.5) |
+| existing gates | `plugin-host` P1/P6, `plugin-composed`, `cli-plugin` O1/O3/O4 and the four raw-socket invokes now **state** what they relied on silently: `allowUnsigned: true` where the package is unsigned and the case is about something else, and `granted: []`/`['store.query']` on the wire. No assertion was loosened; P4's message moved to the layer that now answers it (`… granted capabilities at the runner`), and C2 covers the host's own refusal with no runner present |
+
+### 10.5 What remains open
+
+Everything §8 listed that is not one of these three is unchanged: a production-CA issuance (§13.4 item 1 — Pebble
+with validation *not* short-circuited is proven, which is stronger than the spec's own note), and `make test-perf`,
+which still needs an idle box (a measurement precondition, not a defect).
+
+**One flake, found by running the suite through the harness, diagnosed, and split in two.** `C4`
+(`plugin-composed.test.ts`) failed **twice in ~9 full-suite runs** and **0 times in 8 runs of its own file**: after
+`uninstallPlugin()` the composed app still answered `200` for the removed endpoint. A diagnostic added to the
+assertion settled which of the two possible causes it was — the failure message now prints both views:
+
+```
+C4 … AssertionError [ERR_ASSERTION]: host: row=gone
+  200 !== 404        (the app container answered with the row the host had already deleted)
+```
+
+So the uninstall committed and this process sees it; the *container* read a page cache that had not observed the
+host's DDL commit — Docker Desktop's virtiofs, not a Linux bind mount and not the product. Two things came out of it:
+
+1. **A real defect next door, fixed.** `uninstallPlugin()` wrapped `PRAGMA wal_checkpoint(TRUNCATE)` in a
+   `try/catch` on the belief that a busy reader throws; the pragma **returns** `{busy, log, checkpointed}`, so that
+   catch could never fire for the reason it named and the one guarantee the uninstall makes to the other process
+   could be skipped silently. The result is now read and the attempt repeated while `busy` (25 × 20 ms), and the
+   catch is reduced to the hard error it actually covers.
+2. **A strict twin, and a bounded allowance only where the boundary exists.** The one-shot property is now asserted
+   with no retry and no pause in **`plugin-host.test.ts` E6**, where the app is a Fastify instance in the same
+   process and the database is on the same filesystem: the *first* request after the uninstall is the tenant's 404,
+   byte-identical to a missing page, while the runner still holds the package. C4 keeps the cross-container case and
+   re-reads for at most a second — **only** when its own connection already reports `row=gone`; if the row is still
+   present in this process, or the app has not caught up within that second, C4 is red. That is the narrowest form
+   that separates "the uninstall did not happen" from "the container's cache has not seen it", and the strict form
+   is asserted where the filesystem can honour it.
+
+Newly named, and none of them a S4 blocker:
+
+- per-tenant trust is not modelled (`publishers.json` is one file per install, §8.5's own path);
+- **the image's first-party key is a placeholder with no retained private half**, so first-party packages cannot be
+  signed until the release pipeline bakes its own public key into `FIRST_PARTY_SPKI_PEM` (`plugin_sign --keygen`,
+  keep the private half, replace the constant). It fails closed — an unsigned or wrongly-signed package is refused
+  as `imported`/`unsigned`, never granted as first-party — and no first-party package exists in v1;
+- `data/trust/revoked.json` is named by §8.5 and has **no writer** — revocation is `cms_plugin_revoked` today, so
+  the file is a second source of truth waiting to disagree with the first (recorded in §13's traceability);
+- a signature does not travel in an export; the bundle's root and `BUNDLE.json` remain the integrity claim;
+- the runner still holds its package list from boot, so `install`/`uninstall` say "restart the runner service".
+
+### 10.6 Reproducing
+
+```
+make test                                                        # 566 / 566 / 0 / 0, exit 0, 178.90 s
+node scripts/run-node-tests.mjs --timeout=180000 test/plugin-trust.test.ts
+node scripts/run-node-tests.mjs --timeout=180000 test/plugin-capability.test.ts
+bash scratch/s4f/trust-transcript.sh > scratch/s4f/transcript.txt # the session quoted in §10.1
+bash scratch/s4f/capability-mutations.sh                         # M1/M2 and the hash-identical restore
+```
+
+Artifacts: `scratch/s4f/transcript.txt`, `scratch/s4f/mutations/{M1-runner-check-disabled,M2-host-check-disabled,
+after-restore}.log`, `scratch/s4f/mutations/{server.mjs,host.ts}.backup`, `scratch/s4f/make-test.log` (the 565 run).
+`scratch/s4f/pubA.{key,pub}` are the transcript's throwaway publisher keys — the image key's private half is
+deliberately not kept anywhere (§10.5).

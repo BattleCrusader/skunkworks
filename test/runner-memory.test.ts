@@ -162,7 +162,7 @@ test('M1 — the ceiling is in the shipped compose file, and the container’s c
 
 test('M2 — a package that asks for more than the ceiling is refused by name (PL_OOM), not by a dead container', () => {
   const [hoard] = call([
-    { id: 1, op: 'plugin.invoke', plugin: 'memhoard', tenant: 'acme', args: { op: 'hold', args: { mb: 4096 } } },
+    { id: 1, op: 'plugin.invoke', plugin: 'memhoard', tenant: 'acme', granted: [], args: { op: 'hold', args: { mb: 4096 } } },
   ]) as { ok: boolean; code?: string; plugin?: string; message?: string }[];
   assert.equal(hoard?.ok, false, `the hoard was allowed: ${JSON.stringify(hoard)}`);
   assert.equal(hoard?.code, 'SKW_E_PL_OOM', `expected PL_OOM, got ${String(hoard?.code)}: ${String(hoard?.message)}`);
@@ -186,7 +186,7 @@ test('M4 — the dead package is restarted and answers again; a JS-object hoard 
   let again: Record<string, unknown> | undefined;
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
-    const [res] = call([{ id: 1, op: 'plugin.invoke', plugin: 'memhoard', tenant: 'acme', args: { op: 'hold', args: { mb: 8 } } }]) as Record<
+    const [res] = call([{ id: 1, op: 'plugin.invoke', plugin: 'memhoard', tenant: 'acme', granted: [], args: { op: 'hold', args: { mb: 8 } } }]) as Record<
       string,
       unknown
     >[];
@@ -206,7 +206,7 @@ test('M4 — the dead package is restarted and answers again; a JS-object hoard 
   const spawned = docker(['logs', NAME], 10_000);
   assert.match(`${spawned.stdout}${spawned.stderr}`, /heap=64MiB permission=on/, 'the child was not spawned with the heap cap');
   const [objects] = call([
-    { id: 1, op: 'plugin.invoke', plugin: 'memhoard', tenant: 'acme', args: { op: 'holdObjects', args: { mb: 512 } } },
+    { id: 1, op: 'plugin.invoke', plugin: 'memhoard', tenant: 'acme', granted: [], args: { op: 'holdObjects', args: { mb: 512 } } },
   ]) as { ok: boolean; code?: string; message?: string }[];
   assert.equal(objects?.ok, false, 'a 512 MiB object hoard was allowed inside a 64 MiB heap cap');
   assert.equal(objects?.code, 'SKW_E_PL_OOM', `expected PL_OOM for the object hoard, got ${String(objects?.code)}: ${String(objects?.message)}`);

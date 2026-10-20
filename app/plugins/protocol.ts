@@ -89,6 +89,12 @@ export interface Manifest {
   version: string;
   entry: string;
   description?: string;
+  /**
+   * §8.1's `publisher` block, *if the package makes one*. It is a claim, not a grant: the
+   * signature file is what binds a package to a key (§8.5), and when both exist they must
+   * agree or the install is refused.
+   */
+  publisher?: { id: string; key_id?: string };
   capabilities: string[];
   tables: TableSpec[];
   settings: SettingSpec[];
@@ -176,6 +182,21 @@ export function parseManifest(raw: unknown): Manifest {
 
   const manifest: Manifest = { id, version: r.version, entry: r.entry, capabilities, tables, settings };
   if (typeof r.description === 'string') manifest.description = r.description;
+  // §8.1's publisher block. Optional — a package that makes no claim is unsigned — but a
+  // malformed one is a refused package rather than a field nobody validated.
+  if (r.publisher !== undefined) {
+    if (typeof r.publisher !== 'object' || r.publisher === null) bad(id, 'publisher must be {id, key_id}');
+    const p = r.publisher as Record<string, unknown>;
+    if (typeof p.id !== 'string' || !/^[a-z][a-z0-9-]{1,39}$/.test(p.id)) bad(id, `publisher id ${JSON.stringify(p.id)} is not [a-z][a-z0-9-]{1,39}`);
+    const block: { id: string; key_id?: string } = { id: p.id };
+    if (p.key_id !== undefined) {
+      if (typeof p.key_id !== 'string' || !/^spki-sha256:[0-9a-f]{64}$/.test(p.key_id)) {
+        bad(id, `publisher key_id ${JSON.stringify(p.key_id)} is not spki-sha256:<64 hex>`);
+      }
+      block.key_id = p.key_id;
+    }
+    manifest.publisher = block;
+  }
   // D25 (S4e): the public surface. Validated here, before an install writes anything, so a
   // malformed endpoint is a refused package and not a 500 on the tenant's site.
   if (r.endpoints !== undefined) {

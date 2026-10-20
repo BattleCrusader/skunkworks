@@ -2909,3 +2909,224 @@ independent of 1–3; 6–7 are independent of all of them; 8 requires every poi
 | — | **carried, not separate items:** `POINTERS` to `range(1, 29)` (item 8); §1's marker count (item 9); E-24/E-25's owed pointer lines, which item 8 lands | E-26..E-28 | — |
 | — | **open, not closed here:** a token refusal on `GET /d/<key>/file` writes no `denied` row — `verifyToken` fails and throws before the tenant database is opened (`app/download/plane.ts`, the `!verified.ok` branch), while `docs/sds/diagrams/gated-download.puml:59` says "401 … + one `kind='denied'` event row (jti may be NULL)". The only `'denied'` insert in `app/` is the redeem path (`plane.ts:341`). Needs its own item against §7.3 and the diagram — not E-26's, because the window change does not touch it | `app/download/plane.ts` (`!verified.ok`), `docs/sds/diagrams/gated-download.puml:59` | minor (specification) |
 | — | **open, not closed here:** E-26's resume key is `(code, asset, IP, UA)`, so a client that changes network or browser spends a use to resume; that is D32's own key, and narrowing it is a product decision, not an errata's | `IDEA.md` D32; E-26 "Recorded, not closed" | minor (specification) |
+
+---
+
+## 13. Errata E-29..E-30 (post-S4)
+
+**Status:** amendment of record for `docs/sds/SDS.md`, issued after `docs/build/S4-final-report.md` §7 disclosed **two
+deliberate deviations** the S4 build made and declined to resolve silently, and §8 listed them as the last two text
+items before S4 GO.
+
+**Date:** 2026-10-21. **Author:** Architect. **Scope:** the specification, and — unlike §1–§12 — also the code that
+makes the corrected text true. That is stated rather than implied: both items below are places where the shipped
+behaviour is right and the sentence is wrong, so an errata that only re-worded the sentence would leave the next
+Builder free to "fix" the code back to the text.
+
+**Two items, and neither is a decision that needs a CEO.** E-29 replaces a conditional listener with an
+unconditional one plus a comment, because the conditional is what produced the dead first boot; E-30 replaces a
+memory sentence that was **false as shipped** with the one the cgroup now makes true. Both add a bound or a promise
+that holds; neither removes a control. No frozen contract is touched: `check_frozen.py` quotes neither sentence
+(verified this pass — `PASS the SDS quotes the register`, `pointers: 23/23`), so no `SUPERSEDED` marker is owed.
+
+**Numbering.** §12 above is E-26..E-28. This section is §13 and no citation above this line changes. E-28's builder
+item 8 (`POINTERS` → `range(1, 29)`) has **not** landed — the check still reports `pointers: 23/23` against
+`range(1, 24)` (`scripts/model/check_frozen.py:206`), so E-24..E-28's pointer lines are owed. Item 5 below moves the
+range to `range(1, 31)` in one edit rather than twice, because a pointer range that is fixed in two passes is a
+pointer range that will be fixed in three.
+
+---
+
+### E-29 — §12.5 emits `listen 443 ssl` only for `cert_state = 'issued'`, which makes the listener depend on a claim no file backs
+
+**Defect.** `SDS.md:2219–2224` and `SDS.md:2253–2257` state one rule twice: "`listen 443 ssl` is emitted **only** for
+a host whose `domain.cert_state = 'issued'` — a block that listens on 443 without a certificate fails `nginx -t`, so
+the pending state must be a generated property of the block and not a comment", and "a bundle that cannot yet
+obtain one reports `certificate: pending` and serves on 80".
+
+The QA measured what that rule produces on a cold install (`S4-final-report.md` §1.1, reproduced on
+`nginx:1.31-alpine` with the `certs/` a fresh `install.sh` wrote):
+
+```
+[emerg] cannot load certificate "/etc/nginx/certs/acme.test.crt":
+  BIO_new_file() failed (SSL: … No such file or directory …)
+nginx: configuration file /etc/nginx/nginx.conf test failed
+```
+
+The reasoning is circular and the circle closes on the customer. A bundle **cannot carry a private key**
+(`app/export/cms.ts` writes `cert_state: 'none'` for every exported host, and `find bundle -name '*.crt' -o -name
+'*.key'` finds 0), so on a cold install every host is `pending` by construction; a block whose 443 depends on
+`issued` therefore has **no listener on 443 at all** until a CA that the box may not be able to reach issues a
+certificate — and the self-signed pair the installer mints (`tools/install_certs.mjs`, one pair per tenant with
+every host in the SAN set) is never used by the very block it was minted for. The rule's stated reason ("a 443 block
+naming a certificate that does not exist fails `nginx -t`") is true of a *missing file* and false of *this* file,
+which the install guarantees before nginx starts.
+
+The shipped code took the other branch, correctly: `tools/nginx_gen.ts:124` emits `listen 80; listen 443 ssl;` for
+every tenant block, `:122` emits the state as a comment (`# certificate: pending (self-signed until ACME)` or
+`issued`), and `test/first-boot-tls.test.ts` T1–T5 proves the whole chain — a bundle cut from a tenant whose control
+plane said `issued` arrives with `cert_state: none`, nginx starts, HTTPS answers 200 with the self-signed peer, and
+after a real ACME issuance against Pebble (validation **not** short-circuited) the peer fingerprint changes while
+`State.StartedAt` does not (the HUP is a reload).
+
+**Corrected text — drop-in for `SDS.md` §12.5, replacing the paragraph beginning "Per-host HTTP-01 certificates"
+through "…why the promise is bracketed."; the ACME `ask` paragraph after it is unchanged.**
+
+```markdown
+Per-host HTTP-01 certificates, no wildcard (D7): a wildcard needs DNS-01 plus registrar API credentials; HTTP-01
+needs one A record. Let's Encrypt allows 50 certificates per registered domain per week, far more than a sales
+pipeline of demos. **The certificate never gates a listener.** Every tenant block emits `listen 80; listen 443 ssl;`
+unconditionally, because a listener that depends on a claim no file backs is a listener that does not exist on a
+cold install: an exported bundle cannot carry a private key, so it cannot honestly claim `issued`, and the old rule
+therefore left a fresh box serving nothing on 443 until a CA it may not be able to reach answered. What the install
+guarantees instead is the **file**: `install.sh` mints one self-signed pair per tenant with every host of that
+tenant in the SAN set, into `<data>/certs/<host>.crt|key` (0600), and mints only when the file is absent, so
+re-running the installer never downgrades a CA-issued pair. `domain.cert_state` is then a **comment beside the
+block** — `# certificate: pending (self-signed until ACME)` or `# certificate: issued` — and the ACME service's job
+is to replace the bytes and HUP nginx, never to create the listener. A pending certificate is therefore a
+certificate the browser will warn about, which is the honest state; it is not a dead site. Measured: 16.01 s of
+issuance with Pebble and `PEBBLE_VA_ALWAYS_VALID=1`, excluding DNS, port 80 and rate limits — which is why the
+promise is bracketed.
+```
+
+**Corrected text — drop-in for `SDS.md` §12.3, replacing the sentence "`listen 80` is on every block because §12.5
+promises a host serves on 80 while its certificate is `certificate: pending`, and `listen 443 ssl` is emitted
+**only** for a host whose `domain.cert_state = 'issued'` — a block that listens on 443 without a certificate fails
+`nginx -t`, so the pending state must be a generated property of the block and not a comment."**
+
+```markdown
+`listen 80` and `listen 443 ssl` are on every block (E-29). The 443 listener does not depend on `cert_state`,
+because the install guarantees a certificate file for every host before nginx starts (`tools/install_certs.mjs`
+mints one self-signed pair per tenant, never overwriting) and a listener that waited for a CA would leave a cold
+box serving nothing on 443. The state is a generated comment beside the block — `pending (self-signed until ACME)`
+or `issued` — so an operator reads the truth without the listener depending on it. The admin session cookie is
+`Secure`, so the admin is unusable over 80 by construction.
+```
+
+**Test that must change.**
+
+1. **`test/first-boot-tls.test.ts` T1–T5** already assert the corrected behaviour and need no edit: T1 is the
+   generated conf for a bundle whose hosts are all `cert_state: 'none'`, and it asserts `listen 443 ssl` and the
+   `# certificate: pending (self-signed until ACME)` comment on **every** tenant block; T2–T4 assert the installer
+   mints per-host pairs and that `nginx -t` passes against them; T5 asserts the Pebble issuance and the HUP. The
+   gate that must be *added* is the negative control, and it is the one this item exists for: restore
+   `if (r.cert_state === 'issued')` around the 443 emission in `tools/nginx_gen.ts` and T1 must go red, naming the
+   missing listener.
+2. **`test/nginx-config.test.ts`** — its per-tenant assertions quote the generated file; they now quote a comment
+   where they used to quote an absence. No assertion weakens: the file is compared byte-for-byte with
+   `nginx/conf.d/10-app.conf` by `D6` of `make verify-dist`, so the committed conf must be regenerated in the same
+   commit as any generator change.
+3. **`SDS.md` §16's S4 row 12** — "serves on 80 while pending" becomes **"serves 443 with the self-signed pair while
+   pending"**. The row is prose, no checker quotes it, which is exactly why it is listed as an item rather than
+   assumed.
+
+**Recorded, not closed — a self-signed certificate on 443 is a browser warning, not a TLS failure, and the
+operator is told.** The screen that would say so is `skwctl`'s (there is no admin screen for it in v1); the
+generated conf carries the comment and the install log carries `certificate: pending (self-signed) <host> for
+<hosts>`. Whether a demo host should instead serve 80-only until issuance is a product decision about first
+impressions, not a spec correction, and it is not taken here.
+
+**Severity: major (specification, availability).** The rule's own reason produced the failure it was written to
+prevent, on the first boot of every install, and the QA reproduced it as a dead site.
+
+---
+
+### E-30 — §8.4 and §13.3 say a plugin "cannot starve the host" while the container had no memory ceiling at all
+
+**Defect.** `SDS.md:1441–1443` (**Cost, accepted**): "One cgroup for all plugins means per-plugin memory is **not**
+enforceable — a hostile plugin can starve its co-tenants inside the runner. It cannot starve the host and it cannot
+affect a page (§13.3)." `SDS.md:2353–2355` (**§13.3**, bullet 1): "**No per-plugin memory ceiling.** One cgroup for
+all plugins. A hostile plugin can starve its co-tenants inside the runner; it cannot starve the host, and it cannot
+affect a page, because no plugin code is on the render path."
+
+Both sentences describe a bound that did not exist. Measured by the S4 QA (`S4-final-report.md` §3.1):
+`docker inspect` → `Memory=0 MemorySwap=0`; inside the container `/sys/fs/cgroup/memory.max` → `max`; one package
+held 256 MB inside a 1.54 GB VM. "It cannot starve the host" had no ceiling to be true against — a single package
+could take the whole VM and the compose stack with it, and the sentence said otherwise in two places, which is how
+a limitation becomes an assumption nobody checks.
+
+The shipped code took the other branch (`S4-final-report.md` §3.2–§3.3): `docker-compose.yml:105–106` sets
+`mem_limit: 384m` and `memswap_limit: 384m` (equal, or a package escapes the ceiling by being paged out);
+`runner/server.mjs:73–74` sizes the child heap (`--max-old-space-size=64`, `:215`) and the reported ceiling
+(`RUNNER_MEMORY_MB=384`); an OOM kill is distinguished from the 2 s timeout by the cgroup's `oom_kill` counter and
+V8's heap-limit abort (`:305`) and reported as **`SKW_E_PL_OOM`** with the ceiling in the message; a dead child is
+restarted, with a five-deaths-a-minute limit.
+
+Measured: `Memory=402653184 MemorySwap=402653184`, `memory.max=402653184`, `20.11MiB / 384MiB (5.24%)` idle, and for
+a 4096 MiB request `{"code":"SKW_E_PL_OOM","message":"plugin memhoard was killed at the runner's 384 MiB cgroup
+while running hold"}` with `memory.peak=384.0 MiB` and `Running=true` afterwards — the host was never in the blast
+radius, and the package answered again 250 ms later. Per-plugin **accounting** is still absent and still not
+claimed: the ceiling is one cgroup shared by every child.
+
+**Corrected text — drop-in for `SDS.md` §8.4, replacing the "Cost, accepted:" paragraph.**
+
+```markdown
+**Cost, accepted:** 47.4–48.0 MB idle, 0.19 s cold start, 38.2–42.8 MB per child, 22 µs IPC. One cgroup for all
+plugins means per-plugin memory is **not** enforceable — a hostile plugin can starve its co-tenants inside the
+runner, and a package that asks for more than the ceiling is killed by the kernel in its own child rather than by
+an accountant (measured at 384.0 MiB of 384 MiB for a 4 GiB request, reported `SKW_E_PL_OOM` naming the ceiling).
+What the ceiling does buy is the sentence this paragraph used to assert without one: **it cannot starve the host**,
+because the cgroup is `mem_limit: 384m` with `memswap_limit` equal to it — no swap escape — and the container
+survives the kill (`Running=true`) and serves the next request after the child is restarted. It cannot affect a
+page either, because no plugin code is on the render path (§13.3).
+```
+
+**Corrected text — drop-in for `SDS.md` §13.3, replacing bullet 1 only.**
+
+```markdown
+- **No per-plugin memory ceiling — one ceiling for all of them.** Every plugin child shares one cgroup, capped at
+  `mem_limit: 384m` with `memswap_limit: 384m`; per-plugin accounting is not claimed and is not implemented. A
+  hostile plugin can starve its co-tenants inside the runner, and it is killed for trying: a request beyond the
+  ceiling dies in its own child with `SKW_E_PL_OOM` naming the ceiling, the container stays up, and the child is
+  restarted (five deaths a minute, then the package stays down). It cannot starve the host, and it cannot affect a
+  page, because no plugin code is on the render path.
+```
+
+**Test that must change.**
+
+1. **`test/runner-memory.test.ts` M1–M4** already assert the corrected behaviour: M1 reads
+   `HostConfig.Memory`/`MemorySwap` **and** `/sys/fs/cgroup/memory.max` inside the container and requires both to
+   equal the ceiling (a compose file that says `384m` and a container that does not have it are different facts);
+   M2 requires `PL_OOM` naming the package and the ceiling, and `Running=true` afterwards; M3 requires
+   `memory.peak` to have moved above 64 MiB (so the number is a measurement) and to stay within the ceiling; M4
+   requires the restarted child to answer again. The negative control is the one this item exists for: remove
+   `mem_limit`/`memswap_limit` from `docker-compose.yml` and M1–M4 must go red.
+2. **No new test is proposed for RSS.** A memory assertion in `make test` is a flake and one in `make test-perf`
+   measures the box; `memory.peak` inside the cgroup is a *bound* observation, which is the property the spec
+   claims. That distinction is E-27's, repeated here because this item is where a Reader will look for it.
+
+**Recorded, not closed — 50 tenants × one 384 MiB cgroup is still one cgroup.** A per-plugin ceiling would need one
+container (or one cgroup) per package, which is the process-per-tenant arithmetic §8.4 rejects on measurement. The
+honest v1 statement is the one above: a co-tenant can be starved, the host cannot, and the install screen says the
+box is sized for a handful of plugins (§13.3's closing sentence).
+
+**Severity: major (specification, containment).** The sentence was false as shipped, in the section a security
+reviewer reads first, and it was false in the direction that makes a reviewer stop looking.
+
+---
+
+### Builder items this section owes — ordered, each naming the file and the gate that proves it
+
+| # | Item | Files | Gate that proves it |
+|---|---|---|---|
+| 1 | **E-29** paste the §12.5 drop-in and its pointer line | `docs/sds/SDS.md` §12.5 | `make verify-frozen` green; it quotes neither sentence, so the proof is that the retired clause ("serves on 80") is absent and the replacement is present verbatim |
+| 2 | **E-29** paste the §12.3 drop-in and its pointer line; regenerate the committed conf in the same commit | `docs/sds/SDS.md` §12.3, `nginx/conf.d/10-app.conf` | `make verify-dist` **D6** (byte-identical regeneration) |
+| 3 | **E-29** §16's S4 row 12 wording: "serves on 80 while pending" → "serves 443 with the self-signed pair while pending" | `docs/sds/SDS.md` §16 | **none — and said plainly:** no checker quotes an S4 row; the row is read by people |
+| 4 | **E-30** paste the §8.4 and §13.3 drop-ins and their pointer lines | `docs/sds/SDS.md` §8.4, §13.3 | `make verify-frozen`; `M1` asserts the numbers the text now names (384 MiB, both limits) |
+| 5 | **E-29/E-30** `POINTERS` → `range(1, 31)`, landing E-24..E-30's pointer lines (E-28's item 8 has not run; the check reports `pointers: 23/23`) | `scripts/model/check_frozen.py:206` | the pointer phase reports 31/31; renaming one pointer line turns it red |
+| 6 | **E-29** the negative control, recorded as a gate and not a claim: restore `if (r.cert_state === 'issued')` around the 443 emission | `tools/nginx_gen.ts` | `test/first-boot-tls.test.ts` T1 red; restored byte-identical afterwards |
+| 7 | **E-30** the negative control: remove `mem_limit`/`memswap_limit` | `docker-compose.yml` | `test/runner-memory.test.ts` M1–M4 red; restored byte-identical afterwards |
+
+Items 1–4 are text; 6–7 are the mutations that make the text's two claims gates rather than sentences; 5 is last
+because it requires every pointer line to exist.
+
+---
+
+### Traceability — E-29..E-30
+
+| E | Closes | Source (verified in this pass) | Severity |
+|---|---|---|---|
+| **E-29** | §12.5/§12.3 emit `listen 443 ssl` only for `cert_state = 'issued'`, so a cold install has no 443 listener and the self-signed pair the installer mints is unused; §16's S4 row 12 still says "serves on 80" | `S4-final-report.md` §1.1 (the `nginx -t` failure, quoted), §1.2 (the fix: 443 for every block, state as a comment), §7 item 1, §8; `SDS.md:2219–2224`, `:2253–2257`; `tools/nginx_gen.ts:122`, `:124`; `app/export/cms.ts` (`cert_state: 'none'`); `tools/install_certs.mjs`; `install.sh`; `test/first-boot-tls.test.ts` T1–T5; `test/nginx-config.test.ts` | major (specification, availability) |
+| **E-30** | §8.4 and §13.3 assert "it cannot starve the host" while `Memory=0`, `memory.max=max`, and a package held 256 MB in a 1.54 GB VM; per-plugin accounting is still absent and must stop being implied | `S4-final-report.md` §3.1 (the measurement), §3.2 (the fix), §3.3 (peak 384.0/384 MiB, `PL_OOM`, container alive), §7 item 2, §8; `SDS.md:1441–1443`, `:2353–2355`; `docker-compose.yml:105–106`; `runner/server.mjs:73–74`, `:215`, `:305`; `test/runner-memory.test.ts` M1–M4 | major (specification, containment) |
+| — | **carried, not separate items:** the pointer range and E-24..E-28's owed pointer lines (item 5); the §16 S4 row-12 wording (item 3) | E-29..E-30 | — |
+| — | **open, not closed here:** `data/trust/revoked.json` is named by §8.5 and has no writer in this tree — revocation is the `cms_plugin_revoked` table today, and the file is a second source of truth waiting to disagree with it. Needs its own item against §8.5, not E-29's | `docs/sds/SDS.md:1453`; `app/plugins/install.ts` (the `cms_plugin_revoked` read); the only occurrence under `app/` is the comment at `app/plugins/protocol.ts:251` | minor (specification) |

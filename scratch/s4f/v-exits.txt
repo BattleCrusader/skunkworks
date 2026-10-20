@@ -1,0 +1,2 @@
+npm_exit=1
+make_exit=0

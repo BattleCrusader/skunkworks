@@ -211,9 +211,46 @@ export class PluginHost {
   /**
    * Run one package entrypoint. `tenant` is the app's binding, and the runner forwards
    * every host op the package makes during this call back to this connection.
+   *
+   * `grant` is the capability set the tenant's installed row carries, and the runner
+   * refuses anything outside it before asking the host. The caller that already read the
+   * row passes it (`endpoint.ts` does); a caller that did not gets the row read here, and a
+   * package with no row gets the **empty** grant — never the manifest's, because "no row"
+   * and "every capability" must not be the same request.
    */
-  async invoke(tenant: string, plugin: string, op: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    return await this.request({ op: 'plugin.invoke', plugin, tenant, args: { op, args } });
+  async invoke(
+    tenant: string,
+    plugin: string,
+    op: string,
+    args: Record<string, unknown> = {},
+    grant?: readonly string[],
+  ): Promise<unknown> {
+    const granted = grant ?? this.grantFor(tenant, plugin);
+    return await this.request({ op: 'plugin.invoke', plugin, tenant, granted: [...granted], args: { op, args } });
+  }
+
+  /**
+   * The grant as the tenant's own database states it. Read-only and tolerant: an absent
+   * table, an absent row or an unreadable file is the empty set, which the runner treats as
+   * "no host op", and the host's own check refuses the op with the row's own reason.
+   */
+  private grantFor(tenant: string, plugin: string): readonly string[] {
+    let db: Database.Database | null = null;
+    try {
+      db = openAdminWrite(`${this.options.dataDir}/tenants/${tenant}/site.db`, 5000);
+      const table = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_plugin_installed'`).get();
+      if (table === undefined) return [];
+      const row = db.prepare('SELECT manifest_json FROM cms_plugin_installed WHERE plugin_id = ?').get(plugin) as
+        | { manifest_json: string }
+        | undefined;
+      if (row === undefined) return [];
+      const manifest = JSON.parse(row.manifest_json) as { capabilities?: unknown };
+      return Array.isArray(manifest.capabilities) ? manifest.capabilities.map(String) : [];
+    } catch {
+      return [];
+    } finally {
+      db?.close();
+    }
   }
 
   close(): void {

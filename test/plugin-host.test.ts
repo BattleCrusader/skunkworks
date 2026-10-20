@@ -40,7 +40,7 @@ import { loadEnv } from '../app/env.ts';
 import { runExport } from '../app/export/index.ts';
 import { AppError } from '../app/errors.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
-import { installPlugin, installedPlugins, assertEnabled } from '../app/plugins/install.ts';
+import { installPlugin, installedPlugins, assertEnabled, uninstallPlugin } from '../app/plugins/install.ts';
 import { hostOp } from '../app/plugins/ops.ts';
 import { packageRootHash, readManifest } from '../app/plugins/protocol.ts';
 import { openAdminWrite } from '../app/db/classes.ts';
@@ -116,8 +116,7 @@ before(async () => {
     sourceDir: PLUGIN_SRC,
     testReportPath: reportPath,
     runnerImageDigest: RUNNER_DIGEST,
-    publisher: 'acme-labs',
-    signatureState: 'unsigned',
+    allowUnsigned: true,
     enable: true,
   });
 
@@ -186,7 +185,7 @@ test('P1 — the install matrix refuses an untested, stale or revoked package, a
 
   // no report
   assertAppError(
-    () => installPlugin({ siteDb, pluginsRoot: join(fixture.dir, 'unused'), sourceDir: source, runnerImageDigest: RUNNER_DIGEST }),
+    () => installPlugin({ siteDb, pluginsRoot: join(fixture.dir, 'unused'), sourceDir: source, runnerImageDigest: RUNNER_DIGEST, allowUnsigned: true }),
     'SKW_E_PL_TESTS_STALE',
     /no test report/,
   );
@@ -201,6 +200,7 @@ test('P1 — the install matrix refuses an untested, stale or revoked package, a
         sourceDir: source,
         testReportPath: stale,
         runnerImageDigest: RUNNER_DIGEST,
+        allowUnsigned: true,
       }),
     'SKW_E_PL_TESTS_STALE',
     /produced by another runner image/,
@@ -231,6 +231,7 @@ test('P1 — the install matrix refuses an untested, stale or revoked package, a
         sourceDir: revokedSource,
         testReportPath: revokedReport,
         runnerImageDigest: RUNNER_DIGEST,
+        allowUnsigned: true,
       }),
     'SKW_E_PL_REVOKED',
     /revoked on this install/,
@@ -254,7 +255,7 @@ test('P1 — the install matrix refuses an untested, stale or revoked package, a
     sourceDir: source,
     testReportPath: freshReport,
     runnerImageDigest: RUNNER_DIGEST,
-    signatureState: 'unsigned',
+    allowUnsigned: true,
     enable: true,
   });
   assert.equal(ok.enabled, true);
@@ -328,7 +329,15 @@ test('P3 — a third-party package runs and its host ops are answered against th
 
 test('P4 — an undeclared op is PL_REJECTED and a foreign table is PL_NO_TABLE, both naming the package', async () => {
   assert.ok(handle !== null);
-  await assertAppRejection(() => handle!.plugins.invoke('acme', 'notes', 'steal', {}), 'SKW_E_PL_REJECTED', /store\.delete is not in notes's declared capabilities/);
+  // S4f moved this refusal one hop earlier: the runner now checks the grant before it forwards,
+  // so the message says so. The property is unchanged — refused, `PL_REJECTED`, naming op and
+  // package — and `test/plugin-capability.test.ts` C2 proves the host's own check separately,
+  // with no runner in the loop.
+  await assertAppRejection(
+    () => handle!.plugins.invoke('acme', 'notes', 'steal', {}),
+    'SKW_E_PL_REJECTED',
+    /store\.delete is not in notes's granted capabilities at the runner/,
+  );
   await assertAppRejection(() => handle!.plugins.invoke('acme', 'notes', 'foreign', {}), 'SKW_E_PL_NO_TABLE', /notes did not declare table "cms_page"/);
 });
 
@@ -428,7 +437,7 @@ test('P6 — an installed but disabled package is PL_UNAVAILABLE, and so is a ho
     sourceDir: source,
     testReportPath: report,
     runnerImageDigest: RUNNER_DIGEST,
-    signatureState: 'unsigned',
+    allowUnsigned: true,
     enable: false,
   });
   const rows = installedPlugins(openAdminWrite(siteDb, 5000));
@@ -567,4 +576,41 @@ test('E5 — a plugin endpoint body is capped at 16 KiB before the runner is ask
   });
   assert.equal(res.statusCode, 413, res.body);
   assert.equal((res.json() as { error?: { code?: string } }).error?.code, 'SKW_E_PLT_BODY_TOO_LARGE');
+});
+
+/**
+ * S4f — the strict half of §8.6's uninstall row: **the first request after the uninstall is
+ * the 404**, on a coherent filesystem.
+ *
+ * The composed gate (`plugin-composed.test.ts` C4) makes the same assertion across a container
+ * boundary, where Docker Desktop's virtiofs can serve one request from a page cache that has
+ * not seen the host's DDL commit — measured, roughly one full-suite run in four, with the host
+ * already reporting `row=gone`. That gate therefore re-reads for up to a second *only* when
+ * this process's own view says the drop happened. Here there is no boundary to cross: the app
+ * is a Fastify instance in this process, the tenant database is on this process's filesystem,
+ * and the request below is the first one after `uninstallPlugin()` returned — so a 200 is the
+ * uninstall or the route, and nothing else.
+ */
+test('E6 — the first request after an uninstall is the tenant’s 404, byte-identical to a missing page', async () => {
+  assert.ok(handle !== null);
+  const first = await handle.app.inject({ method: 'GET', url: '/_plugin/notes/list', headers: { host: 'acme.test' } });
+  assert.equal(first.statusCode, 200, 'the positive control: the endpoint answers before the uninstall');
+
+  uninstallPlugin({
+    siteDb: fixture.sitePath('acme'),
+    pluginsRoot,
+    pluginId: 'notes',
+    archiveDir: join(fixture.dir, 'plugin-archive'),
+  });
+
+  // No retry, no pause: §8.6 says "404 once uninstalled", and this is the first request.
+  const gone = await handle.app.inject({ method: 'GET', url: '/_plugin/notes/list', headers: { host: 'acme.test' } });
+  const miss = await handle.app.inject({ method: 'GET', url: '/no-such-page', headers: { host: 'acme.test' } });
+  assert.equal(gone.statusCode, 404, gone.body);
+  const strip = (s: string): string => s.replace(/"requestId":"[^"]+"/, '"requestId":"*"');
+  assert.equal(strip(gone.body), strip(miss.body), 'an uninstalled endpoint must not be an oracle');
+
+  // The runner still holds the package until it restarts; the host must not route to it.
+  const listed = await handle.plugins.list();
+  assert.equal(listed.some((p) => p.id === 'notes'), true, 'the runner kept the package: the 404 was the host\'s');
 });
