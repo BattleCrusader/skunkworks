@@ -2169,3 +2169,260 @@ component in S4 will produce it on day one and a silently ignored parameter is a
 | — | **declined — not a defect:** "no S2 shell calls `data.source`, so publish→page→rows has no end-to-end gate". True, and not a specification gap: no §16 S2 criterion claims a template consumer, §6.3 puts the `list` component in S4, and this errata does not invent an S2 integration to make a diagram look complete. It is recorded in §16 S4's scope as the first consumer, where it already is | `S2-qa.md` §4 A3 note, §8 | none |
 | — | **not a new item — already specified:** `D8`, "no session sweeper". E-18 already requires one in writing ("the sweeper deletes a row when either deadline has passed, and deletes a revoked row once the cap has passed"), so this is a build gap against frozen text, not a specification gap; S2b's checklist item 3 is where it is proved | `S2-qa.md` §6 D8; E-18 above | minor (build) |
 | — | **open, not closed here:** `D6` (a raw `SQLITE_ERROR` when a `query` source's table loses a column out of band — a 500 on a public render) is a resolver catch-all, queued for S3's error-surface work; `D10` (§17 attributes S2 proof to O-17, O-30 and C-23) is a register correction belonging to the §17 pass | `S2-qa.md` §4 A5b, §2.1, §6 D6/D10 | minor |
+
+---
+
+## 11. Errata E-24, E-25 (post-S2-closeout)
+
+**Status:** amendment of record for `docs/sds/SDS.md`, issued after `docs/build/S2-closeout-report.md`
+(tree `d77a8c3`) closed M5, M6 and D12 and flagged two contradictions instead of resolving them silently
+(§6, open items 1 and 2 of that report).
+
+**Date:** 2026-10-20. **Author:** Architect. **Scope:** the specification. No implementation file is edited
+by this pass; both items are text, and both corrected texts are what a Builder or a reviewer applies.
+
+**Two items, and each is a sentence the document can no longer keep.** E-24: §6.2 refuses a non-integer
+`limit` and, two sentences later, floors one — one rule with two answers in one paragraph, where the code has
+already chosen the refusal (M5, witnessed by `M5-1` and its mutation). E-25: the frozen suite budget
+`--test-timeout=15000` is 1.46× the pre-split worst file, so 6× CPU load failed a file whose every test
+passed; the perf split moved that file out, and the budget is `40000`, derived 4.4× from the worst file that
+remains. **Neither item decides a behaviour that is not already implemented and measured**, which is why
+neither is a narrowing: E-24 retires a sentence that contradicted the row above it, and E-25 records a
+derivation that was already applied.
+
+**Numbering.** §10 above is the traceability table for §8 (post-S2-QA). This section is §11, and no citation
+above this line changes.
+
+**Precedence, and the supersessions this section relies on** (§1's order is unchanged):
+
+1. **E-24 `SUPERSEDES SDS.md §6.2's "The clamp is Math.floor on a number" sentence`** — that sentence, and
+   only that sentence. The paragraph's opening rule, the table row above it, §6.1a and §6.3 are untouched.
+   The sentence reads as a licence to floor because it names `Math.floor` as "the clamp"; the clamp is
+   `limit_max`, and flooring is not clamping.
+2. **E-24 also retires E-23's own test sentence** "`limit: 2.7` → floors to 2, as today" (§8 (post-S2-QA),
+   E-23, "Test that must change"). That sentence is errata text, not adopted contract, so it takes no
+   `check_frozen.py` entry: it is replaced in effect by E-24's matrix, and this line is the only pointer E-23
+   keeps. E-23's block is otherwise as issued — the precedent is E-20's amendment of E-18's closing line,
+   where the amendment is declared and the historical block is not rewritten.
+3. **E-25 `SUPERSEDES SDS.md §16 S1's env row (--test-timeout)`** — the clause, never the row: the 5 s
+   `spawnSync`, the `ETIMEDOUT` named failure and the stdout assertion are E-8's and stay word for word. The
+   same clause in E-8's drop-in (§2) and in §4's item 12 gate cell is superseded by the same sentence.
+   `make verify-frozen` is green on this row today because `check_frozen.py` does not quote it (S2-closeout
+   §3.3); E-25's test row below puts the replacement under quote so the retired number cannot return.
+4. **Neither item supersedes `00-adjudication.md`.** E-24 decides a sentence §6.2 got wrong about a rule the
+   contract already states ("a rule with two answers is not a rule"); E-25 decides a budget the SDS stated as
+   a number and now states as a derivation. No adjudicated decision moves.
+
+---
+
+### E-24 — §6.2 refuses a non-integer `limit` and, two sentences later, floors one
+
+**Defect.** `SDS.md` §6.2 (pasted from E-23) carries three statements of one rule, and the second and third
+contradict the first:
+
+- the table row (`SDS.md:1072`): "`limit` clamped to `limit_max`, and a non-integer `limit` is refused, never
+  ignored … a non-integer is `422 SKW_E_RT_SOURCE_UNKNOWN`, `reason='param_invalid'`, `detail.param='limit'`";
+- the paragraph (`SDS.md:1082–1084`): "**A `limit` that is not an integer is refused, not ignored.** … The
+  clamp is `Math.floor` on a number, and anything else is `param_invalid`" — which says the opposite: a
+  number that is not an integer is still a *number*, and is floored;
+- E-23's own test paragraph: "`limit: 2.7` → floors to 2, as today."
+
+A Builder applying the paragraph verbatim restores D5: `'5'` falls through to `limit_default`, `5.5` floors,
+and only a negative refuses — three answers for one rule. The implementation refuses all four shapes
+(`S2-closeout.md` §2): `requestLimit` (`app/sources/compile.ts:126–134`) is `typeof value !== 'number' ||
+!Number.isInteger(value)` → refusal, then `value < 1` → refusal; `asLimit` (`app/sources/spec.ts:139–148`)
+applies the same predicate to the spec's two fields with `detail.field` naming which. Witnessed by
+`test/sources.test.ts` `M5-1` — the four shapes QA measured, each at publish **and** at resolve, asserting
+code + reason + `detail.param`, **zero** `cms_datasource` rows written, and the positive control `limit: 2`
+resolving with `limit === 2` — and by one mutation (the `Number.isInteger` clause removed → `M5-1` red,
+`'resolve must refuse 5.5 (a fractional number)'`; `compile.ts` sha256 `d11dd76e…` before and after).
+**No test ever asserted flooring** (S2-closeout §2, closing sentence), so retiring it weakens nothing.
+
+**The decision, and why.** A non-integer `limit` is **refused, never floored**. Flooring is silent: it turns
+a caller's bug into a page with the wrong number of rows and no signal. `2.7` is not "a bit more than two
+rows" — it is a caller who computed a limit wrongly, and the product's answer to a caller bug is a refusal
+that names the parameter, which is the answer `'abc'` already gets. The CEO fixed this direction for this pass
+and it is the implemented one; the errata's job is to stop the document saying both.
+
+**Corrected text — drop-in for `SDS.md` §6.2, replacing the paragraph "A `limit` that is not an integer is
+refused, not ignored." and nothing else.**
+
+```markdown
+**A `limit` is an integer or it is refused — never floored, rounded or ignored.** `data-limit` is an HTML
+attribute and therefore always a string; the component that owns the attribute parses it (§6.3's `list` is
+the first caller) and passes a number, and the source accepts a number or refuses. The refusal is
+`422 SKW_E_RT_SOURCE_UNKNOWN`, `reason='param_invalid'`, `detail.param='limit'` — the code, reason and detail
+every other invalid parameter already produces. `Math.floor` appears nowhere in this rule: a value that would
+need it is not a number of rows, and a floored limit answers a caller's bug with a page that has the wrong
+number of rows and no signal.
+
+**One predicate, two moments.** At **render** it is applied to the request's `limit`; at **publish** to the
+spec's `limit_max` and `limit_default`, with `detail.field` naming which of the two was wrong. Every
+"refused" below is the identical response — same code, same `reason`, same `detail.param` — and writes
+nothing: no `cms_datasource` row at publish, no rows at render.
+
+| Value | Render — the request's `limit` | Publish — the spec's `limit_max` / `limit_default` |
+|---|---|---|
+| **absent** | the spec's `limit_default` (10 when the spec sets none); `truncated=false`, no `data-truncated` | the field's default: `limit_max` → 50, `limit_default` → `min(10, limit_max)` |
+| **integer** `n ≥ 1` | used as `n`; if `n > limit_max` it is clamped to `limit_max` with `truncated=true` → `data-truncated` — a clamp, not a refusal | accepted when `1 ≤ n ≤ 500` (`MAX_LIMIT`); `limit_max` is the ceiling itself, so nothing clamps it |
+| **numeric string** `'5'` | refused | refused |
+| **float** `5.5` | refused — **not floored, not rounded** | refused |
+| **negative** `-1`, and `0` | refused | refused |
+| **non-numeric** `'abc'`, `null`, `true`, array, object | refused | refused |
+
+"Refused" is not "ignored" and not "defaulted": a caller who sends `'5'` gets an error naming the parameter,
+because accepting it for one caller and dropping it for another is the rule with two answers this paragraph
+exists to forbid.
+```
+
+**Test that must change.** None. `M5-1` is the gate and already asserts the four shapes QA measured at both
+moments plus the integer positive control; the mutation that removes `Number.isInteger` is its exclusive
+witness. `0` and the non-scalar values fall under the same two branches (`typeof !== 'number' ||
+!Number.isInteger`, then `< 1`) that `M5-1` already exercises, so this item **does not invent an assertion**
+for them — a second test over a branch another test owns is the false precision E-22 forbids. The change owed
+is textual: the flooring sentence out of `SDS.md` §6.2 and out of E-23's test paragraph.
+
+**Recorded, not closed — the default path is not clamped.** Read while checking the matrix against the code: a
+`limit_default` greater than `limit_max` is accepted at publish (`asLimit` checks only `1…500`, `spec.ts:141`)
+and a render that sends **no** `limit` uses `spec.limitDefault` without the clamp (`compile.ts:161–172` — the
+clamp branch runs only when a `limit` is present), so `{limit_max: 5, limit_default: 50}` serves 50 rows and
+contradicts the row that says `limit` is clamped to `limit_max`. Nothing stops it: `cms_datasource.spec_json`
+is checked for `json_valid` only. This is a **separate item, not part of E-24** — the fix is either a publish
+refusal (`param_invalid`, `detail.field='limit_default'`) or a render clamp, and the first is the shape this
+item just chose for flooring, but it changes behaviour nothing has measured and E-24's subject is the flooring
+sentence. Flagged for the next errata rather than decided here.
+
+**Severity: major (specification).** The sentence and the row it sits under cannot both be implemented, and
+the sentence names the exact operation (`Math.floor`) a Builder would reach for. Applied as written it
+re-opens D5 — the defect M5 closed in this pass.
+
+---
+
+### E-25 — the frozen `--test-timeout=15000` is false, because 1.46× was never headroom
+
+**Defect.** `SDS.md` §16 S1's env row says "the suite also runs under `node --test --test-timeout=15000`, so
+a regression is red in under 20 s". Measured (`S2-closeout.md` §3.3):
+
+- node applies `--test-timeout` to **each test and to the file-level subtest**, so a file whose total exceeds
+  it fails even when every test inside it passes — measured on two 700 ms tests with a 1000 ms budget:
+  `ok 1 - a`, `not ok 1 - <file>`;
+- the pre-split worst idle file was `test/sources.test.ts` at **10 264 ms** — **1.46×** under 15 000;
+- at 6× CPU load the unmodified file exited `not ok 1 - test/sources.test.ts   duration_ms: 15009.712459`
+  with every test inside it green (a `git worktree` at `639763e`, `load-run.sh 6`).
+
+So the number was true only of an idle box, which is not the box a gate runs on. The **split** is what fixed
+it — the same file under the same 15 000 ms cap at the same 6× load passes 16/16 in 364.7 ms once its rate
+assertions moved to `make test-perf` — and the budget is the second half, not the first.
+
+**Corrected text, site 1 — a new paragraph in `SDS.md` §16's preamble, after "The gates declare their
+interpreter."** This is where the derivation lives, so a future reader re-derives instead of widening.
+
+```markdown
+**The gates declare their time budget, and it is derived from a measurement.** `make test` runs under
+`TEST_TIMEOUT_MS`, which is **40 000** ms today and is re-derived — never raised to make a red test green —
+whenever the file set changes. The derivation has four steps, and the `Makefile` carries all four beside the
+number: (1) **split first**, because node applies the budget to each test *and* to the file-level subtest, so
+the number that matters is the worst **per-file** runtime, not the worst test; (2) **measure that runtime
+idle**, `node --test --test-concurrency=1 <file>` on a box running nothing else, reading `duration_ms` from
+the TAP summary; (3) **multiply by 4.4**, the load headroom this project has measured — 6× and 14× CPU load
+both green at 306/306 — where the retired 1.46× went red at 6× load; (4) **put the measurement beside the
+number**: the file, its `duration_ms`, and the date. At this writing: worst idle file
+`test/ddl-runner.test.ts` **9 036 ms** (S2 closeout, 2026-10-20) × 4.4 = 39 758 ms, rounded up to 40 000. The
+per-file table that derivation reads, after the split, is `ddl-runner` 9 036, `nginx-e2e` 8 446, `env` 5 519,
+`onboarding` 2 372, `cli-bootstrap` 1 665 ms. **Assertions about time do not live in this gate at all** —
+every assertion that compares a duration or a rate belongs to `make test-perf`, which is why this budget can
+be a multiple of the slowest file instead of a number a slow test drifts into.
+```
+
+**Corrected text, site 2 — the §16 S1 env row, replacing its `--test-timeout=15000` clause and nothing else.**
+
+```markdown
+| boot refuses any `^SK_|^SKUNK_` env key, naming it, and the gate cannot hang | env test: `spawnSync` with `{timeout: 5000, killSignal: 'SIGKILL'}`; `ETIMEDOUT` is a named failure ("the process booted instead of refusing: <key>"), never a wait — the 5 s child budget bounds *this* case; `make test` runs under `TEST_TIMEOUT_MS`, derived per §16's preamble, so a regression anywhere is a named red test and never a CI job timeout; the child's stdout must not contain "listening" |
+```
+
+**Which gate owns time-based assertions now: `make test-perf`.** It runs `test/perf/*.perf.test.ts` only, and
+it runs behind `scripts/perf-preflight.mjs`, which prints the core count and 1-minute load average, **refuses**
+(exit 2) above the core count, warns above half, and honours `SKW_PERF_FORCE=1` with a banner saying the
+numbers are not a measurement. `make test` asserts **no wall-clock value at all**. Four assertions moved, and
+each keeps a structural witness in `make test` (`S2-closeout.md` §3.1–§3.2):
+
+| Moved out of `make test` | Now | Structural witness that stayed in `make test` |
+|---|---|---|
+| `S2E-2` `cost_ms_max <= 1.5` (worst of 200) | `P-1`, drift alarm on the **median** | `S2E-2` still asserts the measurement happened: `typeof cost_ms_max === 'number'`, finite, `> 0`, `cost_rows`, the stored row's columns |
+| `V1-4` an expensive view body refused by the real 1.5 ms ceiling | `P-2` (refuses at 26.1–37.7 ms) | `V1-4`'s monotone `budgetMsMax: 0` form (same code, `limit_ms === 0`) plus its positive control `cost_ms_max > 0` |
+| `S2E-22` `published.cost_ms_max <= 1.5` over HTTP | `P-3` | `S2E-23` (C-18 refusal through the route), `S2E-24` (CSRF) |
+| `admin-auth` case 4, three login medians within 20 %, n=60 | `P-4` | case 4's status 401 / `SKW_E_SEC_AUTH_INVALID` / no cookie / no `Location` / byte-identical scrubbed bodies, and `4b`'s TOTP-computation count |
+
+**Three things that look like time and are not, and must not be dragged into the perf gate.** (1) Clock
+arithmetic computed from configuration — `expiresAt − now ≈ 60 min ±5 s` in `admin-auth` case 3 and the 15 min
+expiry in `admin-session`; the slack is 5 s on 60 min and no load moves it. (2) Harness **deadlines** that
+bound a wait and fail with a message — nginx up to 15 s, `spawnSync` 5 s, and the 17 MiB body's attempts
+(3 → 8, count in the failure message). (3) Structural contention — `ddl-runner` `C7`'s `waitedFor >= 1`, where
+more load means more contention, not less. Moving any of these would make the deterministic gate wait on the
+clock to learn nothing.
+
+**This does not weaken any correctness assertion.** Evidence, all of it measured (`S2-closeout.md`
+§3.4–§3.6, §5):
+
+- `make test` **306/306** at idle (38.7 s), at **6×** CPU load (47.0 s) and at **14×** (48.8 s) — 14× being
+  the level at which QA lost the 17 MiB response and recorded 13 of 300 red in `hermes verify`.
+- `SKW_ALLOW_SKIP` was never set, and `scripts/run-node-tests.mjs` still makes a skip a failure (E-8, E-15).
+- The one measurement that got **stronger** is a fixture: the 14× run found `V1-1` failing with
+  `cost_ms_max 12.358 ms exceeds the 1.5 ms budget`, because `POSTS_VIEW` still published against the default
+  ceiling; it now states `budgetMsMax: 1_000` like `POSTS`. A flake found by measuring, not a band widened to
+  hide one.
+- The one regression only `make test-perf` can see is **named rather than deleted**: an unknown email that
+  skips the argon2 verify entirely — identical body, identical code, identical TOTP count, only the medians
+  move; `P-4` is its only witness. That is why the gate exists.
+- `make test-perf` is **not** a CI check and must not become a required one until CI has an idle runner: it
+  measures the box, and the best window available for this pass was a **warning** run at load 4.26 of 8 cores
+  — stated as a warning, not called idle.
+
+**Test that must change.** No test file changes: `Makefile`'s `TEST_TIMEOUT_MS` is already 40 000 and `make
+test` already passes `--timeout=$(TEST_TIMEOUT_MS)` to the single runner. The gate that must change is the
+**frozen-quote** gate, because it cannot see this row today — `check_frozen.py` does not quote §16 S1's env
+row, which is why `make verify-frozen` was green with a false number in the SDS. The builder item below adds the
+row to the quoted set under the marker `SUPERSEDES SDS.md §16 S1's env row (--test-timeout)`, asserting the
+retired clause absent and the replacement present. `POINTERS` (`check_frozen.py:206`, `range(1, 24)`) also
+moves to `range(1, 26)` when E-24's and E-25's pointer lines land.
+
+**Recorded, not closed — three invocation paths, three budgets.** `make test` passes 40 000. A bare
+`node scripts/run-node-tests.mjs <files>` still defaults to **15 000** (`run-node-tests.mjs:34`, and its header
+comment says "default 15000"), so the retired number survives on the path that is meant to be "exactly one
+way the suite is invoked". `npm test` — what `hermes verify` runs — does not go through the runner at all and
+therefore has no `--test-timeout` and no skip-is-failure (pre-existing, recorded in §8's "not defects" list,
+unchanged here). And the `Makefile` comment's derivation cites "8.99 s" for `ddl-runner`, which is that
+file's **pre-split** figure; the post-split measurement is **9 036 ms** (§3.3's second column). None of the
+three changes a verdict — 40 000/9 036 = 4.43× and 40 000/8 990 = 4.45× — but a reader re-deriving from the
+comment would copy the wrong column, so the corrected figure is stated here and the comment is a one-line
+builder correction, not a spec change.
+
+**Severity: minor (specification), load-bearing.** The frozen sentence was false and believing it is how the
+gate was narrowed into a flake; the code already carries the derived budget, so no work is blocked by the text
+being a pass late.
+
+---
+
+### Builder items this section owes — ordered, each naming the file and the gate that proves it
+
+| # | Item | Files | Gate that proves it |
+|---|---|---|---|
+| 1 | **E-24** paste the §6.2 drop-in in place of the "A `limit` that is not an integer is refused, not ignored." paragraph; the `Math.floor` sentence is retired by that replacement, and E-23's "floors to 2" sentence is retired in effect (no `SDS.md` text carries it) | `docs/sds/SDS.md` §6.2, plus its pointer line (`> Amended by 02-errata.md E-24.`) | `make test`'s quote phase — the retired sentence absent, the replacement present verbatim |
+| 2 | **E-25** paste the §16 preamble paragraph and the corrected S1 env row, with its pointer line (`> Amended by 02-errata.md E-25.`) | `docs/sds/SDS.md` §16 preamble and S1's table | same quote phase; the retired clause absent, the replacement present |
+| 3 | **E-24, E-25** register the two supersessions in the checker: `item='E-24'` with marker `SUPERSEDES SDS.md §6.2's "The clamp is Math.floor on a number" sentence`, and `item='E-25'` with marker `SUPERSEDES SDS.md §16 S1's env row (--test-timeout)`; add the env row to the quoted set, which is the row the checker cannot see today | `scripts/model/check_frozen.py` | `make verify-frozen` green, **and** re-inserting `--test-timeout=15000` into that row turns it red (prove it red once, then restore) |
+| 4 | **E-24, E-25** extend the pointer range to `range(1, 26)` | `scripts/model/check_frozen.py:206` | the pointer phase reports 25/25; renaming one pointer line turns it red |
+| 5 | **E-25**'s recorded correction: the derivation comment cites 8.99 s, which is `ddl-runner`'s **pre-split** figure; the post-split measurement is 9 036 ms | `Makefile:92–94` (comment only) | **none — and said plainly:** a comment is not a gate. The number a reader re-derives is the one in §16's preamble, and 8.99 s would put them one column to the left |
+
+Items 1 and 2 are independent; 3 requires both (it quotes their output), and 4 requires 3.
+
+---
+
+### Traceability — E-24, E-25
+
+| E | Closes | Source (verified in this pass) | Severity |
+|---|---|---|---|
+| E-24 | §6.2's flooring sentence contradicts the refusal row two sentences above it and E-23's own test sentence; applied verbatim it re-opens D5, and a floored `limit` returns a page with the wrong number of rows and no signal | `S2-closeout.md` §2 (the four shapes at publish and resolve, `M5-1`, the `d11dd76e…` mutation), §6 item 1; `SDS.md:1072` (the row) and `:1082–1084` (the paragraph, quoted above); `02-errata.md` §8 (post-S2-QA) E-23, "Test that must change"; `app/sources/compile.ts:126–134`; `app/sources/spec.ts:139–148,222–223` | major (specification) |
+| E-25 | the frozen suite budget is 1.46× the file it has to cover, so 6× load fails a file whose every test passes; the number is now derived (4.4× the worst remaining idle file) instead of asserted | `S2-closeout.md` §3.3 (per-file table both columns, `duration_ms 15009.712459`, the 4.4× derivation), §3.4 (306/306 at 6× and 14×), §5, §6 item 2; `SDS.md:2489`; `Makefile:86–97`; `scripts/run-node-tests.mjs:34`; `scripts/perf-preflight.mjs` | minor (specification) |
+| — | **carried, not separate items:** §16 S1's env row goes under `check_frozen.py`'s quote phase (inside E-25); `POINTERS` to `range(1, 26)` (inside E-25); E-23's "floors to 2" test sentence retired in effect (inside E-24); the `Makefile` comment's 8.99 s corrected to 9 036 ms (inside E-25) | E-24, E-25 | — |
+| — | **open, not closed here:** `limit_default > limit_max` is accepted at publish and unclamped on a render that sends no `limit`, so the clamp row is false for the default path — needs its own item and a decision between a publish refusal and a render clamp | `app/sources/spec.ts:141`; `app/sources/compile.ts:161–172`; `schema/site.sql` `cms_datasource.spec_json` (`json_valid` only) | minor (specification) |
+| — | **open, not closed here:** the runner's bare-invocation default stays 15 000 and `npm test` has no budget at all, so "the suite runs under a derived budget" is true of `make test` only | `scripts/run-node-tests.mjs:34`; `package.json`; `S2-closeout.md` §3.6 | minor (build) |

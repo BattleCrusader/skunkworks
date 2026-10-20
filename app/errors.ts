@@ -54,6 +54,10 @@ export const HTTP: Record<string, number> = {
   SKW_E_SEC_CODE_INVALID: 401,
   SKW_E_SEC_RATE_LIMITED: 429,
   SKW_E_SEC_ROLE_DISABLED: 403,
+  // §7.5 (S3a): every upload that the sniff, the SVG rule or the filename rule refuses.
+  // 415 Unsupported Media Type is the status the frozen registry assigns it, so a PHP
+  // payload renamed `.png` is refused with the code that describes the refusal.
+  SKW_E_SEC_UPLOAD_REJECTED: 415,
   // §9.6 (C-21): the chain and the daily seal disagree — the anchor is what makes a
   // recomputed chain visible, so this is the code an unanchored verifier cannot raise.
   SKW_E_SEC_AUDIT_SEAL: 500,

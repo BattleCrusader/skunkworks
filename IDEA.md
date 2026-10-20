@@ -107,6 +107,7 @@ source of truth — see §5.1 for the capability matrix and the pre-flight check
 | D28 | **CSRF header is frozen as `X-CSRF-Token`** — one header, no form-field alternative | Two accepted CSRF paths is two ways to get it wrong, and a form field survives in the HTML an editor can rewrite. |
 | D29 | **Fleet console lives at `/admin` on the admin host; tenant-scoped URLs are `/admin/t/<key>/…`; login is `/admin/login`** | §9.2 requires the tenant in the path for tenant routes, which leaves no address for "choose a tenant". One non-tenant URL fixes it without a second session model. |
 | D30 | **First-run bootstrap is `skwctl admin bootstrap`**, printing a one-time TOTP URI + password to a 0600 file; **the 5-minute install now includes one human step** | A TOTP-mandatory bundle with no enrolment path is a product nobody can log into. The promise stays ~5 min; the wording must admit the scan step rather than the docs quietly omitting it. |
+| D31 | **A datasource whose `limit_default` exceeds its `limit_max` is REFUSED at publish**, and the render path clamps the default anyway | The publish gate is the only place a human sees the number; a spec that publishes clean and silently serves more rows than its own ceiling is the same class of bug as flooring a non-integer limit. Belt and braces because the invariant and the clamp fail differently. |
 
 ---
 

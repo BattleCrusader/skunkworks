@@ -66,6 +66,15 @@ export interface Allowlist {
   columns: Set<string>;
   /** Leftmost column of each index: the columns a SEARCH can actually start from. */
   indexed: Set<string>;
+  /**
+   * Registered columns the live relation no longer has — an out-of-band `DROP COLUMN` or a
+   * rebuild that did not go through the runner. They are **excluded** from `columns` (so a
+   * source that names one is refused) and kept here so the refusal can say `column_drift`
+   * instead of `column_not_allowed`: the operator did not type a bad name, the table moved
+   * under a published source. D6.
+   */
+  drifted: Set<string>;
+  relation: string;
 }
 
 /**
@@ -74,7 +83,12 @@ export interface Allowlist {
  * Refusals name the column: §6.2's `422 SKW_E_RT_SOURCE_UNKNOWN` is the code, and
  * an operator who typed `secret_col` needs to see `secret_col`, not "invalid".
  */
-export function allowlistFor(db: Database.Database, kind: string, relation: string): Allowlist {
+export function allowlistFor(
+  db: Database.Database,
+  kind: string,
+  relation: string,
+  opts?: { tenantKey?: string },
+): Allowlist {
   if (kind === 'query') {
     const row = db.prepare('SELECT columns_json FROM cms_table_registry WHERE table_name = ?').get(relation) as
       | { columns_json: string }
@@ -87,9 +101,25 @@ export function allowlistFor(db: Database.Database, kind: string, relation: stri
     if (!relationExists(db, relation, 'table')) {
       throw sourceUnknown('table_missing', `${relation} is in cms_table_registry but not in the schema`, { relation });
     }
+    const registered = (JSON.parse(row.columns_json) as { name: string }[]).map((c) => c.name);
+    // D6: the registry is what the operator agreed to; the live table is what answers the
+    // query. The allowlist is the **intersection**, and the difference is drift. Without the
+    // intersection a published source and the database can agree with each other and still
+    // disagree about a column that no longer exists — a `SQLITE_ERROR` at prepare time, and a
+    // 500 on a public render.
+    const live = new Set<string>(
+      (db.prepare(`PRAGMA table_xinfo("${relation.replace(/"/g, '""')}")`).all() as { name: string }[]).map((c) => c.name),
+    );
     const columns = new Set<string>(['id']);
-    for (const column of JSON.parse(row.columns_json) as { name: string }[]) columns.add(column.name);
-    return { columns, indexed: leftmostIndexed(db, relation) };
+    const drifted = new Set<string>();
+    for (const name of registered) {
+      if (live.has(name)) columns.add(name);
+      else drifted.add(name);
+    }
+    // A drift is logged where it is *observed*, not only where a source happens to name the
+    // column: the operator needs to know the table moved before a page goes red.
+    for (const column of drifted) noteColumnDrift(opts?.tenantKey ?? '-', relation, column);
+    return { columns, indexed: leftmostIndexed(db, relation), drifted, relation };
   }
 
   if (kind === 'view') {
@@ -103,7 +133,10 @@ export function allowlistFor(db: Database.Database, kind: string, relation: stri
     const columns = new Set<string>(
       (db.prepare(`PRAGMA table_xinfo("${relation}")`).all() as { name: string }[]).map((c) => c.name),
     );
-    return { columns, indexed: leftmostIndexed(db, relation) };
+    // A view cannot drift from itself: §6.1a already refuses a body that is not the registered
+    // one, and this allowlist is read from the live view *after* that proof — so the set is
+    // empty by construction rather than by inspection.
+    return { columns, indexed: leftmostIndexed(db, relation), drifted: new Set<string>(), relation };
   }
 
   // Defence in depth: `assertKind` refuses this before a connection exists, and the
@@ -240,6 +273,61 @@ export function assertViewChecksum(db: Database.Database, relation: string): voi
  * `(tenant, relation)` per 60 s so a page in a hot loop cannot flood the log. The sink is a seam:
  * production writes to stderr through it, a test counts calls.
  */
+// --- D6: one log line per drifted column, with its own seam --------------------------------
+//
+// The refusal tells the reader nothing about *why* the page stopped working; the operator needs
+// the relation and the column, on stderr, once per window. Rate-limited per (tenant, relation,
+// column) for the same reason the view refusal is: a page in a hot loop must not flood the log.
+
+const driftAt = new Map<string, number>();
+export const DRIFT_LOG_WINDOW_MS = 60_000;
+let driftSink: (line: string) => void = (line) => {
+  process.stderr.write(`${line}\n`);
+};
+
+export function setDriftLogSink(sink: ((line: string) => void) | null): void {
+  driftSink =
+    sink ??
+    ((line) => {
+      process.stderr.write(`${line}\n`);
+    });
+  driftAt.clear();
+}
+
+/** True when a line was written (i.e. not suppressed by the window). */
+export function noteColumnDrift(
+  tenantKey: string,
+  relation: string,
+  column: string,
+  nowMs: number = Date.now(),
+): boolean {
+  const key = `${tenantKey}\u0000${relation}\u0000${column}`;
+  const last = driftAt.get(key);
+  if (last !== undefined && nowMs - last < DRIFT_LOG_WINDOW_MS) return false;
+  driftAt.set(key, nowMs);
+  driftSink(`column_drift tenant=${tenantKey} relation=${relation} column=${column}`);
+  return true;
+}
+
+/** The resolver's catch-all half of D6: a SQLite failure that names a relation and a column. */
+export function noteSourceSqliteError(
+  tenantKey: string,
+  source: string,
+  relation: string,
+  column: string | null,
+  sqliteCode: string,
+  nowMs: number = Date.now(),
+): boolean {
+  const key = `${tenantKey}\u0000${source}\u0000${column ?? '-'}\u0000${sqliteCode}`;
+  const last = driftAt.get(key);
+  if (last !== undefined && nowMs - last < DRIFT_LOG_WINDOW_MS) return false;
+  driftAt.set(key, nowMs);
+  driftSink(
+    `source_sqlite tenant=${tenantKey} source=${source} relation=${relation} column=${column ?? '-'} code=${sqliteCode}`,
+  );
+  return true;
+}
+
 const refusalAt = new Map<string, number>();
 export const VIEW_REFUSAL_LOG_WINDOW_MS = 60_000;
 let refusalSink: (line: string) => void = (line) => {

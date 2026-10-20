@@ -17,7 +17,8 @@
     "@astrojs/node": "^11.1.9",
     "astro": "^7.4.1",
     "better-sqlite3": "^13.0.3",
-    "fastify": "^5.12.7"
+    "fastify": "^5.12.7",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@node-rs/argon2": "^2.2.2",

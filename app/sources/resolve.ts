@@ -20,9 +20,17 @@
  */
 import type Database from 'better-sqlite3';
 
+import { AppError } from '../errors.ts';
 import { bindParams, compile } from './compile.ts';
 import { SourceCache, cacheKey, sha256 } from './cache.ts';
-import { allowlistFor, assertViewChecksum, noteViewChecksumRefusal, readSource, viewAnchor } from './registry.ts';
+import {
+  allowlistFor,
+  assertViewChecksum,
+  noteSourceSqliteError,
+  noteViewChecksumRefusal,
+  readSource,
+  viewAnchor,
+} from './registry.ts';
 import { assertKind, parseSpec, sourceUnknown, type SourceSpec } from './spec.ts';
 
 export type ResolveAudience = 'render' | 'preview';
@@ -79,7 +87,7 @@ export function resolveSource(db: Database.Database, key: string, opts: ResolveO
       throw err;
     }
   }
-  const allowed = allowlistFor(db, kind, spec.relation);
+  const allowed = allowlistFor(db, kind, spec.relation, { tenantKey: opts.tenantKey });
   const bound = bindParams(spec, opts.params ?? {});
   const request: Record<string, unknown> = { ...bound };
   if (opts.params?.limit !== undefined) request.limit = opts.params.limit;
@@ -93,8 +101,76 @@ export function resolveSource(db: Database.Database, key: string, opts: ResolveO
     if (hit !== undefined) return { ...hit, rows: hit.rows };
   }
 
-  const rows = db.prepare(compiled.sql).all(...(compiled.bind as never[])) as Record<string, unknown>[];
+  // D6's catch-all: the allowlist is read from the live schema and the statement runs on the
+  // same handle, but they are two reads of a schema anything with a file handle may change in
+  // between. A drift that lands in that window is still a refusal, not a 500.
+  let rows: Record<string, unknown>[];
+  try {
+    rows = db.prepare(compiled.sql).all(...(compiled.bind as never[])) as Record<string, unknown>[];
+  } catch (err) {
+    const mapped = mapSourceSqliteError(err, { tenantKey: opts.tenantKey, source: key, relation: spec.relation });
+    if (mapped !== null) throw mapped;
+    throw err;
+  }
   const resolved: ResolvedSource = { key, rows, truncated: compiled.truncated, limit: compiled.limit };
   if (cache !== undefined) cache.set(keyOf, resolved, row.ttl_s * 1000);
   return resolved;
+}
+
+// --- D6: the resolver's catch-all --------------------------------------------------------
+
+export interface SourceErrorContext {
+  tenantKey: string;
+  source: string;
+  relation: string;
+}
+
+/**
+ * Map a SQLite failure raised by the resolve statement onto the taxonomy, or return null when
+ * the failure is not SQLite's.
+ *
+ * Why a mapper and not a `try { … } catch { throw internal }`: the allowlist already refuses a
+ * column it can see is gone, so the only way to reach here is drift the allowlist could not
+ * see. Turning that into `SKW_E_PLT_INTERNAL` would be the D6 defect with a different spelling
+ * — a 500 on a public render — and turning it into a *message* would leak the statement.
+ *
+ * `no such column: "slug"` carries the column name in its text; that name is what the operator
+ * needs and what `detail.column` is for. The rest of SQLite's message (`- should this be a
+ * string literal in single-quotes?`) is noise and never leaves the process: the response carries
+ * `reason` and the column, and the log line carries the SQLite code.
+ */
+export function mapSourceSqliteError(err: unknown, ctx: SourceErrorContext): AppError | null {
+  const e = err as { code?: unknown; message?: unknown };
+  const code = typeof e.code === 'string' ? e.code : '';
+  if (!code.startsWith('SQLITE_')) return null;
+  const message = typeof e.message === 'string' ? e.message : '';
+
+  if (code === 'SQLITE_BUSY' || code === 'SQLITE_BUSY_SNAPSHOT' || code === 'SQLITE_LOCKED') {
+    noteSourceSqliteError(ctx.tenantKey, ctx.source, ctx.relation, null, code);
+    return new AppError('SKW_E_DM_BUSY', 'the tenant database is busy; retry shortly');
+  }
+  if (code === 'SQLITE_CORRUPT' || code === 'SQLITE_NOTADB' || code === 'SQLITE_IOERR') {
+    noteSourceSqliteError(ctx.tenantKey, ctx.source, ctx.relation, null, code);
+    return new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'tenant database is not readable', { code });
+  }
+
+  const missingColumn = /no such column:\s*"?([^"\s]+)"?/i.exec(message);
+  if (missingColumn !== null) {
+    const column = missingColumn[1] ?? '';
+    noteSourceSqliteError(ctx.tenantKey, ctx.source, ctx.relation, column, code);
+    return sourceUnknown(
+      'column_drift',
+      `column ${JSON.stringify(column)} no longer exists in ${ctx.relation}`,
+      { column, relation: ctx.relation },
+    );
+  }
+  if (/no such table/i.test(message)) {
+    noteSourceSqliteError(ctx.tenantKey, ctx.source, ctx.relation, null, code);
+    return sourceUnknown('table_missing', `${ctx.relation} is no longer in the schema`, { relation: ctx.relation });
+  }
+
+  // Any other SQLite refusal: the code is the taxonomy's, the SQLite code is in `detail` and the
+  // statement itself never appears in either.
+  noteSourceSqliteError(ctx.tenantKey, ctx.source, ctx.relation, null, code);
+  return sourceUnknown('sqlite_error', `the source could not be read (${code})`, { relation: ctx.relation, sqlite: code });
 }

@@ -34,13 +34,23 @@ export function quote(identifier: string): string {
  */
 export function assertWithinAllowlist(spec: SourceSpec, allowed: Allowlist): void {
   const check = (column: string, role: string): void => {
-    if (!allowed.columns.has(column)) {
-      throw sourceUnknown('column_not_allowed', `column ${JSON.stringify(column)} is not in the allowlist (${role})`, {
+    if (allowed.columns.has(column)) return;
+    // D6: a registered column the live table lost is `column_drift`, not `column_not_allowed`.
+    // The two refusals share a code because they share a cause — the source no longer matches
+    // the relation — but they are different operator facts: one is a typo in a spec, the other
+    // is a schema that moved out of band.
+    if (allowed.drifted.has(column)) {
+      throw sourceUnknown('column_drift', `column ${JSON.stringify(column)} no longer exists in ${spec.relation}`, {
         column,
         role,
         relation: spec.relation,
       });
     }
+    throw sourceUnknown('column_not_allowed', `column ${JSON.stringify(column)} is not in the allowlist (${role})`, {
+      column,
+      role,
+      relation: spec.relation,
+    });
   };
   for (const column of spec.columns) check(column, 'columns');
   for (const clause of spec.where) check(clause.col, 'where');
