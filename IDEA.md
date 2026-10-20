@@ -2,6 +2,9 @@
 
 **Status:** Decided / pre-architecture
 **Last updated:** 2026-10-20
+> **Authority note (2026-10-20):** this file records intent and the decisions made at the time. It is
+> no longer the newest word: `docs/sds/SDS.md` + `docs/sds/00-adjudication.md` are authoritative where
+> they disagree, and **§13 Amendments** lists every decision that measurement changed.
 
 ---
 
@@ -702,3 +705,52 @@ only about *which mechanism*, at what cost.
     downgrade of a plugin we did not write?
 14. **Degradation contract.** A plugin process that hangs or dies must not take the site down:
     timeout, circuit breaker, and what the public endpoint returns while it is broken.
+
+---
+
+## 13. Amendments — where measurement overruled this document
+
+**Authority:** `IDEA.md` records intent and the decisions made at the time. `docs/sds/SDS.md` and
+`docs/sds/00-adjudication.md` are authoritative where the two disagree. Everything below was changed
+by a measurement in the debate, not by a preference; the SDS implements the right-hand column.
+
+The four CEO decisions adopted on 2026-10-20 are folded into the replacement text for **D15**
+(16-character codes), **D21** (drag-and-drop restated as registry-bounded, round-trip gate is a
+fixpoint), **D22** (static export refuses free parameters), **D26** and **§3** (the plugin runner is a
+fourth compose service).
+
+**D-numbers are IDEA's. "Replacement text" is what the SDS will say; the SDS is authoritative and IDEA.md is
+history.** Eleven decisions and six section-level statements change. Two decisions are reaffirmed against a
+paper that contradicted them.
+
+| D | What is now wrong | Replacement text |
+|---|---|---|
+| **D7** | "Path-prefix routing (`/demo/<key>`) is the no-DNS fallback" is right, but §3.1's reading ("everything the app emits must be prefixed from `X-Forwarded-Prefix`") left open who *strips*. | "Path-prefix demos are served by one `location /demo/`; nginx strips the prefix with `rewrite … break` and sets `X-Forwarded-Prefix`; the app never rewrites an inbound path and prefixes every emitted URL exactly once through `site.url()`." |
+| **D8** | Two prefix classes (`cms_*`, `u_*`) cannot express a plugin table. | "Protected tables are enforced by prefix: core `cms_*` (image-owned), user `u_*` (DDL runner), plugin `p_<id>_*` (host migration executor), plugin-system `cms_plugin_*` (image-owned). No fifth namespace exists and a DDL transaction asserts it." |
+| **D9** | "Admin on a separate origin/port with IP allowlist" is unsupportable in a sold bundle (dynamic IPs, CGNAT, phones) and a port is not an origin boundary (cookies ignore ports, measured). | "Admin is a separate **hostname** (`admin.<domain>`) behind nginx with no published port; the IP allowlist is opt-in and empty in exported bundles; when it is empty, TOTP is mandatory and idle drops to 15 min; every non-GET carries a session-bound CSRF token and an exact `Origin` check." |
+| **D14** | "App validates, then hands off with `X-Accel-Redirect`" omitted that the app never sees a byte and that a missing target discards the app's 200. | "Gated downloads are authorise-then-offload: the app stats the target, validates the range, consumes the redemption atomically, then returns `200` with an empty body and `X-Accel-Redirect: /__protected/<sha256>.<ext>`; a missing target is `503 SKW_E_RT_ASSET_MISSING`, never a silent nginx 404." |
+| **D15** | "Access codes are stored argon2id-hashed" cannot be looked up by equality (salted), and a pepper adds a fleet-wide secret whose residency is undecided. | "An access code is 16 Crockford-base32 characters (`<selector:4><secret:12>`); the selector is stored plaintext and unique, the full code is stored as argon2id(m=19456,t=2,p=1); there is no pepper." |
+| **D17** | "Renaming a key cascades to references" is false under the FK action this design needs, and CASCADE costs 439 ms / 2,412 ms of write lock at 200k references. | "Asset identity is the key and the checksum is only the physical address. A referenced key cannot be renamed (`409`); an unreferenced rename writes a `cms_asset_alias` row and 301s; a bounded `repoint` operation rewrites at most 5,000 references in one audited transaction." |
+| **D19** | "Enforcement stays atomic in a single UPDATE" is true but the *unit* was a request, and one download spends four. | "`max_uses` counts redemptions. `uses` increments once per token `jti`, by an insert-first, update-second pair inside one `BEGIN IMMEDIATE`; Range continuations under the same `jti` never consume; `NULL` means unlimited behind an explicit flag." |
+| **D21** | "An empty-diff round-trip as a gate" is unachievable — GrapesJS normalises on load, 8 of 9 fixtures differ at pass 1 — and "fully drag-and-droppable" cannot be true for markup the registry does not know. | "Every site we build is authored for the editor: page bodies use the editor's own component vocabulary, the round-trip gate is a **fixpoint** (`canon(load(save(load))) == canon(load))`, and drag-and-drop is guaranteed **within the shipped component registry**; a new interaction is a component release, not a content edit. Repetition is the `list` component." |
+| **D22** | "Three export targets, one content model" holds, but "the same DB state produces identical bytes" did not, and a `free` parameter could be frozen silently. | "Export target is a render mode. A snapshot is enumerated (declared parameter domains, cap 1024 combinations), pinned to `SKW_EXPORT_NOW`, and **refused** when a `free` parameter appears in a link on any exported page; two exports of one DB at one `SKW_EXPORT_NOW` are byte-identical." |
+| **D26** | Holds, and is the reason C-8 exists. | "Third-party plugins are untrusted by default and run in a separate `plugin-runner` container with no network, no native addons, no filesystem write and no database handle, reached over a 14-operation RPC enum." |
+| **D27** | Contradicted by `r2-plugin.md` §3 Q12 (a root key signing publisher keys). D27 wins. | "No publisher CA in v1. Our key verifies first-party packages; a third-party publisher's key is imported by the tenant owner, fingerprint shown beside every capability; revocation is local to the install." |
+| **§3** | "Services in `docker-compose.yml`: `nginx`, `app`, `acme`. Nothing else." | "`docker-compose.yml` has four services: `nginx`, `app`, `plugin-runner`, `acme`." |
+| **§6** | Lists `cms_page_blocks` (deleted, and nothing replaced its loop) and omits seven tables the DDL now has. | "Drizzle owns `cms_page` (one document per page, no block table), `cms_page_revision`, `cms_asset`, `cms_asset_variant`, `cms_asset_alias`, `cms_asset_link`, `cms_asset_bundle`, `cms_asset_bundle_item`, `cms_download_code`, `cms_download_event`, `cms_watermark_render`, `cms_form`, `cms_form_submission`, `cms_datasource`, `cms_view_registry`, `cms_table_registry`, `cms_trigger_registry`, `cms_audit`, `cms_redirect`, `cms_settings`, and `cms_plugin_migration` / `cms_plugin_installed` / `cms_plugin_revoked`." |
+| **§5** | "Export has nothing to filter" is true across tenants and false inside one: a demo carries prospects' submissions, buyers' codes and per-purchaser watermarked files. | "Export has nothing to filter **across tenants**; inside a tenant it applies `schema/export-projection.json` (five tables `empty`, `cms_settings` filtered) plus each plugin manifest's export class; `content/protected/wm/`, `content/sources/`, `data/control.db` and any `-wal`/`-shm` are never in a bundle, and `--include-pii` is off by default." |
+| **§5.1** | "Target install time ≤ 5 min (measured)" is not what was measured. | "≤ 5 minutes, measured, from a Docker host (≥ 2 vCPU / 2 GB / Compose ≥ 2.20) whose images are pullable or supplied with `--offline`, an A record already pointing at the box, and TCP/80 reachable. Our part: 18.2 s warm, 29.8 s cold-pull, 7.5 s re-run, +16.0 s for TLS once DNS and port 80 are correct. Bundle transfer is excluded and capped." |
+| **§7.4.3** | `__Host-dl-<key>; Path=/d/<key>` is an invalid cookie — `__Host-` requires `Path=/`. | "`Set-Cookie: __Host-sk-dl-<tenantKey>=<token>; Path=/; Secure; HttpOnly; SameSite=Lax`, 600 s, bound in the token to `(cid, aid, jti, iph, uah)`." |
+| **§9** | "Tenancy: one DB per tenant; no cross-tenant query path exists by construction" is a claim the corpus falsified four times: a readonly handle can `ATTACH` a sibling and `VACUUM INTO` the public tree. | "Tenant isolation is a **permission** boundary inside one Node process, not a construction. Structural: one SQLite file per tenant and no request value ever becomes a path segment. Permissions, each tested: no statement that names a file; no write outside the tenant directory (`query_only=1`); no code we did not ship in the process; no caller-controlled path segment. The three paths that can break it are the DDL runner, any `ATTACH`-capable handle, and any `import()` from a tenant-writable tree." |
+
+**Reaffirmed, not changed, against a paper that contradicted them:** D2 (one file per tenant — `r2-red-team.md`
+§6.1 says do not reopen it, and nothing in the corpus does), and D23 (cp1252-preserving sanitiser — `r2-red-team.md`
+§6.9; the omission was applying it to filenames, which O-07 fixes).
+
+**Largest blast radius of the delta: D21 + §6 (one document, registry-bounded, `list` component).** It changes
+the stored shape of every page, the block registry, the SSR renderer, and all three exporters — the widest
+surface in the build, and the one Red Team called "the single most expensive late decision in the set"
+(`r2-red-team.md` §5 item 5). Second largest: D15/D19 (the paid feature's schema and accounting), which is
+contained to S3 but touches the one table that holds live codes.
+
+---
