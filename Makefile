@@ -5,7 +5,7 @@
 # exit non-zero on failure.
 
 .PHONY: help test test-perf verify verify-toolchain verify-gitignore verify-schema verify-claims \
-        verify-claims-modern verify-frozen verify-s1 build typecheck diagrams
+        verify-claims-modern verify-frozen verify-s1 verify-dist build typecheck diagrams
 
 help:
 	@echo "make test                run every verification check (canonical, deterministic)"
@@ -18,6 +18,7 @@ help:
 	@echo "make verify-frozen       assert docs/sds/SDS.md quotes the register verbatim"
 	@echo "make verify-gitignore    assert .gitignore verdicts against git"
 	@echo "make verify-s1           build, typecheck, and run the S1 gates in test/ (a skip is a failure, G3)"
+	@echo "make verify-dist         execute dist/ as a child process: D1 boot, D2 page, D3 download, D4 migrate, D5 skwctl, D6 nginx_gen (E-28)"
 	@echo "make build               tsc to dist/ plus the Astro middleware entry in build/astro/"
 	@echo "make diagrams            re-render every .puml in docs/ and report each PNG's size"
 
@@ -37,7 +38,7 @@ MODERN_PYTHON ?= python3
 
 test: verify-toolchain verify
 
-verify: verify-gitignore verify-schema verify-claims verify-frozen verify-s1
+verify: verify-gitignore verify-schema verify-claims verify-frozen verify-s1 verify-dist
 
 # E-15: preflight. Both imports are load-bearing — checks 17 and 21 need argon2, and
 # every check needs a SQLite that can apply the frozen chain.
@@ -106,6 +107,17 @@ PERF_FILES := $(shell find test/perf -name '*.perf.test.ts' | sort)
 # escape is `SKW_ALLOW_SKIP=1`, which is never set here.
 verify-s1: verify-toolchain build typecheck
 	@node scripts/run-node-tests.mjs --timeout=$(TEST_TIMEOUT_MS) $(TEST_FILES)
+
+# E-28: the gate that executes the artefact that ships. Every other code-executing gate
+# here imports the TypeScript modules under Node's type stripping, where `import.meta.url`
+# ends in `.ts` — so a resolver that only works in the source world is invisible to all of
+# them. That is how a `.ts`-only worker URL reached production with 404/404 green. This
+# target runs `dist/` as a child process and asserts six things (D1–D6) on what comes out;
+# it is not a `test/**/*.test.ts` file because `npm test` does not build, and a dist case
+# inside `test/` would either fail on a clean tree or be given a skip — and a skip is a
+# failure here (E-8, E-15).
+verify-dist: build
+	@node scripts/dist-gate.mjs
 
 # The performance gate. Not part of `make test`, and it says what it is before it runs: these
 # assertions are only meaningful on a box that is not already busy. The load-average guard refuses

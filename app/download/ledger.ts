@@ -43,7 +43,13 @@ export type DenialReason =
   | 'denied_revoked'
   | 'denied_expired'
   | 'denied_token'
-  | 'denied_watermark';
+  | 'denied_watermark'
+  /**
+   * E-26's middle window and no `ok` `first` row: the token is authentic and names a
+   * purchase that never happened. Not an `outcome` the schema stores — this reason never
+   * writes a row — but it has to travel to the plane, which answers `reason='no_redemption'`.
+   */
+  | 'no_redemption';
 
 export type ConsumeResult =
   | { spent: true }
@@ -62,6 +68,14 @@ export interface ConsumeInput {
   at: string;
   /** Epoch ms, compared against `expires_at`. */
   nowMs: number;
+  /**
+   * E-26: `now ≤ token.exp`. False in the continuation-only window, where this function
+   * may serve an existing redemption and **must not** insert a `first` row, move `uses`,
+   * or create a redemption of any kind. A token past `exp` can continue a purchase,
+   * never make one; the default is `true`, so a caller that has not thought about it
+   * keeps the old (spending) behaviour explicitly rather than silently.
+   */
+  maySpend?: boolean;
 }
 
 interface CodeRow {
@@ -73,6 +87,14 @@ interface CodeRow {
 
 export function consumeUse(db: Database.Database, input: ConsumeInput): ConsumeResult {
   const run = db.transaction((): ConsumeResult => {
+    // E-26: the continuation-only window. No insert, no `UPDATE`, no row of any kind —
+    // the whole question is whether an `ok` `first` row already exists for this `jti`.
+    if (input.maySpend === false) {
+      const existing = readEvent(db, input.jti);
+      if (existing === undefined) return { spent: false, continuation: false, reason: 'no_redemption' };
+      return continuationOf(db, existing, input);
+    }
+
     // The gate first. `ON CONFLICT DO NOTHING` without a target covers the partial
     // unique index; a targeted clause would have to repeat the index predicate.
     const inserted = db
@@ -111,39 +133,54 @@ export function consumeUse(db: Database.Database, input: ConsumeInput): ConsumeR
 
     // A row already exists for this jti: either a continuation of an authorised
     // redemption, or a repeat of a denial.
-    const existing = db
-      .prepare(`SELECT outcome, code_id, asset_id FROM cms_download_event WHERE jti = ? AND kind = 'first'`)
-      .get(input.jti) as { outcome: string; code_id: number | null; asset_id: number | null } | undefined;
+    const existing = readEvent(db, input.jti);
     if (existing === undefined) {
       // Unreachable: the insert reported a conflict, so the row is there. Treated as
       // a denial rather than a continuation because "I could not read the ledger"
       // must never authorise bytes.
       return { spent: false, continuation: false, reason: 'denied_token' };
     }
-    // The jti is globally unique by construction (128 random bits), but a row that
-    // names another code or another asset is not this redemption's row: a continuation
-    // must prove it is the same purchase, or a reused jti would be served free.
-    if (existing.code_id !== input.codeId || existing.asset_id !== input.assetId) {
-      return { spent: false, continuation: false, reason: 'denied_token' };
-    }
-    if (existing.outcome !== 'ok') {
-      return { spent: false, continuation: false, reason: existing.outcome as DenialReason };
-    }
-
-    // A live redemption. §7.4's continuation condition includes "the code is not
-    // revoked", so a revoke stops the rest of an in-flight transfer too.
-    const code = readCode(db, input.codeId);
-    if (code === null) return { spent: false, continuation: false, reason: 'denied_revoked' };
-    if (code.revoked_at !== null) return { spent: false, continuation: false, reason: 'denied_revoked' };
-    if (code.expires_at !== null && Date.parse(code.expires_at) <= input.nowMs) {
-      return { spent: false, continuation: false, reason: 'denied_expired' };
-    }
-    return { spent: false, continuation: true };
+    return continuationOf(db, existing, input);
   });
 
   // `.immediate()` is BEGIN IMMEDIATE: the write lock is taken up front, so two
   // processes cannot both pass the gate on a shared-cache snapshot.
   return run.immediate();
+}
+
+interface EventRow {
+  outcome: string;
+  code_id: number | null;
+  asset_id: number | null;
+}
+
+function readEvent(db: Database.Database, jti: string): EventRow | undefined {
+  return db
+    .prepare(`SELECT outcome, code_id, asset_id FROM cms_download_event WHERE jti = ? AND kind = 'first'`)
+    .get(jti) as EventRow | undefined;
+}
+
+/** A row that already exists for this `jti`: serve only if it authorised the same purchase. */
+function continuationOf(db: Database.Database, existing: EventRow, input: ConsumeInput): ConsumeResult {
+  // The jti is globally unique by construction (128 random bits), but a row that
+  // names another code or another asset is not this redemption's row: a continuation
+  // must prove it is the same purchase, or a reused jti would be served free.
+  if (existing.code_id !== input.codeId || existing.asset_id !== input.assetId) {
+    return { spent: false, continuation: false, reason: 'denied_token' };
+  }
+  if (existing.outcome !== 'ok') {
+    return { spent: false, continuation: false, reason: existing.outcome as DenialReason };
+  }
+
+  // A live redemption. §7.4's continuation condition includes "the code is not
+  // revoked", so a revoke stops the rest of an in-flight transfer too.
+  const code = readCode(db, input.codeId);
+  if (code === null) return { spent: false, continuation: false, reason: 'denied_revoked' };
+  if (code.revoked_at !== null) return { spent: false, continuation: false, reason: 'denied_revoked' };
+  if (code.expires_at !== null && Date.parse(code.expires_at) <= input.nowMs) {
+    return { spent: false, continuation: false, reason: 'denied_expired' };
+  }
+  return { spent: false, continuation: true };
 }
 
 function readCode(db: Database.Database, id: number): CodeRow | null {

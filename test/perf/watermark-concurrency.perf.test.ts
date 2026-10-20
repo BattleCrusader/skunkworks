@@ -8,7 +8,14 @@
  *
  *   - a cap of 16 (no semaphore) drives `started` to 16 before any returns → peak 16 → red;
  *   - a cap of 4 never reaches the gate → the safety timer fires and peak is 4 → red;
- *   - a cap of 8 opens the gate, all eight return, the next eight run → peak exactly 8.
+ *   - a cap of `min(8, max(4, availableParallelism()))` opens the gate, all eight return,
+ *     the next eight run → peak exactly the cap.
+ *
+ * E-27: the cap this asserts is now the **effective** one — `min(STAMP_CONCURRENCY,
+ * globalStampConcurrency())` — because the per-tenant eight is bounded by the box's
+ * `max(4, availableParallelism())`. On this eight-core box both numbers are 8 and the case
+ * is unchanged; on a two-core box the old literal `8` would have been red for the wrong
+ * reason. Both numbers are printed, so a reader can see which one bound.
  *
  * It is in `test/perf` because a *deadlock* is a wall-clock event: the safety timer is the
  * thing that turns a wrong cap into a named failure instead of a hung job (E-8). The
@@ -25,7 +32,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { uploadAsset } from '../../app/assets/library.ts';
 import { openAdminWrite } from '../../app/db/classes.ts';
 import { assetById } from '../../app/download/code.ts';
-import { STAMP_CONCURRENCY, WatermarkStore } from '../../app/download/render.ts';
+import { STAMP_CONCURRENCY, WatermarkStore, globalStampConcurrency } from '../../app/download/render.ts';
 import { makeFixture } from '../helpers/fixture.ts';
 
 test('P-S3d-1. sixteen concurrent stamps reach exactly the cap of eight, then drain', async () => {
@@ -55,6 +62,9 @@ test('P-S3d-1. sixteen concurrent stamps reach exactly the cap of eight, then dr
     let started = 0;
     let active = 0;
     let peak = 0;
+    // E-27: min(8, max(4, cores)). The gate opens when the cap is reached, so a cap that is
+    // too high peaks above it and a cap that is too low never opens the gate at all.
+    const cap = Math.min(STAMP_CONCURRENCY, globalStampConcurrency());
     let openGate: (() => void) | null = null;
     const gate = new Promise<void>((resolve) => {
       openGate = resolve;
@@ -67,7 +77,7 @@ test('P-S3d-1. sixteen concurrent stamps reach exactly the cap of eight, then dr
         started += 1;
         active += 1;
         peak = Math.max(peak, active);
-        if (started === STAMP_CONCURRENCY) openGate?.();
+        if (started === cap) openGate?.();
         await Promise.race([gate, new Promise((resolve) => setTimeout(resolve, 4_000))]);
         active -= 1;
         return Buffer.from('%PDF-1.7\nstub\n%%EOF\n', 'latin1');
@@ -97,10 +107,11 @@ test('P-S3d-1. sixteen concurrent stamps reach exactly the cap of eight, then dr
 
     assert.equal(results.length, 16, 'every stamp returned');
     assert.equal(started, 16, `the renderer ran ${started} times, not 16`);
-    assert.equal(peak, STAMP_CONCURRENCY, `peak in flight was ${peak}; the cap is ${STAMP_CONCURRENCY}`);
-    assert.equal(store.peakInFlight('acme'), STAMP_CONCURRENCY, 'the store agrees with the renderer');
+    assert.equal(peak, cap, `peak in flight was ${peak}; the effective cap is ${cap}`);
+    assert.equal(store.peakInFlight('acme'), cap, 'the store agrees with the renderer');
     process.stdout.write(
-      `# P-S3d-1 16 stamps -> ${started} renders, peak in flight ${peak}, cap ${STAMP_CONCURRENCY}\n`,
+      `# P-S3d-1 16 stamps -> ${started} renders, peak in flight ${peak}, ` +
+        `per-tenant cap ${STAMP_CONCURRENCY}, global cap ${globalStampConcurrency()}, effective ${cap}\n`,
     );
   } finally {
     fixture.cleanup();

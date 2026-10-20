@@ -40,8 +40,9 @@ import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import { assetById, issueCode } from '../app/download/code.ts';
 import { isCp1252, sanitiseCp1252 } from '../app/download/cp1252.ts';
-import { STAMP_BUDGET_MS, STAMP_CONCURRENCY, stampWorkerUrl, type WatermarkStore } from '../app/download/render.ts';
+import { STAMP_BUDGET_MS, STAMP_CONCURRENCY, StampGate, globalStampConcurrency, stampWorkerUrl, type WatermarkStore } from '../app/download/render.ts';
 import { stampable } from '../app/download/watermark.ts';
+import { cookieName, mintToken } from '../app/download/token.ts';
 import { makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, header, type Res } from './helpers/http.ts';
 import { pdfDrawnText } from './helpers/pdftext.ts';
@@ -55,6 +56,7 @@ let contentRoot = '';
 let bookSha = '';
 let picSha = '';
 let bookId = 0;
+let betaBookId = 0;
 
 interface Issued {
   id: number;
@@ -100,13 +102,18 @@ async function makePng(): Promise<Buffer> {
     .toBuffer();
 }
 
-async function upload(key: string, filename: string, bytes: Buffer): Promise<{ sha: string; id: number }> {
-  const conn = siteDb();
+async function uploadFor(
+  tenantKey: string,
+  key: string,
+  filename: string,
+  bytes: Buffer,
+): Promise<{ sha: string; id: number }> {
+  const conn = openAdminWrite(fixture.sitePath(tenantKey));
   try {
     const result = await uploadAsset({
       db: conn,
       contentRoot,
-      tenantKey: 'acme',
+      tenantKey,
       key,
       filename,
       bytes,
@@ -119,14 +126,22 @@ async function upload(key: string, filename: string, bytes: Buffer): Promise<{ s
   }
 }
 
-async function issue(email: string | null, orderRef: string | null, assetKey = 'vault/book'): Promise<Issued> {
-  const conn = siteDb();
+async function upload(key: string, filename: string, bytes: Buffer): Promise<{ sha: string; id: number }> {
+  return uploadFor('acme', key, filename, bytes);
+}
+
+async function issueFor(tenantKey: string, email: string | null, orderRef: string | null, assetKey: string): Promise<Issued> {
+  const conn = openAdminWrite(fixture.sitePath(tenantKey));
   try {
     const issued = await issueCode({ db: conn, contentRoot, assetKey, email, orderRef });
     return { id: issued.id, code: issued.code };
   } finally {
     conn.close();
   }
+}
+
+async function issue(email: string | null, orderRef: string | null, assetKey = 'vault/book'): Promise<Issued> {
+  return issueFor('acme', email, orderRef, assetKey);
 }
 
 function redeem(code: string): Promise<Res> {
@@ -190,7 +205,13 @@ function uriOf(res: Res): string {
 }
 
 before(async () => {
-  fixture = makeFixture({ specs: [{ key: 'acme', hosts: [HOST], title: 'Acme' }] });
+  fixture = makeFixture({
+    specs: [
+      { key: 'acme', hosts: [HOST], title: 'Acme' },
+      // E-27's second tenant: the global cap only means something across tenants.
+      { key: 'beta', hosts: ['beta.test'], title: 'Beta' },
+    ],
+  });
   contentRoot = join(fixture.dir, 'content');
   mkdirSync(join(contentRoot, 'media'), { recursive: true });
 
@@ -198,6 +219,7 @@ before(async () => {
   bookSha = book.sha;
   bookId = book.id;
   picSha = (await upload('vault/pic', 'plate.png', await makePng())).sha;
+  betaBookId = (await uploadFor('beta', 'vault/book', 'book.pdf', await makePdf(2))).id;
 
   handle = await buildApp({
     env: loadEnv(fixture.env),
@@ -348,7 +370,12 @@ test('W3 — the handed-off path is under content/protected/, never content/medi
 // W4/W5 — the fail-closed pair
 // ---------------------------------------------------------------------------------
 
-async function appWith(watermark: { budgetMs?: number; render?: () => Promise<Buffer> }): Promise<{
+async function appWith(watermark: {
+  budgetMs?: number;
+  render?: () => Promise<Buffer>;
+  globalConcurrency?: number;
+  globalGate?: StampGate;
+}): Promise<{
   appPort: number;
   handle: AppHandle;
   close: () => Promise<void>;
@@ -357,7 +384,12 @@ async function appWith(watermark: { budgetMs?: number; render?: () => Promise<Bu
     env: loadEnv(fixture.env),
     contentRoot,
     downloadLimits: { refusals: 10_000, all: 10_000 },
-    watermark: { budgetMs: watermark.budgetMs ?? STAMP_BUDGET_MS, render: watermark.render },
+    watermark: {
+      budgetMs: watermark.budgetMs ?? STAMP_BUDGET_MS,
+      ...(watermark.render === undefined ? {} : { render: watermark.render }),
+      ...(watermark.globalConcurrency === undefined ? {} : { globalConcurrency: watermark.globalConcurrency }),
+      ...(watermark.globalGate === undefined ? {} : { globalGate: watermark.globalGate }),
+    },
   });
   const p = await extra.app.listen({ port: 0, host: '127.0.0.1' }).then(() => {
     const address = extra.app.server.address();
@@ -517,9 +549,184 @@ test('W6. 16 concurrent stamps never exceed 8 in flight', async () => {
     assert.equal(results.length, 16);
     assert.ok(peak <= STAMP_CONCURRENCY, `peak in-flight was ${peak}, above the cap of ${STAMP_CONCURRENCY}`);
     assert.equal(peak, STAMP_CONCURRENCY, `the cap was never reached (peak ${peak}); the test proves nothing`);
-    process.stdout.write(`# W6 16 concurrent stamps -> peak in flight ${peak} (cap ${STAMP_CONCURRENCY})\n`);
+    // E-27: the box's ceiling is min(8, max(4, availableParallelism())), and the shipped
+    // app must be running under exactly that number.
+    const shipped = Math.min(STAMP_CONCURRENCY, globalStampConcurrency());
+    assert.equal(capped.handle.watermark.globalCapacity, globalStampConcurrency(), 'the process cap is max(4, cores)');
+    process.stdout.write(
+      `# W6 16 concurrent stamps -> peak in flight ${peak} (tenant cap ${STAMP_CONCURRENCY}, ` +
+        `global cap ${capped.handle.watermark.globalCapacity}, effective ${shipped})\n`,
+    );
   } finally {
     await capped.close();
+  }
+});
+
+test('W6b. E-27: two tenants of 8, injected global capacity 4, peak across both is 4', async () => {
+  // D33's number on a small box, made deterministic: the global cap binds before either
+  // tenant's eight does, so no request from either tenant can be the fifth worker.
+  let active = 0;
+  let peak = 0;
+  const capped = await appWith({
+    globalConcurrency: 4,
+    render: async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      active -= 1;
+      return makePdf(1);
+    },
+  });
+  try {
+    const acme = [];
+    const beta = [];
+    for (let i = 0; i < 8; i += 1) {
+      acme.push(await issue(`a${i}@example.com`, `ORD-A-${i}`));
+      beta.push(await issueFor('beta', `b${i}@example.com`, `ORD-B-${i}`, 'vault/book'));
+    }
+
+    const one = async (tenantKey: string, code: Issued, assetId: number): Promise<unknown> => {
+      const conn = openAdminWrite(fixture.sitePath(tenantKey));
+      try {
+        const asset = assetById(conn, assetId);
+        assert.ok(asset !== null, `${tenantKey} has no asset ${assetId}`);
+        return await capped.handle.watermark.ensure({
+          tenantKey,
+          db: conn,
+          asset,
+          code: {
+            id: code.id,
+            email: `${tenantKey}-${code.id}@example.com`,
+            orderRef: `ORD-${tenantKey}-${code.id}`,
+            issuedAt: new Date().toISOString(),
+            selector: code.code.slice(0, 4),
+          },
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        });
+      } finally {
+        conn.close();
+      }
+    };
+
+    const results = await Promise.all([
+      ...acme.map((c) => one('acme', c, bookId)),
+      ...beta.map((c) => one('beta', c, betaBookId)),
+    ]);
+    assert.equal(results.length, 16, 'all sixteen requests settle');
+    assert.ok(peak <= 4, `peak in flight across two tenants was ${peak}, above the injected global cap of 4`);
+    assert.equal(peak, 4, `the global cap was never reached (peak ${peak}); the test proves nothing`);
+    assert.equal(capped.handle.watermark.peakGlobalInFlight(), 4);
+    assert.ok(capped.handle.watermark.peakInFlight('acme') <= 4);
+    assert.ok(capped.handle.watermark.peakInFlight('beta') <= 4);
+    process.stdout.write(
+      `# W6b two tenants x 8 -> global peak ${peak} (cap 4); per tenant acme ` +
+        `${capped.handle.watermark.peakInFlight('acme')} beta ${capped.handle.watermark.peakInFlight('beta')}\n`,
+    );
+  } finally {
+    await capped.close();
+  }
+});
+
+test('W14. a request still queued at the deadline is refused with reason=queue and no worker', async () => {
+  // One process-global slot shared by two stores. The holder's budget is 300 ms and the
+  // waiter's is 40: with a *uniform* budget a waiter is always granted a slot at the exact
+  // instant its own deadline passes, so `reason='queue'` needs a holder that outlasts it —
+  // which is what a second store with a different budget is, and what D33's shared box cap
+  // is in production.
+  const gate = new StampGate(1);
+  const never = (): Promise<Buffer> => new Promise<Buffer>(() => {});
+  const holder = await appWith({ budgetMs: 300, globalGate: gate, render: never });
+  const waiter = await appWith({ budgetMs: 40, globalGate: gate, render: never });
+  try {
+    const rendersBefore = db((conn) => Number((conn.prepare(`SELECT COUNT(*) AS n FROM cms_watermark_render`).get() as { n: number }).n));
+
+    const a = await issue('holder@example.com', 'ORD-QUEUE-A');
+    const heldRedeem = await call({
+      port: holder.appPort,
+      path: '/d/acme',
+      method: 'POST',
+      host: HOST,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: a.code }),
+    });
+    assert.equal(heldRedeem.status, 303, heldRedeem.body);
+    // Start the holder and give it time to take the only slot.
+    const held = call({
+      port: holder.appPort,
+      path: '/d/acme/file',
+      host: HOST,
+      headers: { cookie: cookieOf(heldRedeem) },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    const b = await issue('queued@example.com', 'ORD-QUEUE-B');
+    const queuedRedeem = await call({
+      port: waiter.appPort,
+      path: '/d/acme',
+      method: 'POST',
+      host: HOST,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: b.code }),
+    });
+    assert.equal(queuedRedeem.status, 303, queuedRedeem.body);
+
+    const started = Date.now();
+    const refused = await call({
+      port: waiter.appPort,
+      path: '/d/acme/file',
+      host: HOST,
+      headers: { cookie: cookieOf(queuedRedeem) },
+    });
+    const waited = Date.now() - started;
+
+    assert.equal(refused.status, 503, refused.body);
+    const body = refused.json as { error: { code: string; detail?: Record<string, unknown> } };
+    assert.equal(body.error.code, 'SKW_E_SEC_WATERMARK_FAILED');
+    assert.equal(body.error.detail?.reason, 'queue', 'a refusal consumed by queueing must say so');
+    assert.equal(body.error.detail?.budget_ms, 40);
+    assert.ok(Number(body.error.detail?.queued_ms) >= 30, `queued_ms ${String(body.error.detail?.queued_ms)}`);
+    assert.equal(header(refused, 'x-accel-redirect'), undefined, 'no worker, no hand-off');
+    assert.equal(header(refused, 'content-disposition'), undefined);
+
+    const rows = events(b.id);
+    assert.equal(rows.length, 1, `expected exactly one ledger row, got ${JSON.stringify(rows)}`);
+    assert.equal(rows[0]?.kind, 'first');
+    assert.equal(rows[0]?.outcome, 'denied_watermark');
+    assert.equal(rows[0]?.bytes_declared, 0);
+    assert.equal(
+      db((c) => Number((c.prepare(`SELECT uses FROM cms_download_code WHERE id = ?`).get(b.id) as { uses: number }).uses)),
+      0,
+      'a queued refusal spends nothing',
+    );
+    const rendersAfter = db((conn) => Number((conn.prepare(`SELECT COUNT(*) AS n FROM cms_watermark_render`).get() as { n: number }).n));
+    assert.equal(rendersAfter, rendersBefore, 'no render row, because no worker started');
+
+    // A retry under the same jti is still a denial: C-4, a denial is not a continuation.
+    const retry = await call({
+      port: waiter.appPort,
+      path: '/d/acme/file',
+      host: HOST,
+      headers: { cookie: cookieOf(queuedRedeem) },
+    });
+    assert.equal(retry.status, 503, retry.body);
+    assert.equal(events(b.id).length, 1, 'the denial row is not duplicated');
+    assert.ok(waited < 400, `the queue deadline did not bound the response: ${waited} ms (budget 40)`);
+
+    // The holder, on the same gate with eight times the budget, is a *timeout*, not a queue
+    // refusal: it got the slot and ran out of time. One code path, two honest reasons.
+    const holderRes = await held;
+    const holderBody = holderRes.json as { error: { code: string; detail?: Record<string, unknown> } };
+    assert.equal(holderRes.status, 503);
+    assert.equal(holderBody.error.code, 'SKW_E_SEC_WATERMARK_FAILED');
+    assert.equal(holderBody.error.detail?.reason, 'timeout');
+
+    process.stdout.write(
+      `# W14 global cap 1; holder budget 300 ms -> 503 timeout; waiter budget 40 ms -> 503 ` +
+        `reason=queue after ${waited} ms (queued_ms ${String(body.error.detail?.queued_ms)}), one denied_watermark row, uses 0, no render\n`,
+    );
+  } finally {
+    await waiter.close();
+    await holder.close();
   }
 });
 
@@ -554,6 +761,88 @@ test('W7. a render past expires_at is swept, and the next request re-stamps rath
 
   process.stdout.write(
     `# W7 sweep -> rows ${swept.rows}, files ${swept.files}; next request re-stamped ${uri2.slice(0, 34)}… -> 200\n`,
+  );
+});
+// ---------------------------------------------------------------------------------
+// W13 — the render's lifetime follows cexp, not exp (E-26)
+// ---------------------------------------------------------------------------------
+
+test('W13. a render expires at cexp + grace, and a request past cexp writes no render', async () => {
+  const buyer = await issue('hana@example.com', 'ORD-HANA-1313');
+  const redeemed = await redeem(buyer.code);
+  assert.equal(redeemed.status, 303, redeemed.body);
+  const cookie = cookieOf(redeemed);
+  const token = cookie.slice(cookie.indexOf('=') + 1);
+  const claims = JSON.parse(Buffer.from(token.split('.')[1] as string, 'base64url').toString('utf8')) as {
+    jti: string;
+    iat: number;
+    exp: number;
+    cexp: number;
+  };
+  // The two expiries are what the arithmetic below is about: 600 s and 21 600 s.
+  assert.equal(claims.exp - claims.iat, 600);
+  assert.equal(claims.cexp - claims.iat, 21_600);
+
+  const res = await call({ port, path: '/d/acme/file', host: HOST, headers: { cookie } });
+  assert.equal(res.status, 200, res.body);
+  const uri = uriOf(res);
+  const relPath = `content/protected${uri.slice('/__protected'.length)}`;
+
+  const row = db(
+    (conn) =>
+      conn.prepare(`SELECT expires_at FROM cms_watermark_render WHERE path = ?`).get(relPath) as
+        | { expires_at: string }
+        | undefined,
+  );
+  assert.ok(row !== undefined, 'the download wrote no render row');
+
+  // The assertion row 9 never had: the value written at stamp time, against the token's
+  // own claims. E-26 makes it `cexp + grace`; `exp + grace` is six hours *earlier*, and a
+  // sweep at that instant would delete the file under a transfer that started at cexp.
+  assert.equal(Date.parse(row.expires_at), (claims.cexp + 21_600) * 1000, 'expires_at must be cexp + grace');
+  assert.notEqual(
+    Date.parse(row.expires_at),
+    (claims.exp + 21_600) * 1000,
+    'expires_at must not be exp + grace — that is the bug E-26 closes',
+  );
+
+  // A request past `cexp` never reaches the stamp: verifyToken refuses before the database
+  // is opened, so no render row and no ledger row can be written for it.
+  const rendersBefore = db((conn) => Number((conn.prepare(`SELECT COUNT(*) AS n FROM cms_watermark_render`).get() as { n: number }).n));
+  const eventsBefore = db((conn) => Number((conn.prepare(`SELECT COUNT(*) AS n FROM cms_download_event`).get() as { n: number }).n));
+  const key = loadEnv(fixture.env).downloadTokenKey;
+  const nowS = Math.floor(Date.now() / 1000);
+  const dead = mintToken(key, {
+    ...claims,
+    iat: nowS - 30_000,
+    exp: nowS - 29_400,
+    cexp: nowS - 20_000,
+  } as never);
+  const past = await call({
+    port,
+    path: '/d/acme/file',
+    host: HOST,
+    headers: { cookie: `${cookieName('acme')}=${dead}` },
+  });
+  assert.equal(past.status, 401, past.body);
+  assert.equal(
+    (past.json as { error: { detail?: { reason?: string } } }).error.detail?.reason,
+    'continuation_expired',
+  );
+  assert.equal(
+    db((conn) => Number((conn.prepare(`SELECT COUNT(*) AS n FROM cms_watermark_render`).get() as { n: number }).n)),
+    rendersBefore,
+    'a request past cexp wrote a render row',
+  );
+  assert.equal(
+    db((conn) => Number((conn.prepare(`SELECT COUNT(*) AS n FROM cms_download_event`).get() as { n: number }).n)),
+    eventsBefore,
+    'a request past cexp reached the database',
+  );
+
+  process.stdout.write(
+    `# W13 exp=iat+600 cexp=iat+21600; expires_at - cexp = ${(Date.parse(row.expires_at) / 1000 - claims.cexp)} s ` +
+      `(and cexp - exp = ${claims.cexp - claims.exp} s, so exp+grace would be 6 h early); past-cexp 401 writes no row\n`,
   );
 });
 

@@ -51,6 +51,7 @@ import { consumeUse, type ConsumeResult } from './ledger.ts';
 import { WatermarkStore, type StampResult, type WatermarkDeps } from './render.ts';
 import { stampable } from './watermark.ts';
 import {
+  MAX_CONTINUATION_S,
   TOKEN_TTL_S,
   clientHash,
   clearCookieHeader,
@@ -348,17 +349,28 @@ ${error}
       }
 
       const nowS = Math.floor(atMs / 1000);
+      const grace = this.#graceSeconds(db);
+      // E-26: a re-typed code, from the same IP and User-Agent, inside the window returns
+      // the *same* `jti`. A row exists exactly when a use was spent, so a resume through
+      // `consumeUse` is seen as a continuation and spends nothing. `iat`, `exp` and `cexp`
+      // are re-stamped every mint: the authority to mint is the **code**, never the token.
+      const jti = this.#reusableJti(db, row.id, row.asset_id as number, iph, uah, atMs, grace);
       const token = mintToken(this.#deps.env.downloadTokenKey, {
-        jti: randomBytes(16).toString('hex'),
+        jti: jti ?? randomBytes(16).toString('hex'),
         cid: row.id,
         aid: row.asset_id as number,
         iat: nowS,
         exp: nowS + TOKEN_TTL_S,
+        // E-26: `cexp ≥ exp` always. A grace below the ten-minute window (including 0)
+        // makes the second window empty, which is legal and is what "0" means.
+        cexp: nowS + Math.max(grace, TOKEN_TTL_S),
         iph,
         uah,
       });
 
-      reply.header('set-cookie', cookieHeader(tenantKey, token));
+      // E-26: `Max-Age = cexp − iat`. The cookie lives as long as the *narrower*
+      // permission; it is the authorisation inside it that dies in ten minutes.
+      reply.header('set-cookie', cookieHeader(tenantKey, token, Math.max(grace, TOKEN_TTL_S)));
       reply.header('cache-control', 'no-store');
       reply.code(303).header('location', `/d/${encodeURIComponent(tenantKey)}/file`).send();
       return;
@@ -442,6 +454,7 @@ ${error}
       //    That is a *stated* coverage gap — §7.5 says so, and `issueCode` tells the
       //    operator at issue time — not a silent fallback for a stampable asset.
       let handOff: { uri: string; size: number } | null = null;
+      const grace = this.#graceSeconds(db);
       if (stampable(asset) !== null) {
         let stamped: StampResult;
         try {
@@ -456,7 +469,10 @@ ${error}
               issuedAt: row.created_at,
               selector: row.code_selector,
             },
-            expiresAt: new Date((claims.exp + this.#graceSeconds(db)) * 1000).toISOString(),
+            // E-26: `cexp + grace`, not `exp + grace`. The last instant this token may be
+            // served is `cexp`; a file deleted 40 minutes earlier would vanish under a
+            // transfer that started at the last permitted second.
+            expiresAt: new Date((claims.cexp + grace) * 1000).toISOString(),
           });
         } catch (err) {
           // Fail closed, and leave the record that says why. The row is written *before*
@@ -500,6 +516,10 @@ ${error}
       const bytesDeclared = range.kind === 'full' ? size : range.length;
 
       // 4. the consume: insert-first, then update, in one BEGIN IMMEDIATE (C-7).
+      //    E-26: the token's `exp` decides *whether this call may spend*. Past it, the
+      //    only thing a request can do is continue a redemption that already exists —
+      //    `consumeUse` then performs no insert at all, so a continuation can never
+      //    create a purchase.
       const consumed: ConsumeResult = consumeUse(db, {
         jti: claims.jti,
         codeId: claims.cid,
@@ -509,8 +529,17 @@ ${error}
         uaHash: uah,
         at,
         nowMs: atMs,
+        maySpend: Math.floor(atMs / 1000) <= claims.exp,
       });
       if (!consumed.spent && !consumed.continuation) {
+        if (consumed.reason === 'no_redemption') {
+          // E-26: authentic, inside `cexp`, and it names a purchase that never happened.
+          // It is not a continuation and it cannot become one.
+          reply.header('set-cookie', clearCookieHeader(tenantKey));
+          throw new AppError('SKW_E_SEC_TOKEN_INVALID', 'the download token names no redemption', {
+            reason: 'no_redemption',
+          });
+        }
         if (consumed.reason === 'denied_quota') {
           throw new AppError('SKW_E_SEC_USES_EXHAUSTED', 'this code has no uses left', {
             reason: consumed.reason,
@@ -548,6 +577,11 @@ ${error}
    * a missing *grace* decides nothing about money, and refusing a download over it would
    * be a paying customer denied by a seed that has not run yet. The default is the number
    * §7.5 ships, and the seed is asserted by `download-codes.test.ts`.
+   *
+   * **Ceiling: 86 400 s (E-26).** Without it the grace is whatever a `cms_settings` row
+   * says, and "a leaked token buys one asset for at most six hours" becomes a claim about
+   * configuration rather than about the token. A token minted before a grace increase
+   * keeps its own `cexp`; the token check is against the claim, never the current setting.
    */
   #graceSeconds(db: Database.Database): number {
     const row = db.prepare(`SELECT value_json FROM cms_settings WHERE key = ?`).get(SETTING_CONTINUATION_GRACE) as
@@ -555,7 +589,47 @@ ${error}
       | undefined;
     if (row === undefined) return DEFAULT_CONTINUATION_GRACE_S;
     const value = Number(row.value_json);
-    return Number.isInteger(value) && value >= 0 ? value : DEFAULT_CONTINUATION_GRACE_S;
+    if (!Number.isInteger(value) || value < 0) return DEFAULT_CONTINUATION_GRACE_S;
+    return Math.min(value, MAX_CONTINUATION_S);
+  }
+
+  /**
+   * E-26's mint idempotency: the newest `ok` `first` row for this
+   * (code, asset, IP, UA) inside the grace window, or `null`.
+   *
+   * A row exists exactly when a use was spent, so the lookup costs nothing when there is
+   * nothing to reuse, and it is a seek on `ix_ev_code_ts` plus a filter over one code's
+   * rows (`max_uses ≤ 100`). A re-typed code from the same client inside the window
+   * therefore yields the same `jti`, which `consumeUse` sees as a continuation.
+   *
+   * Recorded, not closed: the key is the *client*, not the code. A buyer who changes
+   * network or browser mid-transfer gets a new `jti` and spends a use for the resume.
+   * That is D32's own key, and keying on the code alone would let a code shared in a chat
+   * be resumed from any client — exactly the leak `iph`/`uah` exist to close.
+   */
+  #reusableJti(
+    db: Database.Database,
+    codeId: number,
+    assetId: number,
+    iph: string,
+    uah: string,
+    atMs: number,
+    graceSeconds: number,
+  ): string | null {
+    const row = db
+      .prepare(
+        `SELECT jti, ts FROM cms_download_event
+          WHERE kind = 'first' AND outcome = 'ok'
+            AND code_id = ? AND asset_id = ? AND ip_hash = ? AND ua_hash = ?
+            AND jti IS NOT NULL
+          ORDER BY ts DESC, id DESC LIMIT 1`,
+      )
+      .get(codeId, assetId, iph, uah) as { jti: string; ts: string } | undefined;
+    if (row === undefined) return null;
+    const ts = Date.parse(row.ts);
+    if (!Number.isFinite(ts)) return null;
+    if (atMs - ts > graceSeconds * 1000) return null;
+    return row.jti;
   }
 
   /**

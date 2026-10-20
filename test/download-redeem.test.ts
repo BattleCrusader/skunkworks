@@ -110,8 +110,31 @@ function cookieOf(res: Res): string {
   return raw.slice(0, raw.indexOf(';'));
 }
 
-function download(cookie: string, extra: Record<string, string> = {}): Promise<Res> {
-  return call({ port, path: '/d/acme/file', host: HOST, headers: { cookie, ...extra } });
+/**
+ * A redemption from a **different client**. E-26 keys the mint's jti reuse on
+ * (code, asset, IP, UA), so a second redemption of the same code from the same
+ * User-Agent inside the grace window is a *continuation* and spends nothing — which is
+ * the point of the item. A case that means "a second, independently counted use" must
+ * therefore be a second device, and that is what this helper is.
+ */
+function redeemAs(code: string, client: string): Promise<Res> {
+  return call({
+    port,
+    path: '/d/acme',
+    method: 'POST',
+    host: HOST,
+    headers: { 'content-type': 'application/json', 'user-agent': client },
+    body: JSON.stringify({ code }),
+  });
+}
+
+function download(cookie: string, extra: Record<string, string> = {}, client?: string): Promise<Res> {
+  return call({
+    port,
+    path: '/d/acme/file',
+    host: HOST,
+    headers: { cookie, ...(client === undefined ? {} : { 'user-agent': client }), ...extra },
+  });
 }
 
 function events(codeId: number): { kind: string; outcome: string; bytes_declared: number; bytes_sent: number | null; jti: string | null }[] {
@@ -223,9 +246,10 @@ test('R3 — Range: bytes=1- cannot bypass the counter once the use is spent', a
   assert.equal(res.status, 200);
   assert.equal(usesOf(code.id), 1);
 
-  // The bypass the SDS rejects: a second token, a range that does not start at 0.
-  const second = cookieOf(await redeem(code.code));
-  const bypass = await download(second, { range: 'bytes=1-' });
+  // The bypass the SDS rejects: a second token, a range that does not start at 0. A second
+  // token is a second *client* under E-26's key, or the mint would hand back the same jti.
+  const second = cookieOf(await redeemAs(code.code, 'second-device/1.0'));
+  const bypass = await download(second, { range: 'bytes=1-' }, 'second-device/1.0');
   assert.equal(bypass.status, 410, bypass.body);
   assert.equal((bypass.json as { error: { code: string } }).error.code, 'SKW_E_SEC_USES_EXHAUSTED');
   assert.equal(usesOf(code.id), 1, 'the refused request spent nothing');
@@ -322,7 +346,18 @@ test('R5b. a token minted for another client, asset or clock is refused', async 
   const code = await issue(2);
   const nowS = Math.floor(Date.now() / 1000);
   const key = loadEnv(fixture.env).downloadTokenKey;
-  const claims = { jti: 'a'.repeat(32), cid: code.id, aid: 1, iat: nowS, exp: nowS + 600, iph: 'x'.repeat(22), uah: 'y'.repeat(22) };
+  const claims = {
+    jti: 'a'.repeat(32),
+    cid: code.id,
+    aid: 1,
+    iat: nowS,
+    exp: nowS + 600,
+    // E-26: the payload gained `cexp`. Without it every token below would be refused at
+    // step (5) as a missing claim and this case would pass for the wrong reason.
+    cexp: nowS + 600 + 21_600,
+    iph: 'x'.repeat(22),
+    uah: 'y'.repeat(22),
+  };
 
   const otherClient = await download(`__Host-sk-dl-acme=${mintToken(key, claims)}`);
   assert.equal(otherClient.status, 401);
@@ -338,11 +373,149 @@ test('R5b. a token minted for another client, asset or clock is refused', async 
   assert.equal(res.status, 401, res.body);
   assert.equal((res.json as { error: { code: string } }).error.code, 'SKW_E_SEC_TOKEN_MISMATCH');
 
-  // An expired token: `exp - iat` is still 600, so only the clock can refuse it.
+  // An expired token: `exp - iat` is still 600 and `now` is inside `cexp`, so the token
+  // itself is authentic — it names a purchase that never happened, because this code was
+  // issued and minted but never downloaded. E-26 supersedes the old sentence ("only the
+  // clock can refuse it"); the assertion (401 SKW_E_SEC_TOKEN_INVALID) is kept, and the
+  // reason is now the ledger's.
   const stale = mintToken(key, { ...decoded, iat: nowS - 3600, exp: nowS - 3000 } as never);
   const expired = await download(`__Host-sk-dl-acme=${stale}`);
   assert.equal(expired.status, 401, expired.body);
   assert.equal((expired.json as { error: { code: string } }).error.code, 'SKW_E_SEC_TOKEN_INVALID');
+  assert.equal(
+    (expired.json as { error: { detail?: { reason?: string } } }).error.detail?.reason,
+    'no_redemption',
+    'an authentic token past exp with no first row is a no-redemption case, not a claims failure',
+  );
+});
+
+test('R13. the two windows: exp may spend, cexp only continues, past cexp is dead', async () => {
+  // A real purchase: issue, redeem, download. That writes the one `ok` `first` row this
+  // token is entitled to continue.
+  const code = await issue(3);
+  const live = cookieOf(await redeem(code.code));
+  const first = await download(live);
+  assert.equal(first.status, 200, first.body);
+  assert.equal(usesOf(code.id), 1, '(a) a live token spends exactly one use');
+  const rowsAfterFirst = events(code.id).length;
+  assert.equal(rowsAfterFirst, 1);
+
+  const tokenOf = (cookie: string): Record<string, unknown> => {
+    const raw = cookie.slice(cookie.indexOf('=') + 1);
+    const payload = raw.split('.')[1] as string;
+    return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<string, unknown>;
+  };
+  const key = loadEnv(fixture.env).downloadTokenKey;
+  const decoded = tokenOf(live);
+  const nowS = Math.floor(Date.now() / 1000);
+
+  // (b) The grace, made a fact: the same token, past `exp`, with its `first` row present.
+  // This is the resume a 1 GiB transfer at `limit_rate 1m` needs at 600 s.
+  const resumed = mintToken(key, { ...decoded, iat: nowS - 1200, exp: nowS - 600, cexp: nowS + 20_400 } as never);
+  const inside = await download(`__Host-sk-dl-acme=${resumed}`);
+  assert.equal(inside.status, 200, inside.body);
+  assert.match(String(header(inside, 'x-accel-redirect')), /^\/__protected\/wm\//);
+  assert.equal(usesOf(code.id), 1, '(b) a resume inside the grace windows spends nothing');
+  assert.equal(events(code.id).length, rowsAfterFirst, '(b) and writes no event row');
+
+  // (c) Past `cexp` there is no permission at all, and the database is never reached.
+  const dead = mintToken(key, { ...decoded, iat: nowS - 30_000, exp: nowS - 29_400, cexp: nowS - 20_000 } as never);
+  const past = await download(`__Host-sk-dl-acme=${dead}`);
+  assert.equal(past.status, 401, past.body);
+  assert.equal((past.json as { error: { code: string } }).error.code, 'SKW_E_SEC_TOKEN_INVALID');
+  assert.equal(
+    (past.json as { error: { detail?: { reason?: string } } }).error.detail?.reason,
+    'continuation_expired',
+    '(c) the reason names the expiry that failed',
+  );
+  assert.equal(usesOf(code.id), 1, '(c) a refusal past cexp spends nothing');
+  assert.equal(events(code.id).length, rowsAfterFirst, '(c) and writes no row');
+
+  // (d) Past `exp` with no `first` row at all: authentic, inside `cexp`, and naming a
+  // purchase that never happened. It is not a continuation, and it cannot become one.
+  const orphanCode = await issue(3);
+  const orphanDecoded = tokenOf(cookieOf(await redeem(orphanCode.code)));
+  const orphan = mintToken(key, {
+    ...orphanDecoded,
+    iat: nowS - 1200,
+    exp: nowS - 600,
+    cexp: nowS + 20_400,
+  } as never);
+  const noRow = await download(`__Host-sk-dl-acme=${orphan}`);
+  assert.equal(noRow.status, 401, noRow.body);
+  assert.equal(
+    (noRow.json as { error: { detail?: { reason?: string } } }).error.detail?.reason,
+    'no_redemption',
+    '(d) the middle window without an ok first row is no_redemption',
+  );
+  assert.equal(events(orphanCode.id).length, 0, '(d) and the continuation path inserted nothing');
+
+  // (e) The same expired token from another client: the binding is checked before the clock.
+  const otherClient = await download(`__Host-sk-dl-acme=${resumed}`, { 'user-agent': 'someone-else/1.0' });
+  assert.equal(otherClient.status, 401, otherClient.body);
+  assert.equal((otherClient.json as { error: { code: string } }).error.code, 'SKW_E_SEC_TOKEN_MISMATCH');
+
+  // (f) `cexp - iat = 86 401` is a claims failure at step (5), before the ledger.
+  const tooLong = mintToken(key, { ...decoded, iat: nowS, exp: nowS + 600, cexp: nowS + 86_401 } as never);
+  const refused = await download(`__Host-sk-dl-acme=${tooLong}`);
+  assert.equal(refused.status, 401, refused.body);
+  assert.equal(
+    (refused.json as { error: { detail?: { reason?: string } } }).error.detail?.reason,
+    'claims',
+    '(f) the 86 400 s ceiling is on the token, not on the setting',
+  );
+
+  process.stdout.write(
+    `# R13 live 200 uses=1; past-exp resume 200 uses=1 rows=${rowsAfterFirst}; past-cexp 401 ` +
+      `continuation_expired uses=1; no-row 401 no_redemption rows=0; other client 401; cexp-iat 86401 401\n`,
+  );
+});
+
+test('R14. a mint inside the grace window reuses the jti, so a resume spends no second use', async () => {
+  const code = await issue(3);
+  const before = Math.floor(Date.now() / 1000);
+  const firstCookie = cookieOf(await redeem(code.code));
+  const firstToken = firstCookie.slice(firstCookie.indexOf('=') + 1);
+  const claims1 = JSON.parse(Buffer.from(firstToken.split('.')[1] as string, 'base64url').toString('utf8')) as {
+    jti: string;
+    iat: number;
+    cexp: number;
+  };
+
+  // The redemption has to exist before a mint can reuse it: a row exists exactly when a
+  // use was spent (E-26). This is the interrupted transfer the window is for.
+  const one = await download(firstCookie);
+  assert.equal(one.status, 200, one.body);
+  assert.equal(usesOf(code.id), 1, 'the first download spends one use');
+
+  // The errata's "different iat" needs a second boundary crossed; the assertion about it is
+  // structural (the mint re-stamps every time), not a measurement of the clock.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const secondCookie = cookieOf(await redeem(code.code));
+  const secondToken = secondCookie.slice(secondCookie.indexOf('=') + 1);
+  const claims2 = JSON.parse(Buffer.from(secondToken.split('.')[1] as string, 'base64url').toString('utf8')) as {
+    jti: string;
+    iat: number;
+    cexp: number;
+  };
+
+  assert.equal(claims2.jti, claims1.jti, 'a re-typed code inside the window must reuse the jti');
+  assert.ok(claims2.iat > claims1.iat || before === claims2.iat, `iat was not re-stamped (${claims1.iat} -> ${claims2.iat})`);
+  assert.equal(claims2.cexp - claims2.iat, 21_600, 'cexp is re-stamped as iat + continuation_grace_s');
+
+  const two = await download(secondCookie);
+  assert.equal(two.status, 200, two.body);
+  assert.equal(usesOf(code.id), 1, 'the re-minted token is a continuation: uses stays 1');
+  assert.equal(
+    events(code.id).filter((e) => e.kind === 'first').length,
+    1,
+    'exactly one first row: the resume inserted nothing',
+  );
+
+  process.stdout.write(
+    `# R14 two mints -> one jti ${claims1.jti.slice(0, 8)}…, iat ${claims1.iat}/${claims2.iat}, ` +
+      `two downloads -> uses ${usesOf(code.id)}, first rows ${events(code.id).filter((e) => e.kind === 'first').length}\n`,
+  );
 });
 
 test('R6 — 报告.pdf downloads with filename*=UTF-8\'\'… and status 200', async () => {
@@ -406,8 +579,9 @@ test('R9 — a code with max_uses NULL is unlimited only behind the toggle and t
   const code = await issue(null);
   assert.equal(usesOf(code.id), 0);
   for (let i = 0; i < 3; i += 1) {
-    const cookie = cookieOf(await redeem(code.code));
-    assert.equal((await download(cookie)).status, 200, `redemption ${i + 1}`);
+    // Three devices: same code, three independently counted redemptions (E-26's key).
+    const cookie = cookieOf(await redeemAs(code.code, `device-${i}/1.0`));
+    assert.equal((await download(cookie, {}, `device-${i}/1.0`)).status, 200, `redemption ${i + 1}`);
   }
   assert.equal(usesOf(code.id), 3);
   const raw = siteDb().prepare(`SELECT max_uses FROM cms_download_code WHERE id = ?`).get(code.id) as {
@@ -430,8 +604,8 @@ test('R10 — lowering max_uses below uses blocks the next redemption immediatel
   }
   assert.equal(usesOf(code.id), 1, 'the edit does not rewrite history');
 
-  const next = cookieOf(await redeem(code.code));
-  const res = await download(next);
+  const next = cookieOf(await redeemAs(code.code, 'second-device/1.0'));
+  const res = await download(next, {}, 'second-device/1.0');
   assert.equal(res.status, 410, res.body);
   assert.equal(usesOf(code.id), 1);
 });

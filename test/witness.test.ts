@@ -107,8 +107,9 @@ export const WITNESSES: readonly Witness[] = [
     mechanism: 'verifyToken',
     source: 'app/download/token.ts',
     file: 'test/download-redeem.test.ts',
-    tests: ['R5', 'R5b'],
-    refuses: 'a MAC that is not 32 bytes (401, never 500), and a token for another client or asset',
+    tests: ['R5', 'R5b', 'R13', 'R14'],
+    refuses:
+      'a MAC that is not 32 bytes (401, never 500), a token for another client or asset, a token past cexp, and a mint inside the grace window that would spend a second use',
   },
   {
     mechanism: 'redeem',
@@ -138,8 +139,9 @@ export const WITNESSES: readonly Witness[] = [
     mechanism: 'WatermarkStore.ensure',
     source: 'app/download/render.ts',
     file: 'test/download-watermark.test.ts',
-    tests: ['W2', 'W6', 'W7'],
-    refuses: 'a second row for one spec, a stamp above the cap of eight, and a hand-off of a file the sweep deleted',
+    tests: ['W2', 'W6', 'W6b', 'W7', 'W13', 'W14'],
+    refuses:
+      'a second row for one spec, a stamp above the tenant cap or above the box cap, a hand-off of a file the sweep deleted, a request still queued at the deadline, and a render that outlives cexp + grace',
   },
   {
     mechanism: 'sanitiseCp1252',

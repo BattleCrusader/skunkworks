@@ -361,15 +361,19 @@ test('G2 — /__protected/ and /__protected/wm/ are internal: a direct request i
 
 test('G3 — Range: bytes=100-199 through the edge is a 206 with exactly those bytes', { skip: SKIP }, async () => {
   assert.ok(served.length > 200, 'G1 must have served a file to slice');
+  // A **new token** means a new client under E-26: the mint reuses the jti for the same
+  // (code, asset, IP, UA) inside the grace window, so the same User-Agent would make this
+  // a continuation and spend nothing — which is the point of R13/R14, not of this case.
+  const client = 'g3-range/1.0';
   const redeemed = await edge('/d/acme', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'user-agent': client },
     body: JSON.stringify({ code }),
   });
   const cookie = cookieOf(redeemed);
 
   const before = usesOf();
-  const res = await edge('/d/acme/file', { headers: { cookie, range: 'bytes=100-199' } });
+  const res = await edge('/d/acme/file', { headers: { cookie, range: 'bytes=100-199', 'user-agent': client } });
   assert.equal(res.status, 206, res.body);
   assert.equal(res.raw.length, 100);
   assert.deepEqual(res.raw, served.subarray(100, 200), 'the slice is the render\'s');
@@ -378,7 +382,7 @@ test('G3 — Range: bytes=100-199 through the edge is a 206 with exactly those b
 
   // The same token again: a continuation, and no second use. `bytes=150-` is the render's
   // last bytes; the same render is still on disk because the second tab reused it.
-  const again = await edge('/d/acme/file', { headers: { cookie, range: 'bytes=150-' } });
+  const again = await edge('/d/acme/file', { headers: { cookie, range: 'bytes=150-', 'user-agent': client } });
   assert.equal(again.status, 206);
   assert.deepEqual(again.raw, served.subarray(150));
   assert.equal(usesOf(), before + 1, 'a continuation under the same token spends nothing');
@@ -387,9 +391,10 @@ test('G3 — Range: bytes=100-199 through the edge is a 206 with exactly those b
 
 test('G4 — 8 parallel ranges through the edge: one use, eight correct slices', { skip: SKIP }, async () => {
   assert.ok(served.length > 200, 'G1 must have served a file to slice');
+  const client = 'g4-parallel/1.0';
   const redeemed = await edge('/d/acme', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'user-agent': client },
     body: JSON.stringify({ code }),
   });
   const cookie = cookieOf(redeemed);
@@ -397,7 +402,9 @@ test('G4 — 8 parallel ranges through the edge: one use, eight correct slices',
   const beforeEvents = eventCount();
 
   const results = await Promise.all(
-    Array.from({ length: 8 }, (_, i) => edge('/d/acme/file', { headers: { cookie, range: `bytes=${i * 10}-` } })),
+    Array.from({ length: 8 }, (_, i) =>
+      edge('/d/acme/file', { headers: { cookie, range: `bytes=${i * 10}-`, 'user-agent': client } }),
+    ),
   );
   for (const [i, res] of results.entries()) {
     assert.equal(res.status, 206, res.body);
