@@ -512,7 +512,10 @@ test('S2E-9. the render path gets resolved rows and no handle', () => {
   const db = openRenderRead(file);
   try {
     const data = createRenderData(db, { tenantKey: 'acme' });
-    assert.deepEqual(Object.keys(data), ['source'], 'the render path exposes exactly one accessor');
+    // §7.3 added the second accessor (`asset`), and this assertion is about the *surface*:
+    // two named accessors, and no handle of any kind. Asserted as an exact list so a third,
+    // unnamed escape hatch would fail here.
+    assert.deepEqual(Object.keys(data), ['source', 'asset'], 'the render path exposes two named accessors');
     assert.equal((data as unknown as { db?: unknown }).db, undefined);
     assert.equal((data as unknown as { prepare?: unknown }).prepare, undefined);
 

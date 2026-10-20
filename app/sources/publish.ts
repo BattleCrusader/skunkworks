@@ -87,7 +87,10 @@ function normalise(input: SourceInput): Normalised {
   assertKind(input.kind);
   const key = assertKey(input.key);
   const kind = input.kind as 'view' | 'query';
-  const base = parseSpec(kind, input.spec, input.params ?? []);
+  // D31, spelled out at its site: a spec whose `limit_default` exceeds its `limit_max` is
+  // refused here. This is the moment a human sees the number, and the row it would create
+  // would serve more rows than its own ceiling claims.
+  const base = parseSpec(kind, input.spec, input.params ?? [], { defaultAboveMax: 'refuse' });
 
   // The two table columns mirror the spec. A caller that passes them separately is
   // describing the same thing; the spec wins, because that is what the resolver reads.

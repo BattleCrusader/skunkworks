@@ -68,6 +68,20 @@ export const MAX_GROUP_BY = 2;
 /** §6.1: the worst-case per-source budget the publish gate enforces. */
 export const COST_MS_MAX = 1.5;
 
+/**
+ * D31 — what to do when a spec's `limit_default` is greater than its `limit_max`.
+ *
+ * The two answers are not alternatives; they are the two moments. **Publish refuses**, because
+ * that is the only moment a human sees the number and a spec that publishes clean and then
+ * serves more rows than its own ceiling is the same class of bug as flooring a limit.
+ * **Render clamps**, because a spec can reach `cms_datasource.spec_json` without passing
+ * through publish (a restored backup, a hand-written row, a migration), and a render path that
+ * trusts the row is a render path that serves 50 rows for a ceiling of 5. Belt and braces
+ * because the invariant and the clamp fail differently: the refusal catches the author, the
+ * clamp catches the row.
+ */
+export type DefaultAboveMax = 'refuse' | 'clamp';
+
 const KEY_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
 const RELATION_RE = /^(u_|p_|cms_v_)[a-z0-9_]+$/;
 const COLUMN_RE = /^[a-z][a-z0-9_]{0,39}$/;
@@ -175,7 +189,12 @@ export function parseParams(raw: unknown): SourceParam[] {
  * `aggregate_json`/`group_by_json`, so a caller may pass either and this is the one
  * place they are reconciled (the spec wins, and publish mirrors both).
  */
-export function parseSpec(kind: SourceKind, raw: unknown, paramsRaw: unknown = []): SourceSpec {
+export function parseSpec(
+  kind: SourceKind,
+  raw: unknown,
+  paramsRaw: unknown = [],
+  opts: { defaultAboveMax?: DefaultAboveMax } = {},
+): SourceSpec {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw sourceUnknown('spec', 'spec_json must be an object');
   }
@@ -220,8 +239,20 @@ export function parseSpec(kind: SourceKind, raw: unknown, paramsRaw: unknown = [
   });
 
   const limitMax = asLimit(spec.limit_max, 50, 'limit_max');
-  const limitDefault = asLimit(spec.limit_default, Math.min(DEFAULT_LIMIT, limitMax), 'limit_default');
-  if (limitDefault > limitMax) throw sourceUnknown('spec', 'limit_default exceeds limit_max');
+  const declaredDefault = asLimit(spec.limit_default, Math.min(DEFAULT_LIMIT, limitMax), 'limit_default');
+  // D31. Publish refuses (the author is told which field is wrong, in the same shape every
+  // other invalid limit takes); render clamps (the row may never have passed publish).
+  let limitDefault = declaredDefault;
+  if (declaredDefault > limitMax) {
+    if ((opts.defaultAboveMax ?? 'refuse') === 'refuse') {
+      throw sourceUnknown(
+        'param_invalid',
+        `limit_default (${declaredDefault}) must not exceed limit_max (${limitMax})`,
+        { param: 'limit', field: 'limit_default', limit_default: declaredDefault, limit_max: limitMax },
+      );
+    }
+    limitDefault = limitMax;
+  }
 
   let aggregate: Aggregate | null = null;
   if (spec.aggregate !== undefined && spec.aggregate !== null) {

@@ -74,7 +74,11 @@ function tree(root: string): string[] {
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const abs = join(dir, entry.name);
       if (entry.isDirectory()) walk(abs);
-      else out.push(`${relative(root, abs)}:${statSync(abs).size}:${sha256(readFileSync(abs))}`);
+      // A symlink is not a byte. S3b's farm adds one per public asset under
+      // `content/public/`; this tree is the **store**, so counting links would make "one blob"
+      // a statement about links. Links are asserted by test/farm.test.ts, where they are the
+      // subject rather than a confounder.
+      else if (!entry.isSymbolicLink()) out.push(`${relative(root, abs)}:${statSync(abs).size}:${sha256(readFileSync(abs))}`);
     }
   };
   walk(root);

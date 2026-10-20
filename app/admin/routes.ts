@@ -53,6 +53,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 
+import { extOfMime } from '../assets/farm.ts';
 import { emitCreateTable, registryRow, type CreateTableOp } from '../ddl/emit.ts';
 import { normaliseTableName, parseColumnLines } from '../ddl/form.ts';
 import { runDdl } from '../ddl/run.ts';
@@ -110,6 +111,25 @@ export interface AdminOptions {
 
 interface Headers {
   [key: string]: string | string[] | undefined;
+}
+
+/** One row of the media library: the asset plus its `thumb` webp, when it has one. */
+interface MediaRow {
+  id: number;
+  key: string;
+  filename: string;
+  alt_text: string | null;
+  kind: string;
+  mime: string;
+  width: number | null;
+  height: number | null;
+  bytes: number;
+  sha256: string;
+  access_class: string;
+  storage_path: string;
+  thumb_sha: string | null;
+  thumb_width: number | null;
+  thumb_height: number | null;
 }
 
 function header(req: FastifyRequest, name: string): string | undefined {
@@ -531,6 +551,17 @@ ${items}
       this.#pagesList(reply, tenant);
       return;
     }
+    // §7.1 / §9: the media library — the thumbnail grid, the search, and the picker that
+    // writes a key into a field. A picker writes a **key**, never a URL: content that stored
+    // a URL would have to be rewritten by every rename (§7.3).
+    if (action === 'media' && req.method === 'GET') {
+      this.#mediaLibrary(req, reply, tenant);
+      return;
+    }
+    if (action === 'media.json' && req.method === 'GET') {
+      this.#mediaJson(req, reply, tenant);
+      return;
+    }
     if (action.startsWith('pages/') && req.method === 'GET') {
       const id = action.slice('pages/'.length);
       if (!PAGE_ID_RE.test(id)) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'not a page id');
@@ -599,6 +630,7 @@ ${items}
 <nav>
   <a href="/admin">All tenants</a>
   <a href="/admin/t/${esc(tenant.key)}/pages">Pages</a>
+  <a href="/admin/t/${esc(tenant.key)}/media">Media</a>
   <a href="/admin/t/${esc(tenant.key)}/tables">Tables</a>
   <a href="/admin/t/${esc(tenant.key)}/sources">Data sources</a>
   ${this.#env.schemaEdit === 'on' ? `<a href="/admin/t/${esc(tenant.key)}/builder">Table builder</a>` : ''}
@@ -782,6 +814,124 @@ ${items}
           : null;
       reply.header('cache-control', 'no-store');
       reply.send({ tenant: tenant.key, page: row, preview });
+    } finally {
+      db.close();
+    }
+  }
+
+  // --- §7.1: the media library ---------------------------------------------
+
+  /**
+   * The search behind both the grid and `media.json`, on the render-read class.
+   *
+   * `q` is matched against the four strings a human might remember — the key, the filename,
+   * the alt text and the kind — because "the logo" is not always a key. Every value is a bound
+   * parameter (`LIKE ? ESCAPE '\'` with the wildcards in the query escaped), so a search box
+   * is not a second SQL surface.
+   */
+  #mediaRows(db: Database.Database, q: string): MediaRow[] {
+    const like = `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+    return db
+      .prepare(
+        `SELECT a.id, a.key, a.filename, a.alt_text, a.kind, a.mime, a.width, a.height, a.bytes,
+                a.sha256, a.access_class, a.storage_path,
+                v.sha256 AS thumb_sha, v.width AS thumb_width, v.height AS thumb_height
+           FROM cms_asset a
+           LEFT JOIN cms_asset_variant v
+                  ON v.asset_id = a.id AND v.label = 'thumb' AND v.format = 'webp'
+          WHERE (@q = '' OR a.key LIKE @like ESCAPE '\\' OR a.filename LIKE @like ESCAPE '\\'
+                 OR ifnull(a.alt_text, '') LIKE @like ESCAPE '\\' OR a.kind = @q)
+          ORDER BY a.created_at DESC, a.key
+          LIMIT 200`,
+      )
+      .all({ q, like }) as MediaRow[];
+  }
+
+  /** The picker's targets: a column name, and nothing else. */
+  static readonly PICK_TARGET = /^[a-z][a-z0-9_]{0,39}$/;
+
+  #mediaLibrary(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): void {
+    const params = new URL(req.url, 'http://admin.invalid').searchParams;
+    const q = (params.get('q') ?? '').slice(0, 100);
+    const pick = params.get('pick') ?? '';
+    const picked = params.get('key') ?? '';
+    const db = this.#siteDb(tenant.key);
+    let rows: MediaRow[];
+    try {
+      rows = this.#mediaRows(db, q);
+    } finally {
+      db.close();
+    }
+
+    // The picker writes the key into a field. A gated asset is refused here for the same
+    // reason `site.asset()` returns no URL for one: a key that renders a 404 is not a pick.
+    const pickedRow = picked === '' ? undefined : rows.find((r) => r.key === picked);
+    const pickTarget = AdminSurface.PICK_TARGET.test(pick) ? pick : '';
+    const field =
+      pickTarget !== '' && pickedRow !== undefined && pickedRow.access_class !== 'gated'
+        ? `<p class="picked"><label for="picked_value">${esc(pickTarget)}</label>` +
+          `<input id="picked_value" type="text" name="${esc(pickTarget)}" value="${esc(pickedRow.key)}" readonly></p>`
+        : '';
+
+    const grid = rows
+      .map((row) => {
+        // §7.1: a gated asset has no farm link, so the grid must not imply one. It is listed
+        // (the library is the admin's inventory) and it is visibly not publishable.
+        const thumb =
+          row.access_class === 'gated'
+            ? '<span class="gated">gated — no public URL</span>'
+            : row.thumb_sha === null
+              ? '<span class="no-thumb">no rendition</span>'
+              : `<img loading="lazy" src="/media/${esc(`${row.key}@thumb.webp`)}?v=${esc(String(row.thumb_sha).slice(0, 8))}"` +
+                ` alt="${esc(row.alt_text ?? '')}" width="${Number(row.thumb_width)}" height="${Number(row.thumb_height)}">`;
+        const use =
+          pickTarget === '' || row.access_class === 'gated'
+            ? ''
+            : `<a class="pick" href="/admin/t/${esc(tenant.key)}/media?pick=${esc(pickTarget)}&amp;key=${esc(row.key)}">Use</a>`;
+        return (
+          `<figure class="asset" data-asset-key="${esc(row.key)}" data-kind="${esc(row.kind)}"` +
+          ` data-access="${esc(row.access_class)}">${thumb}` +
+          `<figcaption><code>${esc(row.key)}</code> <small>${esc(row.kind)} · ${esc(row.filename)}</small></figcaption>${use}</figure>`
+        );
+      })
+      .join('\n');
+
+    const body =
+      `<h1>Media</h1>` +
+      `<form method="get" action="/admin/t/${esc(tenant.key)}/media">` +
+      `<input type="search" name="q" value="${esc(q)}" placeholder="key, filename, alt or kind">` +
+      (pickTarget === '' ? '' : `<input type="hidden" name="pick" value="${esc(pickTarget)}">`) +
+      `<button type="submit">Search</button></form>` +
+      `<p class="count">${rows.length} asset(s)</p>` +
+      field +
+      `<div class="grid">\n${grid}\n</div>`;
+    reply.header('cache-control', 'no-store');
+    reply.type('text/html; charset=utf-8').send(page('Media', body));
+  }
+
+  #mediaJson(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): void {
+    const q = (new URL(req.url, 'http://admin.invalid').searchParams.get('q') ?? '').slice(0, 100);
+    const db = this.#siteDb(tenant.key);
+    try {
+      const rows = this.#mediaRows(db, q).map((row) => ({
+        key: row.key,
+        filename: row.filename,
+        kind: row.kind,
+        alt: row.alt_text,
+        access_class: row.access_class,
+        width: row.width,
+        height: row.height,
+        bytes: row.bytes,
+        sha256: row.sha256,
+        url: row.access_class === 'gated' ? null : `/media/${row.key}.${extOfMime(row.mime)}?v=${row.sha256.slice(0, 8)}`,
+        thumb_url:
+          row.access_class === 'gated' || row.thumb_sha === null
+            ? null
+            : `/media/${row.key}@thumb.webp?v=${row.thumb_sha.slice(0, 8)}`,
+        thumb: row.thumb_sha === null ? null : { sha256: row.thumb_sha, width: row.thumb_width, height: row.thumb_height },
+      }));
+      reply.header('cache-control', 'no-store');
+      reply.send({ tenant: tenant.key, q, assets: rows });
     } finally {
       db.close();
     }

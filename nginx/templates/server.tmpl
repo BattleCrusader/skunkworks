@@ -16,6 +16,9 @@ server {
     }
 
     location /media/ {
+        # §7.1: a renamed key 301s from the map at http scope; a gated asset has no link and
+        # this falls through to the same 404 a key that never existed gets.
+        if ($skw_media_alias) { return 301 $skw_media_alias; }
         alias /srv/content/public/;
         try_files $uri =404;
         add_header Cache-Control "public, max-age=31536000, immutable";

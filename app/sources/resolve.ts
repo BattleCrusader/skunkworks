@@ -54,7 +54,12 @@ export interface ResolvedSource {
 }
 
 function specOf(row: { spec_json: string; params_json: string }, kind: 'view' | 'query'): SourceSpec {
-  return parseSpec(kind, JSON.parse(row.spec_json) as unknown, JSON.parse(row.params_json) as unknown);
+  // D31: the render path clamps a `limit_default` above `limit_max` instead of refusing it.
+  // Refusing here would make a row that bypassed publish unrenderable rather than bounded —
+  // and the promise §6.2 makes is that a render is *clamped*, not that it is unavailable.
+  return parseSpec(kind, JSON.parse(row.spec_json) as unknown, JSON.parse(row.params_json) as unknown, {
+    defaultAboveMax: 'clamp',
+  });
 }
 
 export function specRevision(row: { published_at: string | null; spec_json: string; params_json: string; aggregate_json: string | null; group_by_json: string | null }): string {

@@ -22,6 +22,7 @@ import type Database from 'better-sqlite3';
 import { basename, extname } from 'node:path';
 
 import { AppError } from '../errors.ts';
+import { removeAssetLinks, syncAssetLinks, writeAliasMap } from './farm.ts';
 import { resolveAssetId, linksForAsset } from './links.ts';
 import { putBytes, quotaState, usedBytes, type QuotaState } from './store.ts';
 import { sha256OfStored, sniffAndNormalise, type AssetKind } from './sniff.ts';
@@ -165,6 +166,10 @@ export async function uploadAsset(input: UploadInput): Promise<UploadResult> {
     );
   const asset = assetById(input.db, Number(info.lastInsertRowid));
   if (asset === undefined) throw new AppError('SKW_E_PLT_INTERNAL', 'the asset row vanished after insert');
+  // §7.1 / D18: the row and its farm link are written together, so "a public asset is
+  // reachable at /media/<key>" is a property of uploading rather than of a cron job. A gated
+  // upload creates nothing (the link is absent, not conditional).
+  syncAssetLinks(input.db, input.contentRoot, asset.key);
   return { asset, reused: false, wroteFile: put.wrote, relPath: put.relPath };
 }
 
@@ -182,7 +187,10 @@ export interface RenameResult {
  * `SKW_REPOINT_MAX_ROWS`/the `repoint` operation is S3b: it rewrites up to 5,000 referencing
  * rows in one audited transaction, and it is deliberately not reachable from this function.
  */
-export function renameAsset(db: Database.Database, opts: { from: string; to: string }): RenameResult {
+export function renameAsset(
+  db: Database.Database,
+  opts: { from: string; to: string; contentRoot?: string },
+): RenameResult {
   const row = assetByKey(db, opts.from);
   if (row === undefined) {
     throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no asset with that key', { key: opts.from });
@@ -224,6 +232,17 @@ export function renameAsset(db: Database.Database, opts: { from: string; to: str
     ).run(opts.from, row.id);
   });
   run();
+  // The farm half of the rename, in the only order that never leaves both URLs dead:
+  //   1. the new links exist (the new URL serves);
+  //   2. the alias map names old -> new (the edge can 301, once it reloads);
+  //   3. only then are the old links removed.
+  // Between 1 and 3 the old URL answers with bytes and the new one with bytes; after 3 the
+  // old one is a 301 that the map answers. There is no step at which neither resolves.
+  if (opts.contentRoot !== undefined) {
+    syncAssetLinks(db, opts.contentRoot, opts.to);
+    writeAliasMap(db, opts.contentRoot);
+    removeAssetLinks(opts.contentRoot, opts.from);
+  }
   return { alias: true, links: 0, from: opts.from, to: opts.to };
 }
 
@@ -232,7 +251,11 @@ export function renameAsset(db: Database.Database, opts: { from: string; to: str
  * schema's guard trigger (which also covers bundles and download codes) is the backstop.
  * The alias rows go with it — `cms_asset_alias.asset_id … ON DELETE CASCADE`.
  */
-export function deleteAsset(db: Database.Database, key: string): { deleted: true; key: string } {
+export function deleteAsset(
+  db: Database.Database,
+  key: string,
+  opts: { contentRoot?: string } = {},
+): { deleted: true; key: string } {
   const row = assetByKey(db, key);
   if (row === undefined) {
     // An alias is not an asset: deleting through one would be deleting by a URL that only 301s.
@@ -267,7 +290,14 @@ export function deleteAsset(db: Database.Database, key: string): { deleted: true
     }
     throw err;
   }
+  // The alias rows are gone with the row (CASCADE), so the map must lose the old URL too:
+  // a 301 to a file that no longer exists would be a redirect to a 404.
+  if (opts.contentRoot !== undefined) retireFarm(key, opts.contentRoot, db);
   return { deleted: true, key };
+}
+function retireFarm(key: string, contentRoot: string, db: Database.Database): void {
+  removeAssetLinks(contentRoot, key);
+  writeAliasMap(db, contentRoot);
 }
 
 /**

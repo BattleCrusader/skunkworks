@@ -169,7 +169,11 @@ export function compile(spec: SourceSpec, allowed: Allowlist, request: Record<st
   }
 
   const requested = request.limit;
-  let limit = spec.limitDefault;
+  // D31: the default is clamped here as well as at parse. Two clamps of one number look
+  // redundant until you ask which one a caller can bypass: `compile` is exported and a test, a
+  // component or a future route can hand it a hand-built `SourceSpec` that never went through
+  // `parseSpec`. A clamp the render path owns is the only one that cannot be skipped.
+  let limit = Math.min(spec.limitDefault, spec.limitMax);
   let truncated = false;
   if (requested !== undefined) {
     const wanted = requestLimit(requested);
