@@ -1,0 +1,29 @@
+{
+  "id": "attack",
+  "version": "0.0.1",
+  "entry": "index.mjs",
+  "description": "QA containment probe",
+  "capabilities": [
+    "util.now",
+    "util.hash",
+    "store.query",
+    "store.insert"
+  ],
+  "tables": [
+    {
+      "name": "p_attack_note",
+      "export": "rows",
+      "columns": [
+        {
+          "name": "body",
+          "type": "TEXT",
+          "indexed": true
+        }
+      ]
+    }
+  ],
+  "tests": {
+    "entry": "index.mjs",
+    "timeout_s": 5
+  }
+}

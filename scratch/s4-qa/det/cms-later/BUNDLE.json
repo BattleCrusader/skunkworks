@@ -1,0 +1,168 @@
+{
+  "schema": "skunkworks/site-bundle/v3",
+  "created_at": "2026-10-21T01:00:00.000Z",
+  "export_now": "2026-10-21T01:00:00.000Z",
+  "tenant": {
+    "key": "acme",
+    "mode": "production",
+    "db_version": 3
+  },
+  "hosts": [
+    "acme.test",
+    "www.acme.test"
+  ],
+  "image": {
+    "app_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "runner_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "projection_version": 2,
+  "projection_sha": "fa564d01fe824b992396230ea6955b5abbb28883d3b955869e556a613f4eb59b:c621302084642bc40edfa4449caed7790f3b03893afc28e3adf8a54139b2e6ad",
+  "source_counts": {
+    "cms_asset": 2,
+    "cms_asset_alias": 0,
+    "cms_asset_bundle": 0,
+    "cms_asset_bundle_item": 0,
+    "cms_asset_link": 0,
+    "cms_asset_variant": 0,
+    "cms_audit": 0,
+    "cms_component_registry": 0,
+    "cms_datasource": 0,
+    "cms_download_code": 0,
+    "cms_download_code_archive": 0,
+    "cms_download_event": 0,
+    "cms_form": 0,
+    "cms_form_submission": 0,
+    "cms_nav": 0,
+    "cms_page": 4,
+    "cms_page_revision": 0,
+    "cms_plugin_installed": 0,
+    "cms_plugin_migration": 0,
+    "cms_plugin_revoked": 0,
+    "cms_plugin_setting": 0,
+    "cms_redirect": 0,
+    "cms_settings": 0,
+    "cms_table_registry": 0,
+    "cms_trigger_registry": 5,
+    "cms_view_registry": 0,
+    "cms_watermark_render": 0
+  },
+  "files": [
+    {
+      "path": "data/site.db",
+      "bytes": 319488,
+      "sha256": "9441f179957c487a0ff8a5d827003878f15dad0e335031b7112af36855c88934",
+      "class": "db"
+    },
+    {
+      "path": "data/control.seed.json",
+      "bytes": 1641,
+      "sha256": "3316bbe6c2a052411679ddf1d0cb9d6ce76ff75d8b985bb748aa0e3e0e4c3155",
+      "class": "content"
+    },
+    {
+      "path": "docker-compose.yml",
+      "bytes": 4253,
+      "sha256": "2261891e0fc7058f3098899ff3ca8f17cf7386803611fbd73ed09674f78663db",
+      "class": "infra"
+    },
+    {
+      "path": "install.sh",
+      "bytes": 14091,
+      "sha256": "a61c11a0038626f2d6cb7f374984442cd907996bbf89c28367fd9b44677ad83b",
+      "class": "infra"
+    },
+    {
+      "path": "nginx/nginx.conf",
+      "bytes": 556,
+      "sha256": "61cc7020a879f9893cb1e6b4dc40088f47a5739dd99a4e2a9a7bc3626a2a543f",
+      "class": "infra"
+    },
+    {
+      "path": "nginx/conf.d/00-default.conf",
+      "bytes": 963,
+      "sha256": "b80826572afaa067c68aedde425f722282d45351975d730d75f754a31e67b5d3",
+      "class": "infra"
+    },
+    {
+      "path": "snippets/skunk-proxy.conf",
+      "bytes": 1938,
+      "sha256": "dae1472a7fa1721a02d9894a333351b1863b7f706e65db3e3832066d341725a9",
+      "class": "infra"
+    },
+    {
+      "path": "schema/control.sql",
+      "bytes": 8312,
+      "sha256": "dd759bed6aee29a85c9322400441d6f1c06a4de86bce4aaac94314ff27692437",
+      "class": "infra"
+    },
+    {
+      "path": "schema/site.sql",
+      "bytes": 23137,
+      "sha256": "aaf4c5037f38a78b75f76b1262f8b5655ae4fe8b8c0790b6711ce4f12cc0a740",
+      "class": "infra"
+    },
+    {
+      "path": "tools/bundle_verify.mjs",
+      "bytes": 13540,
+      "sha256": "69ea6153b5786808d9eec76cd21e885fa91ef659e7d0bad5d3798524ec5b18e5",
+      "class": "infra"
+    },
+    {
+      "path": "tools/seed_control.mjs",
+      "bytes": 5461,
+      "sha256": "596146ba4277c8c466670eab282c9366d078725c752ad41c1cca18b17bdb8a68",
+      "class": "infra"
+    },
+    {
+      "path": "tools/control_db.mjs",
+      "bytes": 3999,
+      "sha256": "8468aeb50e9f2bea2ce442a7119820207a1b80faa7e8f8bf9a0f30147f3b641f",
+      "class": "infra"
+    },
+    {
+      "path": "nginx/conf.d/10-app.conf",
+      "bytes": 2965,
+      "sha256": "f10b9d1ef4f761c990d1a0b3f5946ad5383a3c24381c6eeacd7033c64c5377c0",
+      "class": "infra"
+    },
+    {
+      "path": "snippets/skunk-csp.conf",
+      "bytes": 585,
+      "sha256": "6dd0ec9d0a86f93bb11ce6dfef26a7d2f28facced5a2b6dfc797acfe8cc82ecf",
+      "class": "infra"
+    },
+    {
+      "path": "content/media/81/818885ccc68f7f37e8d17e1e024f81c330e14250017bb3aaa68be02f3784a91a.jpg",
+      "bytes": 17,
+      "sha256": "818885ccc68f7f37e8d17e1e024f81c330e14250017bb3aaa68be02f3784a91a",
+      "class": "media"
+    },
+    {
+      "path": "content/media/3c/3cda3e2b82a0f78fae397924389d55cbe6e0d3b89296a152730b0f84eb13c73d.jpg",
+      "bytes": 14,
+      "sha256": "3cda3e2b82a0f78fae397924389d55cbe6e0d3b89296a152730b0f84eb13c73d",
+      "class": "media"
+    },
+    {
+      "path": "content/public/team/studio.jpg",
+      "bytes": 17,
+      "sha256": "818885ccc68f7f37e8d17e1e024f81c330e14250017bb3aaa68be02f3784a91a",
+      "class": "media"
+    },
+    {
+      "path": "content/public/work/one.jpg",
+      "bytes": 14,
+      "sha256": "3cda3e2b82a0f78fae397924389d55cbe6e0d3b89296a152730b0f84eb13c73d",
+      "class": "media"
+    },
+    {
+      "path": "EXPORT-NOTES.md",
+      "bytes": 2436,
+      "sha256": "50939a83bedb58cc1dfc51fa921770947107ad30647a5a3013459ea60e864e8a",
+      "class": "infra"
+    }
+  ],
+  "plugins": [],
+  "refusals": [],
+  "notes": []
+}

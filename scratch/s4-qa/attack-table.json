@@ -1,0 +1,3 @@
+p_notes_note REFUSED SKW_E_PL_NO_TABLE: attack did not declare table "p_notes_note"
+cms_page REFUSED SKW_E_PL_NO_TABLE: attack did not declare table "cms_page"
+p_attack_note REFUSED no such table: p_attack_note

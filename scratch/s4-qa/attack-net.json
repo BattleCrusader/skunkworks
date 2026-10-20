@@ -1,0 +1,1 @@
+{"id":6,"ok":true,"plugin":"probenet","result":{"external_tcp":"ENETUNREACH","external_udp":"ENETUNREACH","loopback_tcp":"ECONNREFUSED","loopback_udp":"SENT","fetch_external":"ENETUNREACH","read":"ERR_ACCESS_DENIED"}}

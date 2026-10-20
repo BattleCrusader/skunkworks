@@ -1,0 +1,8 @@
+{
+  "id": "probenet",
+  "version": "1.0.0",
+  "entry": "index.mjs",
+  "description": "S4c's containment probe: a package whose only job is to open a socket and report what the kernel said.",
+  "capabilities": ["util.now"],
+  "tables": []
+}
