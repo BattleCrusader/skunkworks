@@ -896,3 +896,559 @@ evidence.
 | E-14 | "converges exactly (53 objects)" is a `(type,name)` comparison; a missing CHECK passes | `S1-qa.md` §0 m1, §6.1 |
 | E-15 | undeclared `argon2-cffi` / SQLite prerequisites; the pin hides the r3 regression; the comment is false on Linux | `S1-qa.md` §0 m7, §6.2; `S1-report.md` §5.9 |
 | — | **declined:** §16 S1 "the boot order of §2.3" is said to include step 6, which is S4's | `S1-report.md` §5.8 — judged **not a defect** by `S1-qa.md` §5.6 and by this pass: §16's S1 `Contains` list names no plugin work, C-8 makes the runner a separate container, and the builder's logged skip is the specified behaviour. No contract changes, and §3 above records the boundary as settled. |
+
+
+---
+
+## 6. Errata E-16..E-19 (post-S2a)
+
+**Status:** amendment of record for `docs/sds/SDS.md`, issued after S2a went green
+(`docs/build/S2a-report.md`, 145/145) with **four** of its eleven disclosed gaps marked as blocking S2b.
+**Date:** 2026-10-20. **Author:** Architect. **Scope:** the specification. No implementation file is
+edited by this pass.
+
+**Four proposed, four accepted, none declined.** Each was verified against the text before it was
+accepted, and each is a place where the SDS is silent or unsatisfiable rather than a place the builder
+missed: there is no login error code in §4.3's taxonomy (§7.1); the allowlist has no storage and no
+name in §4.3 or §9.1 (§7.4); the session table has no cap and no column to hold one (§7.6); and a
+fresh bundle cannot produce a first operator (§7.5, and see E-19 for the second, unstated reason).
+
+**Two more of the eleven are genuine gaps and are not closed here**, so that this section is not read
+as a complete answer to §7: **item 2** (no CSRF header name — §9.1 names no wire name) and **item 7**
+(`fleet_admin` has no login URL under §9.2's `/admin/t/<key>/…` shape). Both are one-line freezes of
+different subjects, both are recorded as open in §8, and neither blocks S2b.
+
+**Precedence, and the supersessions this section relies on** (§1's order is unchanged):
+
+1. **E-16** `SUPERSEDES 00-adjudication.md §4.2`'s `SEC` list and the 71-code count — **by addition
+   only**, exactly as E-4 did for four codes: nothing is removed or renamed, the pattern is unchanged,
+   and the count moves 71 → 72.
+2. **E-17** `SUPERSEDES 00-adjudication.md §4.2`'s sentence "Twenty-two names, and this table is the
+   complete list" — by **one addition and no deletion**, so the table becomes twenty-three names and
+   every existing name keeps its meaning. It also **amends §3 of this file**, whose bullet *"The 22
+   environment names. No variable is added by this errata"* was true when it was written and is not
+   true now. §3 is a list of settled ground, not a frozen contract, and this is the amendment.
+3. **E-19** replaces `SDS.md` §11.6's block quote. The identical sentence lives in
+   `00-adjudication.md` **§2** under C-24 — the conflict register, not §4's frozen contracts — so this
+   is the correction of a verdict's restatement, not a reopening of the adjudication: C-24's decision
+   (*a seed, never the fleet file*) is untouched, and what is added is the step that makes the seeded
+   row usable.
+4. **E-17's carried correction to E-13** `SUPERSEDES 00-adjudication.md §4.2`'s "they are the **only**
+   exceptions" sentence by **one named class** — nginx's `403` for a peer outside the allowlist — for the
+   same reason E-13 gave; nothing else in the sentence changes.
+
+**§1's count of markers is now stale, deliberately.** "There are five such markers: E-1 … E-13" counts
+the items of §2; this section adds three more (E-16, E-17, E-19) and one carried amendment to E-13, each
+marked `SUPERSEDES` where it occurs. No other count in §1 changes.
+
+**E-18 replaces no frozen text.** It decides a silence in §9.1's table: §1 says this file's silence is
+not a decision, and the SDS's silence on session lifetime is exactly what this item decides. The one
+number it fixes that the SDS never fixed — the populated-allowlist idle window — is report item 3,
+folded in rather than carried as a fifth item.
+
+---
+
+### E-16 — a failed admin login borrows the paid-download code, so two unrelated decisions share one counter
+
+**Defect.** `SDS.md` §4.3 (the `SEC` area: `CSRF`, `CODE_INVALID`, `RATE_LIMITED`, `TOKEN_INVALID`,
+`TOKEN_MISMATCH`, `USES_EXHAUSTED`, `WATERMARK_FAILED`, `AUDIT_SEAL`, `ROLE_DISABLED`,
+`UPLOAD_REJECTED`) and `schema/error-codes.json` (71 codes, 51 HTTP mappings, frozen). There is no code
+for a credential login failure, so S2a raised `SKW_E_SEC_CODE_INVALID` at all three failure sites —
+`app/admin/auth.ts:255` (unknown email), `:278` (wrong password), `:294` (wrong or missing TOTP) —
+and that code is C-6's decision about a **paid download access code** (§7.2: a selector that matches no
+row, a secret that does not verify, a revoked code). Disclosed by the builder as `S2a-report.md` §7.1,
+who declined to add a code because `test/error-codes.test.ts:56` pins the count at 71.
+
+The consequence is not cosmetic. A dashboard counting `CODE_INVALID` adds a mistyped download code to a
+password-guessing run against the admin surface, and neither alert can be written: the two events have
+different owners, different rates and different responses. The borrowed code also makes the emitter
+lie — S2a passes the message `invalid credentials`, which is not what `CODE_INVALID` means anywhere
+else in the taxonomy.
+
+**Corrected text — drop-in for `SDS.md` §4.3: the code-count paragraph, a new paragraph and table row
+after it, and the `SEC` area row.** `SUPERSEDES 00-adjudication.md §4.2`'s `SEC` list and count **by
+addition only**.
+
+```markdown
+`schema/error-codes.json` holds the **72** codes, their HTTP mapping and their `Retry-After` values.
+`validate_schema.py` asserts that every `SKW_E_*` string raised by `schema/*.sql` is a member and
+matches the shape — so a trigger cannot raise a code the app has no mapping for. Two codes are raised
+from inside the database today: `SKW_E_DM_ASSET_IN_USE` and `SKW_E_DM_COLUMN_IMMUTABLE`.
+
+**A credential login failure is its own code, and it is not `SKW_E_SEC_CODE_INVALID`.** `CODE_INVALID`
+is §7.2's decision about a redeemed download code; an admin login is a different decision, owned by a
+different mechanism (`user_account.password_hash`, `user_account.totp_secret`), and the two must not
+share a code — one counter that mixes them cannot be alerted on. The login code is:
+
+| Code | HTTP | Raised when | Cacheable |
+|---|---|---|---|
+| `SKW_E_SEC_AUTH_INVALID` | 401 | an admin login attempt fails at the identity, password or TOTP step; the three are one response | no — `Cache-Control: no-store` |
+
+Its `message` is the fixed literal `invalid credentials`, produced at the call site and not from the
+emitter's table. It carries no `Retry-After` (that is the lockout's, 429 `SKW_E_SEC_RATE_LIMITED`,
+unchanged) and no `WWW-Authenticate` (this surface implements no HTTP authentication scheme).
+
+**The three login failures are one response, and timing is part of the response.** A wrong password, an
+unknown email and a wrong-or-missing TOTP answer with the same status (401), the same code, and a body
+that is byte-identical after `requestId` is substituted; no `Set-Cookie`, no `Location`, no
+`detail`. With TOTP mandatory, **exactly one TOTP computation runs on every attempt** — against the
+row's secret, or against a fixed dummy secret when the row has none — and it runs before the password
+verdict is used; with TOTP optional, none runs. The work an attempt performs is therefore a function of
+the configuration and never of the credentials submitted, so "the password was right, because a TOTP
+step then ran" is not observable. Medians across the three causes stay within 20 %, measured with at
+least 40 samples each; a password-only failure and a TOTP failure are compared in the same test, not
+only the unknown-email and wrong-password pair.
+
+**What the server may still know.** `audit_log` records the cause it observed —
+`reason ∈ {unknown_user, password, totp, locked}` in `after_json` — because an operator investigating a
+break-in needs it and an attacker cannot read that table. The wire distinguishes nothing, and the code
+is one code.
+```
+
+Area-table row becomes `SEC`: `AUTH_INVALID, CSRF, CODE_INVALID, RATE_LIMITED, TOKEN_INVALID,
+TOKEN_MISMATCH, USES_EXHAUSTED, WATERMARK_FAILED, AUDIT_SEAL, ROLE_DISABLED, UPLOAD_REJECTED`.
+`schema/error-codes.json` gains `AUTH_INVALID` in `areas.SEC` and
+`"SKW_E_SEC_AUTH_INVALID": 401` in `http`, and **no** `retry_after` entry.
+
+**What this does not change.** The lockout remains an intentional oracle after the fifth failure: a
+locked account answers `429 SKW_E_SEC_RATE_LIMITED` and an unknown email cannot lock, so the status
+diverges only after an attacker has already made five guesses against a real account
+(`S2a-report.md` §7.9). That divergence is accepted, is not a defect, and is not re-opened here.
+
+**Test that must change.** `test/error-codes.test.ts:56` — the total becomes 72 and the comment cites
+E-16; the app-map-equals-JSON assertion then fails until both files are updated, which is the gate.
+`test/admin-auth.test.ts` — the three assertions at `:121`, `:125` and the TOTP case become
+`SKW_E_SEC_AUTH_INVALID`; the timing test (`ok 6`) compares **three** causes, not two, and its body
+check compares all three scrubbed bodies byte for byte; a new assertion counts TOTP computations per
+attempt and requires the count to depend on `totpRequired` only. Negative control: a mutant that moves
+the TOTP computation back behind `if (!passwordOk) return` must go red on the third-cause timing ratio,
+not merely on the code.
+
+**Severity: major.** Every installed bundle's login path carries this code, and every dashboard an
+operator writes about the admin surface counts it.
+
+---
+
+### E-17 — D9's allowlist has neither a name nor a storage location, so the control cannot be implemented at all
+
+**Defect.** `SDS.md` §9.1's control table — "IP allowlist | opt-in, empty in every exported bundle;
+**when empty, TOTP is mandatory and idle drops to 15 min**" — and D9 (`00-adjudication.md`: "the IP
+allowlist is opt-in and empty in exported bundles; when it is empty, TOTP is mandatory and idle drops to
+15 min"). §4.3's table is complete at twenty-two names and
+names no allowlist variable; `schema/control.sql` has no table for it; and §12.3's generated admin vhost
+carries no access directive. Disclosed by the builder as `S2a-report.md` §7.4, who took the value as
+`BuildAppOptions.adminAllowlist` with a default of `[]` and **declined to enforce it in the app** —
+correctly: with `trustProxy: false` the app sees nginx's address, and an allowlist it cannot trust is
+worse than none.
+
+The gap is therefore two gaps wearing one coat: there is nowhere to put the value, and no component
+that can see the peer address well enough to act on it.
+
+**Corrected text — drop-in for `SDS.md` §9.1, a new §9.1a, the §4.3 environment paragraph and table,
+and the §12.3 admin block.** `SUPERSEDES 00-adjudication.md §4.2`'s "Twenty-two names, and this table
+is the complete list" **by one addition and no deletion**; **amends §3 of this file** (see the
+preamble).
+
+```markdown
+### 9.1a The IP allowlist: one name, one parser, enforced at the edge
+
+`SKW_ADMIN_ALLOWLIST` is a comma-separated list of CIDR blocks, IPv4 and IPv6, optional, and **empty in
+every exported bundle**. It is the only place the allowlist is stored: no `control.db` table and no
+admin route, because the value protects the surface that would edit it and a lockout administered
+through the locked door is a support ticket with a rebuild attached.
+
+- **Unset and empty mean the same thing: no allowlist.** Unset is the bundle default and is not an
+  error; `""`, `" "` and `","` are empty. With no allowlist the edge emits no access directive and
+  §9.1's consequences apply unchanged — TOTP mandatory, idle 15 min.
+- **There is no way to express "deny all".** A value that parses to zero blocks is empty. The only
+  routes to "refuse everyone" are a typo and a lockout, and neither is a configuration.
+- **A non-empty value that does not parse is a boot refusal** (§2.3 step 1), naming the offending
+  token, and `tools/nginx_gen.ts` refuses to emit a config with the same message from the same parser
+  (`app/admin/allowlist.ts`). Two answers to "is this value usable" would be one answer too many, and
+  the alternative — treating a typo as empty — produces a config that looks applied and is not.
+
+**Enforced at the edge; the app never enforces it.** `tools/nginx_gen.ts` emits one `allow <cidr>;` per
+block followed by `deny all;`, inside the **admin** server block and in no other block. The app cannot
+do this: nginx terminates the connection, so `req.socket.remoteAddress` is the edge's address and not
+the operator's (§5.3 row 2 uses it for exactly that reason, and `trustProxy: false` means an
+`X-Forwarded-For` is not evidence). The app reads the same variable for the two consequences §9.1
+attaches to it — TOTP mandatory, and the idle window — and for nothing else.
+
+A peer outside the list is `403` from nginx, before the app is reached: nginx's body, no taxonomy code,
+no `Set-Cookie` (E-13's fifth exception, below). The admin hostname is public — it is in the
+certificate's CT log — so the list controls *reachability*, not *secrecy*; what it buys is that an
+attacker holding the password and a live TOTP code still has to be on the listed network.
+
+**Changing it.** The list is read at boot by the app and at generation by the edge, so the two disagree
+for as long as it takes to apply both. **Narrowing is edge-first** — `nginx -t`, `nginx -s reload`,
+then `docker compose up -d app` — because the other order leaves the edge admitting peers the app has
+already stopped asking a second factor from. **Widening is safe in either order**; the install report
+does it app-first, so the state it prints is the app's.
+```
+
+Drop-in for §4.3's environment paragraph and table (one row, after `SKW_EMAIL_MODE`):
+
+```markdown
+**Environment: one prefix, `SKW_`. Twenty-three names, and this table is the complete list.**
+```
+
+| Var | Default | Required | Meaning |
+|---|---|---|---|
+| `SKW_ADMIN_ALLOWLIST` | (empty) | no | comma-separated CIDRs allowed to reach the admin host; enforced by nginx, read by the app for §9.1's two consequences (§9.1a) |
+
+Drop-in for §9.1's table row:
+
+```markdown
+| IP allowlist | opt-in, empty in every exported bundle; **when empty, TOTP is mandatory and idle drops to 15 min**; stored in `SKW_ADMIN_ALLOWLIST` and enforced by nginx on the admin host, never by the app (§9.1a) |
+```
+
+Drop-in for §12.3's admin server block (the directive lines only; the rest of the block is unchanged):
+
+```nginx
+# admin.<domain> — the only host that serves /admin (E-2, §9.1). No /demo/, no /media/.
+server {
+  listen 80; listen 443 ssl; server_name admin.skw.test;
+  allow 203.0.113.0/24;          # one line per SKW_ADMIN_ALLOWLIST block
+  allow 2001:db8::/32;           # IPv6 rendered as given; no expansion, no reordering
+  deny  all;                     # emitted only when the list is non-empty
+  location / {
+    include /etc/nginx/snippets/skunk-proxy.conf;
+    proxy_pass http://app:3000;
+  }
+}
+```
+
+With an empty list those three lines are absent, so the default is the app's own authentication and
+never an accidental `deny all`.
+
+**Carried by the same item: two environment names the generator invented are deleted.**
+`tools/nginx_gen.ts:176–177` reads `SKW_ADMIN_HOST` and `SKW_DEMOS_HOST`; neither is in §4.3's table,
+and §4.3 says the table is the complete list while §9.1 says the admin host **is** the host component
+of `SKW_ADMIN_ORIGIN`. Freezing a twenty-third name beside two undeclared ones would make the table a
+lie in the same edit, so both are deleted and both hosts are derived:
+
+```
+adminHost = normalise(host(SKW_ADMIN_ORIGIN))
+demosHost = adminHost with its first label replaced by "demos"     # admin.cms.example.com -> demos.cms.example.com
+```
+
+Neither derivation is a variable. `--admin-host` and `--demos-host` stay as test-only flags and default
+to the derived values.
+
+**Test that must change.** `test/env.test.ts` — six parsing cases: unset → empty; `""` → empty; `" , "`
+→ empty; two IPv4 blocks → two entries; a v4 and a v6 block → two entries; a non-empty malformed value
+→ boot refusal naming the token, with `status !== 0` under the 5 s `spawnSync` (E-8).
+`test/nginx-config.test.ts` — the admin block carries `allow`/`deny` iff the list is non-empty; **no**
+tenant block carries either, ever; with the list empty the string `deny` does not appear in
+`10-app.conf`. `test/nginx-e2e.test.ts` — a request to the admin host from outside the list is 403 from
+nginx with `Content-Type: text/html`, no taxonomy code and no `Set-Cookie`, and the app's log shows no
+request; the same request from inside the list reaches the app. Plus: with `SKW_ADMIN_HOST` set to
+something else, the generated config is unchanged (the derived host wins).
+
+**Severity: major.** D9 sells this control in writing, and today the value has nowhere to live and
+nothing that can enforce it.
+
+**Carried correction to E-13 — the fifth exception.** E-13 names four classes of response the app never
+sees and says they are "the **only** exceptions". A denied peer is a fifth: nginx's `403` from `deny
+all;` on the admin host, generated before the app is reached. Drop-in for `SDS.md` §4.3, replacing the
+closing sentence of that paragraph — `SUPERSEDES 00-adjudication.md §4.2`'s identical sentence by the
+addition of one named class, for the same reason E-13 gave: the alternative is an error-code registry
+in two places.
+
+```markdown
+Those four, and **nginx's `403` for a peer outside `SKW_ADMIN_ALLOWLIST` on the admin host** (§9.1a),
+are the only exceptions; each is asserted as such (status and `Content-Type`), and any other response
+that is not a taxonomy body is a defect. The denied peer's body is nginx's on purpose: a taxonomy body
+there would publish the product's error registry to an unauthenticated network peer.
+```
+
+---
+
+### E-18 — there is no absolute session lifetime, and rotation resets the little there is
+
+**Defect.** `SDS.md` §9.1's table ("Session id | 32-byte random hex, stored as a row in
+`control.db.session`, rotated on privilege change") and `schema/control.sql`'s `session` table, which
+carries `created_at`, `expires_at`, `rotated_from` and `revoked_at` and no `last_seen_at`. Idle expiry is
+therefore implemented by sliding `expires_at` on every authenticated request
+(`app/admin/session.ts:19–21`, `:238`), so a session in continuous use never expires — and
+`session/rotate` inserts a **new** row with a fresh `created_at` and a fresh `expires_at`
+(`session.ts:268`), so even a session that does reach a deadline can be replaced by an indefinite
+succession of children. Disclosed by the builder as `S2a-report.md` §7.6, who called it "a real gap"
+and left the model to this pass.
+
+The secondary hole is the one the report only half-names: an operator with a polling dashboard tab is
+*always* in continuous use, so "idle" in practice means "the browser tab was closed", not "the operator
+walked away".
+
+**Corrected text — drop-in for `SDS.md` §9.1, a new §9.1b, and the session row of the control table.**
+No DDL delta is written, because no column is needed: no control-plane migration, no `control-r4.sql`,
+no `gen_schema.py` bump and no re-baselined check 20.
+
+```markdown
+### 9.1b Session lifetime: a 12-hour cap over a sliding idle window
+
+Two constants already in `app/admin/session.ts` and one added, none of them an environment variable:
+§4.3's table carries deployment facts, and a session lifetime is a parameter the product fixes — one box
+that sets it to 30 days is a support case, not a configuration.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `IDLE_MS_NO_ALLOWLIST` | 15 min | §9.1's number for an empty allowlist; unchanged |
+| `IDLE_MS_WITH_ALLOWLIST` | 60 min | the populated-allowlist window, fixed here |
+| `SESSION_ABSOLUTE_MS` | 12 h | the cap, measured from `session.created_at` |
+
+`session.created_at` is the **start of the session lineage**; `session.expires_at` is the **idle
+deadline**. A session is live when all three hold: `revoked_at IS NULL`, `expires_at > now`, and
+`created_at + SESSION_ABSOLUTE_MS > now`. `created_at` is written once, never moved by a request, and
+is the only timestamp that can anchor a cap — a new column would buy the same thing and cost a v4
+control-plane migration, a `control-r4.sql`, a `gen_schema.py` bump and a re-baselined check 20, for a
+value that is a pure function of a column already present.
+
+**The idle window slides, and it is clamped.** On an authenticated request,
+`expires_at := min(now + idle, created_at + SESSION_ABSOLUTE_MS)`, so the idle deadline can never be
+pushed past the cap and a session in continuous use dies at 12 h instead of never. The comparison and
+the clamp stay in the code that already parses these strings (`Date.parse`), not in SQL: `datetime()`
+reformats `2026-10-20T10:00:00.000Z` to a space-separated value, and a string comparison against an ISO
+timestamp after that is silently wrong.
+
+**Rotation inherits the lineage.** `session/rotate` revokes the parent and inserts the child with the
+**parent's** `created_at`; only `expires_at` is new. Without that, rotation is a laundering path — an
+operator, or a stolen cookie, that rotates every few hours resets the cap, which is the same hole as
+having none. The parent's revocation stays in the same transaction, as today.
+
+**A dead session is row 7.** Expired by either deadline is no session: `404 SKW_E_PLT_TENANT_UNKNOWN`
+(§5.3 row 7), no `Set-Cookie`, and the row is not slid on the way out — a refused request must not
+extend anything. The sweeper deletes a row when either deadline has passed, and deletes a revoked row
+once the cap has passed.
+
+**Deploy consequence, stated rather than discovered.** A session minted before this change carries a
+`created_at` and a slid `expires_at`; if it is older than 12 h it dies at deploy and the operator logs
+in again. That is the correct outcome for a security change, and it needs no migration.
+```
+
+Drop-in for §9.1's session row:
+
+```markdown
+| Session id | 32-byte random hex, stored as a row in `control.db.session`, rotated on privilege change; the lineage dies 12 h after `created_at`, however continuously it is used (§9.1b) |
+```
+
+**Test that must change.** `test/admin-session.test.ts` — the six existing cases stand, and four are
+added: (a) a session touched every 5 minutes is refused at `created_at + 12 h` exactly, with 404 and no
+`Set-Cookie`; (b) the slide clamps — after the cap, `expires_at` never exceeds
+`created_at + SESSION_ABSOLUTE_MS`, asserted on the stored value, not on the response; (c) a rotate at
+11 h 59 m yields a child whose `created_at` equals the parent's and which is refused one minute later;
+(d) a session expired by idle but inside the cap is refused and its `expires_at` is unchanged by the
+attempt. `test/admin-auth.test.ts:156` keeps asserting the populated window against
+`IDLE_MS_WITH_ALLOWLIST`, which is now a frozen number rather than an implementation choice (report item
+3 is closed by that constant having a value the SDS states).
+
+**Severity: major.** The cap is the only thing that ends the session of an operator who never closes
+the tab, and rotation currently resets even the idle window.
+
+---
+
+### E-19 — a freshly installed bundle has no way in: the seeded operator is unclaimable and has no TOTP secret
+
+**Defect.** `SDS.md` §11.6's block quote (the seed "carries … one `owner` user with an argon2id hash and
+`must_change=1`"), §9.1's table ("when [the allowlist is] empty, TOTP is mandatory"), and
+`schema/control.sql`'s `user_account.totp_secret` (nullable, default NULL). Nothing in the SDS creates a
+TOTP secret, prints an enrolment URI, or sets a password a human holds. Disclosed by the builder as
+`S2a-report.md` §7.5 ("S2b needs one or every operator is locked out of a fresh bundle") and §8.
+
+Two verified facts make this a hard deadlock rather than an inconvenience:
+
+1. **`totp_secret IS NULL` cannot authenticate when TOTP is mandatory** — `app/admin/auth.ts:285` leaves
+   `totpOk = false` when the row has no secret, which is the correct fail-closed behaviour and precisely
+   why a bundle with an empty allowlist has no way in.
+2. **Nobody holds the seeded password.** The seed ships "an argon2id hash"; the preimage is in no
+   artefact the bundle carries (§11.5's `BUNDLE.json` has no field for it, and no other file could), and
+   `must_change=1` assumes a change-password flow that the SDS never defines and that cannot run before
+   a login. So a bundle is unreachable **even with the allowlist populated** — the TOTP rule only makes
+   it unreachable sooner.
+
+This is the commercial blocker: the five-minute promise (§0, O-23, measured bracket in §11.6) ends at a
+login screen nobody can pass.
+
+**Corrected text — drop-in for `SDS.md` §11.6's block quote, a new §11.6a, two lines of §3's layout,
+and four §16 rows.**
+
+```markdown
+> A bundle carries `data/control.seed.json` — one tenant with `mode='production'`, its hosts, one
+> `owner` user marked **unclaimed**: `must_change=1`, `totp_secret` NULL, and a `password_hash` that is
+> a real argon2id hash of 32 random bytes discarded at export, so a verification costs exactly what a
+> real one costs and can never succeed — `db_version` and settings — and `install.sh` applies
+> `schema/control.sql` and seeds exactly those rows in one transaction before `compose up`; no bundle
+> contains `data/control.db`, `data/site.db-wal`, `data/site.db-shm`, `content/protected/wm/`,
+> `content/sources/`, a populated `.env`, or a non-NULL `totp_secret` (a §11.3 preflight refusal, so a
+> bundle can never ship a working second factor). The seeded row is a **claim marker, not a
+> credential**: `install.sh` runs `skwctl admin bootstrap` (§11.6a) between `bundle_verify` and
+> `compose up`, so the box has exactly one operator who can log in, and has one before the admin
+> surface is reachable.
+
+### 11.6a The first operator: `skwctl admin bootstrap`
+
+An empty `SKW_ADMIN_ALLOWLIST` makes TOTP mandatory (§9.1), and a row with no `totp_secret` can never
+authenticate. Nothing in a bundle creates either a secret or a password a human holds, so this command
+is the only way into a fresh install, and it runs on the box before the surface exists:
+
+    docker compose run --rm --no-deps --entrypoint node app dist/cli/skwctl.js admin bootstrap \
+      --generate-password --enrolment-out /srv/data/first-login.txt
+
+**What it does, in one transaction.** It claims the seeded row: sets `password_hash` (argon2id,
+`m=19456,t=2,p=1`, through the same 4-slot semaphore), sets `totp_secret` to 20 fresh random bytes
+rendered as unpadded base32 (32 characters), sets `must_change=0`, revokes every live session for that
+user, and writes one `audit_log` row (`action='admin.bootstrap'`, `actor_label='install'`). If no user
+row exists at all it creates one `owner` for the single `mode='production'` tenant, and `--tenant <key>`
+is required when there is more than one. It never creates a `fleet_admin`, and refuses to when
+`SKW_FLEET_MODE=0`.
+
+**What it prints, and where.** The secret goes to `--enrolment-out` and nowhere else: one file created
+`0600` with `O_EXCL` (it will not overwrite an earlier enrolment) holding the admin URL, the email, the
+password when it generated one, the base32 secret in groups of four, the parameters, and the URI
+
+    otpauth://totp/Skunkworks:<email>?secret=<base32>&issuer=Skunkworks&algorithm=SHA1&digits=6&period=30
+
+whose parameters are the normative ones — RFC 6238 defaults, SHA-1, 6 digits, 30 s, one step either side
+accepted. Stdout carries the path and the login URL only. **It refuses to write a secret to a
+non-terminal stdout** (`REFUSAL: SECRET_NOT_PRINTABLE`) unless `--enrolment-out` is given, because
+`install.sh` logs its own output and a TOTP secret in an install log is a secret in a support bundle;
+`--enrolment-out -` is refused for the same reason. No secret reaches `audit_log`, `BUNDLE.json`,
+`control.seed.json` or a log line.
+
+**What it refuses to do.** If a user row exists that is not claimable — `totp_secret IS NOT NULL`, or
+`must_change=0`, or `last_login_at IS NOT NULL` — it writes nothing, exits **3**, and prints
+`REFUSAL: ALREADY_BOOTSTRAPPED` naming the two commands that would change it:
+
+    skwctl admin reset-totp      --email <email> --enrolment-out <path>
+    skwctl admin reset-password  --email <email> (--password-stdin | --generate-password)
+
+Exit 3 is the only benign refusal, so `install.sh` can tell "this box is already set up" from "this
+install failed": 0 and 3 continue (3 with a printed note and nothing changed), any other non-zero exits
+**16**. A second `./install.sh` therefore changes no user row, and a `--generate-password` run never
+rotates a secret it did not create. Every other refusal exits 1 with `REFUSAL: <REASON>` on stderr:
+`NO_CLAIM_TARGET`, `AMBIGUOUS_TARGET`, `TENANT_UNKNOWN`, `FLEET_ADMIN_DISABLED`, `SNAPSHOT_MODE`
+(`SKW_RENDER_MODE=snapshot` must not write `control.db`), `SCHEMA_VERSION_UNKNOWN`,
+`SECRET_NOT_PRINTABLE`, `PASSWORD_TOO_SHORT` (16 characters).
+
+**Why there are no recovery codes.** Recovery is `reset-totp` over shell access on the box, and that is
+not an escalation: whoever can run it can read `SKW_SESSION_KEY` out of `.env` and mint a session
+directly. A recovery code would be a long-lived second factor that has to be stored — a table, a hash, a
+single-use rule, a rate limit — to solve a problem root on the same box already solves, and two factors
+that both live on the same box are one factor. `--generate-password` is why the file says "delete this
+after enrolling": it is the only copy.
+
+**Why `must_change` is not the control.** A forced first-login change needs a code for "password
+expired" and a rule that scopes the session to the change route; v1 has neither, and inventing a second
+code for it is a bigger change than the gap. The column keeps its meaning as the seed's claim marker and
+the claim clears it; the install report tells the operator to change the password, and the file is
+`0600` and deleted.
+```
+
+Two lines of §3's layout change — the `install.sh` line and one new path:
+
+```
+│   ├── cli/skwctl.ts                  admin bootstrap / reset-totp / reset-password (§11.6a)
+├── install.sh                         verify → control.sql → seed → .env → bootstrap → compose up; exit 11/12/15/16
+```
+
+`§16 S2` gains three rows and `§16 S4`'s install row is replaced; both are tabled in §7 with the other
+drop-ins, so they are pasted in one pass.
+
+**Test that must change.** New `test/cli-bootstrap.test.ts`, ten cases: a fresh seeded `control.db` +
+nothing else yields exactly one `owner`, and a TOTP code computed **from the printed URI's secret** logs
+in through the real login route; a second run exits 3 and leaves `password_hash`, `totp_secret` and
+`must_change` byte-identical; a claimed user exits 3 and the file is not written; zero user rows with one
+production tenant creates one, and with two tenants and no `--tenant` refuses `AMBIGUOUS_TARGET`; a
+`fleet_admin` target with `SKW_FLEET_MODE=0` refuses; `SKW_RENDER_MODE=snapshot` refuses; a non-TTY
+invocation without `--enrolment-out` refuses and writes nothing anywhere; the written file is mode 0600
+and a second `--enrolment-out` to the same path refuses (`O_EXCL`); and a grep over the DB, the audit
+row, stdout and the file proves the secret appears in the file and in no other artefact.
+
+**Severity: blocker (commercial).** A bundle that cannot be logged into is not a product, and the
+five-minute promise ends at the login screen.
+
+
+---
+
+## 7. Builder checklist for S2b — ordered, each item naming the file and the gate that proves it
+
+Same shape as §4. Do them in this order. **E-16 before E-18** because both rewrite assertions in
+`test/admin-auth.test.ts` and the login code has to exist before an expiry test can expect a 404 from a
+route that a wrong credential would otherwise 401; **E-17 before E-19** because the bootstrap prints
+whether TOTP is required, which it reads from the allowlist parser, and E-19's gate needs that parser to
+have one answer; **E-19 last** because it is the only new executable in the slice.
+
+| # | Item | Files | Gate that proves it |
+|---|---|---|---|
+| 1 | **E-16** add `SKW_E_SEC_AUTH_INVALID` (401, no `Retry-After`) and stop borrowing the download code | `schema/error-codes.json`, `app/errors.ts`, `app/admin/auth.ts` (three sites: 255, 278, 294) | `test/error-codes.test.ts` (total 72, app map == JSON); `test/admin-auth.test.ts` (three causes, one code) |
+| 2 | **E-16** the work-shape rule: one TOTP computation per attempt when mandatory, before the password verdict, against a dummy secret when the row has none | `app/admin/auth.ts` | `test/admin-auth.test.ts` — three-cause timing within 20 %, bodies byte-equal, TOTP-computation count a function of `totpRequired` only; the "TOTP after the verdict" mutant goes red on timing |
+| 3 | **E-18** the cap: `SESSION_ABSOLUTE_MS`, the clamp, rotation inherits `created_at`, dead → row 7 with no slide and no write | `app/admin/session.ts` (`idleMsFor`, `get`, `touch`, `rotate`) | `test/admin-session.test.ts` — four new cases (12 h under continuous use, clamp on the stored value, rotate at 11 h 59 m dies at 12 h, dead-by-idle → 404/no `Set-Cookie`/no slide) |
+| 4 | **E-18** fix the populated-allowlist window at 60 min (report item 3) | `app/admin/session.ts` | `test/admin-auth.test.ts:156` asserted against the named constant, not a literal |
+| 5 | **E-17** the name, one parser, and the boot refusal | `app/admin/allowlist.ts` (new, the shared parser), `app/env.ts`, `.env.example`, `docker-compose.yml` | `test/env.test.ts` — six parsing cases incl. malformed → refusal naming the token under the 5 s `spawnSync` |
+| 6 | **E-17** edge enforcement in the admin block only | `tools/nginx_gen.ts`, `nginx/conf.d/10-app.conf` (regenerated) | `test/nginx-config.test.ts` (admin only; absent when empty); `test/nginx-e2e.test.ts` (outside → nginx 403, no taxonomy code, no `Set-Cookie`, no app request) |
+| 7 | **E-17** delete `SKW_ADMIN_HOST` / `SKW_DEMOS_HOST`; derive both hosts from `SKW_ADMIN_ORIGIN` | `tools/nginx_gen.ts:176–177` | `test/nginx-config.test.ts` — a set `SKW_ADMIN_HOST` does not change the output; `demos.` derivation asserted for a multi-label admin host |
+| 8 | **E-17** E-13's fifth exception, in the §4.3 drop-in and in the edge test | `test/nginx-e2e.test.ts` (assertion only), `docs/sds/SDS.md` (paste) | the denied-peer 403 asserted as `text/html` with no taxonomy code, alongside the four existing exceptions |
+| 9 | **E-19** `skwctl admin bootstrap` / `reset-totp` / `reset-password` | `app/cli/skwctl.ts` (new), `package.json` (build), `tsconfig.json` | new `test/cli-bootstrap.test.ts` — ten cases, incl. a real TOTP code from the printed URI logging in, exit 3 on the second run with byte-identical rows, and the secret-in-one-artefact grep |
+| 10 | **E-19** the seed is a claim marker and the bundle cannot carry a working factor | `schema/control.seed.json` (the projection's user object), `app/export/preflight.ts` (§11.3), `tools/seed_control.py` | export preflight refuses a non-NULL `totp_secret`; `test/migrate.test.ts`/seed test asserts the seeded row is `must_change=1`, `totp_secret IS NULL`, and unauthenticable |
+| 11 | **E-19** wire it into the install sequence | `install.sh` (S4), `docs/sds/SDS.md` §3's `install.sh` line | S4's measured install: the printed password **and** a code from the printed URI produce an authenticated admin session on a clean host; a second `./install.sh` exits 0 with no row change; a bootstrap failure exits 16 |
+| 12 | **E-16..E-19** paste every drop-in into `SDS.md` with its pointer line (`> Amended by 02-errata.md E-n.`), and add the four §16 rows below | `docs/sds/SDS.md` | `make test` (the frozen-quotes gate) and the drift gate; no code change |
+
+`§16 S2` gains three rows:
+
+```markdown
+| a fresh seeded `control.db` and nothing else yields exactly one operator, and a TOTP code from the printed enrolment URI logs in | `test/cli-bootstrap.test.ts`, end to end through the login route |
+| a second bootstrap writes nothing: exit 3, and `password_hash` / `totp_secret` / `must_change` are byte-identical | same suite, idempotence case |
+| no TOTP secret or password reaches stdout, `audit_log`, `BUNDLE.json` or `control.seed.json` | grep assertion over the four artefacts |
+```
+
+`§16 S4`'s install row is replaced:
+
+```markdown
+| install on a clean host: ≤ 5 min with images present, `certificate: pending` allowed, and the printed credentials plus the printed TOTP URI produce an authenticated admin session without any other step | measured install, recorded in CI, ending in a real login |
+```
+
+**Definition of done for S2b.** `make test` and `make verify-s1` green after items 1–12, with each new
+gate shown to go red when its behaviour is broken (mutate, run, restore, re-hash — the method §6 of the
+S2a report used, and the reason its own C1 was re-run). Two specifics: the TOTP-timing gate must be seen
+to fail with the computation moved back behind the password verdict, and the bootstrap gate must be seen
+to fail with `--enrolment-out` writing to stdout instead of the file. A green suite whose new gate has
+not been seen to fail is not evidence.
+
+**Not in this slice.** The measured five-minute install is S4's gate (item 11's second half); S2b proves
+the command and the login it enables, not the install. The multi-operator surface (invites, roles,
+`reset_token_hash`) stays in S2b's CRUD work and does not use the CLI.
+
+---
+
+## 8. Traceability — E-16..E-19 to the S2a finding each closes
+
+| E | Closes | Source (verified in this pass) | Severity |
+|---|---|---|---|
+| E-16 | no credential-login code; a login failure and a paid-download code share `SKW_E_SEC_CODE_INVALID` | `S2a-report.md` §7.1; `app/admin/auth.ts:255,278,294`; `schema/error-codes.json` (`SEC`, 71 codes); `test/error-codes.test.ts:56` | major |
+| E-17 | D9's allowlist has no storage and no name, and no component can enforce it | `S2a-report.md` §7.4; `SDS.md` §9.1 table; `00-adjudication.md` D9; `schema/control.sql` (no table); `tools/nginx_gen.ts:176–177` (two undeclared names, found in this pass) | major |
+| E-18 | no absolute session lifetime; `expires_at` slides forever and rotation restarts it | `S2a-report.md` §7.6, and §7.3 for the idle window (folded in); `schema/control.sql` `session`; `app/admin/session.ts:19–21,238,268` | major |
+| E-19 | a fresh bundle has no way in: no TOTP secret is created, and no password a human holds exists | `S2a-report.md` §7.5 and §8; `SDS.md` §11.6; `app/admin/auth.ts:285`; `schema/control.sql` `user_account.totp_secret` | blocker (commercial) |
+| — | **carried, not separate items:** E-13's "only exceptions" gains the denied-peer 403 (inside E-17); §3's `install.sh` line and file layout gain the bootstrap step (inside E-19); `SKW_ADMIN_HOST`/`SKW_DEMOS_HOST` deleted (inside E-17) | E-17, E-19 above | — |
+| — | **open, not closed here:** the CSRF header has no frozen wire name (§9.1 names none; S2a chose `X-CSRF-Token`, which is compatible with §5.3 row 2's `X-Skunkworks-*` refusal) | `S2a-report.md` §7.2 | one-line freeze, does not block S2b |
+| — | **open, not closed here:** `fleet_admin` has no login URL under §9.2's `/admin/t/<key>/…` shape; S2a's global-row fallback authenticates the role but gives it no surface | `S2a-report.md` §7.7 | needs a decision, does not block S2b |
+| — | **not defects, left as implemented:** `ip_hash`/`ua_hash` stored for audit and not compared (report §7.8 — binding to either breaks CGNAT and every browser update); lockout's post-fifth-failure 429 divergence (§7.9 — accepted above); `/admin` and `/admin/` as row 7's 404 (§7.10); `npm test` not routing through the skip-enforcing runner (§7.11) | `S2a-report.md` §7 | — |
+
+---
+
+## 9. What this section does NOT change (so S2b does not re-litigate it)
+
+- **The CSRF mechanism.** One token, session-bound, header name `X-CSRF-Token`, exact `Origin` on every
+  non-GET, and no second path for form posts. E-16 changes the code a failed login returns, not how a
+  login request is refused.
+- **The three connection classes, the DDL AST, the five refusals, the export manifest, the plugin RPC
+  surface, the download accounting unit.** Untouched.
+- **`schema/control.sql` in this slice.** E-18 needs no column and E-19 needs none: `created_at` anchors
+  the cap and `totp_secret` holds the secret. The schema stays at v3, and no `control-r4.sql` exists.
+- **The 71 existing codes, their names, their statuses and their `Retry-After` values.** E-16 adds one
+  (71 → 72); nothing is renamed, removed or re-mapped.
+- **Every existing environment name and its meaning.** E-17 adds one and deletes two names that were
+  never in the table; `^SK_|^SKUNK_` stays a boot refusal.
+- **The lockout, the 429, and its divergence from an unknown email after five failures.** Accepted in
+  E-16's last paragraph, not re-opened.
+- **The seed and never the fleet file (C-24).** E-19 changes what the seeded row *means* — a claim
+  marker instead of an unusable credential — and not what travels in a bundle.
