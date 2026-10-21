@@ -101,7 +101,26 @@ export function renderEditorPage(input: EditorPageInput): string {
 body{margin:0;font:14px/1.4 system-ui,sans-serif}
 #skw-layout{display:grid;grid-template-columns:240px 1fr 300px;height:100vh}
 #skw-blocks,#skw-settings{overflow:auto;border-right:1px solid #ddd;padding:.5rem}
-#skw-canvas{overflow:auto}
+#skw-canvas{overflow:auto;background:#f3f3f6}
+/* GrapesJS ships a DARK theme (:root{--gjs-primary-color:#444 …}). Half a dark editor inside a
+   white admin reads as unfinished, so the palette is re-pointed at the admin's own colours
+   here — five custom properties, no stylesheet fork, no !important spray. */
+/* On :root, not #gjs: the Style Manager is mounted in #skw-settings, which is outside the
+   editor container, and a theme set on #gjs would leave exactly that column dark. */
+:root{
+  --gjs-primary-color:#ffffff;
+  --gjs-secondary-color:#24242b;
+  --gjs-tertiary-color:#f3f3f6;
+  --gjs-quaternary-color:#2563eb;
+  --gjs-font-color:#24242b;
+  --gjs-font-color-active:#111116;
+  --gjs-main-dark-color:rgba(0,0,0,.04);
+  --gjs-secondary-dark-color:rgba(0,0,0,.03);
+  --gjs-main-light-color:rgba(255,255,255,.6);
+  --gjs-secondary-light-color:rgba(0,0,0,.45);
+}
+/* A page editor should show the page as the visitor sees it: white, not the theme's gutter. */
+#skw-canvas .gjs-cv-canvas,#skw-canvas .gjs-cv-canvas__frames,#skw-canvas .gjs-frame-wrapper{background:#e9e9ee}
 #skw-blocks h3{margin:.75rem 0 .25rem;font-size:.75rem;text-transform:uppercase;color:#666}
 #skw-blocks button{display:block;width:100%;text-align:left;margin:.15rem 0;padding:.35rem .5rem;cursor:grab}
 #skw-settings .field{margin:.5rem 0}
@@ -199,6 +218,11 @@ const BOOT_SCRIPT = String.raw`
     // reported as "the buttons are not visible". The toolbar in the page above is ours and
     // draws its icons as inline SVG.
     panels: { defaults: [] },
+    // The Style Manager is the one part of GrapesJS's stock chrome this screen needs, and it
+    // used to arrive inside a default panel whose buttons are Font Awesome glyphs. Mounting
+    // it into our own right-hand column keeps the capability and drops the missing-icon
+    // chrome in one move.
+    styleManager: { appendTo: '#skw-settings' },
   });
 
   // The toolbar. Four controls, wired to the editor's own commands, plus a dirty marker so
