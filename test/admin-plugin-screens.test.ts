@@ -30,6 +30,7 @@ import { call, header, type Res } from './helpers/http.ts';
 
 const CLI = join(REPO, 'app', 'cli', 'skwctl.ts');
 const BLOG = join(REPO, 'plugins', 'blog');
+const CONTACT = join(REPO, 'plugins', 'contact');
 
 let fixture: Fixture;
 let handle: AppHandle;
@@ -111,6 +112,22 @@ before(async () => {
     RUNNER_DIGEST,
   ]);
   assert.equal(installed.status, 0, `install failed: ${installed.stderr}${installed.stdout}`);
+
+  // S8k: the second shipped package, installed the same way. Its form is what the page builder
+  // offers, and its messages screen is what the operator reads.
+  const installedContact = skwctl([
+    'plugin',
+    'install',
+    CONTACT,
+    '--tenant',
+    'acme',
+    '--allow-unsigned',
+    '--test-report',
+    reportFor(CONTACT),
+    '--runner-digest',
+    RUNNER_DIGEST,
+  ]);
+  assert.equal(installedContact.status, 0, `contact install failed: ${installedContact.stderr}${installedContact.stdout}`);
 
   handle = await buildApp({ env: loadEnv(fixture.env) });
   port = await handle.app
@@ -358,4 +375,114 @@ test('S8i-1. the Plugins screen has a sub-menu of each loaded package\'s own scr
 
   // Back on for the rest of the file.
   assert.equal((await post('/admin/t/acme/plugins/enable', { plugin: 'blog' })).status, 303);
+});
+
+/**
+ * S8k. Two things a visitor met: a post link that answered 404, and a contact plugin with no form.
+ *
+ * `/blog/test` failed because a post is a row in `p_blog_post` and this CMS serves `cms_page` rows
+ * by path. The package now declares the *shape* of a post page and the host renders it. And the
+ * contact package declares a form the host draws, posts to the page's own URL, and forwards to the
+ * JSON endpoint — so a visitor gets a page back, not `{"ok":true}`.
+ */
+test('S8k-1. a published post has a page at its slug, and a draft does not', async () => {
+  const db = new Database(fixture.sitePath('acme'));
+  try {
+    db.prepare('DELETE FROM p_blog_post').run();
+    db.prepare(
+      `INSERT INTO p_blog_post (title, slug, body, status, published_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run('A post <b>with</b> markup', 'a-post', 'First line.\n\nSecond paragraph.', 'published', '2026-04-01', '2026-04-01T00:00:00.000Z');
+    db.prepare(
+      `INSERT INTO p_blog_post (title, slug, body, status, published_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run('Still a draft', 'still-a-draft', 'Not ready.', 'draft', null, '2026-04-02T00:00:00.000Z');
+  } finally {
+    db.close();
+  }
+
+  const page = await call({ port, path: '/blog/a-post', host: 'acme.test' });
+  assert.equal(page.status, 200, page.body);
+  assert.match(page.body, /<h1>A post &lt;b&gt;with&lt;\/b&gt; markup<\/h1>/, 'the title is text');
+  assert.match(page.body, /<p>First line\.<\/p>/, 'blank lines separate paragraphs');
+  assert.match(page.body, /<p>Second paragraph\.<\/p>/);
+
+  // A draft is not published by its own page either.
+  const draft = await call({ port, path: '/blog/still-a-draft', host: 'acme.test' });
+  assert.equal(draft.status, 404);
+  assert.equal((draft.json as { error?: { code?: string } }).error?.code, 'SKW_E_RT_PAGE_NOT_FOUND');
+
+  // A slug nothing has is the same 404.
+  assert.equal((await call({ port, path: '/blog/no-such-post', host: 'acme.test' })).status, 404);
+});
+
+test('S8k-2. the contact form is drawn by the host, and a submit lands a row', async () => {
+  // Installed is not enabled: the package must be loaded before its form exists (S8i's rule).
+  assert.equal((await post('/admin/t/acme/plugins/enable', { plugin: 'contact' })).status, 303);
+
+  const db = new Database(fixture.sitePath('acme'));
+  try {
+    db.prepare("UPDATE cms_page SET body_html = ? WHERE path = '/pricing'").run(
+      '<h1>Contact</h1><div data-skw-form="contact/contact"></div>',
+    );
+  } finally {
+    db.close();
+  }
+
+  const form = await call({ port, path: '/pricing', host: 'acme.test' });
+  assert.equal(form.status, 200, form.body);
+  // Attributes come back in the canonical order, so match the parts, not a spelling.
+  assert.match(form.body, /<form[^>]*method="post"/, 'a real form, posted to this page');
+  assert.match(form.body, /<input[^>]*name="name"/);
+  assert.match(form.body, /<input[^>]*name="email"[^>]*type="email"/);
+  assert.match(form.body, /<textarea[^>]*name="message"/);
+  assert.match(form.body, /<input[^>]*name="_skw_form"[^>]*value="contact\/contact"/);
+
+  const submitted = await call({
+    port,
+    path: '/pricing',
+    method: 'POST',
+    host: 'acme.test',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      _skw_form: 'contact/contact',
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      message: 'Hello from the page.',
+    }).toString(),
+  });
+  assert.equal(submitted.status, 303, submitted.body);
+  assert.equal(header(submitted, 'location'), '/pricing?sent=1');
+
+  // The visitor is owed a page, not JSON.
+  const thanks = await call({ port, path: '/pricing?sent=1', host: 'acme.test' });
+  assert.equal(thanks.status, 200, thanks.body);
+  assert.match(thanks.body, /your message is on its way/i);
+  assert.doesNotMatch(thanks.body, /<input[^>]*name="name"/, 'the form is replaced by the thanks line');
+
+  const db2 = new Database(fixture.sitePath('acme'));
+  try {
+    const row = db2.prepare("SELECT name, email, message, status FROM p_contact_message WHERE email = 'ada@example.com'").get() as
+      | { name: string; message: string; status: string }
+      | undefined;
+    assert.ok(row !== undefined, 'the submit wrote no row');
+    assert.equal(row.name, 'Ada Lovelace');
+    assert.equal(row.message, 'Hello from the page.');
+    assert.equal(row.status, 'new');
+  } finally {
+    db2.close();
+  }
+
+  // A refused submit comes back as the page with one sentence, and writes nothing.
+  const bad = await call({
+    port,
+    path: '/pricing',
+    method: 'POST',
+    host: 'acme.test',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ _skw_form: 'contact/contact', name: 'x', email: 'not-an-email', message: '' }).toString(),
+  });
+  assert.equal(bad.status, 303);
+  assert.equal(header(bad, 'location'), '/pricing?form_error=1');
+  const errorPage = await call({ port, path: '/pricing?form_error=1', host: 'acme.test' });
+  assert.match(errorPage.body, /That did not send/);
+  assert.match(errorPage.body, /name="name"/, 'the form is back for another try');
 });

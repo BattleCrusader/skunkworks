@@ -48,6 +48,18 @@ export function activate(ctx) {
     href: '/blog/{slug}',
   });
 
+  // S8k: the post's own page. `/blog/test` used to be a dead link with a live row behind it —
+  // this CMS serves cms_page rows by path, and a post is a row here. The host renders the page;
+  // the package only says which table and which columns.
+  ctx.page({
+    pattern: '/blog/{slug}',
+    table: 'p_blog_post',
+    slug_column: 'slug',
+    title_column: 'title',
+    body_column: 'body',
+    filter: { column: 'status', equals: 'published' },
+  });
+
   ctx.endpoint('GET', 'posts', async (args) => {
     const query = args.query ?? {};
     const limit = await pageSize(args.facade, query.limit);

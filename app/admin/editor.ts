@@ -72,6 +72,8 @@ export interface EditorPageInput {
    * are absent from this list, which is how the palette and the renderer stay in step.
    */
   blocks?: { id: string; label: string; plugin: string; limit: number }[];
+  /** S8k: the forms this tenant's enabled packages declared. Each inserts a marker the host fills. */
+  forms?: { id: string; label: string }[];
 }
 
 /** `JSON.stringify` inside a `<script type="application/json">`: `<` must not close it. */
@@ -100,6 +102,16 @@ export function editorBootPayload(input: EditorPageInput): {
       kind: 'block' as const,
       content: listComponentFor(input.registry, block.id, block.limit),
       // No settings panel: the block's view is the package's declaration, not a page decision.
+      editable: [],
+    })),
+    // A form is a marker too: the fields and the sent/error state are the host's to draw.
+    ...(input.forms ?? []).map((form) => ({
+      id: `form-${form.id.replace(/\//g, '-')}`,
+      label: form.label,
+      category: 'Plugins',
+      type: 'form',
+      kind: 'block' as const,
+      content: `<div data-skw-form="${form.id}"></div>`,
       editable: [],
     })),
   ];

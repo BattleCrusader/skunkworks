@@ -467,6 +467,8 @@ export class PluginRuntime {
         endpoint: (method: string, name: string, handler: unknown) => recorder.endpoint(method, name, handler),
         screen: (screen: unknown) => recorder.screen(screen),
         block: (spec: unknown) => recorder.block(spec),
+        page: (spec: unknown) => recorder.page(spec),
+        form: (spec: unknown) => recorder.form(spec),
         log: (line: unknown) => ctx.facade['log.write'](line),
       });
 

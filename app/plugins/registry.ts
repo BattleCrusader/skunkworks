@@ -105,11 +105,55 @@ export interface DeclarativeBlock {
   labelColumn?: string;
 }
 
+/**
+ * S8k: a **page** a package can serve, without shipping markup.
+ *
+ * A blog post is a row, and this CMS serves `cms_page` rows by path — so `/blog/test` was a dead
+ * link with a live row behind it. A package now declares the *shape* of a detail page (a pattern,
+ * the table, which columns are the slug, the title and the body) and the host renders it through
+ * the same shell, nav and filters as any other page. The package still supplies no HTML.
+ */
+export interface DeclarativePage {
+  /** `/blog/{slug}` — one `{column}` placeholder, filled from the row. */
+  pattern: string;
+  table: string;
+  /** The column matched against the placeholder. */
+  slugColumn: string;
+  titleColumn: string;
+  /** The row's body, rendered as text (never parsed as markup). */
+  bodyColumn: string;
+  /** One equality filter, so only published rows answer. */
+  filter?: { column: string; equals: string };
+  /** Shown above the body; defaults to the package's own screen title. */
+  layout?: 'article';
+}
+
+/**
+ * S8k: a **form** a package owns, drawn by the host.
+ *
+ * `/_plugin/<id>/<name>` is JSON by contract (§10.5), so a browser form cannot post to it and then
+ * expect a page back. The host therefore draws the form, posts it to **the page's own path**, and
+ * forwards the fields to the package's endpoint as JSON — the same split the admin login uses.
+ */
+export interface DeclarativeForm {
+  /** `<plugin>/<name>`; the value the host puts in the form's hidden marker. */
+  id: string;
+  label: string;
+  /** The endpoint the host forwards to: `POST`, and one this package declared. */
+  endpoint: string;
+  /** What the visitor fills in. The host draws labels, inputs and errors from this. */
+  fields: { name: string; label: string; type: 'text' | 'email' | 'textarea'; required?: boolean; maxLength?: number }[];
+  /** The sentence a visitor sees after a successful submit. */
+  thanks: string;
+}
+
 export interface RegistrationSet {
   hooks: Map<string, HookFn[]>;
   endpoints: Map<string, RegisteredEndpoint>;
   screens: Map<string, DeclarativeScreen>;
   blocks: Map<string, DeclarativeBlock>;
+  pages: Map<string, DeclarativePage>;
+  forms: Map<string, DeclarativeForm>;
 }
 
 export interface RegistryEntry extends RegistrationSet {
@@ -125,7 +169,14 @@ export interface RegistryEntry extends RegistrationSet {
 export type TenantSnapshot = ReadonlyMap<string, readonly { pluginId: string; fn: HookFn }[]>;
 
 export function emptyRegistrations(): RegistrationSet {
-  return { hooks: new Map(), endpoints: new Map(), screens: new Map(), blocks: new Map() };
+  return {
+    hooks: new Map(),
+    endpoints: new Map(),
+    screens: new Map(),
+    blocks: new Map(),
+    pages: new Map(),
+    forms: new Map(),
+  };
 }
 
 /**
@@ -357,6 +408,94 @@ export class ActivationRecorder {
       title: typeof s.title === 'string' ? s.title : this.pluginId,
       ...(spec.fields === undefined ? {} : { fields: spec.fields }),
       ...(spec.list === undefined ? {} : { list: spec.list }),
+    });
+  }
+
+  /**
+   * S8k: a detail page. One `{column}` placeholder, a table the package owns, and three columns it
+   * declared — the host builds the page, so a package cannot introduce a template or a script.
+   */
+  page(spec: unknown): void {
+    if (!this.open) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} registered a page after activation closed`);
+    if (typeof spec !== 'object' || spec === null) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} registered a page that is not an object`);
+    const p = spec as Record<string, unknown>;
+    const table = typeof p.table === 'string' ? p.table : '';
+    const declaredTable = this.declaredTables.get(table);
+    if (declaredTable === undefined) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} declared a page on ${JSON.stringify(table)}, which it does not own`);
+    }
+    const columnsOf = new Set((declaredTable.columns ?? []).map((c) => c.name));
+    const pattern = typeof p.pattern === 'string' ? p.pattern : '';
+    const placeholders = [...pattern.matchAll(/\{([a-z][a-z0-9_]*)\}/g)].map((m) => m[1] as string);
+    if (!pattern.startsWith('/') || pattern.includes('//') || placeholders.length !== 1) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} page pattern ${JSON.stringify(pattern)} is not /path/{column}`);
+    }
+    for (const key of ['slug_column', 'title_column', 'body_column'] as const) {
+      if (typeof p[key] !== 'string' || !columnsOf.has(p[key] as string)) {
+        throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} page ${pattern} names ${key}=${JSON.stringify(p[key])}, which ${table} does not declare`);
+      }
+    }
+    if (!columnsOf.has(placeholders[0] as string)) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} page ${pattern} binds {${placeholders[0]}} , which ${table} does not declare`);
+    }
+    if (p.filter !== undefined) {
+      const filter = p.filter as Record<string, unknown>;
+      if (typeof filter !== 'object' || filter === null || typeof filter.column !== 'string' || !columnsOf.has(filter.column) || typeof filter.equals !== 'string') {
+        throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} page ${pattern} has a filter that is not {column, equals} over its own columns`);
+      }
+    }
+    if (this.registrations.pages.has(pattern)) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} registered page ${pattern} twice`);
+    this.registrations.pages.set(pattern, {
+      pattern,
+      table,
+      slugColumn: p.slug_column as string,
+      titleColumn: p.title_column as string,
+      bodyColumn: p.body_column as string,
+      ...(p.filter === undefined ? {} : { filter: p.filter as { column: string; equals: string } }),
+    });
+  }
+
+  /**
+   * S8k: a form the host draws and the package receives as JSON. The endpoint must be one this
+   * package declared, or the host would be posting a visitor's words to a door it does not own.
+   */
+  form(spec: unknown): void {
+    if (!this.open) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} registered a form after activation closed`);
+    if (typeof spec !== 'object' || spec === null) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} registered a form that is not an object`);
+    const f = spec as Record<string, unknown>;
+    const name = typeof f.name === 'string' ? f.name : '';
+    if (!/^[a-z][a-z0-9-]{0,39}$/.test(name)) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} named a form ${JSON.stringify(name)}`);
+    const endpoint = typeof f.endpoint === 'string' ? f.endpoint : '';
+    if (!this.registrations.endpoints.has(`POST ${endpoint}`)) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} form ${name} posts to ${JSON.stringify(endpoint)}, which it did not declare`);
+    }
+    const fieldsRaw = Array.isArray(f.fields) ? f.fields : [];
+    if (fieldsRaw.length === 0 || fieldsRaw.length > 12) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} form ${name} has ${fieldsRaw.length} fields; 1–12`);
+    const fields: DeclarativeForm['fields'] = [];
+    for (const raw of fieldsRaw) {
+      if (typeof raw !== 'object' || raw === null) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} form ${name}: a field is not an object`);
+      const field = raw as Record<string, unknown>;
+      const fieldName = typeof field.name === 'string' ? field.name : '';
+      if (!/^[a-z][a-z0-9_]{0,40}$/.test(fieldName)) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} form ${name}: field name ${JSON.stringify(fieldName)}`);
+      const type = String(field.type ?? 'text');
+      if (!['text', 'email', 'textarea'].includes(type)) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} form ${name}.${fieldName}: type ${JSON.stringify(field.type)}`);
+      fields.push({
+        name: fieldName,
+        label: typeof field.label === 'string' && field.label !== '' ? field.label : fieldName,
+        type: type as 'text' | 'email' | 'textarea',
+        ...(field.required === true ? { required: true } : {}),
+        ...(typeof field.maxLength === 'number' ? { maxLength: field.maxLength } : {}),
+      });
+    }
+    if (new Set(fields.map((f2) => f2.name)).size !== fields.length) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} form ${name}: a field is declared twice`);
+    const id = `${this.pluginId}/${name}`;
+    if (this.registrations.forms.has(id)) throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} registered form ${name} twice`);
+    this.registrations.forms.set(id, {
+      id,
+      label: typeof f.label === 'string' && f.label !== '' ? f.label : name,
+      endpoint,
+      fields,
+      thanks: typeof f.thanks === 'string' && f.thanks !== '' ? f.thanks : 'Thank you — your message was sent.',
     });
   }
 

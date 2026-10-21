@@ -224,6 +224,10 @@ test('S3. blog activates: /blog and GET posts register, and the feed answers its
   assert.deepEqual(screen.fields?.find((f) => f.name === 'status')?.options, ['draft', 'published']);
   assert.deepEqual(screen.fields?.find((f) => f.name === 'slug')?.from, 'title');
   assert.deepEqual(screen.list, ['title', 'status', 'published_at']);
+  // S8k: the post page and its shape.
+  const declaredPage = [...entry.pages.values()][0];
+  assert.equal(declaredPage?.pattern, '/blog/{slug}');
+  assert.equal(declaredPage?.slugColumn, 'slug');
 
   const endpoint = runtime.endpoint(TENANT, 'blog', 'GET', 'posts');
   assert.ok(endpoint !== undefined, 'GET posts is declared but was not registered');
@@ -300,6 +304,11 @@ test('S4. contact activates: POST submit validates, writes one row, and never ec
   assert.deepEqual(screen.fields?.find((f) => f.name === 'status')?.options, ['new', 'read', 'replied', 'archived']);
   assert.equal(screen.fields?.find((f) => f.name === 'ip_hash')?.widget, 'hidden');
   assert.deepEqual(screen.list, ['name', 'email', 'status', 'created_at']);
+  // S8k: the form the page builder offers, posting to the endpoint this package declared.
+  const declaredForm = [...entry.forms.values()][0];
+  assert.equal(declaredForm?.id, 'contact/contact');
+  assert.equal(declaredForm?.endpoint, 'submit');
+  assert.deepEqual(declaredForm?.fields.map((f) => f.name), ['name', 'email', 'message']);
   assert.ok(runtime.endpoint(TENANT, 'contact', 'POST', 'submit') !== undefined, 'POST submit was not registered');
 
   const empty = asRecord(await invoke('contact', 'submit', 'POST', '/_plugin/contact/submit', ''));

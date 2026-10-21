@@ -38,6 +38,7 @@ import {
 import { normalisePagePath, pageMiss } from './render/page.ts';
 import { renderStoredBody } from './render/body.ts';
 import { resolveSourceBlocks } from './render/blocks.ts';
+import { loadPluginPage, matchPluginPage, pluginPageBody, resolveFormMarkers } from './render/plugin-pages.ts';
 import { loadNav } from './render/nav.ts';
 import { CSP_HEADER, cspPolicy, cspPolicyWithNonce } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
@@ -634,11 +635,69 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   app.setErrorHandler((err, req, reply) => {
     sendError(reply, err, String(req.id));
   });
+  /**
+   * S8k: a browser posting one of a package's declared forms.
+   *
+   * The form posts to the page's own URL (a form with no `action` does exactly that), so this is
+   * where it lands. The host forwards the declared fields to the package's endpoint as JSON — the
+   * endpoint contract stays JSON-only — and answers the browser with a redirect, because a person
+   * who pressed Send is owed a page, not a JSON body (the same rule the admin login learned).
+   */
+  async function handleDeclaredFormPost(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    ctx: { tenant: { key: string } },
+    path: string,
+  ): Promise<boolean> {
+    // The urlencoded parser hands this route a string (the same one the admin login reads), so the
+    // body becomes a field map here. A cap first: a public form is not a place to receive megabytes.
+    const raw = typeof req.body === 'string' ? req.body : '';
+    if (raw === '' || raw.length > 64 * 1024) return false;
+    const fields: Record<string, string> = {};
+    for (const [key, value] of new URLSearchParams(raw)) {
+      if (key !== '') fields[key] = value;
+    }
+    const formId = fields._skw_form ?? '';
+    if (formId === '') return false;
+
+    plugins.enter(ctx.tenant.key);
+    let writeDb: ReturnType<typeof openAdminWrite> | null = null;
+    try {
+      await plugins.sync(ctx.tenant.key);
+      const owner = plugins.registry.plugins(ctx.tenant.key).find((entry) => entry.forms.has(formId));
+      const form = owner?.forms.get(formId);
+      if (owner === undefined || form === undefined) return false;
+      const payload: Record<string, string> = {};
+      for (const field of form.fields) payload[field.name] = String(fields[field.name] ?? '');
+      writeDb = openAdminWrite(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+      const result = await runEndpoint(plugins, {
+        db: writeDb,
+        tenant: ctx.tenant.key,
+        plugin: owner.pluginId,
+        endpoint: form.endpoint,
+        method: 'POST',
+        url: req.url,
+        body: JSON.stringify(payload),
+      });
+      const ok = typeof result === 'object' && result !== null && (result as { ok?: unknown }).ok === true;
+      reply
+        .header('cache-control', 'no-store')
+        .code(303)
+        .header('location', `${path}?${ok ? 'sent' : 'form_error'}=1`)
+        .send('');
+      return true;
+    } finally {
+      writeDb?.close();
+      plugins.leave(ctx.tenant.key);
+    }
+  }
+
   async function serveNotFound(req: FastifyRequest, reply: FastifyReply): Promise<void> {
     const ctx = resolveRequest(req);
     const path = normalisePagePath(req.url);
     // §4.3 (E-4): a URL that cannot name a path is refused before a route runs.
     if (path === null) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'the request path is not a page path');
+    if (req.method === 'POST' && (await handleDeclaredFormPost(req, reply, ctx, path))) return;
     const db = getSiteDb(ctx.tenant);
     // O-29: `?preview=<token>` is the one way a draft reaches a browser. The token
     // is bound to this tenant and this normalised path, and `loadPageForRender`
@@ -650,8 +709,37 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       token: previewToken ?? null,
       sessionKey: env.sessionKey,
     });
-    if (loaded.page === null) throw pageMiss();
-    const stored = loaded.page;
+    // S8k: a post is a row, not a `cms_page`. Before answering "no such page", ask the loaded
+    // packages whether a declared detail pattern owns this path — and if it does, hand the rest of
+    // the render the same PageRecord shape every other page arrives in. The host builds the body;
+    // the package only named the table and the columns.
+    let stored = loaded.page;
+    if (stored === null) {
+      plugins.enter(ctx.tenant.key);
+      try {
+        await plugins.sync(ctx.tenant.key);
+        const declared = [...plugins.registry.plugins(ctx.tenant.key)].flatMap((entry) => [...entry.pages.values()]);
+        const match = matchPluginPage(declared, path);
+        if (match !== undefined) {
+          const row = loadPluginPage(db, match.page, match.slug);
+          if (row !== undefined) {
+            stored = {
+              id: 0,
+              path,
+              title: String(row[match.page.titleColumn] ?? ''),
+              status: 'published',
+              template: 'page',
+              bodyHtml: pluginPageBody(row, match.page),
+              bodyCss: '',
+              updatedAt: new Date().toISOString(),
+            };
+          }
+        }
+      } finally {
+        plugins.leave(ctx.tenant.key);
+      }
+    }
+    if (stored === null) throw pageMiss();
     // §3/§4.4: the header and footer menus are `cms_nav` rows, read here because the
     // Astro layer never opens a database (§2.2). `loadNav()` resolves every href and
     // refuses a row it cannot resolve — a menu entry pointing at a page that does not
@@ -699,9 +787,25 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
         return undefined;
       });
 
+      // S8k: a declared form is a marker until render time — `sent` and an error sentence are
+      // per-response facts, so they cannot live in the saved page.
+      const sent = new URL(req.url, 'http://page.invalid').searchParams.get('sent') === '1';
+      const formError = new URL(req.url, 'http://page.invalid').searchParams.get('form_error') === '1';
+      const withForms = resolveFormMarkers(
+        withBlocks,
+        (id) => {
+          for (const entry of plugins.registry.plugins(ctx.tenant.key)) {
+            const form = entry.forms.get(id);
+            if (form !== undefined) return form;
+          }
+          return undefined;
+        },
+        { sent, ...(formError ? { error: 'That did not send. Check the fields and try again.' } : {}) },
+      );
+
       page = {
         ...stored,
-        bodyHtml: renderStoredBody(db, withBlocks, {
+        bodyHtml: renderStoredBody(db, withForms, {
           urlFor: (key) => assetUrls.get(key) ?? null,
           // §8.6 O-30: a core form rendered for a browser gets its `_pt` minted here, at the one
           // instant the page is produced. The tenant is the Host's (§5.3), never the body's.

@@ -70,6 +70,21 @@ export function activate(ctx) {
 
     return { ok: true };
   });
+
+  // S8k: the widget for the page builder. Registered after the endpoint: a form names the door it
+  // posts to, and the host refuses a form whose endpoint the package did not declare — so the
+  // order here is the contract, not a style choice.
+  ctx.form({
+    name: 'contact',
+    label: 'Contact form',
+    endpoint: 'submit',
+    thanks: 'Thanks — your message is on its way. We reply to the address you left.',
+    fields: [
+      { name: 'name', label: 'Your name', type: 'text', required: true, maxLength: 120 },
+      { name: 'email', label: 'Your email', type: 'email', required: true, maxLength: 254 },
+      { name: 'message', label: 'Message', type: 'textarea', required: true, maxLength: 4000 },
+    ],
+  });
 }
 
 /**

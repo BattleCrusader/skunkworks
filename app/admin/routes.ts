@@ -2167,6 +2167,9 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
         blocks: (this.#plugins?.registry.plugins(tenant.key) ?? []).flatMap((entry) =>
           [...entry.blocks.values()].map((block) => ({ id: block.id, label: block.label, plugin: entry.pluginId, limit: block.limit })),
         ),
+        forms: (this.#plugins?.registry.plugins(tenant.key) ?? []).flatMap((entry) =>
+          [...entry.forms.values()].map((form) => ({ id: form.id, label: form.label })),
+        ),
       });
       reply.header('cache-control', 'no-store');
       reply.type('text/html; charset=utf-8').send(body);
