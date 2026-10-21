@@ -1542,6 +1542,22 @@ tenant|form|ts, 30 min, minimum fill 1.5 s), honeypot `_hp` → 202 with the suc
 ## 9. Admin surface
 
 > Amended by 02-errata.md E-2.
+>
+> **Superseded by D37 (2026-10-21).** The CEO overruled D9: the admin surface is **not a
+> hostname**. `/admin` on every tenant host is that tenant's admin, the fleet console is
+> `/fleet`, the tenant comes from `Host`, and the isolation D9 got from the separate origin
+> is carried by the cookie (`__Secure-sk-sess-<tenantKey>`; `Path=/admin`; `HttpOnly;
+> Secure; SameSite=Strict`) plus the session row's tenant. Superseded in this section:
+> §9.1's `listener = 'admin'` definition and its four consequences, the session-cookie row
+> and the CSRF/`SKW_ADMIN_ORIGIN` row of §9.1's table, §9.1a's "inside the admin server
+> block", and §9.2's "the admin listener ignores `Host`". Unchanged: TOTP and the empty-
+> allowlist consequences, lockout, §9.1b's session lifetime, §9.2's one-source rule (only
+> *which* source changed), §9.3's immutable columns, the DDL preview, §9.5 and §9.6.
+> The two reasons D9 gave — C-25's same-origin argument and `/admin` as an anti-oracle —
+> are given up **by decision**, and both are recorded rather than dropped in
+> `docs/build/S6-admin-path-report.md` §2. `scripts/model/check_frozen.py` asserts that the
+> retired sentences are still quoted here, so the supersession is recorded as this note
+> and as a named erratum-shaped entry in the report, not by deleting the frozen text.
 
 ### 9.1 One listener, one origin, one hostname
 

@@ -34,6 +34,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, test } from 'node:test';
 
+import { sessionCookieName } from '../app/admin/session.ts';
 import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import { installPlugin } from '../app/plugins/install.ts';
@@ -348,7 +349,8 @@ test('H9. admin.login — post-authentication, with the operator id', async () =
   const userId = await seedUser({ controlDb: fixture.controlDb, tenantKey: TENANT, email, totpSecret: TOTP_SECRET });
   resetTrace();
   const session = await openSession({ port, key: TENANT, email, password: PASSWORD });
-  assert.ok(session.cookie.startsWith('__Host-sk-sess'));
+  // D37: the cookie is named for the tenant, at Path=/admin.
+  assert.ok(session.cookie.startsWith(`${sessionCookieName(TENANT)}=`), session.cookie.slice(0, 40));
   const [line] = traces('admin.login');
   assert.ok(line !== undefined, 'admin.login was never dispatched');
   assert.equal(line.call.tenant, TENANT);

@@ -130,7 +130,6 @@ before(async () => {
   );
 
   const generated = generateAppConf(readHosts(fixture.controlDb), {
-    adminHost: 'admin.skw.test',
     demosHost: 'demos.skw.test',
     boxRps: 192,
   });
@@ -191,7 +190,6 @@ before(async () => {
     mkdirSync(c, { recursive: true });
     writeFileSync(join(c, '00-default.conf'), DEFAULT_SERVER);
     const text = generateAppConf(readHosts(fixture.controlDb), {
-      adminHost: 'admin.skw.test',
       demosHost: 'demos.skw.test',
       boxRps: 192,
       adminAllowlist: parseAdminAllowlist(allowlist.join(',')),
@@ -339,18 +337,25 @@ test('E-11: a client X-Forwarded-Prefix is cleared at the edge', { skip: SKIP },
   assert.equal(body.prefix, '', 'a client-chosen prefix must never become tenant.prefix');
 });
 
-test('E-1(b): an empty tenant header on the admin host through the real edge is row 7, 404 not 421', { skip: SKIP }, async () => {
-  // nginx does not forward a header whose proxy_set_header value is "": the app
-  // sees no tenant header at all and answers row 7. The direct-connection twin
-  // (row 1, 421) is test/tenancy/resolve.test.ts case E-1 (a).
+test('D37 + E-1(b): /admin through the real edge is the tenant host\'s, and an empty tenant header is a no-op', { skip: SKIP }, async () => {
+  // This test used to send `/admin/t/acme/pages` to `admin.skw.test` and assert row 7's
+  // 404. D37 moved the admin surface onto the tenant host, so the same assertion runs
+  // against `acme.test` through nginx — which is the only place the edge's
+  // `proxy_set_header X-Skunkworks-Tenant ""` is executed for real. nginx does not
+  // forward an empty value, so the app sees no tenant header and the Host decides.
   const res = await call({
     port: edgePort,
     path: '/admin/t/acme/pages',
-    host: 'admin.skw.test',
+    host: 'acme.test',
     headers: { 'x-skunkworks-tenant': '' },
   });
   assert.equal(res.status, 404, res.body.slice(0, 200));
   assert.equal((res.json as { error: { code: string } }).error.code, 'SKW_E_PLT_TENANT_UNKNOWN');
+
+  // And the old admin hostname reaches nothing at all through the edge: it is not a
+  // server_name in any block, so nginx's default server answers.
+  const gone = await call({ port: edgePort, path: '/admin/login', host: 'admin.skw.test' });
+  assert.equal(gone.status, 404, 'no vhost for the old admin hostname');
 });
 
 test('E-13: a 17 MiB body through the edge is nginx\'s HTML 413, with no taxonomy code', { skip: SKIP }, async () => {
@@ -379,7 +384,9 @@ test('E-17: a peer outside SKW_ADMIN_ALLOWLIST is nginx\'s 403, and the app neve
   const path = '/admin/login?denied=1';
   const before = logLines().length;
 
-  const res = await call({ port: denyPort, path, host: 'admin.skw.test' });
+  // D37: the allowlist guards `/admin` inside the tenant block, so the peer is refused
+  // on the tenant's own host — not on a hostname that no longer exists.
+  const res = await call({ port: denyPort, path, host: 'acme.test' });
   assert.equal(res.status, 403, res.body.slice(0, 200));
 
   // E-13's fifth exception: nginx's body, no taxonomy code, no Set-Cookie. A
@@ -396,7 +403,7 @@ test('E-17: a peer outside SKW_ADMIN_ALLOWLIST is nginx\'s 403, and the app neve
 });
 
 test('E-17: the same request from a peer inside the list reaches the app', { skip: SKIP }, async () => {
-  const res = await call({ port: allowPort, path: '/admin/login?allowed=1', host: 'admin.skw.test' });
+  const res = await call({ port: allowPort, path: '/admin/login?allowed=1', host: 'acme.test' });
   assert.equal(res.status, 200, res.body.slice(0, 200));
   assert.match(res.body, /<form method="post" action="\/admin\/login"/);
   // And the app's access log now has it: the pair of tests differs only in the list.

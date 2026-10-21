@@ -1,36 +1,42 @@
 /**
- * The admin surface — SDS §9, errata E-16/E-18/E-19 and the frozen CEO decisions
- * D28, D29 and D30.
+ * The admin surface — **as re-homed by D37**: `/admin` on every tenant host, the
+ * fleet console at `/fleet`. SDS §9, errata E-16/E-18/E-19 and the frozen CEO
+ * decisions D28, D29 and D30 still govern everything below the routing.
  *
- * Shapes, exactly as frozen:
+ * Shapes, exactly as D37 leaves them:
  *
- *   GET  /admin                        the fleet console: the tenant list and the
- *                                      switcher (D29). Selection changes the URL;
- *                                      the session's tenant never changes.
- *   GET|POST /admin/login              the only login URL (D29). Not tenant-scoped:
- *                                      the tenant comes from the `user_account` row.
+ *   GET  /admin                        this Host's tenant admin home (was D29's
+ *                                      fleet console; the console is `/fleet` now).
+ *   GET|POST /admin/login              the only login URL (D29, kept). The tenant is
+ *                                      the Host's; a fleet row signs in here too and
+ *                                      gets the `/fleet` cookie.
  *   POST /admin/password/reset         consume a reset token (E-19's columns).
- *   ....  /admin/t/<key>/<action>      every tenant-scoped URL (D29, §9.2):
+ *   ....  /admin/t/<key>/<action>      every tenant-scoped URL (D29, §9.2), where
+ *                                      `<key>` must equal the Host's tenant:
  *                                      `` (home), session, session/rotate, logout,
  *                                      totp/enrol, totp/confirm, password/reset-request,
  *                                      pages, pages/<id>, tables, tables/<table>[/<id>][/delete],
  *                                      builder, builder/preview (S2c).
+ *   GET  /fleet                        the fleet console: every active tenant and the
+ *                                      host each one is administered on. Fleet session
+ *                                      only, any host, 404 for everyone else.
+ *   POST /fleet/logout                 end the fleet session.
  *
  * Rules this file implements, each cited:
  *
- *  - **§9.1 rule 1** — the surface exists only when `listener = 'admin'`. On any
- *    other Host this handler does not parse a cookie and does not answer: it hands
- *    the request to the same page-miss path `setNotFoundHandler` uses.
- *  - **§5.3 row 1** — the admin listener refuses a tenant header that is present
- *    at all, before any route runs.
+ *  - **D37 — the tenant comes from `Host`, and only from `Host`.** Not from a header
+ *    (a non-empty `X-Skunkworks-Tenant` on an admin path is 421, which is row 1's
+ *    rule relocated to the only place where it still means something), not from a
+ *    URL segment (`/admin/t/beta/…` on acme's host is 404), not from the session
+ *    (`session.tenant_id` must equal the Host's tenant, else 404). §9.2's "one
+ *    source of truth" survives the change; only *which* source changed.
  *  - **§5.3 row 2** — an untrusted peer may not assert any `X-Skunkworks-*` header.
- *  - **§5.3 row 7** — a tenant-scoped admin request with no session is
- *    `404 SKW_E_PLT_TENANT_UNKNOWN`, never `401` or `403`.
- *  - **§9.2** — `/admin/t/<key>/…`; the tenant comes from `session.tenant_id` and the
- *    URL key must equal that tenant's key. A fleet operator (`tenant_id IS NULL`)
- *    has no tenant URL; the console is its surface.
+ *  - **§5.3 row 7 (as relocated)** — an admin request with no session for this Host's
+ *    tenant is `404 SKW_E_PLT_TENANT_UNKNOWN`, never `401` or `403`.
+ *  - **§9.2** — `/admin/t/<key>/…`; the key must equal the Host's tenant key.
  *  - **D28** — the CSRF header is `X-CSRF-Token`, one header, and there is no
- *    form-field alternative anywhere in this file.
+ *    form-field alternative anywhere in this file (the `csrf` body field that the
+ *    no-JS forms carry is a session-bound token, not a substitute header).
  *  - **E-16** — a credential failure is `401 SKW_E_SEC_AUTH_INVALID`, with one body
  *    for all three causes; the cause observed goes to `audit_log`, never the wire.
  *  - **§9.3** — `cms_*` rows are editable through generated forms. The forms carry
@@ -42,11 +48,20 @@
  *    makes the two paths unknown paths.
  *  - **E-17** — the allowlist is read from `env.adminAllowlist`, the one parser's
  *    output; this file does not enforce it (nginx terminates the connection).
+ *  - **D37 — the Origin check is the request's own origin.** `Origin` must equal
+ *    `https://` + the normalised `Host`. `SKW_ADMIN_ORIGIN` is no longer the answer
+ *    to "what origin may POST here", because there is no single origin any more:
+ *    three hosts on one box are three origins, and the honest comparison is the one
+ *    the browser already made.
+ *  - **D37 — C-25 is gone, and the cookie is what is left.** Tenant-authored HTML and
+ *    the admin are now same-origin by decision. `SameSite=Strict` plus the per-host
+ *    cookie name plus the session-row tenant check are the three things that keep a
+ *    cross-site request and a confused host from being an authenticated one.
  *
- * Order of checks on a tenant-scoped route: listener → row 1 → row 2 → session
- * (404) → tenant (404) → Origin (403) → CSRF token (403) → the route. The session
- * precedes the CSRF check deliberately: a request with no session has no token to
- * bind and is the row-7 404, not a 403.
+ * Order of checks on a tenant-scoped route: Host tenant → row 2 → header refusal →
+ * session (404) → tenant match (404) → Origin (403) → CSRF token (403) → the route.
+ * The session precedes the CSRF check deliberately: a request with no session has no
+ * token to bind and is the 404, not a 403.
  */
 import type Database from 'better-sqlite3';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -89,22 +104,24 @@ import { PREVIEW_PARAM, PREVIEW_TTL_MS, mintPreviewToken } from '../render/previ
 import { listSources } from '../sources/registry.ts';
 import { publishSource, saveSourceDraft, type SourceInput } from '../sources/publish.ts';
 import type { TenantMap } from '../tenancy/cache.ts';
-import { listenerFor } from '../tenancy/listener.ts';
+import { normaliseHost } from '../tenancy/normalise-host.ts';
 import {
   TENANT_HEADER,
   anySkunkworksHeader,
-  headerPresent,
   peerInCidrs,
   type Tenant,
 } from '../tenancy/resolve.ts';
 import { Auth, Semaphore, verifyTotp, type LoginFailureReason } from './auth.ts';
 import { groupOf, newSecret, otpauthUri } from './totp.ts';
 import {
+  ADMIN_COOKIE_PATH,
   CSRF_HEADER,
-  SESSION_COOKIE,
+  FLEET_COOKIE,
+  FLEET_COOKIE_PATH,
   SessionStore,
   cookieValue,
   idleMsFor,
+  sessionCookieName,
   type SessionRecord,
 } from './session.ts';
 
@@ -130,7 +147,6 @@ export interface AdminOptions {
   env: Env;
   controlPath: string;
   tenants: TenantMap;
-  adminHost: string | null;
   /**
    * The process-wide argon2 semaphore (§7.2: `SKW_ARGON2_MAX_CONCURRENT=4`). Shared
    * with the download plane so the two verifiers cannot add up to 8 concurrent
@@ -248,7 +264,6 @@ export class AdminSurface {
   readonly #env: Env;
   readonly #controlPath: string;
   readonly #tenants: TenantMap;
-  readonly #adminHost: string | null;
   readonly #allowlist: string[];
   readonly #idleMs: number;
 
@@ -276,7 +291,6 @@ export class AdminSurface {
     this.#env = opts.env;
     this.#controlPath = opts.controlPath;
     this.#tenants = opts.tenants;
-    this.#adminHost = opts.adminHost;
     // E-17: the one parser's output, read from the environment — there is no
     // second way to set this value, so the app cannot disagree with the edge
     // about what the list is.
@@ -305,9 +319,42 @@ export class AdminSurface {
     this.#plugins = runtime;
   }
 
-  /** §9.1 rule 1: this is the only gate on cookie parsing. */
-  sessionFor(cookieHeader: string | undefined, atMs = Date.now()): SessionRecord | null {
-    const id = this.sessions.verify(cookieValue(cookieHeader, SESSION_COOKIE));
+  /**
+   * D37: the tenant an admin request is about is the tenant its `Host` maps to.
+   *
+   * This is the whole of the replacement for §9.1's `listener` rule, and it is
+   * deliberately narrow: it accepts a raw `Host` header, normalises it once with the
+   * same function the resolver uses, and looks it up. It never consults
+   * `X-Skunkworks-Tenant` (a demo prefix is not an admin host), never a session and
+   * never the URL. `undefined` is "this Host is nobody's", which every caller turns
+   * into the same 404 an unknown path gets.
+   */
+  hostTenant(host: string | null | undefined): Tenant | undefined {
+    const normalised = normaliseHost(host ?? null);
+    if (normalised === null) return undefined;
+    const tenant = this.#tenants.lookupHost(normalised);
+    if (tenant === undefined || tenant.status !== 'active') return undefined;
+    return tenant;
+  }
+
+  /** D37: the only gate on parsing a tenant's cookie — and it needs the tenant first. */
+  sessionFor(cookieHeader: string | undefined, tenant: Pick<Tenant, 'key'>, atMs = Date.now()): SessionRecord | null {
+    const id = this.sessions.verify(cookieValue(cookieHeader, sessionCookieName(tenant.key)));
+    if (id === null) return null;
+    return this.sessions.readAndTouch(id, atMs, this.#idleMs);
+  }
+
+  /** D37: the fleet session lives in its own namespace, at its own path. */
+  fleetSessionFor(cookieHeader: string | undefined, atMs = Date.now()): SessionRecord | null {
+    const session = this.#readSession(cookieHeader, FLEET_COOKIE, atMs);
+    // A fleet session has no tenant (`user_account`'s CHECK says so). A row that has
+    // one is not a fleet session, whatever cookie it arrived under.
+    if (session === null || session.tenantId !== null) return null;
+    return session;
+  }
+
+  #readSession(cookieHeader: string | undefined, name: string, atMs = Date.now()): SessionRecord | null {
+    const id = this.sessions.verify(cookieValue(cookieHeader, name));
     if (id === null) return null;
     return this.sessions.readAndTouch(id, atMs, this.#idleMs);
   }
@@ -318,26 +365,32 @@ export class AdminSurface {
   }
 
   async handle(req: FastifyRequest, reply: FastifyReply, fallback: NotFoundFallback): Promise<void> {
-    const listener = listenerFor(req.headers.host, this.#adminHost);
-    if (listener !== 'admin') {
-      // §9.1 rule 1: no admin route, no session cookie parse, no admin response
-      // on a public listener. The request is an ordinary unmatched path.
-      await fallback(req, reply);
-      return;
-    }
-
-    // §5.3 rows 1 and 2, before any route.
+    // D37: row 2 is a general gate on the box, not an admin one — an untrusted peer
+    // may not assert any `X-Skunkworks-*` header.
     const headers = req.headers as Headers;
-    if (headerPresent(headers, TENANT_HEADER)) {
-      throw new AppError('SKW_E_PLT_EDGE_PROOF', 'the admin listener does not accept a tenant header');
-    }
     const peer = req.socket.remoteAddress ?? '';
     if (!peerInCidrs(peer, this.#env.edgeTrustedCidrs) && anySkunkworksHeader(headers)) {
       throw new AppError('SKW_E_PLT_EDGE_PROOF', 'edge assertion from an untrusted peer');
     }
 
+    // Row 1, relocated: the admin surface never takes a tenant from a header. A
+    // **non-empty** one is an assertion and is refused; an empty one is the edge's
+    // own `proxy_set_header … ""` and asserts nothing (SDS §5.3 says nginx does not
+    // forward it at all, and this is what happens when it does).
+    const claimed = header(req, TENANT_HEADER);
+    if (claimed !== undefined && claimed !== '') {
+      throw new AppError('SKW_E_PLT_EDGE_PROOF', 'the admin surface does not accept a tenant header');
+    }
+
+    const tenant = this.hostTenant(req.headers.host);
+    if (tenant === undefined) {
+      // The Host maps to no tenant: "there is no tenant here" is the true statement,
+      // and it is the same 404 any other path on this Host gets.
+      throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no tenant here');
+    }
+
     // §5.5: every admin response is `no-store`. Set here, once, so a new route
-    // cannot forget it — the console, the login page and the tenant home included.
+    // cannot forget it — the tenant home, the login page and the reset form included.
     reply.header('cache-control', 'no-store');
 
     const pathname = pathnameOf(req.url);
@@ -346,12 +399,14 @@ export class AdminSurface {
 
     if (seg.length === 1) {
       this.#requireMethod(req, 'GET');
-      this.#console(req, reply);
+      const session = this.#requireSession(req, tenant);
+      this.#assertTenantMatches(session, tenant);
+      await this.#tenantHome(reply, tenant, session);
       return;
     }
 
     if (seg.length === 2 && seg[1] === 'login') {
-      await this.#loginRoute(req, reply);
+      await this.#loginRoute(req, reply, tenant);
       return;
     }
 
@@ -364,63 +419,140 @@ export class AdminSurface {
     if (seg[1] === 't' && seg.length >= 3) {
       const key = seg[2] as string;
       if (!KEY_RE.test(key)) throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no admin route at this path');
-      const tenant = this.#tenants.lookupKey(key);
-      if (tenant === undefined || tenant.status !== 'active') {
-        throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no tenant here');
-      }
+      // §9.2 with D37's source: the key is a claim and the Host is the resolution.
+      // A key that is not this Host's tenant is the same 404 as a missing one — not a
+      // 403, because "tenant beta exists somewhere else" is not a fact this Host owes
+      // the caller.
+      if (key !== tenant.key) throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no tenant here');
       const action = seg.slice(3).join('/');
       await this.#tenantRoute(req, reply, tenant, action);
       return;
     }
 
-    // §9.2: every admin URL is one of the shapes above; anything else under the
-    // admin host is the same "no tenant here" 404 as an unknown path.
+    // Every admin URL is one of the shapes above; anything else under `/admin` is the
+    // same "no tenant here" 404 as an unknown path.
     throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no admin route at this path');
   }
 
-  // --- D29: the console, the login page, the reset consumer ---------------
+  /**
+   * D37: the fleet console at `/fleet`, on any Host, for a fleet session only.
+   *
+   * A tenant owner who asks for it gets `serveNotFound` — the page-miss path — so the
+   * answer is byte-identical to a path with no `cms_page` row: same 404, same code,
+   * same headers. There is no "you are not allowed" and no login redirect, because
+   * both would confirm that something is there.
+   */
+  async handleFleet(req: FastifyRequest, reply: FastifyReply, fallback: NotFoundFallback): Promise<void> {
+    const headers = req.headers as Headers;
+    const peer = req.socket.remoteAddress ?? '';
+    if (!peerInCidrs(peer, this.#env.edgeTrustedCidrs) && anySkunkworksHeader(headers)) {
+      throw new AppError('SKW_E_PLT_EDGE_PROOF', 'edge assertion from an untrusted peer');
+    }
+    const claimed = header(req, TENANT_HEADER);
+    if (claimed !== undefined && claimed !== '') {
+      throw new AppError('SKW_E_PLT_EDGE_PROOF', 'the fleet console does not accept a tenant header');
+    }
 
-  #console(req: FastifyRequest, reply: FastifyReply): void {
-    const session = this.#requireSession(req);
+    const session = this.fleetSessionFor(req.headers.cookie);
+    if (session === null) {
+      await fallback(req, reply);
+      return;
+    }
+
+    const pathname = pathnameOf(req.url);
+    const seg = pathname.split('/').filter((s) => s !== '');
+    reply.header('cache-control', 'no-store');
+
+    if (seg.length === 1) {
+      this.#requireMethod(req, 'GET');
+      this.#fleetConsole(req, reply, session);
+      return;
+    }
+    if (seg.length === 2 && seg[1] === 'logout') {
+      this.#requireMethod(req, 'POST');
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.sessions.revoke(session.id, Date.now());
+      reply.header('set-cookie', this.sessions.clearCookieHeader(FLEET_COOKIE, FLEET_COOKIE_PATH));
+      reply.send({ ok: true });
+      return;
+    }
+    // Anything else under `/fleet` for a real fleet session is a 404, not a page miss:
+    // the console has exactly the two routes above.
+    throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no fleet route at this path');
+  }
+
+  // --- D37: the console, the login page, the reset consumer -----------------
+
+  #fleetConsole(req: FastifyRequest, reply: FastifyReply, session: SessionRecord): void {
     const user = this.auth.userById(session.userId);
     const all = this.#tenants.all().filter((t) => t.status === 'active');
 
-    // A fleet operator (`tenant_id IS NULL`) sees the fleet. A tenant operator
-    // sees the one tenant its session names — not because the URL says so, but
-    // because that is the whole of what the session may reach (§9.2). Listing the
-    // others would be an inventory leak with no route behind it.
-    const visible = session.tenantId === null ? all : all.filter((t) => t.id === session.tenantId);
-
-    const items = visible
+    // A fleet operator sees every tenant, and each entry links to that tenant's own
+    // admin on that tenant's **primary host** — with `/admin` on a tenant host there is
+    // no single admin address left, so the console has to say where each tenant lives.
+    // The link is absolute and host-qualified because a fleet session has no tenant:
+    // `/admin/t/<key>/` on the console's own host would be the 404 this very route
+    // answers for everyone else.
+    const items = all
       .map((t) => {
-        const current = t.id === session.tenantId;
-        return `<li${current ? ' aria-current="true"' : ''}><a href="/admin/t/${esc(t.key)}/">${esc(t.key)}</a> <span>${esc(t.mode)}</span>${current ? ' <span>(current)</span>' : ''}</li>`;
+        const host = this.#primaryHost(t.id);
+        const label = `${esc(t.key)} <span>${esc(t.mode)}</span>`;
+        const link =
+          host === null
+            ? `<span data-tenant="${esc(t.key)}">${label}</span> <span>(no host mapped)</span>`
+            : `<a href="https://${esc(host)}/admin" data-tenant="${esc(t.key)}">${label}</a> <code>https://${esc(host)}/admin</code>`;
+        return `<li>${link}</li>`;
       })
       .join('\n');
 
     const who = user === null ? `user ${session.userId}` : `${esc(user.email)} (${esc(user.role)})`;
-    const fleet = session.tenantId === null ? 'fleet operator' : 'tenant operator';
     reply
       .type('text/html; charset=utf-8')
       .send(
         page(
-          'Skunkworks — tenants',
-          `<h1>Tenants</h1>
-<p>${who} — ${fleet}</p>
+          'Skunkworks — fleet',
+          `<h1>Fleet</h1>
+<p>${who} — fleet operator</p>
 <ul data-role="tenant-switcher">
 ${items}
 </ul>
-<p>Sessions are tenant-bound: choosing a tenant changes the URL, never the session (§9.2).</p>`,
+<p>Each tenant is administered on its own hosts at <code>/admin</code>; this console has no tenant of its own (D37).</p>
+<form method="post" action="/fleet/logout">
+  <input type="hidden" name="csrf" value="${esc(this.sessions.csrfToken(session))}">
+  <button type="submit">Sign out</button>
+</form>`,
         ),
       );
   }
 
-  async #loginRoute(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  /**
+   * The host a tenant is administered on: its primary `domain` row, else its first
+   * host. `control.db` is read directly because `TenantMap` is keyed the other way
+   * round (host → tenant) and this is one row per tenant on a screen an operator sees.
+   */
+  #primaryHost(tenantId: number): string | null {
+    const db = openAdminWrite(this.#controlPath, this.#env.dbBusyTimeoutMs);
+    try {
+      const row = db
+        .prepare(
+          `SELECT host FROM domain WHERE tenant_id = ?
+            ORDER BY is_primary DESC, host LIMIT 1`,
+        )
+        .get(tenantId) as { host: string } | undefined;
+      return row?.host ?? null;
+    } finally {
+      db.close();
+    }
+  }
+
+  async #loginRoute(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): Promise<void> {
     if (req.method === 'GET') {
       reply.type('text/html; charset=utf-8').send(
         page(
           'Skunkworks — sign in',
           `<h1>Sign in</h1>
+<p>${esc(tenant.key)}</p>
 <form method="post" action="/admin/login" enctype="application/x-www-form-urlencoded">
   <label>Email <input type="email" name="email" autocomplete="username" required></label>
   <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
@@ -432,10 +564,10 @@ ${items}
       return;
     }
     if (req.method !== 'POST') throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'login is a GET or a POST');
-    await this.#login(req, reply);
+    await this.#login(req, reply, tenant);
   }
 
-  async #login(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  async #login(req: FastifyRequest, reply: FastifyReply, hostTenant: Tenant): Promise<void> {
     // A non-GET with no session cannot carry a session-bound token, but the Origin
     // check still applies: login CSRF is the attack this closes.
     this.#assertOrigin(req);
@@ -449,7 +581,11 @@ ${items}
     }
 
     const atMs = Date.now();
-    const result = await this.auth.authenticate({ email, password, totp, atMs });
+    // D37: the Host scopes the lookup. Two tenants may hold one email address
+    // (`UNIQUE(tenant_id, email)`), and before this the second one could not sign in
+    // at all — the 401 that said "ambiguous" was the old single-admin-surface promise
+    // showing through. The fleet rows stay reachable from here (§9.1's "one login URL").
+    const result = await this.auth.authenticate({ scope: hostTenant.id, email, password, totp, atMs });
     if (!result.ok) {
       // E-16: the cause is recorded where an attacker cannot read it, and the
       // wire answers one code and one body for all three.
@@ -464,14 +600,17 @@ ${items}
       throw result.error;
     }
 
-    // The tenant is the row's, never a URL segment (D29). A tenant that is not
-    // serving is the same "no tenant here" a suspended tenant gets everywhere
-    // (§5.3 row 9), and it refuses the login rather than minting a dead session.
     const tenantId = result.user.tenantId;
     let tenant: Tenant | undefined;
     if (tenantId !== null) {
       tenant = this.#tenants.lookupId(tenantId);
       if (tenant === undefined || tenant.status !== 'active') {
+        throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no tenant here');
+      }
+      // D37: credentials for tenant B presented on tenant A's host. The row is right
+      // and this Host does not serve that tenant, so the answer is the same 404 a
+      // missing tenant gets — and no cookie, because there is nothing here to be.
+      if (tenant.id !== hostTenant.id) {
         throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no tenant here');
       }
     }
@@ -494,13 +633,19 @@ ${items}
       ip: req.socket.remoteAddress ?? '',
     });
     // §13.3.4, `admin.login` — an **action**, post-authentication, `{tenant, operatorId}`.
-    // The return value is discarded by `actionSite`'s signature: a hook that could change an
-    // authentication outcome would be a hook that changes who is signed in, which is why this
+    // The return value is discarded by `actionSite`'s signature: a hook that could change
+    // an authentication outcome would be a hook that changes who is signed in, which is why this
     // is the action and `admin.session` is absent by decision.
     if (tenant !== undefined) {
       await actionSite('admin.login', tenant.key, { tenant: tenant.key, operatorId: result.user.id });
     }
-    reply.header('set-cookie', this.sessions.cookieHeader(this.sessions.sign(session.id)));
+    // D37: the cookie's name and path follow the session's *kind*. A tenant session is
+    // named for its tenant and scoped to `/admin`; a fleet session has no tenant to be
+    // named for and is scoped to `/fleet`, so the console's cookie is never sent to a
+    // tenant's admin surface.
+    const name = tenant === undefined ? FLEET_COOKIE : sessionCookieName(tenant.key);
+    const path = tenant === undefined ? FLEET_COOKIE_PATH : ADMIN_COOKIE_PATH;
+    reply.header('set-cookie', this.sessions.cookieHeader(name, this.sessions.sign(session.id), path));
     reply.send({
       ok: true,
       tenant: tenant === undefined ? null : { key: tenant.key, mode: tenant.mode },
@@ -571,7 +716,14 @@ ${items}
       targetId: String(row.id),
       ip: req.socket.remoteAddress ?? '',
     });
-    reply.header('set-cookie', this.sessions.clearCookieHeader());
+    // D37: the cleared cookie is the one this user could have had. A tenant row's
+    // session lives under that tenant's name at `/admin`; a fleet row's under the
+    // fleet name at `/fleet`. Clearing the wrong one leaves a live-looking cookie in
+    // the browser that the server refuses — confusing, and one bug report waiting.
+    const resetTenant = row.tenant_id === null ? undefined : this.#tenants.lookupId(row.tenant_id);
+    const resetName = resetTenant === undefined ? FLEET_COOKIE : sessionCookieName(resetTenant.key);
+    const resetPath = resetTenant === undefined ? FLEET_COOKIE_PATH : ADMIN_COOKIE_PATH;
+    reply.header('set-cookie', this.sessions.clearCookieHeader(resetName, resetPath));
     reply.send({ ok: true, sessionsRevoked: true });
   }
 
@@ -580,7 +732,7 @@ ${items}
   async #tenantRoute(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, action: string): Promise<void> {
     if (action === '') {
       this.#requireMethod(req, 'GET');
-      const session = this.#requireSession(req);
+      const session = this.#requireSession(req, tenant);
       this.#assertTenantMatches(session, tenant);
       await this.#tenantHome(reply, tenant, session);
       return;
@@ -593,7 +745,7 @@ ${items}
       throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no admin route at this path');
     }
 
-    const session = this.#requireSession(req);
+    const session = this.#requireSession(req, tenant);
     this.#assertTenantMatches(session, tenant);
 
     if (action === 'plugins' && req.method === 'GET') {
@@ -626,7 +778,7 @@ ${items}
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
       this.sessions.revoke(session.id, Date.now());
-      reply.header('set-cookie', this.sessions.clearCookieHeader());
+      reply.header('set-cookie', this.sessions.clearCookieHeader(sessionCookieName(tenant.key), ADMIN_COOKIE_PATH));
       reply.send({ ok: true });
       return;
     }
@@ -768,7 +920,6 @@ ${items}
     // actually registered is dropped by the dispatch (the bus's `declaredScreens` rule), so
     // a plugin cannot link to a route that does not exist or to core's own pages.
     const core: { href: string; label: string }[] = [
-      { href: '/admin', label: 'All tenants' },
       { href: `/admin/t/${tenant.key}/pages`, label: 'Pages' },
       { href: `/admin/t/${tenant.key}/media`, label: 'Media' },
       { href: `/admin/t/${tenant.key}/tables`, label: 'Tables' },
@@ -997,20 +1148,26 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
     if (req.method !== method) throw new AppError('SKW_E_PLT_REQUEST_INVALID', `${method} is the method here`);
   }
 
-  #requireSession(req: FastifyRequest): SessionRecord {
-    const session = this.sessionFor(header(req, 'cookie'));
+  /**
+   * D37: the session is looked for under **this Host's tenant's name**, and nowhere
+   * else. A cookie minted for another tenant is not in this namespace, so it is not
+   * a session here — before any row is read, before any tenant comparison runs.
+   */
+  #requireSession(req: FastifyRequest, tenant: Pick<Tenant, 'key'>): SessionRecord {
+    const session = this.sessionFor(header(req, 'cookie'), tenant);
     if (session === null) {
-      // Row 7: no session on the admin listener is "no tenant here".
+      // Row 7, relocated: no session for this Host's tenant is "no tenant here".
       throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no session');
     }
     return session;
   }
 
   #assertTenantMatches(session: SessionRecord, tenant: Tenant): void {
-    // §9.2: the URL is the authority and the session's tenant is the only source.
-    // A key that is not the session's tenant must not resolve — that mismatch is
-    // the cross-tenant write the rule exists to prevent. A fleet session has no
-    // tenant, so every tenant URL is refused for it, which is the true statement.
+    // D37: the Host chose the tenant and the session row must agree with it. This is
+    // the gate that replaced §9.1 rule 1 — a session for acme presented on beta's
+    // host is a valid session for the wrong surface, and the honest answer is the
+    // same 404 a missing tenant gets. A fleet session (`tenant_id IS NULL`) is
+    // refused here too: it has no tenant, and `/fleet` is its surface.
     if (session.tenantId === null || session.tenantId !== tenant.id) {
       throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no tenant here');
     }
@@ -1018,10 +1175,28 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
 
   // --- CSRF --------------------------------------------------------------
 
+  /**
+   * D37: the expected origin is the **request's own** origin — `https://` plus the
+   * normalised `Host`.
+   *
+   * `SKW_ADMIN_ORIGIN` was the right answer while there was one admin hostname. There
+   * are now as many admin origins as there are tenant hosts, so a single configured
+   * string would either refuse every host but one or accept a host it does not serve.
+   * The scheme is fixed at `https` and that is not a guess: the session cookie is
+   * `Secure`, so a browser does not attach it to an `http` request at all — an
+   * http-origin POST carries no session and cannot be an authenticated action. A
+   * plain-http deployment therefore cannot log in, which is the correct answer for a
+   * product whose every host has a certificate.
+   *
+   * Absent and mismatched are both `403 SKW_E_SEC_CSRF`, unchanged: the check never
+   * accepted a missing Origin and does not start now.
+   */
   #assertOrigin(req: FastifyRequest): void {
     const origin = header(req, 'origin');
-    if (origin === undefined || origin !== this.#env.adminOrigin) {
-      throw new AppError('SKW_E_SEC_CSRF', 'origin does not match SKW_ADMIN_ORIGIN');
+    const host = normaliseHost(req.headers.host ?? null);
+    const expected = host === null ? null : `https://${host}`;
+    if (origin === undefined || expected === null || origin !== expected) {
+      throw new AppError('SKW_E_SEC_CSRF', 'origin does not match the host this request was sent to');
     }
   }
 
@@ -1478,7 +1653,7 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
     tenant: Tenant,
     action: string,
   ): Promise<void> {
-    const session = this.#requireSession(req);
+    const session = this.#requireSession(req, tenant);
     const db = this.#siteWrite(tenant.key);
     try {
       const out = await handleCodes(
@@ -1966,7 +2141,10 @@ for (const form of document.querySelectorAll('form[data-csrf-token]')) {
       // The row vanished or expired between the read and the rotation.
       throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no session');
     }
-    reply.header('set-cookie', this.sessions.cookieHeader(this.sessions.sign(rotated.id)));
+    const rotatedTenant = rotated.tenantId === null ? undefined : this.#tenants.lookupId(rotated.tenantId);
+    const rotatedName = rotatedTenant === undefined ? FLEET_COOKIE : sessionCookieName(rotatedTenant.key);
+    const rotatedPath = rotatedTenant === undefined ? FLEET_COOKIE_PATH : ADMIN_COOKIE_PATH;
+    reply.header('set-cookie', this.sessions.cookieHeader(rotatedName, this.sessions.sign(rotated.id), rotatedPath));
     reply.send({
       ok: true,
       csrfToken: this.sessions.csrfToken(rotated),

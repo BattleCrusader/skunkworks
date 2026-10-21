@@ -169,7 +169,6 @@ before(async () => {
 
   const gateway = hostGatewayIPv4();
   const generated = generateAppConf(readHosts(fixture.controlDb), {
-    adminHost: 'admin.skw.test',
     demosHost: 'demos.skw.test',
     boxRps: 192,
   });

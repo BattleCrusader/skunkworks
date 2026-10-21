@@ -28,7 +28,7 @@ import { packageRootHash } from '../app/plugins/manifest.ts';
 import { revokeRoot, revocationPath, REVOCATION_FORMAT } from '../app/plugins/revocation.ts';
 import { trustDirFor } from '../app/plugins/trust.ts';
 import { openAdminWrite } from '../app/db/classes.ts';
-import { ADMIN_HOST, PASSWORD, TOTP_SECRET, openSession, seedUser } from './helpers/admin.ts';
+import { ADMIN_HOST, ADMIN_ORIGIN, PASSWORD, TOTP_SECRET, openSession, seedUser } from './helpers/admin.ts';
 import { REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, type Res } from './helpers/http.ts';
 
@@ -163,7 +163,7 @@ test('N3. the re-enable path: un-revoke, submit the form, the row enables and th
     host: ADMIN_HOST,
     headers: {
       cookie: session.cookie,
-      origin: 'https://admin.skw.test',
+      origin: ADMIN_ORIGIN,
       'content-type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams({ plugin: 'actseq', csrf: session.csrfToken }).toString(),
@@ -195,7 +195,7 @@ test('N3b. the CSRF field is not a bypass: no token, no enable', async () => {
     path: `/admin/t/${TENANT}/plugins/enable`,
     method: 'POST',
     host: ADMIN_HOST,
-    headers: { cookie: session.cookie, origin: 'https://admin.skw.test', 'content-type': 'application/x-www-form-urlencoded' },
+    headers: { cookie: session.cookie, origin: ADMIN_ORIGIN, 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ plugin: 'actseq' }).toString(),
   });
   assert.equal(res.status, 403, res.body);

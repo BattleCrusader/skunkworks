@@ -1,24 +1,29 @@
 /**
- * §9.1's session control, as a wire gate:
+ * §9.1's session control, as a wire gate — **with D37's cookie replacing §9.1's**.
  *
- *   | Session cookie | `__Host-sk-sess`; `Path=/`; `Secure`; `HttpOnly`; `SameSite=Lax` |
+ *   | Session cookie | `__Secure-sk-sess-<tenantKey>`; `Path=/admin`; `Secure`; `HttpOnly`; `SameSite=Strict` |
  *   | Session id     | 32-byte random hex, stored as a row in `control.db.session`, rotated on privilege change |
  *   | IP allowlist   | ... when empty ... idle drops to 15 min |
  *
- * The frozen attribute list is asserted as an exact string, so an extra attribute
- * (`Domain`, `Max-Age`, `Expires`, `SameSite=Strict`) is a failure rather than a
- * detail. Rejection is asserted five ways: a cookie is data from the client and
- * every part of it is checkable.
+ * D37 supersedes the old row (`__Host-sk-sess`; `Path=/`; `SameSite=Lax`). Three of
+ * those four old attributes are gone for reasons the decision names: `__Host-` cannot
+ * carry `Path=/admin` (§7.4.3's erratum is the same rule), `Path=/` was only meaningful
+ * when the admin surface was its own host, and `Lax` was survivable only because the
+ * admin was cross-origin from tenant HTML. The attribute list is still asserted as an
+ * exact string, so an extra attribute (`Domain`, `Expires`, a second `Path`) is a
+ * failure rather than a detail. Rejection is still asserted from the client side: a
+ * cookie is data from the client and every part of it is checkable.
  */
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { after, before, test } from 'node:test';
 
 import {
+  ADMIN_COOKIE_PATH,
   IDLE_MS_NO_ALLOWLIST,
   SESSION_ABSOLUTE_MS,
-  SESSION_COOKIE,
-  SESSION_COOKIE_ATTRS,
+  cookieAttrs,
+  sessionCookieName,
 } from '../app/admin/session.ts';
 import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
@@ -51,12 +56,16 @@ function sessionRequest(cookie: string | undefined, portToUse = port): Promise<R
   return call({ port: portToUse, path: '/admin/t/acme/session', host: ADMIN_HOST, headers });
 }
 
+/** The cookie this file's tenant (`acme`) is issued, under D37's naming. */
+const COOKIE = sessionCookieName('acme');
+const ATTRS = cookieAttrs(ADMIN_COOKIE_PATH);
+
 function idOf(cookie: string): string {
-  return cookie.slice(`${SESSION_COOKIE}=`.length).split('.')[0] as string;
+  return cookie.slice(`${COOKIE}=`.length).split('.')[0] as string;
 }
 
 function macOf(cookie: string): string {
-  return cookie.slice(`${SESSION_COOKIE}=`.length).split('.')[1] as string;
+  return cookie.slice(`${COOKIE}=`.length).split('.')[1] as string;
 }
 
 before(async () => {
@@ -74,22 +83,23 @@ after(async () => {
   fixture.cleanup();
 });
 
-test('1. the cookie carries exactly the five frozen attributes', async () => {
+test('1. the cookie carries exactly D37\'s attribute list, in D37\'s order', async () => {
   const res = await login({ port, key: 'acme', email: OWNER, totp: currentTotp() });
   const raw = setCookie(res);
   assert.ok(raw !== undefined);
-  // `<name>=<64 hex>.<43 base64url>; Path=/; Secure; HttpOnly; SameSite=Lax` and
-  // nothing else: no Domain, no Max-Age, no Expires, no other SameSite value.
-  assert.match(
-    raw,
-    new RegExp(`^${SESSION_COOKIE}=[0-9a-f]{64}\\.[A-Za-z0-9_-]{43}; ${SESSION_COOKIE_ATTRS.replace(/[/]/g, '\\/')}$`),
-    raw,
-  );
-  assert.equal(raw, `${cookiePair(res)}; ${SESSION_COOKIE_ATTRS}`);
-  assert.equal(SESSION_COOKIE, '__Host-sk-sess');
-  // `__Host-` requires Secure, Path=/, and no Domain — the string above is the proof.
+  // `<per-tenant name>=<64 hex>.<43 base64url>; HttpOnly; Secure; SameSite=Strict; Path=/admin`
+  // and nothing else: no Domain, no Max-Age, no Expires, no other SameSite value.
+  assert.match(raw, new RegExp(`^${COOKIE}=[0-9a-f]{64}\\.[A-Za-z0-9_-]{43}; ${ATTRS.replace(/[/]/g, '\\/')}$`), raw);
+  assert.equal(raw, `${cookiePair(res)}; ${ATTRS}`);
+  assert.equal(COOKIE, '__Secure-sk-sess-acme');
+  // D37's order, asserted literally: HttpOnly, Secure, SameSite=Strict, Path.
+  assert.equal(ATTRS, 'HttpOnly; Secure; SameSite=Strict; Path=/admin');
+  // A `Domain` attribute would let one tenant host read another's cookie; `__Secure-`
+  // forbids it, and so does this.
   assert.ok(!/Domain=/i.test(raw));
   assert.ok(!/Max-Age=/i.test(raw));
+  // `__Host-` is not available at a path other than `/` (§7.4.3's erratum, same rule).
+  assert.ok(!raw.startsWith('__Host-'));
 });
 
 test('2. a tampered cookie is not a session: five rejection cases, all the row-7 404', async () => {
@@ -97,11 +107,14 @@ test('2. a tampered cookie is not a session: five rejection cases, all the row-7
   const mac = macOf(session.cookie);
 
   const cases: [name: string, cookie: string][] = [
-    ['no signature at all', `${SESSION_COOKIE}=${id}`],
-    ['a flipped signature', `${SESSION_COOKIE}=${id}.${mac.slice(0, -1)}${mac.endsWith('A') ? 'B' : 'A'}`],
-    ['the id of another length', `${SESSION_COOKIE}=${id.slice(0, 62)}.${mac}`],
-    ['a signature over a different id', `${SESSION_COOKIE}=${'0'.repeat(64)}.${mac}`],
-    ['the value under a non-__Host name', `sk-sess=${id}.${mac}`],
+    ['no signature at all', `${COOKIE}=${id}`],
+    ['a flipped signature', `${COOKIE}=${id}.${mac.slice(0, -1)}${mac.endsWith('A') ? 'B' : 'A'}`],
+    ['the id of another length', `${COOKIE}=${id.slice(0, 62)}.${mac}`],
+    ['a signature over a different id', `${COOKIE}=${'0'.repeat(64)}.${mac}`],
+    // D37: the value under another tenant's name, and under the fleet name. A session
+    // id is only a session in its own namespace.
+    ["another tenant's name", `${sessionCookieName('beta')}=${id}.${mac}`],
+    ['the fleet name', `__Secure-sk-fleet=${id}.${mac}`],
   ];
 
   for (const [name, cookie] of cases) {
@@ -130,7 +143,11 @@ test('3. a revoked session is refused on the next request', async () => {
     headers: { cookie: doomed.cookie, origin: ADMIN_ORIGIN, 'x-csrf-token': doomed.csrfToken },
   });
   assert.equal(out.status, 200);
-  assert.match(String(setCookie(out)), /^__Host-sk-sess=; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=0$/);
+  assert.match(
+    String(setCookie(out)),
+    new RegExp(`^${COOKIE}=; ${ATTRS.replace(/[/]/g, '\\/')}; Max-Age=0$`),
+    'the clearing cookie names the same name and the same path, or the browser keeps the original',
+  );
 
   const after = await sessionRequest(doomed.cookie);
   assert.equal(after.status, 404, 'a logged-out cookie is not a session');

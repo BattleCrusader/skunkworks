@@ -356,11 +356,13 @@ export function planCms(options: CmsOptions): CmsPlan {
   }
 
   // The edge config is generated for **this tenant only** ($tenant map, one server block
-  // per host, the demos and admin vhosts). Copying the platform's `nginx/conf.d` would
-  // carry every other client's server_name into a bundle handed to one of them.
+  // per host, the demos vhost). Copying the platform's `nginx/conf.d` would carry every
+  // other client's server_name into a bundle handed to one of them. D37: there is no
+  // admin vhost to emit, and the allowlist is empty in a bundle by decision (§9.1a), so
+  // the exported `/admin` location carries no access directive at all.
   const conf = generateAppConf(
     tenant.hosts.map((h) => ({ host: h.host, key: tenant.key, cert_state: h.certState })),
-    { adminHost, demosHost, boxRps: 192, adminAllowlist: [] },
+    { demosHost, boxRps: 192, adminAllowlist: [] },
   );
   files.push({ path: 'nginx/conf.d/10-app.conf', bytes: conf });
   // §10.5 (C-12, S4c): the same one line the live site sends and the other two targets ship.

@@ -24,14 +24,14 @@
  *    `failed_logins` and `locked_until` and nothing else, so the exponent is the
  *    failure count rather than a separate lock counter.
  * 4. **A global `fleet_admin` row can authenticate from a tenant login URL.**
- *    `user_account`'s CHECK forces `tenant_id IS NULL` for that role, and §9.2
- *    gives every admin URL the shape `/admin/t/<key>/…`, so a fleet operator has
- *    no URL of their own in this slice. The lookup therefore accepts a global row
- *    as a fallback (a tenant-scoped row with the same email wins), so the role can
- *    be authenticated — and refused, `403 SKW_E_SEC_ROLE_DISABLED`, when
- *    `SKW_FLEET_MODE=0`. A fleet login URL is an open item; until it exists a
- *    fleet session has `tenant_id = NULL` and resolves to the row-7 404 on every
- *    tenant route, which is the true statement about it.
+ *    `user_account`'s CHECK forces `tenant_id IS NULL` for that role, and there is
+ *    one login URL (D29) at `/admin/login` on whichever tenant host the operator
+ *    is looking at, so the tenant scope admits a global row as a fallback (a
+ *    tenant-scoped row with the same email wins). Since D37 that session is not
+ *    homeless: it gets the `__Secure-sk-fleet` cookie and `/fleet` is its surface,
+ *    while every `/admin` route refuses it (a fleet session has no tenant, and the
+ *    tenant on `/admin` now comes from the Host). With `SKW_FLEET_MODE=0` the role
+ *    is refused here, before the password, `403 SKW_E_SEC_ROLE_DISABLED`.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
@@ -176,10 +176,14 @@ interface UserRow {
 
 export interface AuthenticateInput {
   /**
-   * D29: the login URL is `/admin/login`, which is not tenant-scoped, so the
-   * tenant is read from the `user_account` row and never from a URL segment.
-   * An email that exists in two tenants is ambiguous and authenticates nothing.
+   * D37: the host the login arrived on has already picked the tenant, so the
+   * lookup is scoped to it. Before D37 (D29) the URL had no tenant and the row
+   * did, which made an email that exists in two tenants *ambiguous* — and it is
+   * still ambiguous inside a scope, but a tenant host now supplies the scope, so
+   * `owner@abc123.com` on `abc123.com` and `owner@123abc.com` on `123abc.com` are
+   * two operators rather than one 401. `null` is the fleet scope (`/fleet`).
    */
+  scope: number | null;
   email: string;
   password: string;
   totp: string | undefined;
@@ -271,11 +275,21 @@ export class Auth {
       db.close();
     }
 
-    // One row is the identity. Two rows with the same email in different tenants
-    // are two operands with one password field: the request is ambiguous, and the
-    // answer is the same 401 as a wrong password (no oracle that says "this email
-    // exists twice").
-    const row = rows.length === 1 ? rows[0] : undefined;
+    // D37: `WHERE email = ?` stays the statement — `ix_user_email` is the index the
+    // login path is fast because of (`test/index-audit.test.ts`), and the scope is a
+    // filter over a handful of rows rather than a second index decision. A tenant
+    // scope also admits the fleet rows: `/admin/login` on any host is the one login
+    // URL (D29), so a fleet operator signs in there and gets the `/fleet` cookie.
+    const scoped = rows.filter((r) =>
+      input.scope === null ? r.tenant_id === null : r.tenant_id === input.scope || r.tenant_id === null,
+    );
+
+    // One row is the identity. Two rows **inside one scope** with the same email are
+    // two operands with one password field: the request is ambiguous, and the answer
+    // is the same 401 as a wrong password (no oracle that says "this email exists
+    // twice"). `UNIQUE(tenant_id, email)` makes that unreachable today; it stays as
+    // the defence it was written as, and the tenant/fleet pair is reachable.
+    const row = scoped.length === 1 ? scoped[0] : undefined;
 
     // §9.1: with SKW_FLEET_MODE=0 the app refuses to *authenticate* this role.
     // Checked before the password so the refusal is the same whether or not the
@@ -321,7 +335,8 @@ export class Auth {
     if (row === undefined || !passwordOk || (this.#totpRequired && !totpOk)) {
       if (row !== undefined) this.#recordFailure(row.id, row.failed_logins, input.atMs);
       const reason: LoginFailureReason =
-        row === undefined ? (rows.length === 0 ? 'unknown_user' : 'ambiguous') : !passwordOk ? 'password' : 'totp';
+        scoped.length > 1 ? 'ambiguous' : row === undefined ? 'unknown_user' : !passwordOk ? 'password' : 'totp';
+
       return { ok: false, error: new AppError('SKW_E_SEC_AUTH_INVALID', 'invalid credentials'), reason };
     }
 

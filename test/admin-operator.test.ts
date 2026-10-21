@@ -4,9 +4,12 @@
  *   E-19 item 2   TOTP enrolment + confirm for a second operator, and
  *                 `skwctl admin reset-totp` over box shell access.
  *   E-19 item 3   password reset over `reset_token_hash` / `reset_expires_at`.
- *   D29           `GET /admin` is the fleet console (tenant list + switcher),
- *                 every tenant URL is `/admin/t/<key>/…`, login is `/admin/login`,
- *                 and tenant selection changes the URL — never the session's tenant.
+ *   D29           every tenant URL is `/admin/t/<key>/…` and login is `/admin/login`.
+ *                 **D37 replaced D29's console**: `GET /admin` is now the *Host's*
+ *                 tenant home, `/admin/t/<key>/` must match the Host, and the fleet
+ *                 console is `GET /fleet`. The switcher's promise changed shape —
+ *                 selecting a tenant means selecting its host, not its URL — and the
+ *                 tests below say so where the old ones did.
  *   §9.3          the first CRUD read path for a `cms_*` table (list + detail),
  *                 on the `render-read` connection class.
  *
@@ -21,7 +24,7 @@ import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 
 import { totpCode, verifyTotp } from '../app/admin/auth.ts';
-import { SESSION_COOKIE } from '../app/admin/session.ts';
+import { FLEET_COOKIE, sessionCookieName } from '../app/admin/session.ts';
 import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import {
@@ -55,7 +58,9 @@ function listen(app: AppHandle): Promise<number> {
 }
 
 function idOf(cookie: string): string {
-  return cookie.slice(`${SESSION_COOKIE}=`.length).split('.')[0] as string;
+  // D37: the name is the tenant's, so the id starts after that tenant's prefix.
+  const eq = cookie.indexOf('=');
+  return cookie.slice(eq + 1).split('.')[0] as string;
 }
 
 function sessionRow(id: string): { tenant_id: number | null; revoked_at: string | null } {
@@ -111,38 +116,36 @@ after(async () => {
 
 // --- D29: the console, the switcher, the one login URL ----------------------
 
-test('D29-1. GET /admin with no session is the row-7 404, not a login redirect', async () => {
+test('D37-1. GET /admin with no session is the row-7 404, not a login redirect', async () => {
   const res = await call({ port, path: '/admin', host: ADMIN_HOST });
   assert.equal(res.status, 404);
   assert.equal(codeOf(res), 'SKW_E_PLT_TENANT_UNKNOWN');
-  assert.equal(header(res, 'location'), undefined, 'never a redirect: the admin host maps to no tenant');
+  assert.equal(header(res, 'location'), undefined, 'never a redirect');
 });
 
-test('D29-2. the console lists the tenant an operator may reach, and only that one', async () => {
+test('D37-2. /admin is this Host\'s tenant home: their own pages, and no fleet inventory', async () => {
   const session = await openSession({ port, key: 'acme', email: 'owner@acme.test' });
   const res = await call({ port, path: '/admin', host: ADMIN_HOST, headers: { cookie: session.cookie } });
   assert.equal(res.status, 200, res.body);
   assert.match(String(header(res, 'content-type')), /text\/html/);
   assert.match(String(header(res, 'cache-control')), /no-store/);
-  assert.ok(res.body.includes('href="/admin/t/acme/"'), 'the switcher link for the session tenant');
+  assert.ok(res.body.includes('href="/admin/t/acme/pages"'), "the tenant's own menu");
   assert.equal(res.body.includes('/admin/t/beta/'), false, 'a tenant operator does not see the fleet inventory');
   assert.ok(res.body.includes('owner@acme.test'));
+  // D29's "All tenants" entry was the fleet console. It is `/fleet` now and a tenant
+  // owner gets the page-miss 404 there, so a menu must not offer it.
+  assert.equal(res.body.includes('All tenants'), false, 'no link to a surface that 404s for this operator');
 });
 
-test('D29-3. the switcher changes the URL; the session row tenant is unchanged', async () => {
+test('D37-3. the tenant URL is the Host\'s; the session row tenant is never rewritten', async () => {
   const session = await openSession({ port, key: 'acme', email: 'owner@acme.test' });
   const id = idOf(session.cookie);
   const before = sessionRow(id).tenant_id;
 
-  const consoleRes = await call({ port, path: '/admin', host: ADMIN_HOST, headers: { cookie: session.cookie } });
-  assert.equal(consoleRes.status, 200);
-  const target = /href="(\/admin\/t\/[a-z0-9-]+\/)"/.exec(consoleRes.body)?.[1];
-  assert.equal(target, '/admin/t/acme/', 'the link the switcher offers');
-
-  const home = await call({ port, path: target as string, host: ADMIN_HOST, headers: { cookie: session.cookie } });
+  const home = await call({ port, path: '/admin/t/acme/', host: ADMIN_HOST, headers: { cookie: session.cookie } });
   assert.equal(home.status, 200, home.body);
   assert.ok(home.body.includes('acme'));
-  assert.equal(sessionRow(id).tenant_id, before, 'selection changed the URL, never the session');
+  assert.equal(sessionRow(id).tenant_id, before, 'a request never changes which tenant the session names');
 });
 
 test('D29-4. another tenant\'s /admin/t/<key>/… is refused for a non-fleet operator', async () => {
@@ -154,17 +157,20 @@ test('D29-4. another tenant\'s /admin/t/<key>/… is refused for a non-fleet ope
     assert.equal(codeOf(res), 'SKW_E_PLT_TENANT_UNKNOWN', path);
     assert.equal(header(res, 'set-cookie'), undefined, path);
   }
-  assert.equal(sessionRow(id).tenant_id, sessionRow(id).tenant_id);
   assert.equal(sessionRow(id).revoked_at, null, 'a refused cross-tenant request does not kill the session');
 });
 
-test('D29-5. a fleet operator reaches the console and no tenant URL', async () => {
+test('D37-5. a fleet operator reaches /fleet and no tenant URL', async () => {
   const session = await openSession({ port: fleetPort, email: 'fleet@skw.test' });
-  const consoleRes = await call({ port: fleetPort, path: '/admin', host: ADMIN_HOST, headers: { cookie: session.cookie } });
+  assert.ok(session.cookie.startsWith(`${FLEET_COOKIE}=`), 'the fleet session gets the fleet cookie');
+  const consoleRes = await call({ port: fleetPort, path: '/fleet', host: ADMIN_HOST, headers: { cookie: session.cookie } });
   assert.equal(consoleRes.status, 200, consoleRes.body);
-  assert.ok(consoleRes.body.includes('/admin/t/acme/'), 'the fleet sees every active tenant');
-  assert.ok(consoleRes.body.includes('/admin/t/beta/'));
+  assert.ok(consoleRes.body.includes('data-tenant="acme"'), 'the fleet sees every active tenant');
+  assert.ok(consoleRes.body.includes('data-tenant="beta"'));
   assert.ok(consoleRes.body.includes('fleet operator'));
+  // D37: the console cannot link a fleet session into a tenant admin (there is no
+  // tenant to be), so each entry carries the tenant's own admin address instead.
+  assert.ok(consoleRes.body.includes('https://acme.test/admin'), 'and where each tenant is administered');
 
   const tenantUrl = await call({ port: fleetPort, path: '/admin/t/acme/', host: ADMIN_HOST, headers: { cookie: session.cookie } });
   assert.equal(tenantUrl.status, 404, 'a fleet session has no tenant, so every tenant URL is refused');
@@ -193,7 +199,8 @@ test('D29-6. /admin/login is the only login URL: a page for GET, a real form pos
     body: form,
   });
   assert.equal(res.status, 200, res.body);
-  assert.ok(cookiePair(res) !== undefined);
+  const pair = cookiePair(res) as string;
+  assert.ok(pair.startsWith(`${sessionCookieName('acme')}=`), `D37 names the cookie for the tenant: ${pair.slice(0, 40)}`);
 
   // The per-tenant login is gone: it would select a tenant from the URL.
   const perTenant = await call({
@@ -207,7 +214,6 @@ test('D29-6. /admin/login is the only login URL: a page for GET, a real form pos
   assert.equal(perTenant.status, 404);
   assert.equal(codeOf(perTenant), 'SKW_E_PLT_TENANT_UNKNOWN');
 });
-
 test('D28. the CSRF token is a header and there is no form-field alternative', async () => {
   const session = await openSession({ port, key: 'acme', email: 'owner@acme.test' });
   const asField = await call({

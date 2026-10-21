@@ -16,7 +16,7 @@ import Database from 'better-sqlite3';
 import { after, before, test } from 'node:test';
 
 import { ARGON2_OPTIONS, lockoutMsFor, totpCode } from '../app/admin/auth.ts';
-import { IDLE_MS_NO_ALLOWLIST, IDLE_MS_WITH_ALLOWLIST } from '../app/admin/session.ts';
+import { IDLE_MS_NO_ALLOWLIST, IDLE_MS_WITH_ALLOWLIST, sessionCookieName } from '../app/admin/session.ts';
 import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import {
@@ -136,7 +136,8 @@ test('2a. TOTP is mandatory when the allowlist is empty: no code and a wrong cod
 
 test('2b. with a valid TOTP the login succeeds, sets the cookie and reports totpRequired=false afterwards', async () => {
   const session = await openSession({ port, key: 'acme', email: OWNER });
-  assert.ok(session.cookie.startsWith('__Host-sk-sess='));
+  // D37: the cookie is named for the tenant the Host maps to.
+  assert.ok(session.cookie.startsWith(`${sessionCookieName('acme')}=`), session.cookie.slice(0, 40));
 
   const info = await call({ port, path: '/admin/t/acme/session', host: ADMIN_HOST, headers: { cookie: session.cookie } });
   assert.equal(info.status, 200);
@@ -281,7 +282,9 @@ test('7. a login for an operator whose tenant is not serving is the row-9 404 (Â
   db.prepare("UPDATE tenant SET status = 'suspended' WHERE key = 'beta'").run();
   db.close();
 
-  const res = await login({ port, email: beta, totp: currentTotp() });
+  // D37: the login belongs on beta's own host â€” and a suspended tenant is refused
+  // before any credential is looked at, which is row 9's promise at the new address.
+  const res = await login({ port, email: beta, totp: currentTotp(), host: 'beta.test' });
   assert.equal(res.status, 404);
   assert.equal(codeOf(res), 'SKW_E_PLT_TENANT_UNKNOWN');
   assert.equal(res.headers['set-cookie'], undefined, 'a suspended tenant mints no session');

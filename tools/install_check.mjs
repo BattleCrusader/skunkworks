@@ -8,6 +8,14 @@
  * the container runs, the same login route a browser posts to, and the same
  * `session` row.
  *
+ * **D37: the login is on the tenant's host, not on an admin hostname.** There is no
+ * `admin.<domain>` any more — `/admin` is a path on each tenant host — so the `Host`
+ * this probe sends is the first tenant's primary `domain` row, read out of the
+ * `control.db` the install just wrote. The enrolment file's `admin:` line is still
+ * read for the address a human is told to open, and it is deliberately *not* used as
+ * the Host: a probe that sent the old admin hostname would be testing a name the edge
+ * no longer serves, and it would pass or fail for the wrong reason.
+ *
  * **S4c: and then it fetches the tenant's first published page.** D30's promise is
  * "an empty host directory to a **served page**", and an install whose only proof is the
  * admin console has proved the console, not the product. The page is chosen from the
@@ -44,9 +52,37 @@ const field = (name) => {
 
 const email = field('email');
 const password = field('password');
-const url = new URL(field('admin'));
-const host = url.host;
-const origin = url.origin;
+const adminUrl = new URL(field('admin'));
+
+/**
+ * The tenant the install created, and the host it is served on. Read before the app
+ * boots because the `Host` header is what selects the tenant — and with D37 it is also
+ * what selects the admin surface.
+ */
+async function primaryTenant() {
+  const { DatabaseSync } = await import('node:sqlite');
+  const control = new DatabaseSync(join(dataDir, 'control.db'), { readOnly: true });
+  try {
+    const tenant = control.prepare('SELECT id, key FROM tenant ORDER BY id LIMIT 1').get();
+    if (tenant === undefined) throw new Error('control.db has no tenant');
+    const domain = control
+      .prepare('SELECT host FROM domain WHERE tenant_id = ? ORDER BY is_primary DESC, host LIMIT 1')
+      .get(tenant.id);
+    if (domain === undefined) throw new Error(`tenant ${tenant.key} has no domain row`);
+    return { key: String(tenant.key), host: String(domain.host) };
+  } finally {
+    control.close();
+  }
+}
+
+const primary = await primaryTenant();
+const host = primary.host;
+const origin = `https://${host}`;
+if (adminUrl.host !== host) {
+  process.stdout.write(
+    `install_check: the enrolment file names ${adminUrl.host}; D37 administers ${primary.key} at https://${host}/admin\n`,
+  );
+}
 
 process.env.SKW_DATA_DIR = dataDir;
 

@@ -386,4 +386,19 @@ if [ "$VERIFY_LOGIN" -eq 1 ]; then
   fi
 fi
 
-say "done. Sign in at $ADMIN_ORIGIN/admin/login, then delete $ENROLMENT."
+# D37: admin is `/admin` on the tenant's own host, so the address to print is the
+# tenant's, not an admin hostname. Read it from the control plane this install just
+# wrote; fall back to the admin host only when there is no tenant at all (an install
+# with no tenant has no admin to sign in to, and the line then names the old name
+# rather than an empty string).
+TENANT_HOST="$(node --no-warnings -e '
+const { DatabaseSync } = require("node:sqlite");
+try {
+  const db = new DatabaseSync(process.argv[1], { readOnly: true });
+  const t = db.prepare("SELECT id FROM tenant ORDER BY id LIMIT 1").get();
+  const d = t && db.prepare("SELECT domain.host AS host FROM domain WHERE domain.tenant_id = ? ORDER BY domain.is_primary DESC, domain.host LIMIT 1").get(t.id);
+  process.stdout.write(d ? String(d.host) : "");
+} catch { process.stdout.write(""); }
+' "$CONTROL_DB" 2>/dev/null || true)"
+SIGNIN_HOST="${TENANT_HOST:-$ADMIN_HOST}"
+say "done. Sign in at https://$SIGNIN_HOST/admin/login, then delete $ENROLMENT."

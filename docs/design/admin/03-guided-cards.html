@@ -1,0 +1,679 @@
+<!-- 03-guided-cards.html — Direction 03 · Guided Cards. Task-led, one job per screen, written for a non-technical site owner. Standalone mockup: inline CSS, system fonts, no external requests. -->
+<!doctype html>
+<html lang="en" data-screen="pages">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guided Cards — Skunkworks admin</title>
+<style>
+:root{
+  --canvas:#eef2f8; --card:#ffffff; --card-2:#f7f9fd;
+  --ink:#182130; --ink-2:#3f4b5e; --muted:#66748a; --faint:#93a0b3;
+  --line:#e2e8f1; --line-2:#d3dce9;
+  --blue:#2563eb; --blue-2:#1d4ed8; --blue-soft:#e8f0ff; --blue-line:#c7d9ff;
+  --green:#0f9d6e; --green-soft:#e7f7f1;
+  --amber:#b45309; --amber-soft:#fff5e6; --amber-line:#f3d7ac;
+  --red:#d33a3a; --red-soft:#fdeeee; --red-line:#f3cccc;
+  --r-sm:10px; --r:14px; --r-lg:20px;
+  --shadow:0 1px 2px rgba(24,33,48,.05),0 12px 32px rgba(24,33,48,.07);
+  --shadow-sm:0 1px 2px rgba(24,33,48,.06),0 2px 8px rgba(24,33,48,.04);
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+figure{margin:0}
+html[data-screen="signin"] .appbar,html[data-screen="signin"] .page{display:none}
+html,body{margin:0;background:var(--canvas);color:var(--ink);font:15px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+[hidden]{display:none!important}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+::selection{background:#d7e4ff}
+
+/* review strip */
+.specbar{display:flex;align-items:center;gap:14px;height:36px;padding:0 22px;background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:40}
+.specbar__tag{font:10px/1 var(--mono);letter-spacing:.12em;color:var(--blue);background:var(--blue-soft);border:1px solid var(--blue-line);padding:4px 6px;border-radius:5px}
+.specbar__name{font-size:12px;font-weight:650;letter-spacing:.01em}
+.specbar__note{font-size:11px;color:var(--muted);border-left:1px solid var(--line);padding-left:14px}
+.specbar__tabs{margin-left:auto;display:flex;gap:4px}
+.specbar__tabs button{font-size:11px;color:var(--muted);padding:5px 10px;border-radius:999px}
+.specbar__tabs button:hover{background:var(--card-2);color:var(--ink)}
+.specbar__tabs button[aria-selected="true"]{background:var(--ink);color:#fff}
+
+/* app bar */
+.appbar{display:flex;align-items:center;gap:26px;height:66px;padding:0 28px;background:#fff;border-bottom:1px solid var(--line);position:relative;z-index:20}
+.brand{display:flex;align-items:center;gap:10px}
+.brand__mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(145deg,#3b82f6,#1d4ed8);color:#fff;display:grid;place-items:center;font-weight:700;font-size:14px;box-shadow:0 4px 10px rgba(37,99,235,.28)}
+.brand b{font-size:15px;font-weight:650;letter-spacing:-.01em}
+.tenantpill{display:flex;align-items:center;gap:6px;margin-left:6px;font-size:12px;color:var(--ink-2);background:var(--card-2);border:1px solid var(--line);padding:5px 9px;border-radius:999px}
+.tenantpill i{width:6px;height:6px;border-radius:50%;background:var(--green);display:block}
+.appnav{display:flex;gap:2px;margin-left:16px}
+.appnav a{padding:8px 13px;border-radius:9px;font-size:13.5px;color:var(--muted)}
+.appnav a:hover{background:var(--card-2);color:var(--ink)}
+.appnav a.is-on{background:var(--blue-soft);color:var(--blue-2);font-weight:600}
+.appbar__right{margin-left:auto;display:flex;align-items:center;gap:16px}
+.appbar__right .help{font-size:13px;color:var(--muted)}
+.avatar{width:32px;height:32px;border-radius:50%;background:#dfe8f7;color:#2c4a7c;display:grid;place-items:center;font-size:11px;font-weight:650}
+.who{font-size:12px;line-height:1.35;color:var(--muted)}
+.who b{display:block;color:var(--ink);font-weight:600;font-size:12.5px}
+
+.page{max-width:1060px;margin:0 auto;padding:34px 28px 80px}
+.screen{animation:none}
+.pagehead{display:flex;align-items:flex-start;gap:20px;margin-bottom:22px}
+.pagehead h1{margin:0 0 4px;font-size:30px;line-height:1.2;letter-spacing:-.025em;font-weight:650}
+.pagehead p{margin:0;color:var(--muted);font-size:14px}
+.pagehead .actions{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:7px;height:38px;padding:0 15px;border-radius:10px;font-size:13.5px;font-weight:600;border:1px solid var(--line-2);background:#fff;color:var(--ink-2);box-shadow:var(--shadow-sm);white-space:nowrap}
+.btn:hover{border-color:#b9c6d8;color:var(--ink)}
+.btn--primary{background:var(--blue);border-color:var(--blue);color:#fff;box-shadow:0 4px 12px rgba(37,99,235,.22)}
+.btn--primary:hover{background:var(--blue-2);border-color:var(--blue-2);color:#fff}
+.btn--ghost{box-shadow:none;background:transparent;border-color:transparent;color:var(--blue-2)}
+.btn--ghost:hover{background:var(--blue-soft);border-color:transparent}
+.btn--sm{height:32px;padding:0 11px;font-size:12.5px;border-radius:8px}
+.btn .ic{width:16px;height:16px;flex:none}
+.btn--primary .ic{color:#fff}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow-sm)}
+.card--pad{padding:22px}
+.sectionhead{display:flex;align-items:baseline;justify-content:space-between;margin:26px 2px 10px}
+.sectionhead h2{margin:0;font-size:13px;letter-spacing:.02em;text-transform:uppercase;color:var(--muted);font-weight:650}
+.sectionhead span{font-size:12px;color:var(--faint)}
+
+/* next-step banner */
+.nextstep{display:flex;align-items:center;gap:16px;background:linear-gradient(120deg,#fff8ec,#fffdf8);border:1px solid var(--amber-line);border-radius:var(--r);padding:16px 18px;margin-bottom:22px}
+.nextstep__icon{width:38px;height:38px;border-radius:10px;background:#fff;border:1px solid var(--amber-line);display:grid;place-items:center;color:var(--amber);flex:none}
+.nextstep b{display:block;font-size:14px;margin-bottom:1px}
+.nextstep p{margin:0;font-size:13px;color:#7a5a32}
+.nextstep .btn{margin-left:auto}
+
+/* page rows */
+.pagelist{overflow:hidden}
+.pagerow{display:flex;align-items:center;gap:16px;padding:15px 18px;border-bottom:1px solid var(--line)}
+.pagerow:last-child{border-bottom:0}
+.pagerow:hover{background:#fafcff}
+.thumb-ic{width:44px;height:44px;border-radius:11px;flex:none;display:grid;place-items:center;color:#fff;font-size:12px;font-weight:700;letter-spacing:.02em;box-shadow:inset 0 0 0 1px rgba(0,0,0,.04)}
+.thumb-ic.a{background:linear-gradient(145deg,#4f7cff,#2f4fd8)}
+.thumb-ic.b{background:linear-gradient(145deg,#e7a06a,#b96b3f)}
+.thumb-ic.c{background:linear-gradient(145deg,#69b7a1,#2f7f6b)}
+.pagerow__main{min-width:0;flex:1}
+.pagerow__title{font-size:16px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pagerow__meta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);margin-top:2px}
+.dotsep{width:3px;height:3px;border-radius:50%;background:#c3cdda;display:inline-block}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:4px 9px;border-radius:999px;white-space:nowrap}
+.pill--live{background:var(--green-soft);color:#0b7a55}
+.pill--draft{background:var(--amber-soft);color:#8a4a09}
+.pill--private{background:#f3f5fa;color:#51607a}
+.pill i{width:5px;height:5px;border-radius:50%;background:currentColor;display:block}
+.rowactions{display:flex;align-items:center;gap:6px;margin-left:4px}
+.chev{color:#a9b5c6;font-size:18px;line-height:1;padding:0 2px}
+
+/* stats strip */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:20px}
+.stat{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:15px 17px;box-shadow:var(--shadow-sm)}
+.stat b{display:block;font-size:24px;line-height:1.1;letter-spacing:-.02em;font-weight:650}
+.stat span{font-size:12px;color:var(--muted)}
+.helper{display:flex;gap:10px;align-items:flex-start;margin-top:20px;padding:14px 16px;background:var(--card-2);border:1px solid var(--line);border-radius:var(--r);font-size:13px;color:var(--ink-2);line-height:1.55}
+.helper .ic{color:var(--blue);flex:none;margin-top:1px}
+.helper b{font-weight:600}
+
+/* media */
+.dropzone{display:flex;align-items:center;gap:16px;border:1.5px dashed #b9c9df;background:linear-gradient(180deg,#fbfdff,#f6f9fe);border-radius:var(--r);padding:18px 20px;margin-bottom:20px}
+.dropzone:hover{border-color:#8fb0dc;background:#f8fbff}
+.dropzone__icon{width:42px;height:42px;border-radius:12px;background:#fff;border:1px solid var(--line);display:grid;place-items:center;color:var(--blue);flex:none;box-shadow:var(--shadow-sm)}
+.dropzone b{display:block;font-size:14.5px}
+.dropzone p{margin:2px 0 0;font-size:12.5px;color:var(--muted)}
+.dropzone .btn{margin-left:auto}
+.toolbar{display:flex;align-items:center;gap:10px;margin:4px 0 16px;flex-wrap:wrap}
+.chips{display:flex;gap:6px;margin-right:auto}
+.chip{font-size:12.5px;padding:7px 12px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--muted)}
+.chip:hover{border-color:#becbdb;color:var(--ink)}
+.chip.is-on{background:var(--ink);border-color:var(--ink);color:#fff}
+.search{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line-2);border-radius:10px;padding:0 11px;height:36px;min-width:230px;color:var(--faint)}
+.search input{border:0;outline:0;background:none;font-size:13px;color:var(--ink);width:100%}
+.search input::placeholder{color:var(--faint)}
+.mediagrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.asset{background:#fff;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--shadow-sm);transition:box-shadow .15s}
+.asset:hover{box-shadow:var(--shadow)}
+.asset__frame{position:relative;aspect-ratio:4/3;background:#e9eef6;border-bottom:1px solid var(--line)}
+.asset__frame .kind{position:absolute;left:10px;top:10px;z-index:3;font-size:10.5px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:#41506a;background:rgba(255,255,255,.9);border:1px solid rgba(24,33,48,.08);border-radius:6px;padding:3px 6px}
+.asset__frame .kind.lock{color:#8a4a09;background:#fff7ea;border-color:#f0d8b2}
+.asset__body{padding:11px 13px 12px}
+.asset__name{font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.asset__meta{font-size:11.5px;color:var(--muted);margin-top:1px}
+.asset__foot{display:flex;align-items:center;gap:8px;margin-top:10px}
+.asset__foot .pill{font-size:10.5px;padding:3px 7px}
+.asset__foot .more{margin-left:auto;color:var(--faint);font-size:16px;line-height:1;padding:2px 4px;border-radius:6px}
+.asset__foot .more:hover{background:var(--card-2);color:var(--ink)}
+.asset__note{margin-top:8px;font-size:11.5px;color:#8a4a09;background:var(--amber-soft);border:1px solid var(--amber-line);border-radius:8px;padding:6px 8px;line-height:1.45}
+.ph{position:absolute;inset:0;z-index:1}
+.ph--home{background:linear-gradient(180deg,#22344a 0%,#3a4f64 45%,#7b6348 46%,#9c7852 73%,#3b3027 100%)}
+.ph--home::before{content:"";position:absolute;left:12%;right:14%;top:31%;height:19%;background:linear-gradient(180deg,#a98a60,#735c41);border-radius:2px;box-shadow:0 14px 26px rgba(0,0,0,.28)}
+.ph--home::after{content:"";position:absolute;left:47%;top:12%;width:7%;height:34%;background:#14202c;border-radius:2px}
+.ph--clay{background:radial-gradient(120% 100% at 30% 18%,#d5a17c,#96624a 58%,#50312a)}
+.ph--clay::before{content:"";position:absolute;left:29%;top:20%;width:42%;height:54%;border-radius:50% 50% 44% 44%/58% 58% 42% 42%;background:linear-gradient(145deg,#eec1a1,#ae7054 62%,#7c4836);box-shadow:inset -12px -14px 26px rgba(0,0,0,.2),0 18px 22px rgba(0,0,0,.22)}
+.ph--clay::after{content:"";position:absolute;left:9%;right:9%;bottom:8%;height:12%;background:radial-gradient(60% 100% at 50% 0,rgba(0,0,0,.32),transparent 70%)}
+.ph--studio{background:linear-gradient(155deg,#5f6a6f,#364246 62%,#232c30)}
+.ph--studio::before{content:"";position:absolute;left:15%;top:30%;width:27%;height:42%;border-radius:46% 46% 26% 26%;background:linear-gradient(150deg,#d2c0ab,#917f6d)}
+.ph--studio::after{content:"";position:absolute;left:50%;top:24%;width:28%;height:50%;border-radius:44% 44% 22% 22%;background:linear-gradient(150deg,#b2a597,#72675d);box-shadow:-8px 12px 18px rgba(0,0,0,.26)}
+.ph--pdf{background:linear-gradient(160deg,#eef2f8,#e3e9f2)}
+.doc{position:absolute;left:27%;top:13%;width:46%;height:74%;background:#fff;border:1px solid #d5dde9;border-radius:3px;box-shadow:0 14px 26px rgba(30,45,70,.16);padding:9% 6%}
+.doc i{display:block;height:2px;background:#dde4ee;margin-bottom:6px}
+.doc i:nth-child(1){width:58%;height:4px;background:#2563eb;margin-bottom:10px}
+.doc i:nth-child(4){width:84%}
+.doc i:nth-child(5){width:64%}
+.doc b{position:absolute;right:8%;bottom:8%;font:8px/1 var(--mono);letter-spacing:.1em;color:#7b8aa0;border:1px solid #d5dde9;padding:2px 3px;border-radius:3px}
+
+/* editor */
+.editorcard{overflow:hidden}
+.edbar{display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid var(--line);background:#fff}
+.edbar .back{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:5px}
+.edbar__title{font-size:16px;font-weight:650;letter-spacing:-.01em}
+.edbar__meta{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:8px}
+.edbar__right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.saved{font-size:12px;color:var(--muted);margin-right:4px;display:flex;align-items:center;gap:5px}
+.saved i{width:6px;height:6px;border-radius:50%;background:var(--green);display:block}
+.stepper{display:flex;align-items:center;gap:0;padding:12px 18px;background:var(--card-2);border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
+.step{display:flex;align-items:center;gap:7px;padding-right:14px}
+.step em{font-style:normal;width:20px;height:20px;border-radius:50%;background:#dfe6f1;color:#5a6a80;display:grid;place-items:center;font-size:11px;font-weight:650}
+.step.is-on{color:var(--ink);font-weight:600}
+.step.is-on em{background:var(--blue);color:#fff}
+.step.done em{background:var(--green-soft);color:var(--green)}
+.stepsep{width:26px;height:1px;background:var(--line-2);margin:0 12px 0 0}
+.ednotice{display:flex;align-items:flex-start;gap:9px;padding:9px 18px;background:#fff6e8;border-bottom:1px solid var(--amber-line);font-size:12.5px;color:#7a4a10}
+.ednotice code{font:11px/1 var(--mono);background:#fff;border:1px solid var(--amber-line);padding:2px 4px;border-radius:4px}
+.ednotice .x{margin-left:auto;color:#b08246}
+.edbody{display:grid;grid-template-columns:212px minmax(0,1fr) 268px;min-height:520px}
+.blocks{border-right:1px solid var(--line);padding:14px 12px;background:#fbfcff}
+.blocks h3{margin:10px 4px 5px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:650}
+.blocks h3:first-child{margin-top:0}
+.blockgrid{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.block{display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:7px 7px;border:1px solid var(--line);border-radius:8px;background:#fff;font-size:11px;line-height:1.25;color:var(--ink-2);text-align:left}
+.block:hover{border-color:var(--blue-line);background:var(--blue-soft);color:var(--blue-2)}
+.block i{width:13px;height:9px;border:1.4px solid currentColor;border-radius:2px;opacity:.55;display:block}
+.blocks .tip{font-size:10.5px;line-height:1.5;color:var(--faint);margin:14px 4px 0;border-top:1px solid var(--line);padding-top:10px}
+.edcanvas{background:#e8edf5;padding:18px 22px 28px;overflow:auto}
+.edcanvas__top{display:flex;justify-content:space-between;align-items:center;max-width:620px;margin:0 auto 8px;font-size:10.5px;color:#7b889c}
+.preview{max-width:620px;margin:0 auto;background:#fff;box-shadow:0 18px 44px rgba(30,47,75,.2);border-radius:3px;font:14px/1.55 var(--sans);min-height:420px}
+.pv-nav{display:flex;justify-content:space-between;align-items:center;padding:14px 26px;border-bottom:1px solid #eef1f6;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#7b8798}
+.pv-nav b{font-size:11px;letter-spacing:.16em}
+.pv-hero{padding:28px 26px 6px}
+.pv-eyebrow{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a6a45;margin-bottom:6px}
+.pv-hero h1{font-size:29px;line-height:1.12;letter-spacing:-.02em;margin:0 0 7px;font-weight:650}
+.pv-hero p{margin:0;color:#66748a;font-size:13px;max-width:40ch}
+.pv-plans{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:18px 26px 24px}
+.pv-plan{border:1px solid #e7ecf3;border-radius:8px;padding:11px 10px}
+.pv-plan h2{margin:0 0 3px;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#98a3b3}
+.pv-plan .price{font-size:20px;font-weight:650;letter-spacing:-.02em}
+.pv-plan .price small{font-size:10px;color:#98a3b3;font-weight:400}
+.pv-plan p{margin:5px 0 9px;font-size:10.5px;line-height:1.45;color:#6b7787}
+.pv-plan a{font-size:10.5px;color:#2563eb;font-weight:600}
+.ctasel{position:relative;display:inline-block;outline:2px solid #2563eb;outline-offset:3px;border-radius:2px}
+.gjstool{position:absolute;bottom:-26px;right:-3px;display:flex;background:#2563eb;color:#fff;border-radius:4px;font-size:9px;overflow:hidden;z-index:4}
+.gjstool span{padding:4px 5px;border-right:1px solid rgba(255,255,255,.24)}
+.gjstool span:last-child{border-right:0}
+.edsettings{border-left:1px solid var(--line);padding:18px 16px;background:#fff}
+.edsettings h3{margin:0 0 2px;font-size:15px;font-weight:650}
+.edsettings .sub{font-size:11.5px;color:var(--muted);margin:0 0 16px}
+.fld{margin-bottom:14px}
+.fld label{display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:5px}
+.fld input{width:100%;height:36px;border:1px solid var(--line-2);border-radius:8px;padding:0 10px;font:13px/1 var(--sans);color:var(--ink);background:#fff;outline:0}
+.fld input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.fld .help{font-size:11px;color:var(--faint);margin:5px 0 0;line-height:1.45}
+.edsettings .hint{font-size:11.5px;line-height:1.5;color:var(--muted);background:var(--card-2);border:1px solid var(--line);border-radius:8px;padding:9px 10px;margin-top:16px}
+.edsettings .meta{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+.edsettings .meta div{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted);padding:3px 0}
+.edsettings .meta code{font:10.5px/1 var(--mono);color:var(--ink-2)}
+.edfoot{display:flex;align-items:center;gap:12px;padding:12px 18px;border-top:1px solid var(--line);background:#fff}
+.edfoot .note{font-size:12px;color:var(--muted)}
+.edfoot .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+
+/* plugins */
+.alertcard{display:flex;gap:16px;align-items:flex-start;background:#fff;border:1px solid var(--red-line);border-left:4px solid var(--red);border-radius:var(--r);padding:18px 20px;box-shadow:var(--shadow-sm)}
+.alertcard__icon{width:38px;height:38px;border-radius:50%;background:var(--red-soft);color:var(--red);display:grid;place-items:center;flex:none}
+.alertcard h2{margin:0 0 3px;font-size:18px;letter-spacing:-.015em}
+.alertcard .who{font-size:12px;color:var(--muted);margin:0 0 8px}
+.alertcard p{margin:0 0 12px;font-size:13.5px;color:var(--ink-2);max-width:62ch;line-height:1.55}
+.factrow{display:grid;grid-template-columns:150px minmax(0,1fr);gap:10px;border-top:1px solid var(--line);padding:8px 0;font-size:12.5px}
+.factrow dt{color:var(--muted)}
+.factrow dd{margin:0;color:var(--ink-2)}
+.factrow code{font:11px/1 var(--mono);background:#f4f6fa;border:1px solid var(--line);padding:3px 5px;border-radius:4px;color:#b23a3a}
+.alertcard .acts{display:flex;gap:8px;margin-top:14px;align-items:center}
+.alertcard .acts .link{font-size:12.5px;color:var(--muted);margin-left:6px;border-bottom:1px solid var(--line-2)}
+.minicard{display:flex;align-items:center;gap:14px;background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;margin-top:12px;box-shadow:var(--shadow-sm)}
+.minicard .ic{width:34px;height:34px;border-radius:9px;background:var(--amber-soft);color:var(--amber);display:grid;place-items:center;flex:none}
+.minicard b{display:block;font-size:13.5px}
+.minicard p{margin:1px 0 0;font-size:12px;color:var(--muted)}
+.minicard .btn{margin-left:auto}
+.working{display:flex;align-items:center;gap:14px;padding:15px 18px;border-bottom:1px solid var(--line)}
+.working:last-child{border-bottom:0}
+.working .tick{width:30px;height:30px;border-radius:50%;background:var(--green-soft);color:var(--green);display:grid;place-items:center;flex:none}
+.working b{font-size:14px}
+.working p{margin:1px 0 0;font-size:12px;color:var(--muted)}
+.working .toggle{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:12px;color:#0b7a55;background:var(--green-soft);padding:4px 9px;border-radius:999px}
+.toggle i{width:22px;height:13px;border-radius:999px;background:#16a97a;position:relative;display:block}
+.toggle i::after{content:"";position:absolute;right:2px;top:2px;width:9px;height:9px;border-radius:50%;background:#fff}
+
+/* sign in */
+.signin{min-height:calc(100vh - 36px);display:grid;place-items:center;padding:40px 20px;background:radial-gradient(1200px 600px at 50% -10%,#e3ecff,#eef2f8 60%)}
+.signin__wrap{width:420px}
+.signin__brand{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:22px}
+.signin__card{background:#fff;border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:0 2px 4px rgba(24,33,48,.04),0 28px 70px rgba(24,33,48,.13);padding:30px}
+.signin__card h1{margin:0 0 4px;font-size:25px;letter-spacing:-.025em}
+.signin__card .sub{margin:0 0 6px;font-size:13.5px;color:var(--muted)}
+.stepdots{display:flex;gap:5px;margin:14px 0 20px}
+.stepdots i{height:4px;border-radius:2px;background:var(--line-2);flex:1}
+.stepdots i.on{background:var(--blue)}
+.sf{margin-bottom:14px}
+.sf label{display:block;font-size:12.5px;font-weight:600;margin-bottom:5px}
+.sf input{width:100%;height:42px;border:1px solid var(--line-2);border-radius:10px;padding:0 12px;font:14px/1 var(--sans);color:var(--ink);background:#fff;outline:0}
+.sf input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.sf input[name="totp"]{letter-spacing:.36em;font-family:var(--mono);font-size:16px}
+.sf .help{font-size:11.5px;color:var(--muted);margin:5px 0 0;line-height:1.45}
+.signin__card .submit{width:100%;height:44px;border-radius:10px;background:var(--blue);color:#fff;font-size:14px;font-weight:650;margin-top:4px;box-shadow:0 6px 16px rgba(37,99,235,.24)}
+.signin__card .submit:hover{background:var(--blue-2)}
+.signin__after{margin:14px 0 0;text-align:center;font-size:12px;color:var(--muted)}
+.signin__foot{text-align:center;font-size:11.5px;color:var(--muted);margin-top:18px;line-height:1.6}
+.signin__foot a{color:var(--blue-2);font-weight:600}
+
+@media (max-width:1100px){
+  .mediagrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .edbody{grid-template-columns:190px minmax(0,1fr) 250px}
+}
+</style>
+</head>
+<body>
+
+<div class="specbar">
+  <span class="specbar__tag">DIRECTION 03</span>
+  <span class="specbar__name">Guided Cards</span>
+  <span class="specbar__note">task-led · one job per screen · for the site owner</span>
+  <nav class="specbar__tabs" role="tablist" aria-label="Mock screens">
+    <button role="tab" data-screen-tab="pages" aria-selected="true">Pages</button>
+    <button role="tab" data-screen-tab="media" aria-selected="false">Photos &amp; files</button>
+    <button role="tab" data-screen-tab="editor" aria-selected="false">Editor</button>
+    <button role="tab" data-screen-tab="plugins" aria-selected="false">Plugins</button>
+    <button role="tab" data-screen-tab="signin" aria-selected="false">Sign in</button>
+  </nav>
+</div>
+
+<header class="appbar">
+  <div class="brand"><span class="brand__mark">S</span><b>Skunkworks</b></div>
+  <span class="tenantpill"><i></i>abc123</span>
+  <nav class="appnav">
+    <a href="#" class="is-on" data-screen-tab="pages">Pages</a>
+    <a href="#" data-screen-tab="media">Photos &amp; files</a>
+    <a href="#" data-screen-tab="plugins">Plugins</a>
+  </nav>
+  <div class="appbar__right">
+    <span class="help">Help</span>
+    <span class="avatar">OW</span>
+    <span class="who"><b>Owner</b>owner@abc123.com</span>
+  </div>
+</header>
+
+<main class="page">
+
+  <!-- ============ PAGES ============ -->
+  <section class="screen" data-screen="pages">
+    <div class="pagehead">
+      <div>
+        <h1>Your pages</h1>
+        <p>Three pages on your site. Two are live for everyone; one is still a draft only you can see.</p>
+      </div>
+      <div class="actions">
+        <button class="btn">Preview site ↗</button>
+        <button class="btn btn--primary"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>New page</button>
+      </div>
+    </div>
+
+    <div class="nextstep">
+      <span class="nextstep__icon"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 9v4m0 4h.01"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20h15.4a2 2 0 0 0 1.7-2.8L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg></span>
+      <div><b>Pricing is almost ready</b><p>It was last saved 41 minutes ago. Give it a final look, then publish it when you're happy.</p></div>
+      <button class="btn btn--primary btn--sm">Finish pricing</button>
+    </div>
+
+    <div class="sectionhead"><h2>All pages</h2><span>Sorted by address</span></div>
+    <div class="card pagelist">
+      <div class="pagerow">
+        <span class="thumb-ic a">H</span>
+        <div class="pagerow__main">
+          <div class="pagerow__title">ABC123 — hello from abc123.com</div>
+          <div class="pagerow__meta"><span>Home page</span><i class="dotsep"></i><span>Updated 20 October</span><i class="dotsep"></i><span>12 versions</span></div>
+        </div>
+        <span class="pill pill--live"><i></i>Live</span>
+        <div class="rowactions"><button class="btn btn--sm">Edit</button><span class="chev">›</span></div>
+      </div>
+
+      <div class="pagerow">
+        <span class="thumb-ic b">A</span>
+        <div class="pagerow__main">
+          <div class="pagerow__title">About &amp; Co &lt;ltd&gt;</div>
+          <div class="pagerow__meta"><span>/about</span><i class="dotsep"></i><span>Updated 19 October</span><i class="dotsep"></i><span>5 versions</span></div>
+        </div>
+        <span class="pill pill--live"><i></i>Live</span>
+        <div class="rowactions"><button class="btn btn--sm">Edit</button><span class="chev">›</span></div>
+      </div>
+
+      <div class="pagerow">
+        <span class="thumb-ic c">P</span>
+        <div class="pagerow__main">
+          <div class="pagerow__title">Pricing</div>
+          <div class="pagerow__meta"><span>/pricing</span><i class="dotsep"></i><span>Saved 41 minutes ago</span><i class="dotsep"></i><span>4 versions</span></div>
+        </div>
+        <span class="pill pill--draft"><i></i>Draft</span>
+        <div class="rowactions"><button class="btn btn--sm">Edit</button><span class="chev">›</span></div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><b>2</b><span>pages live for visitors</span></div>
+      <div class="stat"><b>1</b><span>draft only you can see</span></div>
+      <div class="stat"><b>21</b><span>versions kept safely</span></div>
+    </div>
+
+    <div class="helper">
+      <svg class="ic" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></svg>
+      <span><b>What does publishing do?</b> It puts the page live and keeps the version before it, so nothing is ever lost. Publish again whenever you like.</span>
+    </div>
+  </section>
+
+  <!-- ============ MEDIA ============ -->
+  <section class="screen" data-screen="media" hidden>
+    <div class="pagehead">
+      <div>
+        <h1>Photos &amp; files</h1>
+        <p>Four files, 3.1 MB in total. Images can appear on any page; documents stay private until you share a code.</p>
+      </div>
+      <div class="actions"><span class="pill pill--private">3 public · 1 private</span></div>
+    </div>
+
+    <div class="dropzone">
+      <span class="dropzone__icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></span>
+      <div><b>Drag a file here</b><p>or choose one from your computer · JPG, PNG, PDF, MP4 · up to 20 MB</p></div>
+      <button class="btn">Choose a file</button>
+    </div>
+
+    <div class="toolbar">
+      <div class="chips">
+        <button class="chip is-on">All 4</button>
+        <button class="chip">Images 3</button>
+        <button class="chip">Documents 1</button>
+        <button class="chip">Private 1</button>
+      </div>
+      <label class="search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input placeholder="Search by name or description" aria-label="Search files">
+      </label>
+    </div>
+
+    <div class="mediagrid">
+      <figure class="asset">
+        <div class="asset__frame"><span class="kind">Image</span><div class="ph ph--home"></div></div>
+        <figcaption class="asset__body">
+          <div class="asset__name">banner/home.jpg</div>
+          <div class="asset__meta">1600 × 900 · 412 KB · used on Home</div>
+          <div class="asset__foot"><span class="pill pill--live"><i></i>Public</span><button class="more" title="More">⋯</button></div>
+        </figcaption>
+      </figure>
+
+      <figure class="asset">
+        <div class="asset__frame"><span class="kind">Image</span><div class="ph ph--clay"></div></div>
+        <figcaption class="asset__body">
+          <div class="asset__name">gallery/one.jpg</div>
+          <div class="asset__meta">1200 × 1500 · 288 KB · used on About</div>
+          <div class="asset__foot"><span class="pill pill--live"><i></i>Public</span><button class="more" title="More">⋯</button></div>
+        </figcaption>
+      </figure>
+
+      <figure class="asset">
+        <div class="asset__frame"><span class="kind">Image</span><div class="ph ph--studio"></div></div>
+        <figcaption class="asset__body">
+          <div class="asset__name">team/studio.jpg</div>
+          <div class="asset__meta">1600 × 900 · 364 KB · used on Home</div>
+          <div class="asset__foot"><span class="pill pill--live"><i></i>Public</span><button class="more" title="More">⋯</button></div>
+        </figcaption>
+      </figure>
+
+      <figure class="asset">
+        <div class="asset__frame"><span class="kind lock">PDF · private</span><div class="ph ph--pdf"><div class="doc"><i></i><i></i><i></i><i></i><i></i><b>PDF</b></div></div></div>
+        <figcaption class="asset__body">
+          <div class="asset__name">vault/paid.pdf</div>
+          <div class="asset__meta">18 pages · 2.0 MB · used on Pricing</div>
+          <div class="asset__foot"><span class="pill pill--draft"><i></i>Private</span><button class="more" title="More">⋯</button></div>
+          <div class="asset__note">Visitors can only open this with a download code you give them.</div>
+        </figcaption>
+      </figure>
+    </div>
+
+    <div class="helper">
+      <svg class="ic" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+      <span><b>Private files are safe by default.</b> They never get a public web address. Share one by issuing a code that expires and can be limited to a number of downloads.</span>
+    </div>
+  </section>
+
+  <!-- ============ EDITOR ============ -->
+  <section class="screen" data-screen="editor" hidden>
+    <div class="pagehead" style="margin-bottom:16px">
+      <div>
+        <h1 style="font-size:24px">Editing Pricing</h1>
+        <p>Drag a block from the left, then change its words on the right. Nothing goes live until you publish.</p>
+      </div>
+      <div class="actions"><button class="btn btn--ghost">← All pages</button></div>
+    </div>
+
+    <div class="card editorcard">
+      <div class="edbar">
+        <div>
+          <div class="edbar__title">Pricing <span style="font:11px/1 var(--mono);color:var(--muted);font-weight:400">/pricing</span></div>
+          <div class="edbar__meta"><span class="pill pill--draft"><i></i>Draft</span><span>Version 4</span></div>
+        </div>
+        <div class="edbar__right">
+          <span class="saved"><i></i>Saved a moment ago</span>
+          <button class="btn btn--sm">Preview</button>
+          <button class="btn btn--sm btn--primary">Publish</button>
+        </div>
+      </div>
+
+      <div class="stepper">
+        <span class="step is-on"><em>1</em>Edit the page</span><span class="stepsep"></span>
+        <span class="step"><em>2</em>Check how it looks</span><span class="stepsep"></span>
+        <span class="step"><em>3</em>Publish</span>
+      </div>
+
+      <div class="ednotice">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="margin-top:2px"><circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/></svg>
+        <span>That paste didn't work — this site doesn't have that kind of block. Nothing was changed.</span>
+        <button class="x" aria-label="Dismiss">✕</button>
+      </div>
+
+      <div class="edbody">
+        <aside class="blocks">
+          <h3>Structure</h3>
+          <div class="blockgrid">
+            <button class="block"><i></i>Hero</button>
+            <button class="block"><i></i>Call to action</button>
+          </div>
+          <h3>Words</h3>
+          <div class="blockgrid">
+            <button class="block"><i></i>Prose</button>
+          </div>
+          <h3>Pictures</h3>
+          <div class="blockgrid">
+            <button class="block"><i></i>Image</button>
+            <button class="block"><i></i>Gallery</button>
+            <button class="block"><i></i>Embed</button>
+          </div>
+          <h3>Selling</h3>
+          <div class="blockgrid">
+            <button class="block"><i></i>Form</button>
+            <button class="block"><i></i>Download</button>
+          </div>
+          <h3>Lists</h3>
+          <div class="blockgrid">
+            <button class="block"><i></i>Repeating list</button>
+            <button class="block"><i></i>Copy email</button>
+          </div>
+          <p class="tip">These are the only blocks this site has. If you need something else, ask your developer.</p>
+        </aside>
+
+        <div class="edcanvas">
+          <div class="edcanvas__top"><span>Desktop preview</span><span>Drag to reorder · click to edit</span></div>
+          <div class="preview">
+            <div class="pv-nav"><b>ABC123</b><span>Work · About · Pricing</span></div>
+            <div class="pv-hero">
+              <div class="pv-eyebrow">Pricing</div>
+              <h1>Three ways to work together.</h1>
+              <p>Fixed scope, fixed price, no surprise invoices. Pick the engagement that fits the quarter.</p>
+            </div>
+            <div class="pv-plans">
+              <div class="pv-plan">
+                <h2>Studio</h2>
+                <div class="price">$4k</div>
+                <p>One page, one week, one round of notes.</p>
+                <a href="#">Choose studio</a>
+              </div>
+              <div class="pv-plan">
+                <h2>Partner</h2>
+                <div class="price">$9k<small>/mo</small></div>
+                <p>Continuous design and build, two days a week.</p>
+                <span class="ctasel">
+                  <span class="gjstool"><span>cta</span><span>⣿</span><span>⧉</span><span>⌫</span></span>
+                  <a href="#">Start a project</a>
+                </span>
+              </div>
+              <div class="pv-plan">
+                <h2>Retainer</h2>
+                <div class="price">$2k<small>/mo</small></div>
+                <p>Support, small changes, a standing call.</p>
+                <a href="#">Talk to us</a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <aside class="edsettings">
+          <h3>Call to action</h3>
+          <p class="sub">The button you selected</p>
+          <div class="fld"><label>Button words</label><input value="Start a project" aria-label="Button words"><p class="help">Keep it short — two to four words works best.</p></div>
+          <div class="fld"><label>Where it goes</label><input value="/contact" aria-label="Where it goes"><p class="help">A page on your site, starting with a slash.</p></div>
+          <div class="hint">Only the fields that belong to this block appear here. That keeps the page consistent.</div>
+          <div class="meta">
+            <div><span>Block type</span><code>cta</code></div>
+            <div><span>Page</span><code>/pricing</code></div>
+            <div><span>Version</span><code>4</code></div>
+          </div>
+        </aside>
+      </div>
+
+      <div class="edfoot">
+        <span class="note">Publishing makes this page visible to everyone.</span>
+        <div class="right">
+          <button class="btn btn--sm">Save as draft</button>
+          <button class="btn btn--sm btn--primary">Publish changes</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PLUGINS ============ -->
+  <section class="screen" data-screen="plugins" hidden>
+    <div class="pagehead">
+      <div>
+        <h1>Plugins</h1>
+        <p>Extra features for your site. One needs your attention; everything else is working normally.</p>
+      </div>
+      <div class="actions"><span class="pill pill--draft"><i></i>1 needs attention</span></div>
+    </div>
+
+    <div class="alertcard">
+      <span class="alertcard__icon"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5m0 3h.01"/><circle cx="12" cy="12" r="9"/></svg></span>
+      <div style="flex:1">
+        <h2>SEO isn't running</h2>
+        <p class="who">Plugin “seo”, version 2.0.1 · stopped today at 16:12</p>
+        <p>It couldn't start because its safety test report was missing. That sounds technical, but the effect is simple: your pages are fine, they just aren't getting SEO's extra help. Nothing you wrote was lost.</p>
+        <dl style="margin:0">
+          <div class="factrow"><dt>What happened</dt><dd>The update arrived without proof that it had been tested. The site refused to run it rather than trust it.</dd></div>
+          <div class="factrow"><dt>Error code</dt><dd><code>SKW_E_PL_TESTS_STALE</code> — quote this if you ask for help.</dd></div>
+          <div class="factrow"><dt>Your options</dt><dd>Try starting it again, or remove it and ask your developer for a tested version.</dd></div>
+        </dl>
+        <div class="acts">
+          <button class="btn btn--primary btn--sm">Try starting it again</button>
+          <button class="btn btn--sm">Remove plugin</button>
+          <a href="#" class="link">What does this mean?</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="minicard">
+      <span class="ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></span>
+      <div><b>Newsletter — turned off</b><p>Its signature couldn't be verified on 12 October. You can try it again or remove it.</p></div>
+      <button class="btn btn--sm">Review</button>
+    </div>
+
+    <div class="sectionhead"><h2>Working plugins</h2><span>1 running</span></div>
+    <div class="card">
+      <div class="working">
+        <span class="tick"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m5 13 4 4L19 7"/></svg></span>
+        <div><b>Booking</b><p>Adds the enquiry form and sends you an email for each one. Version 1.4.2.</p></div>
+        <span class="toggle">On<i></i></span>
+      </div>
+    </div>
+
+    <div class="helper">
+      <svg class="ic" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 4 6v6c0 5 3.4 8.3 8 9 4.6-.7 8-4 8-9V6l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg>
+      <span><b>A stopped plugin never takes your site down.</b> It simply stops doing its extra job. You can always remove it safely — your pages and files stay where they are.</span>
+    </div>
+  </section>
+
+</main>
+
+<!-- ============ SIGN IN ============ -->
+<section class="signin" data-screen="signin" hidden>
+  <div class="signin__wrap">
+    <div class="signin__brand"><span class="brand__mark">S</span><b style="font-size:16px">Skunkworks</b><span class="tenantpill" style="margin-left:4px"><i></i>abc123</span></div>
+    <div class="signin__card">
+      <h1>Welcome back</h1>
+      <p class="sub">Sign in to look after your site. This usually takes a few seconds.</p>
+      <form onsubmit="return false">
+        <div class="sf">
+          <label for="g-email">Your email</label>
+          <input id="g-email" type="email" name="email" autocomplete="username" value="owner@abc123.com">
+        </div>
+        <div class="sf">
+          <label for="g-pass">Your password</label>
+          <input id="g-pass" type="password" name="password" autocomplete="current-password" value="················">
+          <p class="help">At least 16 characters. <a href="#" style="color:var(--blue-2)">Forgot it?</a></p>
+        </div>
+        <div class="sf">
+          <label for="g-code">6-digit code</label>
+          <input id="g-code" type="text" name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" placeholder="000000">
+          <p class="help">Open your authenticator app and type the code it shows. It changes every 30 seconds.</p>
+        </div>
+        <button class="submit" type="submit">Sign in</button>
+      </form>
+      <p class="signin__after">Five wrong tries lock the account for 15 minutes.</p>
+    </div>
+    <p class="signin__foot">This page is only for the site owner.<br>Need a hand? <a href="#">Ask your developer</a>.</p>
+  </div>
+</section>
+
+<script>
+(function(){
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[data-screen-tab]'));
+  var panes = Array.prototype.slice.call(document.querySelectorAll('section[data-screen]'));
+  function show(id){
+    panes.forEach(function(p){ p.hidden = p.getAttribute('data-screen') !== id; });
+    tabs.forEach(function(t){
+      var on = t.getAttribute('data-screen-tab') === id;
+      if (t.getAttribute('role') === 'tab') t.setAttribute('aria-selected', on ? 'true' : 'false');
+      else t.classList.toggle('is-on', on);
+    });
+    document.documentElement.setAttribute('data-screen', id);
+    window.scrollTo(0,0);
+  }
+  tabs.forEach(function(t){ t.addEventListener('click', function(ev){ ev.preventDefault(); show(t.getAttribute('data-screen-tab')); }); });
+  var initial = (location.hash || '').replace('#','');
+  show(document.querySelector('section[data-screen="' + initial + '"]') ? initial : 'pages');
+})();
+</script>
+</body>
+</html>

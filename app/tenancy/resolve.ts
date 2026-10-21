@@ -1,16 +1,25 @@
 /**
- * resolveTenant() — the ten rows of SDS §5.3 as amended by 02-errata E-1.
+ * resolveTenant() — SDS §5.3 as amended by 02-errata E-1, and by **D37**, which
+ * removed the two rows that existed only because the admin surface was a hostname:
  *
- * The rows are executed once, in this order, first match wins, and no row is
- * evaluated after a row has produced a response. Every row is reachable because
- * row 1 answers every admin-listener request that carries the tenant header **at
- * all**, so rows 3-6 run with `listener = 'public'`, and rows 7 and 8 split the
- * remaining header-absent case exhaustively.
+ *   - **row 1** (`listener = 'admin'` refuses the tenant header, present at all) —
+ *     there is no admin listener any more. The rule it enforced lives where it still
+ *     means something: `AdminSurface.handle` refuses a **non-empty** tenant header on
+ *     every `/admin` path, and the tenant on `/admin` comes from the Host, never from
+ *     a header. An *empty* header is the edge's own `proxy_set_header … ""` and
+ *     asserts nothing, which is why the refusal narrowed to non-empty.
+ *   - **row 7** (`listener = 'admin'` resolves from `session.tenant_id`) — the admin
+ *     tenant is the Host's tenant now, so a session cannot choose it. The gate that
+ *     replaced the row is in `AdminSurface`: session.tenant_id must equal the Host's
+ *     tenant id, and a mismatch is the same 404 a missing tenant is.
+ *
+ * The surviving rows keep their numbers. A gap in the table is honest; renumbering
+ * would make every citation of "row 8" in the reports point at a different rule.
  *
  * Frozen contract (register §4.1, superseded for ordering/numbering by E-1):
- *   SKW_E_PLT_EDGE_PROOF       421  rows 1, 2, 3
+ *   SKW_E_PLT_EDGE_PROOF       421  rows 2, 3
  *   SKW_E_PLT_TENANT_HEADER    400  rows 4, 5
- *   SKW_E_PLT_TENANT_UNKNOWN   404  rows 7/8 miss, row 9
+ *   SKW_E_PLT_TENANT_UNKNOWN   404  rows 6/8 miss, row 9
  *   SKW_E_PLT_TENANT_UNAVAILABLE 503 row 10 (non-schema)
  *   SKW_E_DM_SCHEMA_STALE      503 + Retry-After: 5   row 10 (user_version stale)
  *   SKW_E_DM_BUSY              503 + Retry-After: 1   row 10 (SQLITE_BUSY)
@@ -25,7 +34,6 @@ export const PREFIX_HEADER = 'x-forwarded-prefix';
 /** §5.1: the header name is a constant; a deployment cannot rename it. */
 export const TENANT_KEY_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
-export type Listener = 'public' | 'admin';
 export type TenantMode = 'production' | 'demo' | 'internal';
 export type TenantStatus = 'provisioning' | 'active' | 'suspended' | 'archived';
 
@@ -52,8 +60,14 @@ export interface ResolveInput {
   peer: string;
   host: string | undefined;
   headers: Record<string, string | string[] | undefined>;
-  listener: Listener;
-  session: { tenantId: number } | null;
+  /**
+   * D37: there is no `listener` and no `session` here any more. Both existed to
+   * answer "is this the admin hostname, and if so which tenant did the session
+   * name", and the answer since D37 is "the admin surface is a path, and the
+   * tenant is the Host's". Removing the inputs is what makes a second source of
+   * truth (a header or a session choosing the tenant) unrepresentable rather
+   * than merely unused.
+   */
 }
 
 export interface Resolved {
@@ -61,7 +75,8 @@ export interface Resolved {
   /** The row of §5.3 that resolved this request (6, 7 or 8). */
   step: number;
   tenant: Tenant;
-  via: 'header' | 'host' | 'session';
+  /** D37 removed `'session'`: a session no longer chooses a tenant. */
+  via: 'header' | 'host';
   /** `tenant.prefix`: `/demo/<key>` on a header-routed request, else `""` (E-11). */
   prefix: string;
   host: string | null;
@@ -82,11 +97,6 @@ function header(headers: ResolveInput['headers'], name: string): string | undefi
   return Array.isArray(v) ? v[0] : v;
 }
 
-/** "present at all" — including an empty value (§5.3, E-1). Exported for row 1's admin listener check. */
-export function headerPresent(headers: ResolveInput['headers'], name: string): boolean {
-  return Object.prototype.hasOwnProperty.call(headers, name) && headers[name] !== undefined;
-}
-
 /** Any X-Skunkworks-* header at all (row 2 is about the family, not one name). */
 export function anySkunkworksHeader(headers: ResolveInput['headers']): boolean {
   return Object.keys(headers).some((k) => k.startsWith('x-skunkworks-'));
@@ -103,14 +113,7 @@ export function resolveTenant(input: ResolveInput, deps: ResolveDeps): Resolutio
   const hdr = header(input.headers, TENANT_HEADER);
   const edge = header(input.headers, EDGE_HEADER);
   const prefix = header(input.headers, PREFIX_HEADER);
-  const hdrPresent = headerPresent(input.headers, TENANT_HEADER);
   const hdrNonEmpty = hdr !== undefined && hdr !== '';
-
-  // Row 1 — the admin never takes a tenant from a header, empty or not (§9.2:
-  // "present at all"). First, so rows 3-6 all run with listener='public'.
-  if (input.listener === 'admin' && hdrPresent) {
-    return refuse(1, 'SKW_E_PLT_EDGE_PROOF', 'the admin listener does not accept a tenant header');
-  }
 
   // Row 2 — an untrusted peer may not assert anything at all.
   if (!peerInCidrs(input.peer, deps.trustedCidrs) && anySkunkworksHeader(input.headers)) {
@@ -139,17 +142,8 @@ export function resolveTenant(input: ResolveInput, deps: ResolveDeps): Resolutio
     return finish(6, tenant, 'header', prefix ?? '', normalisedHost(input.host), deps);
   }
 
-  // Row 7 — admin listener with no tenant header: session.tenant_id is the only
-  // source (C-11), and no session is a 404.
-  if (input.listener === 'admin') {
-    if (input.session === null) return refuse(7, 'SKW_E_PLT_TENANT_UNKNOWN');
-    const tenant = deps.lookupId(input.session.tenantId);
-    if (tenant === undefined) return refuse(7, 'SKW_E_PLT_TENANT_UNKNOWN');
-    return finish(7, tenant, 'session', '', normalisedHost(input.host), deps);
-  }
-
-  // Row 8 — public listener with no tenant header: the normalised Host is the
-  // only source, and a Host that maps to nothing is a 404 (no default tenant).
+  // Row 8 — no tenant header: the normalised Host is the only source, and a Host
+  // that maps to nothing is a 404 (no default tenant).
   const host = normalisedHost(input.host);
   if (host === null) return refuse(8, 'SKW_E_PLT_TENANT_UNKNOWN');
   const tenant = deps.lookupHost(host);

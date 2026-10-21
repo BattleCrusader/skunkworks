@@ -5,7 +5,15 @@
  *   - a `map $host $tenant` so one limit_req_zone can be keyed per tenant
  *   - one server block per tenant, listing every host of that tenant
  *   - a demos vhost with the single path-prefix location (no per-demo block)
- *   - an admin vhost that proxies to the same app, and nothing else
+ *
+ * **D37 removed the admin vhost.** Admin is `/admin` on every tenant host, so the
+ * block that used to exist for it is gone — including its `default.crt` pair, which
+ * existed only because a listener without a certificate fails `nginx -t`. The
+ * allowlist (§9.1a) moves into a `location /admin` inside *every* tenant block,
+ * which is the same edge-side check in the only place a request can reach the
+ * admin surface now. A tenant's public paths are untouched by it: a peer outside
+ * the list can read the site and is refused at `/admin`, which is what "controls
+ * reachability, not secrecy" has always meant.
  *
  * Three properties are structural, not cosmetic (E-5):
  *   - every `location` regex is QUOTED: nginx's tokenizer reads an unquoted `{`
@@ -31,7 +39,6 @@ import { adminHostOf, demosHostOf } from '../app/env.ts';
 
 export interface GenOptions {
   edgePlaceholder?: string;
-  adminHost: string;
   demosHost: string;
   boxRps?: number;
   /**
@@ -59,19 +66,23 @@ export const DEMO_KEY = '[a-z0-9][a-z0-9-]{0,39}';
 
 export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): string {
   if (rows.length === 0) throw new Error('nginx_gen: no hosts in control.db.domain');
-  // The demos and admin vhosts are emitted by name. A domain row for either
-  // name would emit a second server block with the same server_name, and nginx
-  // keeps the first and warns — which silently disables the /demo/ rewrite or
-  // shadows the admin surface (§9.1 rule 3, E-2).
-  for (const reserved of [opts.demosHost, opts.adminHost]) {
-    const clash = rows.find((r) => r.host === reserved);
-    if (clash !== undefined) {
-      throw new Error(
-        `nginx_gen: ${reserved} is the ${reserved === opts.demosHost ? 'demos' : 'admin'} vhost and cannot also be a domain of tenant ${clash.key}`,
-      );
-    }
+  // The demos vhost is emitted by name. A domain row for that name would emit a
+  // second server block with the same server_name, and nginx keeps the first and
+  // warns — which silently disables the /demo/ rewrite (§9.1 rule 3, E-2).
+  //
+  // D37: the admin hostname is no longer reserved, because no admin vhost is
+  // emitted. A tenant may not claim the demos name, and the generator exits non-zero
+  // rather than emit a config that shadows it.
+  const clash = rows.find((r) => r.host === opts.demosHost);
+  if (clash !== undefined) {
+    throw new Error(
+      `nginx_gen: ${opts.demosHost} is the demos vhost and cannot also be a domain of tenant ${clash.key}`,
+    );
   }
   const { rate, burst } = tenantRate(opts.boxRps ?? 192, new Set(rows.map((r) => r.key)).size);
+  // D37: the allowlist is emitted inside every tenant block's `location /admin` (see
+  // the block below), so it is read once here rather than per tenant.
+  const allowlist = opts.adminAllowlist ?? [];
 
   const byTenant = new Map<string, string[]>();
   const issued = new Set<string>();
@@ -160,6 +171,34 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
     out.push('        include /etc/nginx/snippets/skunk-csp.conf;');
     out.push('    }');
     out.push('');
+    // D37 + §9.1a (E-17): the admin surface, on this tenant's own host. The location is
+    // explicit rather than left to `location /` for one reason: the allowlist must be
+    // attachable to exactly the paths that reach the admin, and nginx has no way to say
+    // "these directives on a URI prefix" without a location. The rate limit is repeated
+    // because nginx does not inherit `limit_req` into a nested location — dropping it
+    // here would make /admin the one unmetered surface on the box.
+    // `~ ^/admin(/|$)` and not a bare prefix: `location /admin` also matches
+    // `/administrator`, which is an ordinary page path, and putting it behind the
+    // allowlist would 403 a URL that is not the admin. The regex is the app's own rule
+    // (`/admin` or `/admin/…`) written once at the edge.
+    out.push('    # D37: the admin surface — this tenant, this host, /admin (was admin.<domain>).');
+    // Quoted for E-5's reason: an unquoted `{` is a block delimiter to nginx's
+    // tokenizer, and the blanket rule (every regex location is quoted) is cheaper to
+    // keep than a per-pattern exception.
+    out.push('    location ~ "^/admin(/|$)" {');
+    out.push(`        limit_req zone=tenant burst=${burst} nodelay;`);
+    if (allowlist.length > 0) {
+      // E-17: one `allow` per SKW_ADMIN_ALLOWLIST block, then `deny all;`, on `/admin`
+      // and on no other path. With an empty list these lines are absent, so the default
+      // is the app's own authentication and never an accidental deny.
+      out.push('        # SKW_ADMIN_ALLOWLIST — the edge admits these peers to the admin and refuses every other.');
+      for (const block of allowlist) out.push(`        allow ${block};`);
+      out.push('        deny  all;');
+    }
+    out.push('        include /etc/nginx/snippets/skunk-proxy.conf;');
+    out.push('        proxy_pass http://app:3000;');
+    out.push('    }');
+    out.push('');
     // §7.5 (S3d): the stamped per-purchaser renders. A **second** internal location, with
     // its own tree, so `content/media/` keeps exactly one meaning: the immutable store
     // blob that every buyer shares. A gated asset's hand-off is this one, never the other.
@@ -207,31 +246,6 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
   out.push('    location / { return 404; }');
   out.push('}');
   out.push('');
-  out.push('# admin: the only host that serves /admin (E-2, §9.1). No /demo/, no /media/.');
-  out.push('server {');
-  out.push('    listen 80; listen 443 ssl;');
-  out.push(`    server_name ${opts.adminHost};`);
-  // S4d: a listener without a certificate fails `nginx -t`. Until ACME issues for the admin
-  // host the install's self-signed default pair is what nginx presents.
-  out.push('    ssl_certificate     /etc/nginx/certs/default.crt;');
-  out.push('    ssl_certificate_key /etc/nginx/certs/default.key;');
-  out.push('');
-  const allowlist = opts.adminAllowlist ?? [];
-  if (allowlist.length > 0) {
-    // E-17: one `allow` per SKW_ADMIN_ALLOWLIST block, then `deny all;`, in the
-    // admin block and in no other. With an empty list these lines are absent, so
-    // the default is the app's own authentication and never an accidental deny.
-    out.push('    # SKW_ADMIN_ALLOWLIST (§9.1a) — the edge admits these peers and refuses every other.');
-    for (const block of allowlist) out.push(`    allow ${block};`);
-    out.push('    deny  all;');
-    out.push('');
-  }
-  out.push('    location / {');
-  out.push('        include /etc/nginx/snippets/skunk-proxy.conf;');
-  out.push('        proxy_pass http://app:3000;');
-  out.push('    }');
-  out.push('}');
-  out.push('');
   return out.join('\n');
 }
 
@@ -263,9 +277,11 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
   let dataDir = process.env.SKW_DATA_DIR ?? '/srv/data';
   let out = join(process.cwd(), 'nginx', 'conf.d', '10-app.conf');
   let boxRps = Number(process.env.SKW_BOX_RPS ?? '192');
-  // E-17: SKW_ADMIN_HOST and SKW_DEMOS_HOST are deleted. The admin host is the
-  // host component of SKW_ADMIN_ORIGIN (§9.1) and demos is derived from it; the
-  // two flags below stay as test-only overrides.
+  // E-17: SKW_ADMIN_HOST and SKW_DEMOS_HOST are deleted. D37 removed the admin vhost,
+  // so SKW_ADMIN_ORIGIN is now read for one thing only: deriving the demos host from
+  // it. The variable stays required because a boot without it is still a boot without
+  // a demos hostname, and `--admin-host` is accepted and ignored so an existing
+  // install script does not fail on an argument it no longer needs.
   const derivedAdmin = adminHostOf(process.env.SKW_ADMIN_ORIGIN ?? '');
   if (derivedAdmin === null) {
     throw new Error('nginx_gen: SKW_ADMIN_ORIGIN is required — the admin host is derived from it (E-17, §9.1a)');
@@ -281,7 +297,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
     else if (arg === '--demos-host') demosHost = argv[i + 1] ?? demosHost;
     else if (arg === '--box-rps') boxRps = Number(argv[i + 1] ?? boxRps);
   }
-  const text = generateAppConf(readHosts(join(dataDir, 'control.db')), { adminHost, demosHost, boxRps, adminAllowlist });
+  const text = generateAppConf(readHosts(join(dataDir, 'control.db')), { demosHost, boxRps, adminAllowlist });
   writeFileSync(out, text);
   process.stdout.write(`wrote ${out} (${text.split('\n').length} lines)\n`);
   return 0;

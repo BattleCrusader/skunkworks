@@ -14,7 +14,6 @@ import { REPO, makeFixture } from '../test/helpers/fixture.ts';
 const fixture = makeFixture();
 try {
   const text = generateAppConf(readHosts(fixture.controlDb), {
-    adminHost: 'admin.skw.test',
     demosHost: 'demos.skw.test',
     boxRps: 192,
   });

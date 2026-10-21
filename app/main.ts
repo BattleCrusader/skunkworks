@@ -42,9 +42,8 @@ import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
 import { SourceCache } from './sources/cache.ts';
 import { startSealScheduler, sealSummary, type SealSchedulerHandle, type SealSummary } from './audit/scheduler.ts';
 import { TenantMap } from './tenancy/cache.ts';
-import { listenerFor } from './tenancy/listener.ts';
 import { normaliseHost } from './tenancy/normalise-host.ts';
-import { resolveTenant, TENANT_HEADER, type Listener, type Tenant } from './tenancy/resolve.ts';
+import { resolveTenant, TENANT_HEADER, type Tenant } from './tenancy/resolve.ts';
 import { DEFAULT_CONTENT_ROOT } from './assets/store.ts';
 import { Semaphore } from './admin/auth.ts';
 import { seedSettings } from './download/code.ts';
@@ -56,10 +55,6 @@ import { FormLimiter, submitCoreForm } from './forms/intake.ts';
 import { clientHash } from './download/token.ts';
 import { assetUrlsIn } from './editor/render.ts';
 import type { WatermarkDeps, WatermarkStore } from './download/render.ts';
-
-// §9.1 (E-2) lives in tenancy/listener.ts so the admin router shares one rule;
-// re-exported here because that is the import path the S1 gate uses.
-export { listenerFor };
 
 type AstroHandler = (
   req: FastifyRequest['raw'],
@@ -142,20 +137,14 @@ export interface BuildAppOptions {
 }
 
 /**
- * §9.1 (E-2): the listener is the admin **hostname**, and that hostname is the
- * only thing that makes a request an admin request. The path never selects the
- * listener: `/admin`, `/admin/…`, `/adminish` and `/demo/<key>/admin/…` are
- * ordinary paths on a public listener. The rule itself is in
- * `tenancy/listener.ts` and is re-exported above.
+ * **D37 replaces §9.1's listener rule.** There is no admin hostname: `/admin` is a
+ * path on every tenant host, the tenant comes from the Host, and the fleet console
+ * is `/fleet`. `listenerFor` and `isAdminPath` are deleted rather than left returning
+ * a constant — a function that cannot say "admin" is a function nobody should call,
+ * and leaving it exported is how the old rule comes back.
  */
 
-/** §9.1 rule 2: the admin host serves the admin surface and nothing else. */
-function isAdminPath(pathname: string): boolean {
-  return pathname === '/admin' || pathname.startsWith('/admin/');
-}
-
 interface RequestContext {
-  listener: Listener;
   tenant: Tenant;
   via: 'header' | 'host' | 'session';
   prefix: string;
@@ -172,7 +161,6 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   const dataDir = env.dataDir;
   const controlPath = join(dataDir, 'control.db');
   const tenantsDir = join(dataDir, 'tenants');
-  const adminHost = adminHostOf(env.adminOrigin);
 
   // --- step 3: control.db is a boot gate (C-10) -----------------------------
   const control = migrateControl(controlPath, schemaDir);
@@ -209,7 +197,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   // per-surface one (4 × 19 MiB ≈ 76 MiB against the 1 GB container).
   const contentRoot = opts.contentRoot ?? DEFAULT_CONTENT_ROOT;
   const argon = new Semaphore(env.argon2MaxConcurrent);
-  const admin = new AdminSurface({ env, controlPath, tenants, adminHost, semaphore: argon, contentRoot, schemaDir });
+  const admin = new AdminSurface({ env, controlPath, tenants, semaphore: argon, contentRoot, schemaDir });
 
   // --- S2e: one seal per tenant per UTC day (§9.6) -------------------------
   // The timer is unref'd, so it never keeps the process alive; `close()` stops it.
@@ -354,19 +342,22 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
 
   // §9.5's tenant health, and E-20(d)'s one new field: the seal series. Served from a 30 s
   // cache, because the alternative is a `control.db` read and a whole-file chain walk per poll.
-  // Admin listener only, session-bound to the tenant in the URL: on any other Host this is an
-  // ordinary unmatched path (`serveNotFound`), and with no session it is row 7's 404.
+  // D37: the tenant is the Host's and the key in the URL must agree with it — the path is a
+  // claim, the Host is the resolution. With no session for that tenant it is the same
+  // `SKW_E_PLT_TENANT_UNKNOWN` 404 every other admin route answers.
   const sealHealthCache = new Map<string, { at: number; payload: SealHealthPayload }>();
   app.get('/admin/api/tenants/:key/health', async (req: FastifyRequest, reply: FastifyReply) => {
-    const ctx = resolveRequest(req);
-    if (ctx.listener !== 'admin') {
-      await serveNotFound(req, reply);
-      return;
-    }
     const key = (req.params as { key: string }).key;
-    const session = admin.sessionFor(req.headers.cookie);
+    const hostTenant = admin.hostTenant(req.headers.host);
+    const session = hostTenant === undefined ? null : admin.sessionFor(req.headers.cookie, hostTenant);
     const tenant = tenants.lookupKey(key);
-    if (session === null || tenant === undefined || session.tenantId !== tenant.id) {
+    if (
+      hostTenant === undefined ||
+      tenant === undefined ||
+      tenant.id !== hostTenant.id ||
+      session === null ||
+      session.tenantId !== tenant.id
+    ) {
       throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no tenant here');
     }
     const at = Date.now();
@@ -378,16 +369,26 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     return payload;
   });
 
-  // §9.1: the admin surface is mounted on the admin hostname only. The route is
-  // registered for every `/admin…` path — including on a public listener, where
-  // the handler immediately hands the request to the page-miss path, which is how
-  // "no admin route is mounted on a public listener" stays literally true and
-  // byte-identical to any unmatched path.
+  // D37: `/admin` is a path on **every** tenant host, and that host's tenant is the one
+  // it administers. The handler resolves the tenant from `Host` itself (never from a
+  // header, never from a URL segment, never from the session) and answers the same
+  // `SKW_E_PLT_TENANT_UNKNOWN` 404 as any other path when the Host maps to nothing.
   app.all('/admin', async (req: FastifyRequest, reply: FastifyReply) => {
     await admin.handle(req, reply, serveNotFound);
   });
   app.all('/admin/*', async (req: FastifyRequest, reply: FastifyReply) => {
     await admin.handle(req, reply, serveNotFound);
+  });
+
+  // D37: the fleet console, `/fleet` on any host, operator role only. Registered before
+  // the astro catch-all so a tenant page at `/fleet` can never shadow it — and a tenant
+  // owner who asks for it gets `serveNotFound`, byte-identical to a missing page,
+  // because "there is a fleet console here" is a sentence a tenant does not need.
+  app.all('/fleet', async (req: FastifyRequest, reply: FastifyReply) => {
+    await admin.handleFleet(req, reply, serveNotFound);
+  });
+  app.all('/fleet/*', async (req: FastifyRequest, reply: FastifyReply) => {
+    await admin.handleFleet(req, reply, serveNotFound);
   });
 
   // --- S3c: the gated download plane (§7.4, §7.6) -------------------------
@@ -526,10 +527,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     scope.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => done(null, body));
     scope.post('/f/:key', async (req: FastifyRequest, reply: FastifyReply) => {
       const ctx = resolveRequest(req);
-      if (ctx.listener !== 'public') {
-        await serveNotFound(req, reply);
-        return;
-      }
+      // D37: the `listener !== 'public'` guard that used to live here was the admin
+      // host's exclusion, and there is no admin host any more. Nothing replaces it:
+      // a `/demo/` form post was allowed before (the demos host was a public
+      // listener) and is allowed still — the tenant is the header's, as it always was.
       const key = String((req.params as { key?: string }).key ?? '');
       const raw = typeof req.body === 'string' ? req.body : '';
       const fields: Record<string, string> = {};
@@ -731,25 +732,19 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
 
   function resolveRequest(req: FastifyRequest): RequestContext {
     const pathname = pathnameOf(req.url);
-    const host = normaliseHost(req.headers.host);
-    const listener = listenerFor(host, adminHost);
 
     const headers: Record<string, string | string[] | undefined> = {};
     for (const [k, v] of Object.entries(req.headers)) headers[k.toLowerCase()] = v;
 
-    // §9.1 rule 1: on a public listener there is no session cookie parse at all —
-    // the admin surface does not exist there, so neither does its session.
-    const session = listener === 'admin' ? admin.sessionFor(req.headers.cookie) : null;
-
+    // D37: no listener, no session parse, no admin-host rule. The tenant is the
+    // Host's (or the edge's header, inside `/demo/`), on every path including
+    // `/admin` and `/fleet` — `AdminSurface` never reads a tenant out of a URL
+    // segment and never out of a session.
     const result = resolveTenant(
       {
         peer: req.socket.remoteAddress ?? '',
         host: req.headers.host,
         headers,
-        listener,
-        // Row 7 needs a tenant id; a fleet_admin session has none and resolves to
-        // the 404 that "no tenant here" is (§9.2).
-        session: session === null ? null : { tenantId: session.tenantId ?? -1 },
       },
       {
         edgeToken: env.edgeToken,
@@ -761,13 +756,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       },
     );
     if (!result.ok) throw result.error;
-    // §9.1 rule 2: the admin host maps to no tenant, so any path outside
-    // `/admin…` is SKW_E_PLT_TENANT_UNKNOWN — "there is no tenant here" is the
-    // true statement. `/healthz` and `/readyz` are answered before this (§9.5).
-    if (listener === 'admin' && !isAdminPath(pathname)) {
-      throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'the admin host serves the admin surface only');
-    }
-    return { listener, tenant: result.tenant, via: result.via, prefix: result.prefix, pathname };
+    return { tenant: result.tenant, via: result.via, prefix: result.prefix, pathname };
   }
 
   // §7.5: the render tree is a bounded transient. Every minute, delete the renders whose

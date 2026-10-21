@@ -2,12 +2,38 @@
  * Sessions — SDS §9.1's control table, §9.2's tenant rule, and the `session` table
  * in `schema/control.sql` (unchanged: this module fills it, it does not redesign it).
  *
- * The frozen wire contract (§9.1):
+ * The wire contract, **as amended by D37** (the user overruled D9: admin is
+ * `/admin` on each tenant host, WordPress-style, and the fleet console is
+ * `/fleet`). The hostname no longer separates anything, so the cookie does the
+ * separating — in this order, and each one is load-bearing:
  *
- *   | Session cookie | `__Host-sk-sess`; `Path=/`; `Secure`; `HttpOnly`; `SameSite=Lax` |
+ *   | Session cookie | `__Secure-sk-sess-<tenantKey>`; `Path=/admin`; `Secure`; `HttpOnly`; `SameSite=Strict` |
+ *   | Fleet cookie   | `__Secure-sk-fleet`;             `Path=/fleet`; `Secure`; `HttpOnly`; `SameSite=Strict` |
  *   | Session id     | 32-byte random hex, stored as a row in `control.db.session`, rotated on privilege change |
- *   | CSRF           | session-bound token on every non-GET, plus an exact `Origin` check against `SKW_ADMIN_ORIGIN` |
+ *   | CSRF           | session-bound token on every non-GET, plus an exact `Origin` check against the request's own host |
  *   | IP allowlist   | opt-in, empty in every exported bundle; **when empty, TOTP is mandatory and idle drops to 15 min** |
+ *
+ * Three things the old `__Host-sk-sess; Path=/; SameSite=Lax` could not say, and
+ * why each replaced something that D9 got from a separate hostname:
+ *
+ * a. **`__Host-` is unavailable, and that is arithmetic.** `__Host-` requires
+ *    `Path=/` and no `Domain`. The whole isolation story now lives in the path and
+ *    the name, so the cookie must be `Path=/admin` — the same erratum §7.4.3
+ *    records for `__Host-dl-<key>`. `__Secure-` is the strongest prefix that
+ *    permits a path, and it still forbids `Domain` (any `Domain=` would let one
+ *    tenant host set a cookie another could read; there is none, and a test says so).
+ * b. **The name carries the tenant key.** `abc123.com` and `123abc.com` are two
+ *    tenants on one box; a shared name plus one `SKW_SESSION_KEY` would mean a
+ *    browser or a proxy that mixes hosts up hands tenant A's session to tenant B,
+ *    to be caught only by the row check. The name makes the mix-up a non-event:
+ *    host B never looks at name A. The row check stays as the second gate, because
+ *    a caller can rewrite a name.
+ * c. **`SameSite=Strict` replaces the origin separation D9 used.** The old model's
+ *    defence was that tenant HTML could not reach the admin origin. That defence is
+ *    gone by decision, so the cookie must not ride along on any cross-site request:
+ *    a link in an email to `abc123.com/admin` arrives cookieless and is answered by
+ *    the same 404 an unknown admin path gets. Cost, stated rather than discovered:
+ *    an operator who follows a link into the admin signs in again.
  *
  * Four decisions this file makes, each because the SDS names the control and not
  * its mechanism (reported as gaps in `docs/build/S2a-report.md` §6):
@@ -42,10 +68,48 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { openAdminWrite } from '../db/classes.ts';
 
-export const SESSION_COOKIE = '__Host-sk-sess';
-/** §9.1 verbatim: `Path=/`; `Secure`; `HttpOnly`; `SameSite=Lax`. */
-export const SESSION_COOKIE_ATTRS = 'Path=/; Secure; HttpOnly; SameSite=Lax';
+/** D37: one namespace per tenant, so a host mix-up cannot even find the wrong cookie. */
+export const SESSION_COOKIE_PREFIX = '__Secure-sk-sess-';
+/** D37: the fleet console's own cookie, scoped to `/fleet` so `/admin` never sees it. */
+export const FLEET_COOKIE = '__Secure-sk-fleet';
+export const ADMIN_COOKIE_PATH = '/admin';
+export const FLEET_COOKIE_PATH = '/fleet';
+/** `tenant.key`'s CHECK (`^[a-z0-9][a-z0-9-]{0,39}$`), restated here so a name cannot be smuggled. */
+const COOKIE_KEY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+/**
+ * D37: the session cookie's name is a function of the tenant the **Host** maps to.
+ *
+ * A tenant key is `[a-z0-9-]`, which is a legal cookie-name token, so the name is
+ * the key and not a hash of it: an operator debugging a box can read the name and
+ * know which tenant's admin they are looking at, and a hash would hide exactly the
+ * fact that matters when three hosts share one box. A key that does not match the
+ * schema's CHECK is a programming error and throws here rather than reaching a
+ * header, because this string is written into `Set-Cookie` unescaped.
+ */
+export function sessionCookieName(tenantKey: string): string {
+  if (!COOKIE_KEY_RE.test(tenantKey)) {
+    throw new Error(`sessionCookieName: not a tenant key: ${JSON.stringify(tenantKey)}`);
+  }
+  return `${SESSION_COOKIE_PREFIX}${tenantKey}`;
+}
+
+/**
+ * D37's attribute list, in the order the decision names it: `HttpOnly` then
+ * `Secure` then `SameSite=Strict` then `Path`. No `Domain` — ever. A `Domain=`
+ * attribute is the one way a cookie set by one tenant host becomes readable by
+ * another, and the `__Secure-` prefix forbids it structurally as well.
+ */
+export function cookieAttrs(path: string): string {
+  if (!path.startsWith('/') || /[;,]/.test(path)) {
+    throw new Error(`cookieAttrs: not a cookie path: ${JSON.stringify(path)}`);
+  }
+  return `HttpOnly; Secure; SameSite=Strict; Path=${path}`;
+}
+
+/** The CSRF header is `X-CSRF-Token` (§9.1 names no header). */
 export const CSRF_HEADER = 'x-csrf-token';
+
 
 /** §9.1: "when [the allowlist is] empty, TOTP is mandatory and idle drops to 15 min". */
 export const IDLE_MS_NO_ALLOWLIST = 15 * 60_000;
@@ -82,7 +146,7 @@ export function idleMsFor(allowlist: readonly string[]): number {
   return allowlist.length === 0 ? IDLE_MS_NO_ALLOWLIST : IDLE_MS_WITH_ALLOWLIST;
 }
 
-/** `Cookie: a=1; __Host-sk-sess=<v>` → the raw value, or null. */
+/** `Cookie: a=1; __Secure-sk-sess-acme=<v>` → the raw value, or null. */
 export function cookieValue(header: string | undefined, name: string): string | null {
   if (header === undefined) return null;
   for (const part of header.split(';')) {
@@ -135,14 +199,17 @@ export class SessionStore {
     return timingSafeEqual(a, b) ? id : null;
   }
 
-  /** §9.1: the exact attribute list, and nothing else on the cookie. */
-  cookieHeader(value: string): string {
-    return `${SESSION_COOKIE}=${value}; ${SESSION_COOKIE_ATTRS}`;
+  /** D37: `Set-Cookie` for one tenant's session, in that tenant's own namespace. */
+  cookieHeader(name: string, value: string, path: string): string {
+    return `${name}=${value}; ${cookieAttrs(path)}`;
   }
 
-  /** The clearing cookie. A deletion needs `Max-Age=0`; the session cookie never has one. */
-  clearCookieHeader(): string {
-    return `${SESSION_COOKIE}=; ${SESSION_COOKIE_ATTRS}; Max-Age=0`;
+  /**
+   * The clearing cookie. A deletion needs `Max-Age=0`, and it must name the same
+   * path the cookie was set with or the browser keeps the original.
+   */
+  clearCookieHeader(name: string, path: string): string {
+    return `${name}=; ${cookieAttrs(path)}; Max-Age=0`;
   }
 
   /** Session-bound CSRF token (§9.1). */

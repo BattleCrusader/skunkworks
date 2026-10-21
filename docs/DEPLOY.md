@@ -75,7 +75,11 @@ node dist/app/cli/skwctl.js admin bootstrap --email you@example.com --enrolment-
 
 - Claims the seed in one transaction; exit **3** on a second run (the only benign refusal).
 - Prints a **24-character password** and a **20-byte base32 TOTP secret** in a `0600` file.
-- Scan the TOTP secret with your authenticator, then log in at `https://admin.example.com/admin/login`.
+- Scan the TOTP secret with your authenticator, then log in at the **tenant's own
+  host**: `https://<tenant host>/admin/login`. There is no admin hostname (D37) —
+  `admin.example.com` is not a vhost any more, so a browser pointed at it gets the
+  demos vhost's 404. Which host is the tenant's? `install.sh` prints it as the last
+  line of a successful install, and `GET /admin` on it is that tenant's admin.
 
 Recovery, when you need it:
 

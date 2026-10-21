@@ -9,8 +9,26 @@ import { hash } from '@node-rs/argon2';
 import { ARGON2_OPTIONS, totpCode } from '../../app/admin/auth.ts';
 import { call, header, type Res } from './http.ts';
 
-export const ADMIN_HOST = 'admin.skw.test';
-export const ADMIN_ORIGIN = 'https://admin.skw.test';
+/**
+ * D37: there is no admin host. `ADMIN_HOST` is now the *tenant* host the fixture's
+ * `acme` tenant is served on — the name is kept so that a test that says "this is
+ * where an operator works" still reads, but the address is a tenant's. The origin is
+ * the same host, because the CSRF check compares `Origin` with the Host it arrived on.
+ */
+export const ADMIN_HOST = 'acme.test';
+export const ADMIN_ORIGIN = 'https://acme.test';
+
+/** D37: the host each fixture tenant is served on. The first host of each tenant. */
+export const TENANT_HOST: Record<string, string> = {
+  acme: 'acme.test',
+  beta: 'beta.test',
+  'demo-acme': 'acme-demo.test',
+};
+
+/** The host a tenant key is administered on; a key the fixture does not know is `acme`. */
+export function hostForKey(key: string | undefined): string {
+  return key === undefined ? ADMIN_HOST : TENANT_HOST[key] ?? ADMIN_HOST;
+}
 export const PASSWORD = 'correct-horse-battery-staple';
 /** A base32 secret with the length RFC 4226 recommends (160 bits). */
 export const TOTP_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
@@ -73,7 +91,9 @@ export async function login(opts: LoginInput): Promise<Res> {
     port: opts.port,
     path: '/admin/login',
     method: 'POST',
-    host: opts.host ?? ADMIN_HOST,
+    // D37: the login belongs on the tenant's own host, so a test that names a key gets
+    // that key's host and the Host scopes the credential lookup.
+    host: opts.host ?? hostForKey(opts.key),
     headers: { ...headers, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });

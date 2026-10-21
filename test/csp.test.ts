@@ -35,6 +35,7 @@ import { buildApp, type AppHandle } from '../app/main.ts';
 import { CSP_CONF_FILE, CSP_HEADER, cspConf, cspPolicy } from '../app/render/csp.ts';
 import { REPO, SCHEMA, makeFixture, type Fixture } from '../test/helpers/fixture.ts';
 import { call } from '../test/helpers/http.ts';
+import { ADMIN_HOST } from '../test/helpers/admin.ts';
 
 const NOW = '2026-10-20T12:00:00.000Z';
 const POLICY = cspPolicy();
@@ -107,7 +108,7 @@ test('C1 — the live site sends the policy on a page, byte-identically', async 
 
 test('C2 — every HTML surface carries it, and a JSON error carries none', async () => {
   // The admin login is a second HTML surface (D29: a plain form, no JavaScript).
-  const login = await call({ port, path: '/admin/login', host: 'admin.skw.test' });
+  const login = await call({ port, path: '/admin/login', host: ADMIN_HOST });
   assert.equal(login.status, 200);
   assert.equal(login.headers[CSP_HEADER], POLICY, 'the admin form carries the policy too');
 

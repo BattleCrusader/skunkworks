@@ -1,0 +1,615 @@
+<!-- 02-quiet-editorial.html — Direction 02 · Quiet Editorial. Calm, typography-led, the site's own aesthetic in the admin. Standalone mockup: inline CSS, system fonts, no external requests. -->
+<!doctype html>
+<html lang="en" data-screen="pages">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quiet Editorial — Skunkworks admin</title>
+<style>
+:root{
+  --paper:#faf7f0; --paper-2:#f4efe4; --paper-3:#efe8da; --white:#fffdf8;
+  --ink:#1c1a16; --ink-2:#4b463c; --muted:#6f6658; --faint:#8a8071;
+  --rule:#ded6c6; --rule-soft:#eae3d5;
+  --oxblood:#7c3529; --oxblood-soft:#f0e2dd;
+  --green:#33523f; --gold:#a67c3d;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,"Times New Roman",serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+figure{margin:0}
+html[data-screen="signin"] .masthead,html[data-screen="signin"] .sheet{display:none}
+html,body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+[hidden]{display:none!important}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+::selection{background:#e6d6c6}
+
+/* review strip */
+.specbar{display:flex;align-items:center;gap:18px;height:36px;padding:0 32px;border-bottom:1px solid var(--rule);background:var(--paper-2);position:sticky;top:0;z-index:30}
+.specbar__tag{font:10px/1 var(--mono);letter-spacing:.18em;color:var(--oxblood)}
+.specbar__name{font:italic 15px/1 var(--serif);color:var(--ink)}
+.specbar__note{font:11px/1 var(--sans);letter-spacing:.02em;color:var(--muted);border-left:1px solid var(--rule);padding-left:18px}
+.specbar__tabs{margin-left:auto;display:flex;gap:20px}
+.specbar__tabs button{font:10px/1 var(--sans);letter-spacing:.16em;text-transform:uppercase;color:var(--muted);padding:4px 0;border-bottom:1px solid transparent}
+.specbar__tabs button:hover{color:var(--ink)}
+.specbar__tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--ink)}
+
+/* masthead */
+.masthead{display:flex;align-items:baseline;gap:34px;padding:26px 56px 20px;border-bottom:1px solid var(--rule);background:var(--paper)}
+.wordmark{font:400 27px/1 var(--serif);letter-spacing:-.02em}
+.wordmark sup{font:9px/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:var(--muted);vertical-align:super;margin-left:7px}
+.masthead nav{display:flex;gap:24px;margin-left:34px}
+.masthead nav a{font:10px/1 var(--sans);letter-spacing:.16em;text-transform:uppercase;color:var(--muted);padding-bottom:4px;border-bottom:1px solid transparent}
+.masthead nav a.is-on{color:var(--ink);border-bottom-color:var(--ink)}
+.masthead nav a:hover{color:var(--ink)}
+.masthead__who{margin-left:auto;text-align:right;font:11px/1.5 var(--sans);color:var(--muted);letter-spacing:.02em}
+.masthead__who b{display:block;font-weight:400;color:var(--ink-2);letter-spacing:.06em}
+
+.sheet{max-width:1180px;margin:0 auto;padding:0 56px}
+.screen{padding:52px 0 90px}
+.kicker{font:10px/1 var(--sans);letter-spacing:.2em;text-transform:uppercase;color:var(--oxblood);margin-bottom:18px}
+h1.display{font:400 62px/1.02 var(--serif);letter-spacing:-.035em;margin:0 0 14px}
+h1.display em{font-style:italic;color:var(--ink-2)}
+.lede{font:400 18px/1.55 var(--serif);color:var(--ink-2);max-width:56ch;margin:0}
+.rule{height:1px;background:var(--rule);margin:34px 0 0}
+
+/* pages */
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 262px;gap:64px;margin-top:34px}
+.indexhead{display:flex;align-items:baseline;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid var(--ink)}
+.indexhead span{font:10px/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+.pagerow{display:grid;grid-template-columns:92px minmax(0,1fr) 92px;gap:24px;align-items:baseline;padding:24px 0 22px;border-bottom:1px solid var(--rule);position:relative}
+.pagerow:hover{background:linear-gradient(90deg,rgba(124,53,41,.04),transparent 70%)}
+.pagerow:hover .pagerow__title{color:var(--oxblood)}
+.pagerow:focus-visible{outline:2px solid var(--oxblood);outline-offset:3px}
+.pagerow__path{font:11px/1.4 var(--mono);color:var(--muted);letter-spacing:.02em}
+.pagerow__title{font:400 27px/1.18 var(--serif);letter-spacing:-.015em;color:var(--ink)}
+.pagerow__meta{font:10.5px/1.6 var(--sans);letter-spacing:.04em;color:var(--muted);margin-top:6px}
+.pagerow__status{text-align:right;font:italic 14px/1.2 var(--serif);color:var(--green)}
+.pagerow__status.is-draft{color:var(--oxblood)}
+.pagerow__status small{display:block;font:9px/1.6 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-top:5px}
+.pagerow__go{position:absolute;right:0;top:24px;font:10px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--oxblood);opacity:0}
+.pagerow:hover .pagerow__go{opacity:1}
+.margin h2{font:10px/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin:0 0 18px;padding-bottom:9px;border-bottom:1px solid var(--rule)}
+.stats{margin:0 0 30px}
+.stats div{display:flex;align-items:baseline;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--rule-soft)}
+.stats dt{font:13px/1.3 var(--serif);font-style:italic;color:var(--ink-2)}
+.stats dd{margin:0;font:400 22px/1 var(--serif)}
+.notes{list-style:none;margin:0;padding:0}
+.notes li{padding:10px 0;border-bottom:1px solid var(--rule-soft)}
+.notes time{display:block;font:9.5px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-bottom:4px}
+.notes span{font:13.5px/1.45 var(--serif);color:var(--ink-2)}
+.notes b{font-weight:400;color:var(--ink);font-style:italic}
+.margin .foot{font:11px/1.65 var(--sans);color:var(--muted);margin-top:24px}
+.margin .foot a{border-bottom:1px solid var(--rule);padding-bottom:1px}
+
+/* media */
+.mediahead{display:flex;align-items:flex-end;justify-content:space-between;gap:30px}
+.filters{display:flex;align-items:baseline;gap:22px;margin-top:34px;padding-bottom:12px;border-bottom:1px solid var(--ink)}
+.filters label{flex:1;display:flex;align-items:baseline;gap:10px;max-width:360px;border-bottom:1px solid var(--rule);padding-bottom:5px}
+.filters label span{font:10px/1 var(--sans);letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+.filters input{flex:1;border:0;background:none;outline:0;font:italic 15px/1.4 var(--serif);color:var(--ink)}
+.filters input::placeholder{color:var(--faint)}
+.filters .chips{display:flex;gap:18px;margin-left:auto}
+.filters .chips button{font:10px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);padding-bottom:4px;border-bottom:1px solid transparent}
+.filters .chips button.is-on{color:var(--ink);border-bottom-color:var(--ink)}
+.gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:36px 32px;margin-top:40px}
+.gallery .plate--wide{grid-column:1/-1;display:grid;grid-template-columns:1.45fr 1fr;gap:44px;align-items:center;border-top:1px solid var(--rule);padding-top:26px;margin-top:6px}
+.gallery .plate--wide .plate__img{aspect-ratio:16/7}
+.gallery .plate--wide .plate__cap{padding-top:0}
+.gallery .plate--wide .plate__key{font-size:26px}
+.gallery .plate--wide .plate__note{font-size:14px;max-width:38ch}
+.plate{display:flex;flex-direction:column}
+.plate__img{position:relative;aspect-ratio:4/3;background:var(--paper-3);overflow:hidden;border:1px solid rgba(28,26,22,.08)}
+.plate__tag{position:absolute;z-index:2;left:10px;top:10px;font:9px/1 var(--sans);letter-spacing:.16em;text-transform:uppercase;color:var(--ink);background:rgba(250,247,240,.88);border:1px solid rgba(28,26,22,.12);padding:4px 6px}
+.plate__tag.is-gated{color:var(--oxblood);border-color:rgba(124,53,41,.3)}
+.plate__cap{padding-top:12px}
+.plate__key{font:italic 18px/1.25 var(--serif);color:var(--ink)}
+.plate__meta{font:10px/1.6 var(--sans);letter-spacing:.06em;color:var(--muted);margin-top:3px}
+.plate__note{font:12px/1.5 var(--serif);color:var(--ink-2);margin-top:9px}
+.plate__note a{color:var(--oxblood);border-bottom:1px solid rgba(124,53,41,.35)}
+.ph{position:absolute;inset:0;z-index:1}
+.ph--home{background:linear-gradient(180deg,#27384a 0%,#3a4b5c 44%,#6f5c44 45%,#8a6a49 72%,#3b3028 100%)}
+.ph--home::before{content:"";position:absolute;left:12%;right:16%;top:30%;height:20%;background:linear-gradient(180deg,#9b7d57,#6d573d);box-shadow:0 14px 30px rgba(0,0,0,.3)}
+.ph--home::after{content:"";position:absolute;left:46%;top:10%;width:8%;height:36%;background:#16212c}
+.ph--clay{background:radial-gradient(120% 100% at 32% 18%,#cf9a78,#94604a 58%,#4f3029)}
+.ph--clay::before{content:"";position:absolute;left:28%;top:20%;width:44%;height:54%;border-radius:50% 50% 44% 44%/58% 58% 42% 42%;background:linear-gradient(145deg,#e7b99a,#ab6e52 62%,#7b4735);box-shadow:inset -14px -16px 32px rgba(0,0,0,.22),0 20px 26px rgba(0,0,0,.24)}
+.ph--clay::after{content:"";position:absolute;left:8%;right:8%;bottom:7%;height:13%;background:radial-gradient(60% 100% at 50% 0,rgba(0,0,0,.36),transparent 70%)}
+.ph--studio{background:linear-gradient(155deg,#5b6468,#333d41 62%,#222a2d)}
+.ph--studio::before{content:"";position:absolute;left:15%;top:29%;width:27%;height:43%;border-radius:46% 46% 26% 26%;background:linear-gradient(150deg,#cdbba6,#8e7c6a)}
+.ph--studio::after{content:"";position:absolute;left:50%;top:23%;width:29%;height:51%;border-radius:44% 44% 20% 20%;background:linear-gradient(150deg,#ada092,#6f645b);box-shadow:-10px 14px 22px rgba(0,0,0,.28)}
+.ph--pdf{background:#e9e2d4}
+.sheetdoc{position:absolute;left:26%;top:11%;width:48%;height:78%;background:#fffdf8;border:1px solid #d8cfbe;box-shadow:0 16px 28px rgba(40,32,22,.18);padding:10% 7%}
+.sheetdoc i{display:block;height:1px;background:#d8cfbe;margin-bottom:7px}
+.sheetdoc i:nth-child(1){width:58%;height:4px;background:var(--oxblood);margin-bottom:12px}
+.sheetdoc i:nth-child(4){width:84%}
+.sheetdoc i:nth-child(5){width:66%}
+.sheetdoc b{position:absolute;right:9%;bottom:8%;font:8px/1 var(--sans);letter-spacing:.14em;color:var(--oxblood);border:1px solid rgba(124,53,41,.4);padding:3px 4px}
+.galleryfoot{display:flex;justify-content:space-between;margin-top:36px;padding-top:14px;border-top:1px solid var(--rule);font:10px/1.5 var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+/* editor */
+.screen--editor{max-width:none;padding:0;margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw)}
+.ed{background:var(--paper-2);border-top:1px solid var(--rule)}
+.ed__bar{display:flex;align-items:center;gap:20px;padding:14px 26px;border-bottom:1px solid var(--rule);background:var(--paper)}
+.ed__bar .back{font:10px/1 var(--sans);letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+.ed__title{font:400 24px/1.1 var(--serif);letter-spacing:-.01em}
+.ed__title span{font:11px/1 var(--mono);color:var(--muted);margin-left:9px;letter-spacing:0}
+.ed__state{font:italic 13px/1 var(--serif);color:var(--oxblood);margin-left:4px}
+.ed__state small{font:9px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-left:8px}
+.ed__bar .tools{margin-left:auto;display:flex;align-items:center;gap:18px}
+.ed__bar .tools button{font:10px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2)}
+.ed__bar .tools .save{background:var(--ink);color:var(--paper);padding:9px 16px;letter-spacing:.12em}
+.ed__bar .tools .save:hover{background:var(--oxblood)}
+.ed__notice{padding:9px 26px;background:var(--oxblood-soft);border-bottom:1px solid #dcc3ba;font:italic 13.5px/1.5 var(--serif);color:#5e241b}
+.ed__notice code{font:10.5px/1 var(--mono);font-style:normal;background:rgba(255,255,255,.4);padding:2px 4px;border:1px solid rgba(124,53,41,.2)}
+.ed__body{display:grid;grid-template-columns:216px minmax(0,1fr) 286px;min-height:620px}
+.palette{border-right:1px solid var(--rule);padding:22px 20px;background:var(--paper)}
+.palette h3{font:9.5px/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin:20px 0 7px;padding-bottom:6px;border-bottom:1px solid var(--rule-soft)}
+.palette h3:first-child{margin-top:0}
+.palette button{display:flex;align-items:baseline;justify-content:space-between;width:100%;padding:7px 0;font:400 15px/1.3 var(--serif);color:var(--ink-2);border-bottom:1px solid transparent;text-align:left}
+.palette button:hover{color:var(--oxblood);border-bottom-color:var(--rule)}
+.palette button span{font:9px/1 var(--mono);color:var(--faint)}
+.palette .note{font:11px/1.6 var(--sans);color:var(--muted);margin-top:22px;padding-top:12px;border-top:1px solid var(--rule)}
+.palette .note code{font-family:var(--mono);font-size:10px}
+.canvas{background:#e6dfd2;padding:30px 34px 46px;overflow:auto}
+.canvas__meta{max-width:720px;margin:0 auto 12px;display:flex;justify-content:space-between;font:9.5px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:#8b806f}
+.page{max-width:720px;margin:0 auto;background:#fffdf8;color:#22201b;box-shadow:0 28px 60px rgba(60,48,30,.22);font:15px/1.6 var(--sans);min-height:540px}
+.page__nav{display:flex;justify-content:space-between;align-items:center;padding:20px 36px;border-bottom:1px solid #e8e1d3;font:10px/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:#6f6657}
+.page__nav b{font:400 13px/1 var(--serif);letter-spacing:.14em;color:#22201b}
+.page__hero{padding:38px 36px 8px}
+.page__eyebrow{font:9.5px/1 var(--sans);letter-spacing:.2em;text-transform:uppercase;color:#8a5a3d;margin-bottom:10px}
+.page h1{font:400 38px/1.08 var(--serif);letter-spacing:-.025em;margin:0 0 10px;max-width:16ch}
+.page__sub{font:400 15px/1.6 var(--serif);color:#5e574a;max-width:44ch;margin:0}
+.plans{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;padding:26px 36px 34px}
+.plan{border-top:1px solid #cfc5b4;padding-top:12px}
+.plan h2{font:9.5px/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:#8a8172;margin:0 0 5px}
+.plan .price{font:400 26px/1 var(--serif)}
+.plan .price small{font:11px/1 var(--sans);color:#8a8172}
+.plan p{font:13px/1.5 var(--sans);color:#6a6356;margin:7px 0 10px}
+.plan a{font:12px/1 var(--sans);letter-spacing:.06em;color:#7c3529;border-bottom:1px solid rgba(124,53,41,.4);padding-bottom:2px}
+.cta-sel{position:relative;display:inline-block;outline:2px solid #3b82f6;outline-offset:4px}
+.gjs-toolbar{position:absolute;top:auto;bottom:-28px;right:-4px;display:flex;background:#3b82f6;color:#fff;font:9.5px/1 var(--sans);letter-spacing:.06em}
+.gjs-toolbar span{padding:5px 6px;border-right:1px solid rgba(255,255,255,.25)}
+.gjs-toolbar span:last-child{border-right:0}
+.settings{border-left:1px solid var(--rule);background:var(--paper);padding:22px 20px}
+.settings h3{font:400 20px/1.2 var(--serif);margin:0 0 4px}
+.settings .sub{font:10px/1.4 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 20px}
+.field{margin-bottom:18px}
+.field label{display:block;font:9.5px/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+.field input{width:100%;border:0;border-bottom:1px solid var(--ink);background:none;padding:6px 0;font:400 15px/1.4 var(--serif);color:var(--ink);outline:0}
+.field input:focus{border-bottom-color:var(--oxblood)}
+.settings .hint{font:11px/1.6 var(--sans);color:var(--muted);border-top:1px solid var(--rule);padding-top:12px;margin-top:24px}
+.settings dl{margin:18px 0 0;border-top:1px solid var(--rule)}
+.settings dl div{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--rule-soft);font:10.5px/1.4 var(--mono);color:var(--muted)}
+.settings dt{font-family:var(--sans);letter-spacing:.06em}
+.settings dd{margin:0;color:var(--ink-2)}
+.ed__foot{display:flex;justify-content:space-between;padding:10px 26px;border-top:1px solid var(--rule);font:10px/1.4 var(--sans);letter-spacing:.08em;color:var(--muted);background:var(--paper)}
+
+/* plugins */
+.dispatch{border-top:1px solid var(--ink);padding:22px 0 26px;border-bottom:1px solid var(--rule)}
+.dispatch__top{display:flex;align-items:baseline;gap:16px;margin-bottom:8px}
+.dispatch__who{font:italic 19px/1.2 var(--serif);color:var(--ink)}
+.dispatch__when{font:9.5px/1 var(--sans);letter-spacing:.16em;text-transform:uppercase;color:var(--oxblood)}
+.dispatch h3{font:400 30px/1.15 var(--serif);letter-spacing:-.02em;margin:0 0 8px;max-width:24ch}
+.dispatch p{font:15px/1.6 var(--serif);color:var(--ink-2);max-width:62ch;margin:0 0 10px}
+.dispatch .code{font:10.5px/1.6 var(--mono);color:var(--muted);display:block;margin-bottom:14px}
+.dispatch .acts{display:flex;gap:24px;align-items:baseline}
+.dispatch .acts button{font:10px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--oxblood);border-bottom:1px solid rgba(124,53,41,.45);padding-bottom:4px}
+.dispatch .acts button.quiet{color:var(--muted);border-bottom-color:var(--rule)}
+.plugincols{display:grid;grid-template-columns:minmax(0,1fr) 292px;gap:64px;margin-top:44px}
+.ledger{width:100%;border-collapse:collapse}
+.ledger th{text-align:left;font:9.5px/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:var(--muted);padding:0 0 10px;border-bottom:1px solid var(--ink);font-weight:400}
+.ledger td{padding:12px 0;border-bottom:1px solid var(--rule);vertical-align:baseline;font:13.5px/1.4 var(--sans);color:var(--ink-2)}
+.ledger td.pl{font:italic 17px/1.3 var(--serif);color:var(--ink)}
+.ledger td.st{font:12px/1.4 var(--sans);letter-spacing:.02em}
+.ledger .ok{color:var(--green)}
+.ledger .bad{color:var(--oxblood)}
+.ledger .off{color:var(--faint)}
+.ledger td.act{text-align:right;font:10px/1 var(--sans);letter-spacing:.12em;text-transform:uppercase;white-space:nowrap}
+.ledger td.act button{color:var(--oxblood);border-bottom:1px solid rgba(124,53,41,.35);padding-bottom:2px;margin-left:14px}
+.ledger td.act button.quiet{color:var(--muted);border-bottom-color:var(--rule)}
+.running{list-style:none;margin:0;padding:0}
+.running li{padding:12px 0;border-bottom:1px solid var(--rule-soft)}
+.running b{font:italic 16px/1.3 var(--serif);font-weight:400;display:block;color:var(--ink)}
+.running span{font:10px/1.6 var(--mono);color:var(--muted)}
+.plugincols .margin h2{margin-top:36px}
+.plugincols .margin h2:first-child{margin-top:0}
+
+/* sign in */
+.signin{min-height:calc(100vh - 36px);display:grid;grid-template-columns:1.15fr .85fr}
+.signin__left{padding:64px 56px 48px;display:flex;flex-direction:column;justify-content:space-between;border-right:1px solid var(--rule)}
+.signin__mark{font:400 26px/1 var(--serif);letter-spacing:-.02em}
+.signin h1{font:400 68px/1.02 var(--serif);letter-spacing:-.04em;margin:0 0 22px;max-width:14ch}
+.signin h1 em{font-style:italic;color:var(--oxblood)}
+.signin__left p{font:400 18px/1.6 var(--serif);color:var(--ink-2);max-width:40ch;margin:0}
+.signin__facts{display:flex;gap:44px;border-top:1px solid var(--rule);padding-top:20px;margin-top:48px}
+.signin__facts div{font:10px/1.6 var(--sans);letter-spacing:.08em;color:var(--muted)}
+.signin__facts b{display:block;font:400 13px/1.5 var(--mono);color:var(--ink-2);margin-top:3px;letter-spacing:0}
+.signin__right{display:flex;align-items:center;justify-content:center;padding:56px}
+.signin form{width:344px}
+.signin .kicker{margin-bottom:10px}
+.signin h2{font:400 34px/1.1 var(--serif);letter-spacing:-.02em;margin:0 0 8px}
+.signin .sub{font:13.5px/1.6 var(--serif);color:var(--ink-2);margin:0 0 30px}
+.sfield{margin-bottom:20px}
+.sfield label{display:block;font:9.5px/1 var(--sans);letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+.sfield input{width:100%;border:0;border-bottom:1px solid var(--ink);background:none;padding:8px 0;font:400 16px/1.4 var(--serif);color:var(--ink);outline:0}
+.sfield input:focus{border-bottom-color:var(--oxblood)}
+.sfield input[name="totp"]{font-family:var(--mono);letter-spacing:.4em;font-size:17px}
+.sfield .help{font:10.5px/1.6 var(--sans);color:var(--muted);margin:6px 0 0}
+.signin .submit{width:100%;margin-top:10px;padding:12px;background:var(--ink);color:var(--paper);font:10px/1 var(--sans);letter-spacing:.2em;text-transform:uppercase}
+.signin .submit:hover{background:var(--oxblood)}
+.signin .after{font:10.5px/1.7 var(--sans);color:var(--muted);margin-top:22px;padding-top:14px;border-top:1px solid var(--rule)}
+
+@media (max-width:1200px){
+  .masthead,.sheet{padding-left:40px;padding-right:40px}
+  .cols,.plugincols{gap:44px}
+  h1.display{font-size:54px}
+}
+</style>
+</head>
+<body>
+
+<div class="specbar">
+  <span class="specbar__tag">DIRECTION 02</span>
+  <span class="specbar__name">Quiet Editorial</span>
+  <span class="specbar__note">calm · typography-led · the site's own aesthetic</span>
+  <nav class="specbar__tabs" role="tablist" aria-label="Mock screens">
+    <button role="tab" data-screen-tab="pages" aria-selected="true">Pages</button>
+    <button role="tab" data-screen-tab="media" aria-selected="false">Media</button>
+    <button role="tab" data-screen-tab="editor" aria-selected="false">Editor</button>
+    <button role="tab" data-screen-tab="plugins" aria-selected="false">Plugins</button>
+    <button role="tab" data-screen-tab="signin" aria-selected="false">Sign in</button>
+  </nav>
+</div>
+
+<header class="masthead">
+  <div class="wordmark">Skunkworks<sup>admin</sup></div>
+  <nav>
+    <a href="#" class="is-on" data-screen-tab="pages">Pages</a>
+    <a href="#" data-screen-tab="media">Library</a>
+    <a href="#">Tables</a>
+    <a href="#">Sources</a>
+    <a href="#" data-screen-tab="plugins">Plugins</a>
+  </nav>
+  <div class="masthead__who"><b>abc123 · production</b>owner@abc123.com</div>
+</header>
+
+<main class="sheet">
+
+  <!-- ============ PAGES ============ -->
+  <section class="screen" data-screen="pages">
+    <div class="kicker">The site · abc123 · edited this afternoon</div>
+    <h1 class="display">Pages, in the order<br>they were <em>last touched.</em></h1>
+    <p class="lede">Three pages. Two are live; one is still being written. Nothing here is public until you publish it.</p>
+    <div class="rule"></div>
+
+    <div class="cols">
+      <div>
+        <div class="indexhead"><span>Path</span><span>3 pages · 2 published · 1 draft</span></div>
+
+        <a class="pagerow" href="#">
+          <div class="pagerow__path">/</div>
+          <div>
+            <div class="pagerow__title">ABC123 — hello from abc123.com</div>
+            <div class="pagerow__meta">page template · rev 12 · 20 October, 15:02</div>
+          </div>
+          <div class="pagerow__status">Published<small>open</small></div>
+          <span class="pagerow__go">Edit →</span>
+        </a>
+
+        <a class="pagerow" href="#">
+          <div class="pagerow__path">/about</div>
+          <div>
+            <div class="pagerow__title">About &amp; Co &lt;ltd&gt;</div>
+            <div class="pagerow__meta">page template · rev 5 · 19 October, 11:40 · hero, prose, figure, cta</div>
+          </div>
+          <div class="pagerow__status">Published<small>open</small></div>
+          <span class="pagerow__go">Edit →</span>
+        </a>
+
+        <a class="pagerow" href="#">
+          <div class="pagerow__path">/pricing</div>
+          <div>
+            <div class="pagerow__title">Pricing</div>
+            <div class="pagerow__meta">page template · rev 4 · Today, 16:41 · preview expires in 30 min</div>
+          </div>
+          <div class="pagerow__status is-draft">Draft<small>not public</small></div>
+          <span class="pagerow__go">Continue →</span>
+        </a>
+
+        <p class="margin foot" style="margin-top:26px">A draft has a preview link that only signed-in operators can open. Publishing writes the revision and clears it.</p>
+      </div>
+
+      <aside class="margin">
+        <h2>The site</h2>
+        <dl class="stats">
+          <div><dt>pages</dt><dd>3</dd></div>
+          <div><dt>published</dt><dd>2</dd></div>
+          <div><dt>drafts</dt><dd>1</dd></div>
+        </dl>
+        <h2>Recently</h2>
+        <ul class="notes">
+          <li><time>16:41</time><span><b>Pricing</b> saved, rev 4</span></li>
+          <li><time>16:12</time><span><b>seo</b> failed to start — see Plugins</span></li>
+          <li><time>15:02</time><span><b>Home</b> published, rev 12</span></li>
+          <li><time>14:47</time><span><b>gallery/one.jpg</b> added to the library</span></li>
+        </ul>
+        <p class="foot">The audit chain records every write. <a href="#">Read the chain →</a></p>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ============ MEDIA ============ -->
+  <section class="screen" data-screen="media" hidden>
+    <div class="kicker">The library · 4 files · 3.1 MB</div>
+    <div class="mediahead">
+      <h1 class="display">Pictures,<br>and one <em>locked file.</em></h1>
+      <p class="lede" style="max-width:32ch">Everything the site can show, kept in one place. A gated file is never a public URL.</p>
+    </div>
+
+    <div class="filters">
+      <label><span>Find</span><input placeholder="key, filename, alt text…" aria-label="Search the library"></label>
+      <div class="chips">
+        <button class="is-on">All 4</button>
+        <button>Images 3</button>
+        <button>Documents 1</button>
+        <button>Gated 1</button>
+      </div>
+    </div>
+
+    <div class="gallery">
+      <figure class="plate">
+        <div class="plate__img"><span class="plate__tag">Public</span><div class="ph ph--home"></div></div>
+        <figcaption class="plate__cap">
+          <div class="plate__key">banner/home.jpg</div>
+          <div class="plate__meta">image · 1600 × 900 · 412 KB</div>
+        </figcaption>
+      </figure>
+
+      <figure class="plate">
+        <div class="plate__img"><span class="plate__tag">Public</span><div class="ph ph--clay"></div></div>
+        <figcaption class="plate__cap">
+          <div class="plate__key">gallery/one.jpg</div>
+          <div class="plate__meta">image · 1200 × 1500 · 288 KB</div>
+        </figcaption>
+      </figure>
+
+      <figure class="plate">
+        <div class="plate__img"><span class="plate__tag">Public</span><div class="ph ph--studio"></div></div>
+        <figcaption class="plate__cap">
+          <div class="plate__key">team/studio.jpg</div>
+          <div class="plate__meta">image · 1600 × 900 · 364 KB</div>
+        </figcaption>
+      </figure>
+
+      <figure class="plate plate--wide">
+        <div class="plate__img"><span class="plate__tag is-gated">Gated</span><div class="ph ph--pdf"><div class="sheetdoc"><i></i><i></i><i></i><i></i><i></i><b>PDF</b></div></div></div>
+        <figcaption class="plate__cap">
+          <div class="plate__key">vault/paid.pdf</div>
+          <div class="plate__meta">document · 18 pages · 2.0 MB</div>
+          <div class="plate__note">No public URL. Shared only with a download code. <a href="#">Issue a code →</a></div>
+        </figcaption>
+      </figure>
+    </div>
+
+    <div class="galleryfoot">
+      <span>Keys are lower-case and frozen inside page bodies · renames leave an alias</span>
+      <span>4 of 4 shown · sorted by newest</span>
+    </div>
+  </section>
+
+  <!-- ============ EDITOR ============ -->
+  <section class="screen screen--editor" data-screen="editor" hidden>
+    <div class="ed">
+      <div class="ed__bar">
+        <a class="back" href="#">← Pages</a>
+        <div class="ed__title">Pricing <span>/pricing</span></div>
+        <div class="ed__state">Draft <small>rev 4</small></div>
+        <div class="tools">
+          <button>Undo</button>
+          <button>Redo</button>
+          <button>Preview</button>
+          <button class="save">Save</button>
+        </div>
+      </div>
+      <div class="ed__notice">Paste refused — <code>SKW_E_RT_COMPONENT_UNKNOWN</code>. No component is registered for <code>data-gjs-type="pricing-table"</code>, so nothing was inserted.</div>
+
+      <div class="ed__body">
+        <aside class="palette">
+          <h3>Structure</h3>
+          <button>Hero <span>hero</span></button>
+          <button>Call to action <span>cta</span></button>
+          <h3>Text</h3>
+          <button>Prose <span>prose</span></button>
+          <h3>Media</h3>
+          <button>Image <span>figure</span></button>
+          <button>Gallery <span>gallery</span></button>
+          <button>Embed <span>embed</span></button>
+          <h3>Commerce</h3>
+          <button>Form <span>form</span></button>
+          <button>Download button <span>download-button</span></button>
+          <h3>Data</h3>
+          <button>List (repeating) <span>list</span></button>
+          <h3>Interactive</h3>
+          <button>Copy email <span>copy-email</span></button>
+          <p class="note">The palette is the registry, not a second list. <code>schema/component-registry.json</code> feeds the palette, the renderer and every export.</p>
+        </aside>
+
+        <div class="canvas">
+          <div class="canvas__meta"><span>Desktop · 720 px</span><span>page.css · 9 rules</span></div>
+          <div class="page">
+            <div class="page__nav"><b>ABC123</b><span>Work · About · Pricing</span></div>
+            <div class="page__hero">
+              <div class="page__eyebrow">Pricing</div>
+              <h1>Three ways to work together.</h1>
+              <p class="page__sub">Fixed scope, fixed price, no surprise invoices. Pick the engagement that fits the quarter.</p>
+            </div>
+            <div class="plans">
+              <div class="plan">
+                <h2>Studio</h2>
+                <div class="price">$4k</div>
+                <p>One page, one week, one round of notes.</p>
+                <a href="#">Choose studio</a>
+              </div>
+              <div class="plan">
+                <h2>Partner</h2>
+                <div class="price">$9k<small>/mo</small></div>
+                <p>Continuous design and build, two days a week.</p>
+                <span class="cta-sel">
+                  <span class="gjs-toolbar"><span>cta</span><span>⣿</span><span>⧉</span><span>⌫</span></span>
+                  <a href="#">Start a project</a>
+                </span>
+              </div>
+              <div class="plan">
+                <h2>Retainer</h2>
+                <div class="price">$2k<small>/mo</small></div>
+                <p>Support, small changes, a standing call.</p>
+                <a href="#">Talk to us</a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <aside class="settings">
+          <h3>Call to action</h3>
+          <p class="sub">The registry's editable fields</p>
+          <div class="field"><label>Title</label><input value="Start a project" aria-label="Title"></div>
+          <div class="field"><label>Target</label><input value="/contact" aria-label="Target"></div>
+          <p class="hint">Select a block on the canvas and its fields appear here. No field writes CSS, and no field is invented by this panel.</p>
+          <dl>
+            <div><dt>type</dt><dd>cta</dd></div>
+            <div><dt>tag</dt><dd>section</dd></div>
+            <div><dt>children</dt><dd>none</dd></div>
+            <div><dt>page</dt><dd>/pricing</dd></div>
+            <div><dt>template</dt><dd>page</dd></div>
+            <div><dt>managed_by</dt><dd>editor</dd></div>
+          </dl>
+        </aside>
+      </div>
+
+      <div class="ed__foot">
+        <span>Save canonicalises, validates the bytes, and writes the revision row in one transaction.</span>
+        <span>autosave off · unsaved changes 0 · schema v4</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PLUGINS ============ -->
+  <section class="screen" data-screen="plugins" hidden>
+    <div class="kicker">Plugins · 3 installed · 1 running · 2 notices</div>
+    <h1 class="display">Two things<br>need <em>your attention.</em></h1>
+    <p class="lede">A notice is not a warning. It means the plugin is not running — the site is still up, but whatever that plugin did is missing.</p>
+
+    <div class="dispatch" style="margin-top:34px">
+      <div class="dispatch__top"><span class="dispatch__who">seo 2.0.1</span><span class="dispatch__when">Failed today, 16:12</span></div>
+      <h3>It could not prove that it had been tested.</h3>
+      <p>The package arrived without a test report for this image. The loader refused it rather than run code nobody had exercised. Nothing else was affected.</p>
+      <span class="code">SKW_E_PL_TESTS_STALE · no test report: the packager must run plugin.json.tests inside the test image (seo-2.0.1/plugin.json)</span>
+      <div class="acts"><button>Try it again</button><button class="quiet">Remove the plugin</button></div>
+    </div>
+
+    <div class="dispatch">
+      <div class="dispatch__top"><span class="dispatch__who">mailerlite 0.9.0</span><span class="dispatch__when">Failed 12 October, 09:04</span></div>
+      <h3>The signature did not verify.</h3>
+      <p>This package was not signed by a key this box trusts. It stays installed and switched off until someone decides what to do with it.</p>
+      <span class="code">SKW_E_PL_SIGNATURE · unsigned package: signature does not verify against the publisher key</span>
+      <div class="acts"><button>Try it again</button><button class="quiet">Remove the plugin</button></div>
+    </div>
+
+    <div class="plugincols">
+      <div>
+        <h2 style="font:10px/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--ink);padding-bottom:9px;margin:0 0 2px">Installed</h2>
+        <table class="ledger">
+          <thead><tr><th>Plugin</th><th>Version</th><th>State</th><th style="text-align:right">Action</th></tr></thead>
+          <tbody>
+            <tr><td class="pl">booking</td><td>1.4.2</td><td class="st ok">Enabled, loaded</td><td class="act">—</td></tr>
+            <tr><td class="pl">seo</td><td>2.0.1</td><td class="st bad">Enabled, not loaded — failed since boot</td><td class="act"><button>Retry</button><button class="quiet">Uninstall</button></td></tr>
+            <tr><td class="pl">mailerlite</td><td>0.9.0</td><td class="st off">Disabled</td><td class="act"><button>Retry</button><button class="quiet">Uninstall</button></td></tr>
+          </tbody>
+        </table>
+
+        <h2 style="font:10px/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--ink);padding-bottom:9px;margin:38px 0 0">Plugin screens</h2>
+        <p style="font:15px/1.6 var(--serif);color:var(--ink-2);margin:12px 0 0"><a href="#" style="border-bottom:1px solid var(--rule)">Bookings</a> — registered by booking 1.4.2, at <span style="font-family:var(--mono);font-size:11px">/admin/t/abc123/x/booking</span>.</p>
+      </div>
+
+      <aside class="margin">
+        <h2>Running now</h2>
+        <ul class="running">
+          <li><b>booking</b><span>1.4.2 · activation 7<br>form.submitted, form.validate, page.rendered</span></li>
+        </ul>
+        <h2>What this page answers</h2>
+        <p class="foot" style="margin-top:0"><b style="color:var(--ink);font-style:italic">Notices</b> — what went wrong, with the code and the message the runtime recorded.</p>
+        <p class="foot"><b style="color:var(--ink);font-style:italic">Loaded now</b> — what is in this process's registry at this moment.</p>
+        <p class="foot"><b style="color:var(--ink);font-style:italic">Installed</b> — what the rows say, including the activation sequence. A row that says enabled while nothing is loaded is a difference you can see.</p>
+      </aside>
+    </div>
+  </section>
+
+</main>
+
+<!-- ============ SIGN IN ============ -->
+<section class="signin" data-screen="signin" hidden>
+  <div class="signin__left">
+    <div class="signin__mark">Skunkworks<sup style="font:9px/1 var(--sans);letter-spacing:.18em;color:var(--muted);margin-left:6px">ADMIN</sup></div>
+    <div>
+      <h1>The back office, <em>kept quiet.</em></h1>
+      <p>One host, two factors, and a short session. The pages your visitors see live somewhere else entirely.</p>
+      <div class="signin__facts">
+        <div>Host<b>admin.abc123.com</b></div>
+        <div>Allowlist<b>none · TOTP required</b></div>
+        <div>Session<b>12 h cap · 15 min idle</b></div>
+      </div>
+    </div>
+    <p style="font:10.5px/1.7 var(--sans);color:var(--muted);max-width:46ch">A failed attempt answers one body for every cause. The reason is written to the audit log, where an attacker cannot read it.</p>
+  </div>
+
+  <div class="signin__right">
+    <form onsubmit="return false">
+      <div class="kicker">Operator access</div>
+      <h2>Sign in</h2>
+      <p class="sub">Use the account issued for this tenant.</p>
+      <div class="sfield">
+        <label for="e2">Email</label>
+        <input id="e2" type="email" name="email" autocomplete="username" value="owner@abc123.com">
+      </div>
+      <div class="sfield">
+        <label for="p2">Password</label>
+        <input id="p2" type="password" name="password" autocomplete="current-password" value="················">
+        <p class="help">Sixteen characters minimum. argon2id, m=19456, t=2, p=1.</p>
+      </div>
+      <div class="sfield">
+        <label for="t2">Authenticator code</label>
+        <input id="t2" type="text" name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" placeholder="000000">
+        <p class="help">Required: no IP allowlist is configured on this host.</p>
+      </div>
+      <button class="submit" type="submit">Sign in</button>
+      <p class="after">Five failed attempts lock the account for fifteen minutes. The session ends twelve hours after sign-in, however continuously it is used.</p>
+    </form>
+  </div>
+</section>
+
+<script>
+(function(){
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[data-screen-tab]'));
+  var panes = Array.prototype.slice.call(document.querySelectorAll('section[data-screen]'));
+  function show(id){
+    panes.forEach(function(p){ p.hidden = p.getAttribute('data-screen') !== id; });
+    tabs.forEach(function(t){
+      var on = t.getAttribute('data-screen-tab') === id;
+      if (t.getAttribute('role') === 'tab') t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.documentElement.setAttribute('data-screen', id);
+    var navLinks = document.querySelectorAll('.masthead nav a');
+    navLinks.forEach(function(a){
+      var label = a.textContent.toLowerCase();
+      a.classList.toggle('is-on', label === id || (id === 'media' && label === 'library') || (id === 'plugins' && label === 'plugins'));
+    });
+    window.scrollTo(0,0);
+  }
+  tabs.forEach(function(t){ t.addEventListener('click', function(ev){ ev.preventDefault(); show(t.getAttribute('data-screen-tab')); }); });
+  var initial = (location.hash || '').replace('#','');
+  show(document.querySelector('section[data-screen="' + initial + '"]') ? initial : 'pages');
+})();
+</script>
+</body>
+</html>

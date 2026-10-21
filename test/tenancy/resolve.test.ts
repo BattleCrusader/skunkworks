@@ -3,9 +3,22 @@
  * 10 documented outcomes, one test each — tenancy/resolve.test.ts, 10 cases",
  * each asserting **the row number the resolver reports**.
  *
- * The numbering is the errata's, not the old table's: the admin-plus-header case
- * is row 1 (non-empty *and* empty value), the host case is row 8, the session
- * case is row 7. A right status from the wrong row is a defect.
+ * **D37 supersedes rows 1 and 7 and nothing else.** Both were the admin *listener*'s
+ * rows: row 1 refused a tenant header on the admin hostname, row 7 resolved the admin
+ * tenant from `session.tenant_id`. Admin is `/admin` on each tenant host now, the
+ * tenant is the Host's, and a session cannot choose it — so there is no listener to
+ * have those rows about, and `resolveTenant` no longer takes a `listener` or a
+ * `session` at all. The two tests below are rewritten to assert the NEW promise at the
+ * same place the old one was asserted:
+ *
+ *   - row 1's replacement is the admin surface's own header refusal, asserted where
+ *     it now lives (`test/admin-listener.test.ts`, which is the file that used to say
+ *     "admin is 404 on every tenant host");
+ *   - row 7's replacement is that `Host` is the only source, asserted here: the same
+ *     request that used to resolve `beta` from a session resolves `acme` from the Host.
+ *
+ * The surviving rows keep their numbers. A gap in the table is honest; renumbering
+ * would make every citation of "row 8" in the build reports point at a different rule.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -63,16 +76,12 @@ function resolve(over: {
   peer?: string;
   host?: string;
   headers?: Record<string, string | string[] | undefined>;
-  listener?: 'public' | 'admin';
-  session?: { tenantId: number } | null;
 }) {
   return resolveTenant(
     {
       peer: over.peer ?? TRUSTED,
       host: over.host ?? 'acme.test',
       headers: over.headers ?? {},
-      listener: over.listener ?? 'public',
-      session: over.session ?? null,
     },
     deps,
   );
@@ -81,21 +90,15 @@ function resolve(over: {
 /** Every outcome the public listener produced, for E-1 (c). */
 const publicRows: number[] = [];
 
-test('row 1 — the admin listener refuses a tenant header present at all (non-empty and empty)', () => {
-  for (const value of ['acme', '']) {
-    const r = resolve({
-      listener: 'admin',
-      host: 'acme.test',
-      headers: { 'x-skunkworks-tenant': value },
-      session: { tenantId: 1 },
-    });
-    assert.equal(r.ok, false, `header ${JSON.stringify(value)}`);
-    if (r.ok) return;
-    assert.equal(r.step, 1, `row for header ${JSON.stringify(value)}`);
-    assert.equal(r.error.code, 'SKW_E_PLT_EDGE_PROOF');
-    assert.equal(r.error.status, 421);
-  }
-});
+/*
+ * D37 SUPERSEDED ROW 1. There is no admin listener, so `resolveTenant` has no row 1
+ * and this file cannot assert it. The rule — a tenant header never selects the admin
+ * tenant — is still enforced, one layer up and on the only surface where it means
+ * something: `AdminSurface.handle` throws 421 SKW_E_PLT_EDGE_PROOF for a non-empty
+ * `X-Skunkworks-Tenant` on `/admin`, and the witness is
+ * `test/admin-listener.test.ts` test (c). Deleting the row without saying where its
+ * gate went would be the kind of green suite this project exists not to have.
+ */
 
 test('row 2 — an untrusted peer that asserts any X-Skunkworks-* header is 421', () => {
   const r = resolve({ peer: UNTRUSTED, host: 'acme.test', headers: { 'x-skunkworks-edge': EDGE } });
@@ -174,21 +177,30 @@ test('row 6 — a valid header from the edge selects that tenant, prefix from th
   assert.equal(miss.error.code, 'SKW_E_PLT_TENANT_UNKNOWN');
 });
 
-test('row 7 — the admin listener with no header resolves from session.tenant_id only', () => {
-  const r = resolve({ listener: 'admin', host: 'acme.test', headers: {}, session: { tenantId: 2 } });
+/*
+ * D37 SUPERSEDED ROW 7: `session.tenant_id` no longer selects a tenant, on any row.
+ * The property the row encoded — "an admin request's tenant is decided by the server,
+ * not by the caller" — is now `Host`-decided, and it is asserted here as the negative:
+ * there is no input left with which to ask for another tenant.
+ */
+test('D37 (was row 7) — the Host is the only source: no input can name another tenant', () => {
+  const r = resolve({ host: 'acme.test', headers: {} });
   assert.equal(r.ok, true);
   if (!r.ok) return;
-  assert.equal(r.step, 7);
-  assert.equal(r.tenant.key, 'beta', 'the admin listener ignores Host');
-  assert.equal(r.via, 'session');
-  assert.equal(r.prefix, '', 'via=session never carries a prefix');
+  assert.equal(r.step, 8, 'the plain host row, not a session row');
+  assert.equal(r.tenant.key, 'acme');
+  assert.equal(r.via, 'host');
 
-  const noSession = resolve({ listener: 'admin', host: 'acme.test', headers: {}, session: null });
-  assert.equal(noSession.ok, false);
-  if (noSession.ok) return;
-  assert.equal(noSession.step, 7);
-  assert.equal(noSession.error.code, 'SKW_E_PLT_TENANT_UNKNOWN');
-  assert.equal(noSession.error.status, 404);
+  // A session id cannot be passed at all: the input type has no such field, and at
+  // runtime an extra property is ignored by the resolver.
+  const withJunk = resolveTenant(
+    { peer: TRUSTED, host: 'acme.test', headers: {}, session: { tenantId: 2 } } as never,
+    deps,
+  );
+  assert.equal(withJunk.ok, true);
+  if (!withJunk.ok) return;
+  assert.equal(withJunk.tenant.key, 'acme', 'a session-shaped field on the input changes nothing');
+  assert.equal(withJunk.via, 'host');
 });
 
 test('row 8 — no header on the public listener resolves from the normalised Host', () => {
@@ -250,23 +262,19 @@ test('row 10 — a resolved tenant whose database is unusable is 503, one code p
 /* is test/nginx-e2e.test.ts, and it is the one that distinguishes the */
 /* two.                                                                */
 /* ------------------------------------------------------------------ */
-test('E-1 (a) — an empty X-Skunkworks-Tenant on the admin listener is row 1, 421', () => {
-  const r = resolve({
-    listener: 'admin',
-    host: 'admin.skw.test',
-    headers: { 'x-skunkworks-tenant': '' },
-    session: { tenantId: 1 },
-  });
-  assert.equal(r.ok, false);
-  if (r.ok) return;
-  assert.equal(r.step, 1);
-  assert.equal(r.error.status, 421);
-});
-
+/*
+ * D37 SUPERSEDED E-1 (a). The case it described — an empty `X-Skunkworks-Tenant`
+ * arriving at the admin host directly — cannot arise: there is no admin host. The
+ * question it settled (does an empty tenant header from the edge select a tenant?)
+ * is still a real one on a tenant host, and the answer is now the *opposite* of a
+ * 421: the edge's own `proxy_set_header … ""` is a no-op, and the Host decides. The
+ * witness is the same test in `test/admin-listener.test.ts` and the header case in
+ * `test/tenancy/resolve.test.ts` below ("a client-supplied header is inert").
+ */
 /* ------------------------------------------------------------------ */
 /* E-1 (c): no request with listener='public' may report row 1 or 7.   */
 /* ------------------------------------------------------------------ */
-test("E-1 (c) — no public-listener request reports row 1 or row 7", () => {
+test("E-1 (c) — no request reports row 1 or row 7, because neither row exists (D37)", () => {
   const cases: Array<Parameters<typeof resolve>[0]> = [
     { host: 'acme.test', headers: {} },
     { host: 'www.acme.test', headers: {} },
@@ -280,12 +288,12 @@ test("E-1 (c) — no public-listener request reports row 1 or row 7", () => {
     { peer: UNTRUSTED, host: 'acme.test', headers: { 'x-skunkworks-tenant': 'beta' } },
   ];
   const rows = cases.map((c) => {
-    const r = resolve({ ...c, listener: 'public', session: null });
+    const r = resolve(c);
     return r.step;
   });
   for (const row of rows) {
-    assert.notEqual(row, 1, `public listener reported row 1: ${rows.join(',')}`);
-    assert.notEqual(row, 7, `public listener reported row 7: ${rows.join(',')}`);
+    assert.notEqual(row, 1, `a request reported row 1, which D37 removed: ${rows.join(',')}`);
+    assert.notEqual(row, 7, `a request reported row 7, which D37 removed: ${rows.join(',')}`);
   }
   publicRows.push(...rows);
   assert.ok(publicRows.length > 0);

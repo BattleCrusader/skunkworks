@@ -63,13 +63,17 @@ test('E-17.5 a v4 and a v6 block -> two entries, and the v6 line is rendered as 
   const parsed = parseAdminAllowlist('203.0.113.0/24,2001:DB8::/32');
   assert.deepEqual(parsed, ['203.0.113.0/24', '2001:DB8::/32']);
   // "IPv6 rendered as given; no expansion, no reordering" (§9.1a's drop-in).
+  // D37: the directives live inside each tenant block's `location ~ ^/admin(/|$)`,
+  // so they are indented one level deeper than they were in the old admin vhost.
   const conf = generateAppConf(rows, {
-    adminHost: 'admin.skw.test',
     demosHost: 'demos.skw.test',
     adminAllowlist: parsed,
   });
-  assert.match(conf, /^ {4}allow 203\.0\.113\.0\/24;$/m);
-  assert.match(conf, /^ {4}allow 2001:DB8::\/32;$/m);
+  assert.match(conf, /^ {8}allow 203\.0\.113\.0\/24;$/m);
+  assert.match(conf, /^ {8}allow 2001:DB8::\/32;$/m);
+  // Two tenants in this fixture and two blocks per tenant: the pair is emitted once
+  // per tenant block (inside its /admin location), and nowhere else in the file.
+  assert.equal((conf.match(/^ {8}allow /gm) ?? []).length, 4, 'one allow pair per tenant block, once');
 });
 
 test('E-17.6 a non-empty malformed value is a refusal naming the offending token', () => {
