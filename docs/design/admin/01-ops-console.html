@@ -312,6 +312,58 @@ table.installed .state{font:10.5px/1 var(--mono)}
   .assetgrid{grid-template-columns:repeat(3,minmax(0,1fr))}
   .split{grid-template-columns:minmax(0,1fr) 270px}
 }
+
+/* ---- screen band: pages → media ---- */
+.band{position:relative;margin:0;padding:11px 18px 12px;background:linear-gradient(180deg,#090d13,#0c1219);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.band::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:repeating-linear-gradient(90deg,var(--accent) 0 16px,transparent 16px 26px);opacity:.5}
+.band__row{display:flex;align-items:baseline;gap:12px}
+.band__idx{font:9.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);border:1px solid #24506a;background:#0c1d27;padding:3px 5px;border-radius:2px}
+.band__title{margin:0;font:600 13px/1 var(--sans);letter-spacing:.03em;text-transform:uppercase;color:var(--ink);display:flex;align-items:baseline;gap:8px}
+.band__sub{font:10px/1 var(--mono);text-transform:none;letter-spacing:.04em;color:var(--muted);font-weight:400}
+.band__fact{font:10px/1 var(--mono);color:var(--muted)}
+.band__cue{margin-left:auto;font:10px/1 var(--mono);color:#5f6b79}
+.band__note{margin-top:5px;font:10.5px/1.45 var(--mono);color:#6d7a89}
+
+/* ---- media table ---- */
+.mediatable{table-layout:fixed}
+.mediatable th{padding:7px 8px}
+.mediatable td{height:auto;padding:7px 8px;vertical-align:middle}
+.mediatable .m-th{width:56px}
+.mediatable .m-kind{width:66px}
+.mediatable .m-dim{width:102px}
+.mediatable .m-size{width:74px;text-align:right}
+.mediatable .m-use{width:196px}
+.mediatable .m-access{width:158px}
+.mediatable .m-act{width:86px;text-align:right;padding-right:4px}
+.m-row:focus{outline:0}
+.m-row:focus-visible{background:#0f1c26;box-shadow:inset 2px 0 0 var(--accent),inset 0 0 0 1px #24506a}
+.m-row.is-focus{background:#0f1c26;box-shadow:inset 2px 0 0 var(--accent),inset 0 0 0 1px #24506a}
+.mth{position:relative;display:block;width:42px;height:25px;border:1px solid var(--line);background:#0a0f14;overflow:hidden}
+.mth .ph{position:absolute;inset:0}
+.mth--lock{display:grid;place-items:center;color:var(--warn);background:repeating-linear-gradient(135deg,#191308 0 4px,#101319 4px 8px);border-color:#43351a}
+.m-key{font:10.5px/1.25 var(--mono);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-key .lk{vertical-align:-1px;margin-right:5px;color:var(--warn)}
+.m-kind,.m-dim,.m-size{font:10px/1.2 var(--mono);color:var(--muted)}
+.m-size{color:var(--ink-2)}
+.m-use b{display:block;font:10px/1.3 var(--mono);color:var(--ink);font-weight:400}
+.m-use .m-paths{display:block;font:9.5px/1.35 var(--mono);color:#64707e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.m-zero{color:var(--warn)!important}
+.m-pub{font:10px/1 var(--mono);color:var(--muted)}
+.m-gated{display:inline-flex;align-items:center;gap:5px;font:10px/1 var(--mono);color:var(--warn);border:1px solid #4a3a1c;background:#191509;padding:3px 5px;border-radius:2px;white-space:nowrap}
+.m-row--gated{background:repeating-linear-gradient(135deg,#151107 0 7px,#0f131a 7px 14px);box-shadow:inset 2px 0 0 var(--warn);cursor:not-allowed}
+.m-row--gated:hover{background:repeating-linear-gradient(135deg,#1b1609 0 7px,#11161e 7px 14px)}
+.m-row--gated .m-key{color:#e8c98a}
+.rowlink--danger{color:var(--bad)}
+tr:hover .rowlink--danger{color:var(--bad);border-color:#462225}
+.m-note{display:flex;gap:9px;align-items:flex-start;margin:0 16px 0 0;padding:9px 10px;border:1px solid #3d3320;background:#141106;color:#c9b184;font:10.5px/1.55 var(--mono)}
+.m-note b{color:var(--warn);font-weight:400}
+.m-note .src{margin-left:auto;color:#6d6250;white-space:nowrap}
+.m-legend{display:flex;align-items:center;gap:14px;margin:0 16px 0 0;padding:8px 0 0;font:10px/1 var(--mono);color:#5f6b79}
+.m-legend .right{margin-left:auto;color:#5a6674}
+@media (max-width:1100px){
+  .mediatable .m-dim,.mediatable .m-kind{display:none}
+  .mediatable .m-use{width:150px}
+}
 </style>
 </head>
 <body>
@@ -487,93 +539,138 @@ table.installed .state{font:10.5px/1 var(--mono)}
         </div>
       </section>
 
+      <!-- ============ SCREEN BAND · PAGES → MEDIA ============ -->
+      <section class="band" aria-label="Next screen: media">
+        <div class="band__row">
+          <span class="band__idx">screen 02 / 05</span>
+          <h2 class="band__title">Media<span class="band__sub">photos &amp; files</span></h2>
+          <span class="band__fact">6 assets · 780,406 B · 1 gated</span>
+          <span class="band__cue">keep scrolling ↓</span>
+        </div>
+        <div class="band__note">Same shell, same keys. The page list above writes these keys into bodies; this screen owns them.</div>
+      </section>
+
       <!-- ============ MEDIA ============ -->
-      <section class="screen" data-screen="media" hidden>
+      <section class="screen" data-screen="pages media">
         <div class="pagehead">
-          <div><h1>Media <span class="tag">cms_asset</span><span class="pagehead__sub">4 assets · 1 gated · 3.1 MB</span></h1></div>
+          <div><h1>Media <span class="tag">cms_asset</span><span class="pagehead__sub">6 rows · 1 gated · 762 KB</span></h1></div>
           <div class="pagehead__actions">
-            <div class="seg"><button class="is-on">All 4</button><button>Images 3</button><button>Documents 1</button><button>Gated 1</button></div>
-            <button class="btn">Upload</button>
+            <div class="seg"><button class="is-on">All 6</button><button>Images 5</button><button>Documents 1</button><button>Gated 1</button></div>
+            <button class="btn">Upload <kbd>U</kbd></button>
           </div>
         </div>
         <div class="filterbar">
           <label class="search"><span>/</span><input placeholder="key, filename, alt or kind…" aria-label="Search media"></label>
-          <span class="filterbar__hint">sort:created↓&nbsp;&nbsp;thumbs:webp&nbsp;&nbsp;limit:200</span>
+          <span class="filterbar__hint">sort:key↑&nbsp;&nbsp;uses:any&nbsp;&nbsp;limit:200</span>
         </div>
 
         <div class="split">
           <div class="split__main">
-            <div class="assetgrid">
-              <figure class="asset">
-                <div class="asset__frame"><span class="badge">public</span>
-                  <div class="ph ph--home"></div>
-                </div>
-                <figcaption class="asset__cap">
-                  <span class="asset__key">banner/home.jpg</span>
-                  <span class="asset__meta">image · 1600×900 · 412 KB</span>
-                </figcaption>
-              </figure>
+            <table class="grid mediatable">
+              <thead>
+                <tr>
+                  <th class="m-th"></th>
+                  <th>Key</th>
+                  <th class="m-kind">Kind</th>
+                  <th class="m-dim">Dimensions</th>
+                  <th class="m-size">Size</th>
+                  <th class="m-use">Used by</th>
+                  <th class="m-access">Access</th>
+                  <th class="m-act"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="m-row" tabindex="0">
+                  <td class="m-th"><span class="mth"><span class="ph ph--home"></span></span></td>
+                  <td class="m-key">banner/home.jpg</td>
+                  <td class="m-kind">image</td>
+                  <td class="m-dim">1600 × 900</td>
+                  <td class="m-size">1,226 B</td>
+                  <td class="m-use"><b>3 pages</b><span class="m-paths">/ · /about · /pricing</span></td>
+                  <td class="m-access"><span class="m-pub">public</span></td>
+                  <td class="m-act"><button class="rowlink">open</button></td>
+                </tr>
+                <tr class="m-row is-focus" tabindex="0">
+                  <td class="m-th"><span class="mth"><span class="ph ph--clay"></span></span></td>
+                  <td class="m-key">gallery/one.jpg</td>
+                  <td class="m-kind">image</td>
+                  <td class="m-dim">800 × 600</td>
+                  <td class="m-size">940 B</td>
+                  <td class="m-use"><b>1 page</b><span class="m-paths">/about</span></td>
+                  <td class="m-access"><span class="m-pub">public</span></td>
+                  <td class="m-act"><button class="rowlink">open</button></td>
+                </tr>
+                <tr class="m-row" tabindex="0">
+                  <td class="m-th"><span class="mth"><span class="ph ph--studio"></span></span></td>
+                  <td class="m-key">hero/clinic.jpg</td>
+                  <td class="m-kind">image</td>
+                  <td class="m-dim">2000 × 1125</td>
+                  <td class="m-size">210 KB</td>
+                  <td class="m-use"><b>1 page</b><span class="m-paths">/</span></td>
+                  <td class="m-access"><span class="m-pub">public</span></td>
+                  <td class="m-act"><button class="rowlink">open</button></td>
+                </tr>
+                <tr class="m-row" tabindex="0">
+                  <td class="m-th"><span class="mth"><span class="ph ph--clay"></span></span></td>
+                  <td class="m-key">team/portrait.jpg</td>
+                  <td class="m-kind">image</td>
+                  <td class="m-dim">720 × 720</td>
+                  <td class="m-size">96 KB</td>
+                  <td class="m-use"><b>1 page</b><span class="m-paths">/about</span></td>
+                  <td class="m-access"><span class="m-pub">public</span></td>
+                  <td class="m-act"><button class="rowlink">open</button></td>
+                </tr>
+                <tr class="m-row" tabindex="0">
+                  <td class="m-th"><span class="mth"><span class="ph ph--studio"></span></span></td>
+                  <td class="m-key">uploads/scan-2019.png</td>
+                  <td class="m-kind">image</td>
+                  <td class="m-dim">1200 × 1600</td>
+                  <td class="m-size">44 KB</td>
+                  <td class="m-use"><b class="m-zero">0 pages</b><span class="m-paths">unused — safe to delete</span></td>
+                  <td class="m-access"><span class="m-pub">public</span></td>
+                  <td class="m-act"><button class="rowlink rowlink--danger">delete</button></td>
+                </tr>
+                <tr class="m-row m-row--gated" tabindex="0" aria-describedby="gated-why">
+                  <td class="m-th"><span class="mth mth--lock" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg></span></td>
+                  <td class="m-key"><svg class="lk" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>vault/paid.pdf</td>
+                  <td class="m-kind">document</td>
+                  <td class="m-dim" title="one page">A4 · 1 p</td>
+                  <td class="m-size">410 KB</td>
+                  <td class="m-use"><b>1 page</b><span class="m-paths">/pricing · download</span></td>
+                  <td class="m-access"><span class="m-gated"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>gated · code required</span></td>
+                  <td class="m-act"><button class="btn" title="Gated assets are shared by code, not by link">Issue code</button></td>
+                </tr>
+              </tbody>
+            </table>
 
-              <figure class="asset">
-                <div class="asset__frame"><span class="badge">public</span>
-                  <div class="ph ph--clay"></div>
-                </div>
-                <figcaption class="asset__cap">
-                  <span class="asset__key">gallery/one.jpg</span>
-                  <span class="asset__meta">image · 1200×1500 · 288 KB</span>
-                </figcaption>
-              </figure>
-
-              <figure class="asset">
-                <div class="asset__frame"><span class="badge">public</span>
-                  <div class="ph ph--studio"></div>
-                </div>
-                <figcaption class="asset__cap">
-                  <span class="asset__key">team/studio.jpg</span>
-                  <span class="asset__meta">image · 1600×900 · 364 KB</span>
-                </figcaption>
-              </figure>
-
-              <figure class="asset is-sel">
-                <div class="asset__frame"><span class="badge badge--gated">gated</span>
-                  <div class="ph ph--pdf"><div class="doc"><i></i><i></i><i></i><i></i><i></i><b>PDF</b></div></div>
-                </div>
-                <figcaption class="asset__cap">
-                  <span class="asset__key">vault/paid.pdf</span>
-                  <span class="asset__meta">document · 18 pp · 2.0 MB</span>
-                </figcaption>
-              </figure>
+            <div class="m-note" id="gated-why">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="flex:none;margin-top:2px" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
+              <span><b>vault/paid.pdf is gated · code required.</b> There is no public URL and nothing to render, so the thumbnail is a lock. The picker refuses it; the delete action is withheld — revoke the code instead.</span>
+              <span class="src">asset.access = gated</span>
             </div>
 
-            <div class="audit" style="margin-right:16px">
-              <div class="audit__head">
-                <span>Where these files are used</span><span>4 keys</span>
-                <span class="right">a key is frozen inside body_html · renames leave an alias</span>
-              </div>
-              <table class="grid audit__t">
-                <tbody>
-                  <tr><td class="a-a" style="width:150px;color:var(--ink)">banner/home.jpg</td><td>/ · hero image · 1 use</td><td class="a-w">public</td></tr>
-                  <tr><td class="a-a" style="width:150px;color:var(--ink)">gallery/one.jpg</td><td>/about · figure · 1 use</td><td class="a-w">public</td></tr>
-                  <tr><td class="a-a" style="width:150px;color:var(--ink)">team/studio.jpg</td><td>/ · gallery · 1 use</td><td class="a-w">public</td></tr>
-                  <tr><td class="a-a" style="width:150px;color:var(--ink)">vault/paid.pdf</td><td>/pricing · download-button · 1 use</td><td class="a-w" style="color:var(--warn)">gated</td></tr>
-                </tbody>
-              </table>
+            <div class="m-legend">
+              <span><kbd>j</kbd><kbd>k</kbd> move</span>
+              <span><kbd>↵</kbd> open</span>
+              <span><kbd>space</kbd> select</span>
+              <span><kbd>⌫</kbd> delete · uses=0 only</span>
+              <span class="right">focused 2 / 6 · ring is the only affordance</span>
             </div>
           </div>
 
           <aside class="inspect">
-            <div class="inspect__head"><span>Selection</span><span>asset 4/4</span></div>
+            <div class="inspect__head"><span>Selection</span><span>asset 6/6</span></div>
             <h2>vault/paid.pdf</h2>
             <p class="inspect__title">Paid field guide — 2026 edition</p>
             <dl class="facts">
               <div><dt>kind</dt><dd>document</dd></div>
               <div><dt>mime</dt><dd>application/pdf</dd></div>
-              <div><dt>access</dt><dd><span class="pill pill--draft">gated</span></dd></div>
-              <div><dt>encrypted</dt><dd>yes · argon2 code</dd></div>
-              <div><dt>bytes</dt><dd>2,097,152</dd></div>
-              <div><dt>rendition</dt><dd>none</dd></div>
+              <div><dt>access</dt><dd><span class="m-gated"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>gated · code required</span></dd></div>
+              <div><dt>code</dt><dd>argon2 · 8 downloads</dd></div>
+              <div><dt>bytes</dt><dd>419,840</dd></div>
+              <div><dt>uses</dt><dd>1 · /pricing</dd></div>
               <div><dt>sha256</dt><dd>7d31c4a8…9e10</dd></div>
-              <div><dt>storage</dt><dd>content/media/7d/7d31…pdf</dd></div>
+              <div><dt>storage</dt><dd>content/vault/7d/7d31…pdf</dd></div>
             </dl>
             <div class="inspect__actions">
               <button class="btn btn--primary">Issue code</button>
@@ -581,7 +678,7 @@ table.installed .state{font:10.5px/1 var(--mono)}
             </div>
             <div class="inspect__sec">
               <h3>Why there is no thumbnail</h3>
-              <p class="explain" style="margin:0"><b>Gated assets have no farm URL.</b> The grid lists the file because this is the inventory; it is not publishable, and the picker refuses it. Share it with a download code instead.</p>
+              <p class="explain" style="margin:0"><b>Gated assets have no farm URL.</b> The row lists the file because this is the inventory; it is not publishable, and the picker refuses it. Share it with a download code instead.</p>
             </div>
             <div class="inspect__sec">
               <h3>Referenced by</h3>
@@ -856,8 +953,10 @@ table.installed .state{font:10.5px/1 var(--mono)}
 (function(){
   var tabs = Array.prototype.slice.call(document.querySelectorAll('[data-screen-tab]'));
   var panes = Array.prototype.slice.call(document.querySelectorAll('section[data-screen]'));
+  var bands = Array.prototype.slice.call(document.querySelectorAll('.band'));
   function show(id){
-    panes.forEach(function(p){ p.hidden = p.getAttribute('data-screen') !== id; });
+    panes.forEach(function(p){ p.hidden = p.getAttribute('data-screen').split(/\s+/).indexOf(id) === -1; });
+    bands.forEach(function(b){ b.hidden = !(id === 'pages' || id === 'media'); });
     tabs.forEach(function(t){
       var on = t.getAttribute('data-screen-tab') === id;
       if (t.getAttribute('role') === 'tab') t.setAttribute('aria-selected', on ? 'true' : 'false');

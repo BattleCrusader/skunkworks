@@ -45,7 +45,7 @@ Useful flags:
 | `--target DIR` | install root (default `./data`) |
 | `--bundle DIR` | bundle root; `BUNDLE.json` is verified if present |
 | `--seed FILE` | `data/control.seed.json` inside a bundle, or your own |
-| `--admin-host HOST` | admin hostname (default `admin.skw.test`) |
+| `--admin-host HOST` | legacy: after D37 this only derives the demos vhost host (default `admin.skw.test`) |
 | `--no-compose` | stop after bootstrap — **use this to inspect before going live** |
 | `--verify-login` | boot the app in-process and log in end to end |
 | `--skip-dns` | skip the DNS check even with `--domain` |

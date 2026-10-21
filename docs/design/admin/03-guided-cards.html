@@ -278,6 +278,38 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   .mediagrid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .edbody{grid-template-columns:190px minmax(0,1fr) 250px}
 }
+
+/* ---- screen band: pages → photos & files ---- */
+.band{max-width:1060px;margin:0 auto;padding:30px 28px 4px}
+.band__rule{display:flex;align-items:center;gap:14px;color:var(--blue-2);font-size:10px;font-weight:650;letter-spacing:.18em;text-transform:uppercase}
+.band__rule::before,.band__rule::after{content:"";flex:1;height:1px;background:var(--line-2)}
+.band__row{display:flex;align-items:center;gap:14px;margin-top:16px;background:#fff;border:1px solid var(--line);border-radius:var(--r-lg);padding:14px 18px;box-shadow:var(--shadow-sm)}
+.band__icon{width:38px;height:38px;border-radius:12px;background:var(--blue-soft);color:var(--blue-2);display:grid;place-items:center;flex:none;border:1px solid var(--blue-line)}
+.band__row h2{margin:0;font-size:17px;font-weight:650;letter-spacing:-.01em}
+.band__row p{margin:2px 0 0;font-size:13px;color:var(--muted)}
+.band__count{margin-left:auto;font-size:12px;color:var(--muted);background:var(--card-2);border:1px solid var(--line);border-radius:999px;padding:5px 11px;white-space:nowrap}
+
+/* ---- library tiles ---- */
+.btn--lg{height:44px;padding:0 18px;font-size:14.5px;border-radius:12px}
+.btn--lg .ic{width:17px;height:17px}
+.pill--lock{background:var(--amber-soft);color:#8a4a09}
+.asset__use{display:flex;align-items:center;gap:6px;margin-top:9px;padding:5px 8px;background:var(--card-2);border:1px solid var(--line);border-radius:8px;font-size:11.5px;color:var(--ink-2);line-height:1.35}
+.asset__use b{font-weight:650;color:var(--ink)}
+.asset__use svg{color:var(--faint);flex:none}
+.asset__use.is-unused{background:var(--green-soft);border-color:#c6ebdc;color:#0b7a55}
+.asset__use.is-unused b{color:#0b7a55}
+.asset__use.is-gated{background:var(--amber-soft);border-color:var(--amber-line);color:#8a4a09}
+.asset__use.is-gated b{color:#8a4a09}
+.asset__use.is-gated svg{color:#b5762c}
+.asset--gated{border:1.5px dashed var(--amber-line);background:#fffaf1;box-shadow:none}
+.asset--gated:hover{box-shadow:0 8px 20px rgba(180,83,9,.12);border-color:#e6c38f}
+.asset__frame--gated{background:repeating-linear-gradient(135deg,#fdf3e2 0 9px,#f9ecd8 9px 18px);border-bottom:1px dashed var(--amber-line);display:grid;place-items:center}
+.locked{display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center;padding:12px}
+.locked__ring{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;color:#8a4a09;background:#fff;border:1.5px solid var(--amber-line);box-shadow:0 6px 14px rgba(180,83,9,.14)}
+.locked__word{font-size:11px;font-weight:650;letter-spacing:.04em;color:#8a4a09;background:#fff;border:1px solid var(--amber-line);border-radius:999px;padding:5px 10px;white-space:nowrap}
+.locked__sub{font-size:11.5px;color:#9a6a30;max-width:24ch;line-height:1.4}
+.asset--gated .asset__foot .btn{margin-left:auto}
+.asset--gated .asset__note{margin-top:9px}
 </style>
 </head>
 <body>
@@ -376,28 +408,44 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
     </div>
   </section>
 
+  <!-- ============ SCREEN BAND · PAGES → PHOTOS & FILES ============ -->
+  <div class="band" aria-label="Next screen: photos and files">
+    <div class="band__rule"><span>Screen two</span></div>
+    <div class="band__row">
+      <span class="band__icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14m0 0-6-6m6 6 6-6"/></svg></span>
+      <div>
+        <h2>Photos &amp; files</h2>
+        <p>Everything you've uploaded, and which pages use it.</p>
+      </div>
+      <span class="band__count">6 files · 762 KB</span>
+    </div>
+  </div>
+
   <!-- ============ MEDIA ============ -->
-  <section class="screen" data-screen="media" hidden>
+  <section class="screen" data-screen="pages media">
     <div class="pagehead">
       <div>
         <h1>Photos &amp; files</h1>
-        <p>Four files, 3.1 MB in total. Images can appear on any page; documents stay private until you share a code.</p>
+        <p>Six files, 762 KB. Each tile says how many pages use it, so you always know what's safe to remove.</p>
       </div>
-      <div class="actions"><span class="pill pill--private">3 public · 1 private</span></div>
+      <div class="actions">
+        <span class="pill pill--private">5 public · 1 private</span>
+        <button class="btn btn--primary btn--lg"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Add photos</button>
+      </div>
     </div>
 
     <div class="dropzone">
       <span class="dropzone__icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></span>
-      <div><b>Drag a file here</b><p>or choose one from your computer · JPG, PNG, PDF, MP4 · up to 20 MB</p></div>
-      <button class="btn">Choose a file</button>
+      <div><b>Drag photos here</b><p>or use Add photos · JPG, PNG, PDF · up to 20 MB each</p></div>
+      <button class="btn">Choose files</button>
     </div>
 
     <div class="toolbar">
       <div class="chips">
-        <button class="chip is-on">All 4</button>
-        <button class="chip">Images 3</button>
-        <button class="chip">Documents 1</button>
-        <button class="chip">Private 1</button>
+        <button class="chip is-on">All 6</button>
+        <button class="chip">Photos 5</button>
+        <button class="chip">Files 1</button>
+        <button class="chip">Not used 1</button>
       </div>
       <label class="search">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -407,46 +455,77 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 
     <div class="mediagrid">
       <figure class="asset">
-        <div class="asset__frame"><span class="kind">Image</span><div class="ph ph--home"></div></div>
+        <div class="asset__frame"><span class="kind">Photo</span><div class="ph ph--home"></div></div>
         <figcaption class="asset__body">
           <div class="asset__name">banner/home.jpg</div>
-          <div class="asset__meta">1600 × 900 · 412 KB · used on Home</div>
+          <div class="asset__meta">1600 × 900 · 1.2 KB</div>
+          <div class="asset__use"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="13" height="16" rx="2"/><path d="M8 4h13v16H8"/></svg>Used on <b>3 pages</b></div>
           <div class="asset__foot"><span class="pill pill--live"><i></i>Public</span><button class="more" title="More">⋯</button></div>
         </figcaption>
       </figure>
 
       <figure class="asset">
-        <div class="asset__frame"><span class="kind">Image</span><div class="ph ph--clay"></div></div>
+        <div class="asset__frame"><span class="kind">Photo</span><div class="ph ph--clay"></div></div>
         <figcaption class="asset__body">
           <div class="asset__name">gallery/one.jpg</div>
-          <div class="asset__meta">1200 × 1500 · 288 KB · used on About</div>
+          <div class="asset__meta">800 × 600 · 940 B</div>
+          <div class="asset__use"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="13" height="16" rx="2"/><path d="M8 4h13v16H8"/></svg>Used on <b>1 page</b></div>
           <div class="asset__foot"><span class="pill pill--live"><i></i>Public</span><button class="more" title="More">⋯</button></div>
         </figcaption>
       </figure>
 
       <figure class="asset">
-        <div class="asset__frame"><span class="kind">Image</span><div class="ph ph--studio"></div></div>
+        <div class="asset__frame"><span class="kind">Photo</span><div class="ph ph--studio"></div></div>
         <figcaption class="asset__body">
-          <div class="asset__name">team/studio.jpg</div>
-          <div class="asset__meta">1600 × 900 · 364 KB · used on Home</div>
+          <div class="asset__name">hero/clinic.jpg</div>
+          <div class="asset__meta">2000 × 1125 · 210 KB</div>
+          <div class="asset__use"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="13" height="16" rx="2"/><path d="M8 4h13v16H8"/></svg>Used on <b>1 page</b></div>
           <div class="asset__foot"><span class="pill pill--live"><i></i>Public</span><button class="more" title="More">⋯</button></div>
         </figcaption>
       </figure>
 
       <figure class="asset">
-        <div class="asset__frame"><span class="kind lock">PDF · private</span><div class="ph ph--pdf"><div class="doc"><i></i><i></i><i></i><i></i><i></i><b>PDF</b></div></div></div>
+        <div class="asset__frame"><span class="kind">Photo</span><div class="ph ph--clay"></div></div>
+        <figcaption class="asset__body">
+          <div class="asset__name">team/portrait.jpg</div>
+          <div class="asset__meta">720 × 720 · 96 KB</div>
+          <div class="asset__use"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="13" height="16" rx="2"/><path d="M8 4h13v16H8"/></svg>Used on <b>1 page</b></div>
+          <div class="asset__foot"><span class="pill pill--live"><i></i>Public</span><button class="more" title="More">⋯</button></div>
+        </figcaption>
+      </figure>
+
+      <figure class="asset">
+        <div class="asset__frame"><span class="kind">Photo</span><div class="ph ph--studio"></div></div>
+        <figcaption class="asset__body">
+          <div class="asset__name">uploads/scan-2019.png</div>
+          <div class="asset__meta">1200 × 1600 · 44 KB</div>
+          <div class="asset__use is-unused"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Not used anywhere — safe to delete</div>
+          <div class="asset__foot"><span class="pill pill--live"><i></i>Public</span><button class="more" title="More">⋯</button></div>
+        </figcaption>
+      </figure>
+
+      <figure class="asset asset--gated">
+        <div class="asset__frame asset__frame--gated">
+          <span class="kind lock">Private file</span>
+          <div class="locked">
+            <span class="locked__ring" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg></span>
+            <span class="locked__word">gated · code required</span>
+            <span class="locked__sub">No preview — visitors need a code</span>
+          </div>
+        </div>
         <figcaption class="asset__body">
           <div class="asset__name">vault/paid.pdf</div>
-          <div class="asset__meta">18 pages · 2.0 MB · used on Pricing</div>
-          <div class="asset__foot"><span class="pill pill--draft"><i></i>Private</span><button class="more" title="More">⋯</button></div>
-          <div class="asset__note">Visitors can only open this with a download code you give them.</div>
+          <div class="asset__meta">PDF · A4 · 1 page · 410 KB</div>
+          <div class="asset__use is-gated"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="13" height="16" rx="2"/><path d="M8 4h13v16H8"/></svg>Used on <b>1 page</b> — Pricing</div>
+          <div class="asset__foot"><span class="pill pill--lock"><i></i>Needs a code</span><button class="btn btn--sm">Share</button></div>
+          <div class="asset__note">People can only open this with a code you give them. Deleting it breaks the download on Pricing.</div>
         </figcaption>
       </figure>
     </div>
 
     <div class="helper">
-      <svg class="ic" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-      <span><b>Private files are safe by default.</b> They never get a public web address. Share one by issuing a code that expires and can be limited to a number of downloads.</span>
+      <svg class="ic" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></svg>
+      <span><b>Can I delete a file?</b> Yes — but if it says “Used on 3 pages”, those pages will show a gap. A file marked “safe to delete” isn't used anywhere. Private files can't be deleted while a code is active.</span>
     </div>
   </section>
 
@@ -660,8 +739,10 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 (function(){
   var tabs = Array.prototype.slice.call(document.querySelectorAll('[data-screen-tab]'));
   var panes = Array.prototype.slice.call(document.querySelectorAll('section[data-screen]'));
+  var bands = Array.prototype.slice.call(document.querySelectorAll('.band'));
   function show(id){
-    panes.forEach(function(p){ p.hidden = p.getAttribute('data-screen') !== id; });
+    panes.forEach(function(p){ p.hidden = p.getAttribute('data-screen').split(/\s+/).indexOf(id) === -1; });
+    bands.forEach(function(b){ b.hidden = !(id === 'pages' || id === 'media'); });
     tabs.forEach(function(t){
       var on = t.getAttribute('data-screen-tab') === id;
       if (t.getAttribute('role') === 'tab') t.setAttribute('aria-selected', on ? 'true' : 'false');

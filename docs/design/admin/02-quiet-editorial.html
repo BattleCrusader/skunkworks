@@ -245,6 +245,32 @@ h1.display em{font-style:italic;color:var(--ink-2)}
   .cols,.plugincols{gap:44px}
   h1.display{font-size:54px}
 }
+
+/* ---- screen band: pages → library ---- */
+.band{padding:0 0 4px;text-align:center}
+.band__rule{display:flex;align-items:center;gap:18px;color:var(--oxblood);font:10px/1 var(--sans);letter-spacing:.24em;text-transform:uppercase}
+.band__rule::before,.band__rule::after{content:"";flex:1;height:1px;background:var(--rule)}
+.band__title{font:400 36px/1.1 var(--serif);letter-spacing:-.025em;margin:22px 0 8px}
+.band__title em{font-style:italic;color:var(--ink-2)}
+.band__note{font:15px/1.55 var(--serif);color:var(--muted);margin:0 auto;max-width:50ch}
+
+/* ---- library captions ---- */
+.plate__use{margin-top:11px;padding-top:9px;border-top:1px solid var(--rule-soft);font:11.5px/1.55 var(--sans);color:var(--ink-2)}
+.plate__use b{font-weight:600}
+.plate__use span{display:block;font:10px/1.7 var(--mono);color:var(--muted);letter-spacing:.02em}
+.plate__use.is-unused{color:var(--green);border-top-color:rgba(51,82,63,.22)}
+.plate__use.is-unused .ok{color:var(--green);font-family:var(--sans);font-size:10px;letter-spacing:.14em;text-transform:uppercase;margin-top:3px}
+.plate__use.is-gated{color:var(--oxblood);border-top-color:rgba(124,53,41,.24)}
+.plate__use.is-gated span{color:#8a5b50}
+.plate__tag.is-unused{color:var(--muted);border-color:rgba(28,26,22,.14);background:rgba(244,239,228,.9)}
+
+/* ---- sealed plate: a permissioned file, not a picture ---- */
+.gallery .plate--sealed .plate__img--sealed{aspect-ratio:16/6}
+.plate__img--sealed{background:repeating-linear-gradient(135deg,#f2ebdb 0 9px,#ece3d1 9px 18px);border:1px solid rgba(124,53,41,.26);box-shadow:inset 0 0 0 7px #f9f4e8,inset 0 0 0 8px rgba(124,53,41,.16);display:grid;place-items:center}
+.sealed{display:flex;flex-direction:column;align-items:center;gap:11px;text-align:center;padding:16px}
+.sealed__seal{width:58px;height:58px;border-radius:50%;display:grid;place-items:center;color:#f8f1e2;background:radial-gradient(120% 120% at 32% 24%,#a04a3a,#6d2c21 72%);border:1px solid #551f17;box-shadow:0 10px 20px rgba(124,53,41,.26),inset 0 1px 0 rgba(255,255,255,.22)}
+.sealed__req{font:10px/1 var(--sans);letter-spacing:.26em;text-transform:uppercase;color:var(--oxblood);background:var(--paper);border:1px solid rgba(124,53,41,.32);padding:7px 10px}
+.sealed__sub{font:italic 14px/1.4 var(--serif);color:#7d6a5b}
 </style>
 </head>
 <body>
@@ -339,21 +365,28 @@ h1.display em{font-style:italic;color:var(--ink-2)}
     </div>
   </section>
 
+  <!-- ============ SCREEN BAND · PAGES → LIBRARY ============ -->
+  <div class="band" aria-label="Next screen: the library">
+    <div class="band__rule"><span>Screen two</span></div>
+    <h2 class="band__title">The <em>library.</em></h2>
+    <p class="band__note">What the pages above are made of. Six files, catalogued, each with the pages that use it.</p>
+  </div>
+
   <!-- ============ MEDIA ============ -->
-  <section class="screen" data-screen="media" hidden>
-    <div class="kicker">The library · 4 files · 3.1 MB</div>
+  <section class="screen" data-screen="pages media">
+    <div class="kicker">The library · six files · 762 KB</div>
     <div class="mediahead">
-      <h1 class="display">Pictures,<br>and one <em>locked file.</em></h1>
-      <p class="lede" style="max-width:32ch">Everything the site can show, kept in one place. A gated file is never a public URL.</p>
+      <h1 class="display">Everything the site<br>can <em>show.</em></h1>
+      <p class="lede" style="max-width:34ch">Plates, not thumbnails. Every caption ends with the pages that use the file — which is the only question worth asking before you delete one.</p>
     </div>
 
     <div class="filters">
       <label><span>Find</span><input placeholder="key, filename, alt text…" aria-label="Search the library"></label>
       <div class="chips">
-        <button class="is-on">All 4</button>
-        <button>Images 3</button>
-        <button>Documents 1</button>
-        <button>Gated 1</button>
+        <button class="is-on">All 6</button>
+        <button>Photos 5</button>
+        <button>Files 1</button>
+        <button>Not used 1</button>
       </div>
     </div>
 
@@ -362,7 +395,9 @@ h1.display em{font-style:italic;color:var(--ink-2)}
         <div class="plate__img"><span class="plate__tag">Public</span><div class="ph ph--home"></div></div>
         <figcaption class="plate__cap">
           <div class="plate__key">banner/home.jpg</div>
-          <div class="plate__meta">image · 1600 × 900 · 412 KB</div>
+          <div class="plate__meta">JPEG · 1600 × 900 · 1,226 bytes</div>
+          <p class="plate__note">The wide banner behind the masthead. Cropped to sixteen by nine at every width.</p>
+          <div class="plate__use">Used on <b>three pages</b><span>/ · /about · /pricing</span></div>
         </figcaption>
       </figure>
 
@@ -370,31 +405,63 @@ h1.display em{font-style:italic;color:var(--ink-2)}
         <div class="plate__img"><span class="plate__tag">Public</span><div class="ph ph--clay"></div></div>
         <figcaption class="plate__cap">
           <div class="plate__key">gallery/one.jpg</div>
-          <div class="plate__meta">image · 1200 × 1500 · 288 KB</div>
+          <div class="plate__meta">JPEG · 800 × 600 · 940 bytes</div>
+          <p class="plate__note">The single figure that sits beside the About copy.</p>
+          <div class="plate__use">Used on <b>one page</b><span>/about</span></div>
         </figcaption>
       </figure>
 
       <figure class="plate">
         <div class="plate__img"><span class="plate__tag">Public</span><div class="ph ph--studio"></div></div>
         <figcaption class="plate__cap">
-          <div class="plate__key">team/studio.jpg</div>
-          <div class="plate__meta">image · 1600 × 900 · 364 KB</div>
+          <div class="plate__key">hero/clinic.jpg</div>
+          <div class="plate__meta">JPEG · 2000 × 1125 · 210 KB</div>
+          <p class="plate__note">The full-bleed hero on the home page, above the fold.</p>
+          <div class="plate__use">Used on <b>one page</b><span>/</span></div>
         </figcaption>
       </figure>
 
-      <figure class="plate plate--wide">
-        <div class="plate__img"><span class="plate__tag is-gated">Gated</span><div class="ph ph--pdf"><div class="sheetdoc"><i></i><i></i><i></i><i></i><i></i><b>PDF</b></div></div></div>
+      <figure class="plate">
+        <div class="plate__img"><span class="plate__tag">Public</span><div class="ph ph--clay"></div></div>
+        <figcaption class="plate__cap">
+          <div class="plate__key">team/portrait.jpg</div>
+          <div class="plate__meta">JPEG · 720 × 720 · 96 KB</div>
+          <p class="plate__note">Square portrait, set into the About page's closing paragraph.</p>
+          <div class="plate__use">Used on <b>one page</b><span>/about</span></div>
+        </figcaption>
+      </figure>
+
+      <figure class="plate">
+        <div class="plate__img"><span class="plate__tag is-unused">Unused</span><div class="ph ph--studio"></div></div>
+        <figcaption class="plate__cap">
+          <div class="plate__key">uploads/scan-2019.png</div>
+          <div class="plate__meta">PNG · 1200 × 1600 · 44 KB</div>
+          <p class="plate__note">A scan left over from an earlier draft. Nothing points at it.</p>
+          <div class="plate__use is-unused">Not used on any page<span class="ok">safe to delete</span></div>
+        </figcaption>
+      </figure>
+
+      <figure class="plate plate--wide plate--sealed">
+        <div class="plate__img plate__img--sealed">
+          <span class="plate__tag is-gated">Gated</span>
+          <div class="sealed">
+            <span class="sealed__seal" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg></span>
+            <span class="sealed__req">gated · code required</span>
+            <span class="sealed__sub">Sealed. There is no preview to show.</span>
+          </div>
+        </div>
         <figcaption class="plate__cap">
           <div class="plate__key">vault/paid.pdf</div>
-          <div class="plate__meta">document · 18 pages · 2.0 MB</div>
-          <div class="plate__note">No public URL. Shared only with a download code. <a href="#">Issue a code →</a></div>
+          <div class="plate__meta">PDF · A4 · one page · 410 KB</div>
+          <p class="plate__note">A permissioned file, not a picture: no public address, no farm URL, no thumbnail to render. Visitors reach it only through a download code you issue, and the code expires. <a href="#">Issue a code →</a></p>
+          <div class="plate__use is-gated">Used on <b>one page</b><span>/pricing · download button</span></div>
         </figcaption>
       </figure>
     </div>
 
     <div class="galleryfoot">
       <span>Keys are lower-case and frozen inside page bodies · renames leave an alias</span>
-      <span>4 of 4 shown · sorted by newest</span>
+      <span>6 of 6 shown · sorted by key</span>
     </div>
   </section>
 
@@ -592,8 +659,10 @@ h1.display em{font-style:italic;color:var(--ink-2)}
 (function(){
   var tabs = Array.prototype.slice.call(document.querySelectorAll('[data-screen-tab]'));
   var panes = Array.prototype.slice.call(document.querySelectorAll('section[data-screen]'));
+  var bands = Array.prototype.slice.call(document.querySelectorAll('.band'));
   function show(id){
-    panes.forEach(function(p){ p.hidden = p.getAttribute('data-screen') !== id; });
+    panes.forEach(function(p){ p.hidden = p.getAttribute('data-screen').split(/\s+/).indexOf(id) === -1; });
+    bands.forEach(function(b){ b.hidden = !(id === 'pages' || id === 'media'); });
     tabs.forEach(function(t){
       var on = t.getAttribute('data-screen-tab') === id;
       if (t.getAttribute('role') === 'tab') t.setAttribute('aria-selected', on ? 'true' : 'false');
