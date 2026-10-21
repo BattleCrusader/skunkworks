@@ -12,9 +12,9 @@ Multi-tenant Astro CMS. Spec-first: `IDEA.md` (30+ decisions) → `docs/sds/SDS.
 | **S1** hosting core | ✅ QA GO | tenancy sweep, real-nginx e2e, admin 404-on-tenant-host (110 combos, 0 oracle) |
 | **S2** admin + data plane | ✅ QA GO | CSRF 12/12, DDL rollback by schema digest (53 objects), plan-based publish refusal, segment audit seal |
 | **S3** assets + downloads | ✅ QA GO (2 rounds) | one use per token under 8 parallel ranges (3 ways), fail-closed watermarking under real faults, gated 404 byte-identical to missing |
-| **S4** editor + exporters + install + plugins | ⏳ **feature-complete, final QA running** | 587 tests, 10/10 components survive a real browser, 3 exporters byte-identical, install 21.2 s, 12/12 hooks live, 2,908 lines of plugin containment deleted |
+| **S4** editor + exporters + install + plugins | ✅ **GO** (mechanism) | 597 tests, 10/10 components survive a real browser, 3 exporters byte-identical, install 21.2 s, 12/12 hooks live, 2,908 lines of containment deleted, 22 mutations each red only under its own assertion |
 
-**587 tests · 0 skipped · `hermes verify` ok=true · zero leaked containers · three consecutive green runs.**
+**597 tests · 0 skipped · `hermes verify` ok=true · zero leaked containers · four consecutive green runs at load 4.8-8.9.**
 
 ---
 
@@ -62,19 +62,22 @@ mtimes pinned; at +1 h only `EXPORT-NOTES.md` + declared `export_now` differ.
 
 Not one was a missing test. Each was aimed wrong. **Assert on the wire, not on the source.**
 
+**And a fifth, found in the last hour: a gate can be perfectly pointed and still tell a lie.** `skwctl plugin install` printed *"capabilities none — it can reach neither this site's data nor its mailer"* for a zero-capability package, while in-process a plugin can `import better-sqlite3` and read `data/control.db`. Nothing failed, because nothing asserted that the operator-facing text matched the architecture. The fix is a gate that **parses the required sentence out of the errata file and asserts it character for character** — doc and CLI can no longer drift apart. **Assert on the reassurance, not only on the mechanism.**
+
 ---
 
 ## The plugin model (corrected 2026-10-21)
 
 Plugins run **in-process inside the website container, WordPress-style** (D36) — the user overruled the contained sidecar. Deliberately accepted: a synchronous hang cannot be timed out; a signature buys author identity and tamper detection, **not containment**. Scoping is the per-request facade plus a prunable registry, not a sandbox.
 
-## Open before S4 GO
+## Open — honestly uncovered
 
-1. **TLS is never exercised** — every harness strips 443/`ssl_*`, so a bad cert path is invisible.
-2. **ACME cannot start** — `acme-companion` needs a docker-gen service not in the compose file; LE cannot validate `acme.test`.
-3. **Registry pull unproven** — compose driven with locally built `skw-app:s4d` / `skw-runner:s4d`.
-4. **Plugin lifecycle gaps** — no restart signal after install, no uninstall/rollback, no signature/trusted-key flags on `skwctl plugin install` (unsigned only), no audit row on a refused install, one tenant per command, copied package ownership/mode unasserted.
-5. **No composed plugin invoke** — the runner is wired, but no HTTP route drives it in a composed stack.
+1. **§16 S4 row 12** (clean-host install with images present) — no released image exists; the local leg is 841 ms and is not that row's condition.
+2. **The synchronous-hang claim** — verified by reading `withTimeout` and the spec, never by hanging the suite. It is a documented cost, not a tested behaviour.
+3. **Per-instance plugin memory** — 25 KiB measured on an earlier tree, not re-measured at `05a23e8`.
+4. **ACME against a production CA** — proven against local Pebble with validation not short-circuited; no real CA.
+5. **Registry pull** — compose driven with locally built images; the pinned `ghcr` digest is unproven.
+6. **Known environment flake** — Pebble `invalid anti-replay nonce` in `first-boot-tls` T5, seen once in several runs, green on rerun.
 
 ## Deferred (registered, with owners)
 
