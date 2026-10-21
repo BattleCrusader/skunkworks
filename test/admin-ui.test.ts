@@ -212,6 +212,38 @@ test('S7-2. the page list is the landing screen, and every word on it is a datab
   assert.doesNotMatch(res.body, /<script/i, 'the page list needs no JavaScript');
 });
 
+test('S7-9. a published page is never described as "not published yet", whatever its revision count', async () => {
+  // The live defect: the four seeded pages are `status = 'published'` with no rows in
+  // `cms_page_revision`, and the row's third fact was derived from the revision count —
+  // so every row read "Live · … · not published yet". A screen that contradicts itself on
+  // its own headline fact is worse than one that says less.
+  const res = await get('/admin');
+  assert.equal(res.status, 200, res.body);
+
+  // Seeded published page, zero revisions: it must not claim it is unpublished.
+  const publishedRow = /<div class="pagerow" data-page-id="\d+" data-status="published">([\s\S]*?)<\/div>\s*<\/div>/i.exec(res.body);
+  assert.ok(publishedRow !== null, 'the fixture must have a published row to inspect');
+  assert.doesNotMatch(publishedRow[0], /not published yet/, 'a Live row must not say it is unpublished');
+  assert.match(publishedRow[0], /no earlier versions kept/);
+
+  // A draft with no revisions is the one case where the phrase is true, and it stays.
+  // The fixture's own draft carries a revision, so this inserts a page that has none —
+  // the case the old line got right, kept so the fix cannot turn into "never say it".
+  const db = openAdminWrite(fixture.sitePath('acme'));
+  try {
+    db.prepare(
+      "INSERT INTO cms_page (path, slug, title, status) VALUES ('/brand-new', 'brand-new', 'Brand new', 'draft')",
+    ).run();
+  } finally {
+    db.close();
+  }
+  const after = await get('/admin');
+  assert.equal(after.status, 200, after.body);
+  const draftRow = /<div class="pagerow" data-page-id="\d+" data-status="draft">([\s\S]*?)<\/div>\s*<\/div>/i.exec(after.body);
+  assert.ok(draftRow !== null, 'the fixture must have a draft row to inspect');
+  assert.match(draftRow[0], /not published yet/);
+});
+
 test('S7-3. a site database the screen cannot read is a sentence, not a 500 and not invented rows', async () => {
   // The tenant still routes (its file opens); the table the screen needs is gone. That is
   // the branch `#pageRows` returns null for, and the screen must say so rather than throw

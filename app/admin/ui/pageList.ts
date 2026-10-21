@@ -52,7 +52,17 @@ function row(page: PageRow, base: string, nowMs: number): string {
   const title = page.title === '' ? page.path : page.title;
   const where = page.path === '/' ? 'Home page' : page.path;
   const action = page.status === 'draft' ? 'Finish' : 'Edit';
-  const versions = page.versions === 0 ? 'not published yet' : plural(page.versions, 'version');
+  // "not published yet" is a claim about PUBLICATION, and a revision count cannot make it:
+  // the four seeded pages are `status = 'published'` with zero revisions, so this line used
+  // to print "not published yet" beside a Live pill on every row — the screen contradicting
+  // itself on the one fact it exists to report. Found by reading the deployed page, not by
+  // a test, which is why there is now one (S7-9).
+  const versions =
+    page.versions > 0
+      ? plural(page.versions, 'version')
+      : page.status === 'published'
+        ? 'no earlier versions kept'
+        : 'not published yet';
   return `      <div class="pagerow" data-page-id="${page.id}" data-status="${esc(page.status)}">
         <span class="thumb-ic ${tintOf(page.path)}" aria-hidden="true">${esc(initialOf(title, page.path))}</span>
         <div class="pagerow__main">
