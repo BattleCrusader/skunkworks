@@ -3605,3 +3605,74 @@ packages' tables, indexes, screens and endpoints, and that disable unregisters t
 the tenancy rules of §9 are untouched; `cms_page.body_html` remains the only body the renderer
 reads, so nothing about render, export or the asset-link graph changed shape — only which writer
 is allowed to touch it.
+
+## 16. Errata E-39, E-40 (post-S8, from the operator's own browser)
+
+Two defects the person using the console found, neither of them visible from a JSON client — which
+is why every test passed while both were live.
+
+### E-39 — a sign-in form post answered with a JSON body
+
+**Reproduced.** `POST /admin/login` with the browser's own headers and a correct email, password and
+TOTP returned `200` and the session record:
+
+```json
+{"ok":true,"tenant":{"key":"abc123","mode":"production"},"user":{"email":"owner@abc123.com","role":"owner"},
+ "csrfToken":"c7GaKPlyKz8eDXCY8U11tsaRhN1gtj_Myb-6rG18oeE","expiresAt":"…","totpRequired":true}
+```
+
+The browser rendered that as text on `/admin/login`. The `Set-Cookie` had been sent, so the session
+existed — the operator was signed in and had no way to see it. Every existing test posts
+`application/json` (or urlencoded with no `Accept`), so `wantsHtml()` was false in all of them and
+the JSON path was the only path any test had ever taken.
+
+**Cause.** S8a added `wantsHtml()` for the account screens and the sign-out, but `#login` was left
+answering the API shape unconditionally. The sign-in form has always been a plain HTML form with no
+JavaScript (`app/admin/ui/signIn.ts`), so the browser — the *primary* client — was the one client the
+route did not consider.
+
+**Fix.** A form POST now ends in a document:
+
+* success → `303` + `Location`, with `Set-Cookie` on the same reply. Tenant session → `/admin`
+  (the portal for that Host); fleet session → `/fleet`. A `next` field, when it passes `safeNext()`,
+  wins over both.
+* failure → the sign-in screen again, `401` (`429` locked, `403` role disabled), one sentence, no
+  cookie. The sentence never names the factor that failed: E-16's wire rule holds on the screen too.
+* `?next=` — a bounce carries the destination into a hidden field and back. `safeNext()` accepts only
+  `/admin…` and `/fleet…`: no scheme, no host, no `//`, no backslash, and never `/admin/login` itself.
+  An unacceptable value is discarded, not corrected.
+* the JSON shape is untouched for clients that do not ask for HTML.
+
+**Tests that change.** `test/admin-operator.test.ts` gains `D29-6b` (a browser post → `303`, empty
+body, tenant cookie, and the target renders "Your pages"), `D29-6c` (`next` honoured inside the
+console; five hostile values all land on `/admin`) and `D29-6d` (failed browser attempt → `401`,
+`text/html`, form present, no cookie, and no text naming the failing factor).
+
+**Severity.** major (the only way a person signs in was producing a dead end).
+
+### E-40 — claim 7 measured the box, not the parameters
+
+**Reproduced while gating E-39**, on a box at load 88 (a neighbouring project's container holding a
+core of the Docker VM): `verify_claims.py` check 7 failed with a heavy/frozen ratio of `8.29x`, then
+`9.05x`, then passed at `5.7x` — same bytes, seconds apart.
+
+**Cause.** The claim asserted that the heavy argon2id set costs 2.5–8× the frozen set. It measured
+the median of 8 verifies per set, and a median moves with whatever else the machine is doing. The
+docstring already argued that "both medians are measured in this process, so load cancels out of the
+ratio"; on a loaded box they do not cancel, they compound.
+
+**Fix.** The statistic is now the **minimum** of 12 verifies per set: contention can only *add* time,
+so the minimum is the closest estimate of the real cost. The band is unchanged at 2.5–8×, and both
+numbers are printed every run — the medians are how a reader sees the box, the minimum is what the
+claim rests on. Three consecutive runs under the same load: `6.9x`, `7.1x`, `6.1x`, while the medians
+still swung 79–109 ms.
+
+**Nothing about the claim weakened.** A cheaper parameter set, a fast hash or a dropped salt still
+fails it; what stopped happening is the gate reporting the machine's mood.
+
+### Traceability — E-39, E-40
+
+| E | Closes | Source (verified in this pass) | Evidence |
+|---|---|---|---|
+| **E-39** | §7.1's sign-in; §5.5's `no-store` reply; E-16's one-body rule on the HTML path | `app/admin/routes.ts` `#login`, `safeNext()`, `loginFailureMessage()`; `app/admin/ui/signIn.ts` `error`/`next`; `app/admin/ui/layout.ts` `.signin__error` | `test/admin-operator.test.ts` D29-6b/6c/6d; live `303 → /admin` on `abc123.com` |
+| **E-40** | §15.1's argon2 cost figures; the claim's own measurement note | `scripts/model/verify_claims.py` check 7 (min of 12) | `make verify-claims` 27/27 × 3 runs at load 88 |

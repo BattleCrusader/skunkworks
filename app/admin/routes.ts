@@ -228,6 +228,38 @@ function wantsHtml(req: FastifyRequest): boolean {
   return accept.includes('text/html') && !accept.includes('application/json');
 }
 
+/**
+ * Where a browser goes after signing in, when the form carried `next`.
+ *
+ * A query parameter is attacker-controlled, so the only values accepted are paths inside
+ * this console: no scheme, no host, no protocol-relative `//`, no backslash (some browsers
+ * treat `\` as `/`), and nothing that leaves `/admin` or `/fleet`. The login screen itself
+ * is excluded — landing back on the form that was just answered reads as a failure. An
+ * unacceptable value is discarded rather than corrected: the operator lands on their portal,
+ * which is where they were going anyway.
+ */
+function safeNext(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  if (!raw.startsWith('/') || raw.startsWith('//')) return undefined;
+  if (raw.includes('\\') || raw.includes('\n') || raw.includes('\r')) return undefined;
+  const inConsole = raw === '/admin' || raw.startsWith('/admin/') || raw === '/fleet' || raw.startsWith('/fleet/');
+  if (!inConsole || raw === '/admin/login' || raw.startsWith('/admin/login?')) return undefined;
+  return raw;
+}
+
+/**
+ * The one sentence a person gets for a failed attempt. It says what to do, never which
+ * factor was wrong: E-16 already decided the wire must not distinguish an unknown account
+ * from a wrong password from a wrong code, and a screen that did would hand back exactly
+ * what that decision removed. Locked and role-disabled are different questions — one is
+ * "wait", the other is "this build does not accept your role" — so they say so.
+ */
+function loginFailureMessage(reason: LoginFailureReason): string {
+  if (reason === 'locked') return 'Too many failed tries. Wait a minute and try again.';
+  if (reason === 'role_disabled') return 'This build does not accept that kind of account.';
+  return 'That email, password or code did not match. Try again.';
+}
+
 /** Good enough to refuse a typo, and the only thing this screen has to get right. */
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
@@ -619,7 +651,12 @@ ${items}
     if (req.method === 'GET') {
       // S7: the Guided Cards sign-in. The form is the same contract as before — POST
       // `/admin/login`, urlencoded, no CSRF field (there is no session to bind one to).
-      reply.type('text/html; charset=utf-8').send(signInScreen({ tenant: { key: tenant.key, label: tenant.key } }));
+      // A `?next=` from a bounce keeps the operator's destination across the form post. Only
+      // a path inside this console survives `safeNext`; anything else is dropped.
+      const next = safeNext((req.query as { next?: string } | undefined)?.next);
+      reply
+        .type('text/html; charset=utf-8')
+        .send(signInScreen({ tenant: { key: tenant.key, label: tenant.key }, ...(next === undefined ? {} : { next }) }));
       return;
     }
     if (req.method !== 'POST') throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'login is a GET or a POST');
@@ -656,6 +693,23 @@ ${items}
         after: { reason: result.reason },
         ip: req.socket.remoteAddress ?? '',
       });
+      // S8f: a form post that fails is still a form post. A person gets the screen back with
+      // one sentence and the status the taxonomy gives the code; a JSON client keeps E-16's
+      // single body, unchanged.
+      if (wantsHtml(req)) {
+        const back = safeNext(fields.next);
+        reply
+          .code(result.error.status)
+          .type('text/html; charset=utf-8')
+          .send(
+            signInScreen({
+              tenant: { key: hostTenant.key, label: hostTenant.key },
+              ...(back === undefined ? {} : { next: back }),
+              error: loginFailureMessage(result.reason),
+            }),
+          );
+        return;
+      }
       throw result.error;
     }
 
@@ -705,6 +759,14 @@ ${items}
     const name = tenant === undefined ? FLEET_COOKIE : sessionCookieName(tenant.key);
     const path = tenant === undefined ? FLEET_COOKIE_PATH : ADMIN_COOKIE_PATH;
     reply.header('set-cookie', this.sessions.cookieHeader(name, this.sessions.sign(session.id), path));
+    if (wantsHtml(req)) {
+      // A browser form POST ends in a document, never in a body it would render as text: 303
+      // says "that was accepted, now GET this", and the Set-Cookie above rides on this reply.
+      // A fleet session has no tenant portal, so it lands on the console it belongs to.
+      const portal = tenant === undefined ? '/fleet' : '/admin';
+      this.#seeOther(reply, safeNext(fields.next) ?? portal);
+      return;
+    }
     reply.send({
       ok: true,
       tenant: tenant === undefined ? null : { key: tenant.key, mode: tenant.mode },

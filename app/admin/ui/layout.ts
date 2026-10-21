@@ -256,6 +256,8 @@ td form[action$="/disable"] button,td form[action$="/uninstall"] button{border-c
 .signin__card .submit{width:100%;min-height:44px;border-radius:var(--r-in);background:var(--blue);color:#fff;font-size:14px;font-weight:650;margin-top:4px;box-shadow:0 6px 16px rgba(37,99,235,.24);border:0}
 .signin__card .submit:hover{background:var(--blue-2)}
 .signin__after{margin:14px 0 0;text-align:center;font-size:12px;color:var(--muted);line-height:1.5}
+/* S8f: one sentence from a failed attempt, above the form it belongs to. */
+.signin__error{margin:0 0 16px;padding:10px 12px;border:1px solid #f0c2bd;border-radius:var(--r-in);background:#fdf3f2;color:#8f2b21;font-size:13px;line-height:1.45}
 .signin__foot{text-align:center;font-size:11.5px;color:var(--muted);margin-top:18px;line-height:1.6}
 
 /* a page that has not been restyled keeps the old body markup; give it room */

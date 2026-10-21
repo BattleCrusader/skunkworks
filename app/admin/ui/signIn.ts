@@ -18,8 +18,14 @@ import { esc } from './html.ts';
 
 export interface SignInInput {
   tenant: { key: string; label: string };
-  /** Where the operator is sent after a successful POST, for the browser's own hint. */
+  /** Where the operator is sent after a successful POST. Posted back in a hidden field. */
   next?: string;
+  /**
+   * One sentence from a POST that did not sign anyone in. The route decides the wording —
+   * it knows whether the account is locked or the role is disabled — and this screen only
+   * has to place it where a screen reader will read it.
+   */
+  error?: string;
 }
 
 export function signInScreen(input: SignInInput): string {
@@ -35,9 +41,13 @@ export function signInScreen(input: SignInInput): string {
         <h1 id="signin-title">Welcome back</h1>
         <p class="sub">Sign in to look after ${label}. This usually takes a few seconds.</p>
         <div class="stepdots" aria-hidden="true"><i class="on"></i><i class="on"></i><i></i></div>
+        ${input.error === undefined ? '' : `<p class="signin__error" role="alert">${esc(input.error)}</p>`}
         <form method="post" action="/admin/login" enctype="application/x-www-form-urlencoded" data-tenant="${tenant}"${
           input.next === undefined ? '' : ` data-next="${esc(input.next)}"`
-        }>
+        }>${
+          input.next === undefined ? '' : `
+          <input type="hidden" name="next" value="${esc(input.next)}">`
+        }
           <div class="sf">
             <label for="email">Your email</label>
             <input id="email" type="email" name="email" autocomplete="username" autocapitalize="none" spellcheck="false" required>

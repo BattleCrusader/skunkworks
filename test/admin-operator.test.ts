@@ -30,6 +30,7 @@ import { buildApp, type AppHandle } from '../app/main.ts';
 import {
   ADMIN_HOST,
   ADMIN_ORIGIN,
+  PASSWORD,
   TOTP_SECRET,
   codeOf,
   cookiePair,
@@ -238,6 +239,102 @@ test('D29-6. /admin/login is the only login URL: a page for GET, a real form pos
   });
   assert.equal(perTenant.status, 404);
   assert.equal(codeOf(perTenant), 'SKW_E_PLT_TENANT_UNKNOWN');
+});
+
+/**
+ * S8f. The sign-in form is a plain HTML form with no JavaScript, so the *browser* is the
+ * client that posts it. A response body is a document to a browser: answering a successful
+ * sign-in with the JSON session record left the operator staring at one line of JSON on
+ * `/admin/login` with no way forward. The rule is the HTTP one — a form POST that is
+ * accepted ends in `303` and a `Location`, and the `Set-Cookie` rides on that reply.
+ */
+test('D29-6b. a browser form post signs in and answers with a redirect, not a JSON body', async () => {
+  const form = new URLSearchParams({
+    email: 'owner@acme.test',
+    password: PASSWORD,
+    totp: currentTotp(),
+  }).toString();
+  const res = await call({
+    port,
+    path: '/admin/login',
+    method: 'POST',
+    host: ADMIN_HOST,
+    headers: {
+      origin: ADMIN_ORIGIN,
+      'content-type': 'application/x-www-form-urlencoded',
+      accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
+    body: form,
+  });
+  assert.equal(res.status, 303, res.body);
+  assert.equal(header(res, 'location'), '/admin');
+  // A browser that did get a body would render it; a redirect carries none.
+  assert.equal(res.body, '');
+  const pair = cookiePair(res) as string;
+  assert.ok(pair.startsWith(`${sessionCookieName('acme')}=`), `the cookie rides on the redirect: ${pair.slice(0, 40)}`);
+  // The redirect target is a real page for the session it just minted.
+  const portal = await call({ port, path: '/admin', host: ADMIN_HOST, headers: { cookie: pair } });
+  assert.equal(portal.status, 200);
+  assert.match(portal.body, /Your pages/);
+});
+
+test('D29-6c. a ?next= inside the console survives the post, and one outside it does not', async () => {
+  const signIn = (next: string): Promise<Res> =>
+    call({
+      port,
+      path: '/admin/login',
+      method: 'POST',
+      host: ADMIN_HOST,
+      headers: {
+        origin: ADMIN_ORIGIN,
+        'content-type': 'application/x-www-form-urlencoded',
+        accept: 'text/html',
+      },
+      body: new URLSearchParams({
+        email: 'owner@acme.test',
+        password: PASSWORD,
+        totp: currentTotp(),
+        next,
+      }).toString(),
+    });
+
+  const wanted = '/admin/t/acme/editor?page=2';
+  assert.equal(header(await signIn(wanted), 'location'), wanted);
+
+  // A query parameter is attacker-controlled: only the console's own paths are honoured.
+  for (const hostile of ['https://evil.test/x', '//evil.test/x', '/etc/passwd', '/admin/login', '\\\\evil.test']) {
+    assert.equal(
+      header(await signIn(hostile), 'location'),
+      '/admin',
+      `${JSON.stringify(hostile)} must not become the destination`,
+    );
+  }
+});
+
+test('D29-6d. a failed browser sign-in gets the form back with one sentence, and no cookie', async () => {
+  const res = await call({
+    port,
+    path: '/admin/login',
+    method: 'POST',
+    host: ADMIN_HOST,
+    headers: {
+      origin: ADMIN_ORIGIN,
+      'content-type': 'application/x-www-form-urlencoded',
+      accept: 'text/html',
+    },
+    body: new URLSearchParams({
+      email: 'owner@acme.test',
+      password: 'not-the-password-at-all',
+      totp: currentTotp(),
+    }).toString(),
+  });
+  assert.equal(res.status, 401);
+  assert.match(String(header(res, 'content-type')), /text\/html/);
+  assert.equal(header(res, 'set-cookie'), undefined, 'a failed attempt mints nothing');
+  assert.ok(res.body.includes('action="/admin/login"'), 'the form is back, ready for another try');
+  assert.ok(res.body.includes('did not match'), 'and it says what happened');
+  // E-16 survives: the sentence does not say *which* factor was wrong.
+  assert.ok(!/password was wrong|no such user|wrong code/i.test(res.body));
 });
 test('D28. the CSRF token is a header and there is no form-field alternative', async () => {
   const session = await openSession({ port, key: 'acme', email: 'owner@acme.test' });

@@ -243,18 +243,23 @@ const median = (xs) => { const s=[...xs].sort((a,b)=>a-b); const m=s.length>>1;
   const ok=await verify(h, code);
   const t0=process.hrtime.bigint(); crypto.createHmac('sha256',crypto.randomBytes(32)).update(code).digest('hex');
   const tHmac=Number(process.hrtime.bigint()-t0)/1e6;
+  // Contention can only ADD time to a verify, so the minimum of N is the closest estimate of
+  // what the parameters actually cost; a median moves with the load either way. Both are
+  // reported — the pair is how a reader sees the box, the minimum is what the claim rests on.
   const bench = async (phc) => {
     const ts=[];
-    for (let i=0;i<8;i+=1){ const a=process.hrtime.bigint(); await verify(phc, code); ts.push(Number(process.hrtime.bigint()-a)/1e6); }
-    return median(ts);
+    for (let i=0;i<12;i+=1){ const a=process.hrtime.bigint(); await verify(phc, code); ts.push(Number(process.hrtime.bigint()-a)/1e6); }
+    return {min: Math.min(...ts), med: median(ts)};
   };
   // verify() reads its parameters from the PHC string, so the frozen set is measured by
   // hashing one code at those parameters first and verifying against that hash.
   const hFrozen = await hash(code, frozen);
-  const tHeavy = await bench(h);
-  const tFrozen = await bench(hFrozen);
+  const heavyTimes = await bench(h);
+  const frozenTimes = await bench(hFrozen);
   console.log(JSON.stringify({same:h===h2, ok, tHmac:+tHmac.toFixed(3),
-    tFrozen:+tFrozen.toFixed(2), tHeavy:+tHeavy.toFixed(2), frozenPhc:hFrozen.slice(0,31)}));
+    tFrozen:+frozenTimes.min.toFixed(2), tHeavy:+heavyTimes.min.toFixed(2),
+    tFrozenMed:+frozenTimes.med.toFixed(2), tHeavyMed:+heavyTimes.med.toFixed(2),
+    frozenPhc:hFrozen.slice(0,31)}));
 })();
 """)
     out = subprocess.run(["node", js, mod], capture_output=True, text=True)
@@ -267,11 +272,17 @@ const median = (xs) => { const s=[...xs].sort((a,b)=>a-b); const m=s.length>>1;
     assert d["ok"] is True, "the verifier refused its own hash"
     assert d["frozenPhc"].startswith("$argon2id$v=19$m=19456,t=2,p=1$"), d["frozenPhc"]
 
-    # 2. the cost tracks the parameters, measured in one process so load cancels.
+    # 2. the cost tracks the parameters. Both are the **minimum** of 12 verifies measured in
+    # one process: contention can only add time, so the minimum is the closest estimate of the
+    # real cost, while a median swings with whatever else the box is doing. Measured on a box
+    # at load 88 (a neighbouring container holding a core), the medians gave 5.7x on one run
+    # and 9.05x on the next; the minima agreed to within a few percent. The band is unchanged
+    # at 2.5–8x — this makes the measurement quieter, not the claim weaker.
     ratio = d["tHeavy"] / d["tFrozen"]
     assert 2.5 <= ratio <= 8.0, (
         f"heavy/frozen ratio {ratio:.2f}x is outside 2.5–8x for a parameter ratio of 5.05x "
-        f"(frozen={d['tFrozen']}ms heavy={d['tHeavy']}ms) — the cost is not the parameters'"
+        f"(min of 12: frozen={d['tFrozen']}ms heavy={d['tHeavy']}ms; "
+        f"medians {d['tFrozenMed']}ms/{d['tHeavyMed']}ms) — the cost is not the parameters'"
     )
 
     # 3. the derived floor, which load can only raise. Measured here: 9.3 ms per verify
@@ -285,7 +296,8 @@ const median = (xs) => { const s=[...xs].sort((a,b)=>a-b); const m=s.length>>1;
     )
     return (f"verify={d['tFrozen']}ms (m=19456,t=2) salted (different hashes) -> derived "
             f"5000-code scan={scan_frozen_s:.0f}s at the frozen set and {scan_heavy_s:.0f}s at "
-            f"m=65536,t=3 ({ratio:.1f}x, parameter ratio 5.05x); hmac={d['tHmac']}ms")
+            f"m=65536,t=3 ({ratio:.1f}x, parameter ratio 5.05x); "
+            f"medians frozen={d['tFrozenMed']}ms heavy={d['tHeavyMed']}ms; hmac={d['tHmac']}ms")
 
 
 # ------------------------------------------------------------------ 8
