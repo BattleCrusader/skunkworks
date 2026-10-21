@@ -12,7 +12,9 @@ one small inline script that switches screens (and reads `#pages`, `#media`, `#e
 | `03-guided-cards.html` | **Guided Cards** | Task-led cards and wizards, one job per screen |
 
 Open any file directly in a browser at 1280 px wide. Each shows the same five screens:
-Pages (default), Media, Editor, Plugins, Sign in.
+Pages (default), Media, Editor, Plugins, Sign in. Pages and Media are stacked in one scroll —
+the page list first, then a band that names the media screen, then the library — so a reader can
+see the same posture hold across two screens; the tabs jump to either one.
 
 ## The three directions
 
@@ -20,8 +22,9 @@ Pages (default), Media, Editor, Plugins, Sign in.
 command bar, a 184 px text rail, a 30 px-row table, a persistent inspector and a status bar of
 keyboard hints. Data is monospaced, labels are 9–10 px uppercase, colour is reserved for state
 (green published, amber draft, red notice, cyan selection). The page list carries an audit strip
-underneath it; the media screen is a four-up contact sheet with a facts panel; the editor is
-full-bleed, with the dark palette and settings panels framing GrapesJS's own light canvas. Nothing
+underneath it; the media screen is one dense asset table — thumbnail, dimensions, bytes, pages that
+use the key, access — with a facts panel, a focus ring and a key legend; the editor is full-bleed,
+with the dark palette and settings panels framing GrapesJS's own light canvas. Nothing
 is decorative; every pixel is either a value or an affordance.
 
 **02 · Quiet Editorial.** The admin as a well-set publication: a serif masthead, a 62 px headline,
@@ -110,9 +113,12 @@ hover and the sign-in card.
 
 - Tenant `abc123`, operator `owner@abc123.com`, and the page titles (`ABC123 — hello from
   abc123.com`, `About & Co <ltd>`, `Pricing`) are from the seeded site database.
-- Media keys include the required `banner/home.jpg`, `gallery/one.jpg` and `vault/paid.pdf`, plus
-  `team/studio.jpg`, which is a real key in the seed. `vault/paid.pdf` is shown gated and encrypted,
-  which is a real access class in `cms_asset`.
+- Media keys are `banner/home.jpg`, `gallery/one.jpg`, `hero/clinic.jpg`, `team/portrait.jpg`,
+  `uploads/scan-2019.png` and `vault/paid.pdf`; the first two and `vault/paid.pdf` are required keys
+  in the seed, and `vault/paid.pdf` is shown gated and code-required, which is a real access class in
+  `cms_asset`. Sizes and dimensions are the fixture's, not the seed's: `banner/home.jpg` is 1,226 B at
+  1600 × 900 and is used on three pages, `gallery/one.jpg` 940 B at 800 × 600 on one, and
+  `uploads/scan-2019.png` is deliberately unused so the "can I delete this?" answer is visible.
 - Plugin ids, versions, states, activation sequence numbers and notices use the real shapes and
   error codes from `app/plugins` (`SKW_E_PL_TESTS_STALE`, `SKW_E_PL_SIGNATURE`) and the three-column
   notices/loaded/installed model in `app/admin/routes.ts`.

@@ -314,6 +314,7 @@ table.installed .state{font:10.5px/1 var(--mono)}
 }
 
 /* ---- screen band: pages → media ---- */
+.work > section[data-screen="pages"]{min-height:0;padding-bottom:26px}
 .band{position:relative;margin:0;padding:11px 18px 12px;background:linear-gradient(180deg,#090d13,#0c1219);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .band::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:repeating-linear-gradient(90deg,var(--accent) 0 16px,transparent 16px 26px);opacity:.5}
 .band__row{display:flex;align-items:baseline;gap:12px}
@@ -328,13 +329,13 @@ table.installed .state{font:10.5px/1 var(--mono)}
 .mediatable{table-layout:fixed}
 .mediatable th{padding:7px 8px}
 .mediatable td{height:auto;padding:7px 8px;vertical-align:middle}
-.mediatable .m-th{width:56px}
-.mediatable .m-kind{width:66px}
-.mediatable .m-dim{width:102px}
-.mediatable .m-size{width:74px;text-align:right}
-.mediatable .m-use{width:196px}
-.mediatable .m-access{width:158px}
-.mediatable .m-act{width:86px;text-align:right;padding-right:4px}
+.mediatable .m-th{width:46px}
+.mediatable .m-kind{width:72px}
+.mediatable .m-dim{width:96px}
+.mediatable .m-size{width:70px;text-align:right}
+.mediatable .m-use{width:184px}
+.mediatable .m-access{width:178px}
+.mediatable .m-act{width:80px;text-align:right;padding-right:4px}
 .m-row:focus{outline:0}
 .m-row:focus-visible{background:#0f1c26;box-shadow:inset 2px 0 0 var(--accent),inset 0 0 0 1px #24506a}
 .m-row.is-focus{background:#0f1c26;box-shadow:inset 2px 0 0 var(--accent),inset 0 0 0 1px #24506a}
@@ -360,9 +361,13 @@ tr:hover .rowlink--danger{color:var(--bad);border-color:#462225}
 .m-note .src{margin-left:auto;color:#6d6250;white-space:nowrap}
 .m-legend{display:flex;align-items:center;gap:14px;margin:0 16px 0 0;padding:8px 0 0;font:10px/1 var(--mono);color:#5f6b79}
 .m-legend .right{margin-left:auto;color:#5a6674}
-@media (max-width:1100px){
-  .mediatable .m-dim,.mediatable .m-kind{display:none}
+@media (max-width:1420px){
+  .mediatable .m-kind{display:none}
+}
+@media (max-width:1250px){
+  .mediatable .m-dim{display:none}
   .mediatable .m-use{width:150px}
+  .mediatable .m-access{width:150px}
 }
 </style>
 </head>
@@ -396,7 +401,7 @@ tr:hover .rowlink--danger{color:var(--bad);border-color:#462225}
     <aside class="rail">
       <div class="rail__group">Site</div>
       <button class="is-on" data-screen-tab="pages">Pages <span class="count">3</span></button>
-      <button data-screen-tab="media">Media <span class="count">4</span></button>
+      <button data-screen-tab="media">Media <span class="count">6</span></button>
       <a href="#">Tables <span class="count">6</span></a>
       <a href="#">Data sources <span class="count">3</span></a>
       <a href="#">Table builder</a>
@@ -900,7 +905,7 @@ tr:hover .rowlink--danger{color:var(--bad);border-color:#462225}
     </div>
     <div class="right">
       <span><span class="ok">●</span> app-1 · healthz ok</span>
-      <span>3 pages · 4 assets</span>
+      <span>3 pages · 6 assets</span>
       <span>1 failed plugin</span>
       <span>schema edit on</span>
       <span>v4.2.0</span>
@@ -956,7 +961,7 @@ tr:hover .rowlink--danger{color:var(--bad);border-color:#462225}
   var bands = Array.prototype.slice.call(document.querySelectorAll('.band'));
   function show(id){
     panes.forEach(function(p){ p.hidden = p.getAttribute('data-screen').split(/\s+/).indexOf(id) === -1; });
-    bands.forEach(function(b){ b.hidden = !(id === 'pages' || id === 'media'); });
+    bands.forEach(function(b){ b.hidden = id !== 'pages'; });
     tabs.forEach(function(t){
       var on = t.getAttribute('data-screen-tab') === id;
       if (t.getAttribute('role') === 'tab') t.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -969,7 +974,10 @@ tr:hover .rowlink--danger{color:var(--bad);border-color:#462225}
   }
   tabs.forEach(function(t){ t.addEventListener('click', function(ev){ ev.preventDefault(); show(t.getAttribute('data-screen-tab')); }); });
   var initial = (location.hash || '').replace('#','');
-  show(document.querySelector('section[data-screen="' + initial + '"]') ? initial : 'pages');
+  var known = Array.prototype.map.call(document.querySelectorAll('section[data-screen]'), function(s){
+    return s.getAttribute('data-screen');
+  }).join(' ').split(/\s+/);
+  show(known.indexOf(initial) > -1 ? initial : 'pages');
 })();
 </script>
 </body>
