@@ -18,6 +18,8 @@ export interface PageRow {
   title: string;
   /** `draft` | `published` | `hidden` — the schema's three, and no others. */
   status: string;
+  /** There are unpublished changes: the editor has a draft the live body does not have. */
+  draft: boolean;
   versions: number;
   updatedAt: string;
 }
@@ -63,11 +65,16 @@ function row(page: PageRow, base: string, nowMs: number): string {
       : page.status === 'published'
         ? 'no earlier versions kept'
         : 'not published yet';
-  return `      <div class="pagerow" data-page-id="${page.id}" data-status="${esc(page.status)}">
+  // S8b: a published page with a pending draft is two facts, and the row says both. The status
+  // pill answers "can visitors see it?"; this line answers "is what they see what I just made?".
+  const pending = page.draft
+    ? `<i class="dotsep" aria-hidden="true"></i><span class="pagerow__pending">unpublished changes</span>`
+    : '';
+  return `      <div class="pagerow" data-page-id="${page.id}" data-status="${esc(page.status)}" data-draft="${page.draft ? '1' : '0'}">
         <span class="thumb-ic ${tintOf(page.path)}" aria-hidden="true">${esc(initialOf(title, page.path))}</span>
         <div class="pagerow__main">
           <div class="pagerow__title">${esc(title)}</div>
-          <div class="pagerow__meta"><span>${esc(where)}</span><i class="dotsep" aria-hidden="true"></i><span>Updated ${esc(whenLabel(page.updatedAt, nowMs))}</span><i class="dotsep" aria-hidden="true"></i><span>${esc(versions)}</span></div>
+          <div class="pagerow__meta"><span>${esc(where)}</span><i class="dotsep" aria-hidden="true"></i><span>Updated ${esc(whenLabel(page.updatedAt, nowMs))}</span><i class="dotsep" aria-hidden="true"></i><span>${esc(versions)}</span>${pending}</div>
         </div>
         ${statusPill(page.status)}
         <div class="rowactions"><a class="btn btn--sm" href="${esc(`${base}/editor?page=${page.id}`)}">${action}<span class="sr-only"> — ${esc(title)}</span></a>${ICON.chevron}</div>

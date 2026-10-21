@@ -71,6 +71,7 @@ import { dirname, join } from 'node:path';
 import { extOfMime } from '../assets/farm.ts';
 import { applyPick, mediaChoices, pickAsset } from '../editor/media.ts';
 import { loadRegistry, registryCss } from '../editor/registry.ts';
+import { publishPage } from '../editor/publish.ts';
 import { loadForEditor, savePage } from '../editor/save.ts';
 import {
   EDITOR_BOOT_JS,
@@ -874,6 +875,14 @@ ${items}
       await this.#editorSave(req, reply, tenant, session);
       return;
     }
+    // S8b (E-35): the publish step the page list's copy has always promised and no route
+    // implemented. Origin and CSRF first, like every other write.
+    if (action === 'editor/publish' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#editorPublish(req, reply, tenant, session);
+      return;
+    }
     if (action === 'editor/pick' && req.method === 'POST') {
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
@@ -1192,17 +1201,19 @@ ${items}
       const rows = db
         .prepare(
           `SELECT p.id, p.path, p.title, p.status, p.updated_at,
+                  (p.draft_sha <> '') AS draft,
                   (SELECT COUNT(*) FROM cms_page_revision r WHERE r.page_id = p.id) AS versions
              FROM cms_page p
             ORDER BY p.path
             LIMIT 200`,
         )
-        .all() as { id: number; path: string; title: string; status: string; updated_at: string; versions: number }[];
+        .all() as { id: number; path: string; title: string; status: string; updated_at: string; draft: number; versions: number }[];
       return rows.map((row) => ({
         id: Number(row.id),
         path: String(row.path),
         title: String(row.title),
         status: String(row.status),
+        draft: Number(row.draft) === 1,
         versions: Number(row.versions),
         updatedAt: String(row.updated_at),
       }));
@@ -1794,6 +1805,31 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
   // --- §10.1–§10.3 (S4a): the editor ----------------------------------------
 
   /**
+   * Publish one page: draft -> live. The refusal for "nothing to publish" is a 400 with a code,
+   * not a silent `ok`, because an operator who presses Publish on a page with no pending changes
+   * has either lost their work or misread the screen, and both deserve to be told.
+   */
+  #editorPublish(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const body = (req.body ?? {}) as { id?: unknown };
+    const raw = fieldsOf(req.body).id ?? (typeof body.id === 'number' ? String(body.id) : undefined);
+    const id = Number(raw);
+    if (raw === undefined || !Number.isInteger(id) || id <= 0) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'a page id is required');
+    }
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const actor = this.#actor(session);
+      const result = publishPage({ db, registry: loadRegistry(this.#schemaDir), pageId: id, actorId: actor.userId });
+      // `no-store` is already set for every admin response, but this one answers with the state a
+      // browser will now show; a cached copy would say "draft" on a page that is live.
+      reply.header('cache-control', 'no-store');
+      reply.send({ ok: true, page: result });
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
    * The editor page. `?page=<id>` opens a stored document; no id opens a blank one.
    *
    * The refusal happens **here**, before GrapesJS is handed the body: `loadForEditor()`
@@ -1828,6 +1864,7 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
                 managedBy: pageRow.record.managedBy,
                 bodyHtml: pageRow.record.bodyHtml,
                 rev: pageRow.record.rev,
+                draft: pageRow.record.draft,
               },
         registry,
         csrf: this.sessions.csrfToken(session),

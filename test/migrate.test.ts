@@ -47,7 +47,9 @@ test('migrate creates every missing site.db from site.sql and reports per tenant
       assert.equal(t.ok, t.key !== 'broken', `tenant ${t.key}: ${t.error ?? ''}`);
       if (t.key !== 'broken') {
         assert.equal(t.action, 'created');
-        assert.equal(t.to, 4, `tenant ${t.key} at v4 (E-31 item 5: activation_seq)`);
+        // The chain's target, not a constant of nature: v5 is E-35's draft columns (S8b). What
+        // this asserts is that a created file lands on the version site.sql ships.
+        assert.equal(t.to, 5, `tenant ${t.key} at v5 (E-35: cms_page draft columns)`);
       }
     }
     assert.deepEqual(report.migrated.sort(), ['acme', 'beta', 'demo-acme']);
@@ -76,7 +78,7 @@ test('control.db is created when absent, and a second run is a no-op', () => {
   }
 });
 
-test('a v1 site.db is migrated through the frozen chain to v4', () => {
+test('a v1 site.db is migrated through the frozen chain to the shipped version', () => {
   const fixture = makeFixture({ specs: [{ key: 'legacy', hosts: ['legacy.test'], displayName: 'Legacy' }] });
   try {
     const file = fixture.sitePath('legacy');
@@ -92,7 +94,7 @@ test('a v1 site.db is migrated through the frozen chain to v4', () => {
     assert.equal(legacy?.ok, true, JSON.stringify(legacy));
     assert.equal(legacy?.action, 'migrated');
     assert.equal(legacy?.from, 1);
-    assert.equal(legacy?.to, 4);
+    assert.equal(legacy?.to, 5);
 
     // The chain has to land on the shipped target shape, not merely on a version number.
     // §4.5 (E-14): the comparison is the table text (CHECKs), the trigger bodies and the
@@ -102,7 +104,7 @@ test('a v1 site.db is migrated through the frozen chain to v4', () => {
     const fresh = new Database(freshPath);
     fresh.exec(readFileSync(join(REPO, 'schema', 'site.sql'), 'utf8'));
     try {
-      comparePlanes(migrated, fresh, 'site.db v1->v4');
+      comparePlanes(migrated, fresh, 'site.db v1->v5');
     } finally {
       migrated.close();
       fresh.close();

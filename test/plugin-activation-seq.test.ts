@@ -85,7 +85,9 @@ after(() => {
 test('A1. the DDL a fresh tenant gets carries activation_seq, DEFAULT 0, and the CHECK', () => {
   const ddl = readFileSync(join(SCHEMA, 'site.sql'), 'utf8');
   assert.match(ddl, /activation_seq INTEGER NOT NULL DEFAULT 0 CHECK\(activation_seq >= 0\)/);
-  assert.match(ddl, /PRAGMA user_version = 4;/);
+  // The DDL's own version, asserted so this file cannot silently test a database it did not
+  // create. It moves with schema/site.sql (v5 since E-35's draft columns).
+  assert.match(ddl, /PRAGMA user_version = 5;/);
   const db = new Database(siteDbFile(), { readonly: true });
   try {
     const columns = db.pragma('table_info(cms_plugin_installed)') as { name: string; dflt_value: string | null; notnull: number }[];
@@ -132,14 +134,20 @@ test('A3. a restart continues from the row: two processes, two new numbers', () 
   assert.notEqual(one.seq, two.seq);
 });
 
-test('A4. a v3 database migrates to v4, keeps its rows, and seeds them 0', () => {
-  // Build a v3 shape by removing what v4 added, then let the real migration put it back.
+test('A4. a v3 database migrates forward, keeps its rows, and seeds them 0', () => {
+  // Build a v3 shape by removing everything the chain added after v3, then let the real
+  // migration put it back. Both deltas have to be undone or the migration refuses the fixture
+  // for the wrong reason: r4 adds `activation_seq`, r5 adds the four `draft_*` columns.
   const path = join(fixture.dir, 'tenants', 'v3', 'site.db');
   mkdirSync(dirname(path), { recursive: true });
   const v3 = new Database(path);
   try {
     v3.exec(readFileSync(join(SCHEMA, 'site.sql'), 'utf8'));
     v3.exec('ALTER TABLE cms_plugin_installed DROP COLUMN activation_seq');
+    v3.exec('ALTER TABLE cms_page DROP COLUMN draft_html');
+    v3.exec('ALTER TABLE cms_page DROP COLUMN draft_css');
+    v3.exec('ALTER TABLE cms_page DROP COLUMN draft_sha');
+    v3.exec('ALTER TABLE cms_page DROP COLUMN draft_updated_at');
     v3.pragma('user_version = 3');
     v3.prepare(
       `INSERT INTO cms_plugin_installed
@@ -163,11 +171,11 @@ test('A4. a v3 database migrates to v4, keeps its rows, and seeds them 0', () =>
   assert.equal(report.ok, true, report.error);
   assert.equal(report.action, 'migrated');
   assert.equal(report.from, 3);
-  assert.equal(report.to, 4);
+  assert.equal(report.to, 5);
 
   const after = new Database(path, { readonly: true });
   try {
-    assert.equal(Number(after.pragma('user_version', { simple: true })), 4);
+    assert.equal(Number(after.pragma('user_version', { simple: true })), 5);
     const row = after.prepare(`SELECT activation_seq FROM cms_plugin_installed WHERE plugin_id = 'actseq'`).get() as
       | { activation_seq: number }
       | undefined;

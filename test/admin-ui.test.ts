@@ -221,7 +221,9 @@ test('S7-9. a published page is never described as "not published yet", whatever
   assert.equal(res.status, 200, res.body);
 
   // Seeded published page, zero revisions: it must not claim it is unpublished.
-  const publishedRow = /<div class="pagerow" data-page-id="\d+" data-status="published">([\s\S]*?)<\/div>\s*<\/div>/i.exec(res.body);
+  // S8b added `data-draft` beside `data-status`, so the row opener is matched by prefix rather
+  // than by a closing `>` immediately after the status attribute.
+  const publishedRow = /<div class="pagerow" data-page-id="\d+" data-status="published"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/i.exec(res.body);
   assert.ok(publishedRow !== null, 'the fixture must have a published row to inspect');
   assert.doesNotMatch(publishedRow[0], /not published yet/, 'a Live row must not say it is unpublished');
   assert.match(publishedRow[0], /no earlier versions kept/);
@@ -239,7 +241,7 @@ test('S7-9. a published page is never described as "not published yet", whatever
   }
   const after = await get('/admin');
   assert.equal(after.status, 200, after.body);
-  const draftRow = /<div class="pagerow" data-page-id="\d+" data-status="draft">([\s\S]*?)<\/div>\s*<\/div>/i.exec(after.body);
+  const draftRow = /<div class="pagerow" data-page-id="\d+" data-status="draft"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/i.exec(after.body);
   assert.ok(draftRow !== null, 'the fixture must have a draft row to inspect');
   assert.match(draftRow[0], /not published yet/);
 });

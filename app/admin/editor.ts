@@ -39,6 +39,8 @@ export interface EditorPageInput {
     managedBy: string;
     bodyHtml: string;
     rev: number;
+    /** There are unpublished changes (S8b): the canvas holds a draft the site is not serving. */
+    draft: boolean;
   } | null;
   registry: Registry;
   csrf: string;
@@ -79,6 +81,7 @@ export function editorBootPayload(input: EditorPageInput): {
         managedBy: 'editor',
         bodyHtml: '',
         rev: 0,
+        draft: false,
       },
     css: input.bodyCss,
     tenant: input.tenant,
@@ -94,6 +97,11 @@ export function renderEditorPage(input: EditorPageInput): string {
   // from another origin or read without a cookie.
   const base = `/admin/t/${encodeURIComponent(input.tenant)}/editor`;
   const readonly = payload.page.managedBy === 'hand';
+  // S8b: "Live" and "everything you made is live" are two different claims. A published page
+  // with a pending draft is the second one's absence, so it gets its own pill rather than a
+  // green Live over a body the operator has already replaced in the canvas.
+  const pillState = payload.page.status === 'published' && payload.page.draft ? 'pending' : payload.page.status;
+  const pillWord = pillState === 'pending' ? 'Unpublished changes' : statusWord(payload.page.status);
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(title)} — editor</title>
 <link rel="stylesheet" href="${base}/grapesjs.css">
@@ -140,6 +148,9 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 #skw-bar .skw-pill{display:inline-flex;align-items:center;gap:.35rem;font-size:.75rem;font-weight:600;padding:.2rem .55rem;border-radius:999px;background:#e7f6ec;color:#14532d}
 #skw-bar .skw-pill[data-state="draft"]{background:#fff4e0;color:#7a4a00}
 #skw-bar .skw-pill[data-state="hidden"]{background:#f2f2f5;color:#4a4a55}
+/* Live, with unpublished changes: the page is up, but what the operator made is not what
+   visitors are getting. Amber, and never the green "Live" on its own. */
+#skw-bar .skw-pill[data-state="pending"]{background:#fff4e0;color:#7a4a00}
 #skw-bar .skw-spacer{flex:1}
 #skw-bar .skw-btn{display:inline-flex;align-items:center;gap:.4rem;height:34px;padding:0 .7rem;border:1px solid #d8d8de;background:#fff;color:#24242b;border-radius:9px;font:inherit;cursor:pointer}
 #skw-bar .skw-btn:hover{background:#f6f6f8}
@@ -157,13 +168,14 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 <header id="skw-bar">
   <a class="skw-back" href="/admin/t/${encodeURIComponent(input.tenant)}/" aria-label="Back to your pages"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>Pages</a>
   <h1>${escapeHtml(title)}</h1>
-  <span class="skw-pill" data-state="${escapeHtml(payload.page.status)}"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>${escapeHtml(statusWord(payload.page.status))}</span>
+  <span class="skw-pill" data-state="${escapeHtml(pillState)}" id="skw-pill"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg><span id="skw-pill-word">${escapeHtml(pillWord)}</span></span>
   <span class="skw-spacer"></span>
   <span class="skw-save-state" id="skw-save-state" role="status" aria-live="polite">${readonly ? 'Hand-written page — read only' : 'No changes yet'}</span>
   <button type="button" class="skw-btn skw-btn--icon" id="skw-undo" title="Undo" aria-label="Undo" aria-keyshortcuts="Control+z"${readonly ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
   <button type="button" class="skw-btn skw-btn--icon" id="skw-redo" title="Redo" aria-label="Redo" aria-keyshortcuts="Control+Shift+z"${readonly ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
   <button type="button" class="skw-btn" id="skw-preview" title="Preview the page without editing controls"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>Preview</button>
-  <button type="button" class="skw-btn skw-btn--primary" id="skw-save" title="Save — a page that visitors can see updates the moment you save"${readonly ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>Save</button>
+  <button type="button" class="skw-btn" id="skw-save" title="Save your changes as a draft — nothing goes live until you publish"${readonly ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>Save</button>
+  <button type="button" class="skw-btn skw-btn--primary" id="skw-publish" title="Publish — put what you have made live for visitors"${readonly || !payload.page.draft ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>Publish</button>
 </header>
 <p id="skw-notice" role="alert" hidden></p>
 <div id="skw-layout">
@@ -242,6 +254,19 @@ const BOOT_SCRIPT = String.raw`
 
   editor.on('update', function () { setState('Unsaved changes', true); });
 
+  function pillSet(state, word) {
+    var pill = el('skw-pill');
+    var text = el('skw-pill-word');
+    if (pill) pill.setAttribute('data-state', state);
+    if (text) text.textContent = word;
+  }
+
+  /**
+   * S8b: Save writes a draft; Publish is what puts it in front of visitors. Save therefore
+   * ENABLES Publish rather than claiming the change is live — the sentence this screen used to
+   * put on the Save button ("a page that visitors can see updates the moment you save") was
+   * true, and true is why it was wrong: it took live pages off the site.
+   */
   function saveNow() {
     var button = el('skw-save');
     if (button) button.disabled = true;
@@ -249,17 +274,56 @@ const BOOT_SCRIPT = String.raw`
     return window.skwSave()
       .then(function (res) {
         var ok = res && res.ok !== false && !(res.error);
-        setState(ok ? 'Saved' : (res && res.error && res.error.message) || 'Could not save', !ok);
+        if (ok) {
+          boot.page.draft = true;
+          if (boot.page.id === null && res && res.id !== undefined) boot.page.id = res.id;
+          var publish = el('skw-publish');
+          if (publish) publish.disabled = false;
+          if (boot.page.status === 'published') {
+            pillSet('pending', 'Unpublished changes');
+            setState('Saved as a draft — press Publish to put it live', true);
+          } else {
+            setState('Saved as a draft — press Publish to make it live', true);
+          }
+        } else {
+          setState((res && res.error && res.error.message) || 'Could not save', true);
+        }
         return ok;
       })
       .catch(function () { setState('Could not save', true); return false; })
       .then(function (ok) { if (button) button.disabled = false; return ok; });
   }
 
+  function publishNow() {
+    if (boot.page.id === null) {
+      setState('Save the page first', true);
+      return Promise.resolve(false);
+    }
+    var button = el('skw-publish');
+    if (button) button.disabled = true;
+    setState('Publishing…', true);
+    return window.skwPublish()
+      .then(function (res) {
+        var ok = res && res.ok !== false && !(res.error);
+        if (ok) {
+          boot.page.draft = false;
+          boot.page.status = 'published';
+          pillSet('published', 'Live');
+          setState('Published — visitors can see it now', false);
+        } else {
+          setState((res && res.error && res.error.message) || 'Could not publish', true);
+          if (button) button.disabled = false;
+        }
+        return ok;
+      })
+      .catch(function () { setState('Could not publish', true); if (button) button.disabled = false; return false; });
+  }
+
   on('skw-undo', function () { editor.UndoManager.undo(); });
   on('skw-redo', function () { editor.UndoManager.redo(); });
   on('skw-preview', function () { editor.runCommand('core:preview'); });
   on('skw-save', function () { saveNow(); });
+  on('skw-publish', function () { publishNow(); });
 
   document.addEventListener('keydown', function (event) {
     if ((event.metaKey || event.ctrlKey) && String(event.key).toLowerCase() === 's') {
@@ -268,7 +332,7 @@ const BOOT_SCRIPT = String.raw`
     }
   });
   if (readonly) {
-    ['skw-undo', 'skw-redo', 'skw-save'].forEach(function (id) { var n = el(id); if (n) n.disabled = true; });
+    ['skw-undo', 'skw-redo', 'skw-save', 'skw-publish'].forEach(function (id) { var n = el(id); if (n) n.disabled = true; });
   }
 
   // 1. The types, then the lock. Both come from the registry: a type the image does not
@@ -515,6 +579,21 @@ const BOOT_SCRIPT = String.raw`
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json', 'x-csrf-token': boot.csrf },
       body: JSON.stringify(body),
+    }).then(function (r) { return r.json(); });
+  };
+
+  /**
+   * Publish is its own request, not a status field on save: the body being published is
+   * whatever the server holds as the draft, so the page goes live exactly as it was last saved
+   * — never as the canvas happens to look now. An unpublished tab cannot publish a half-typed
+   * document by accident.
+   */
+  window.skwPublish = function () {
+    return fetch('/admin/t/' + encodeURIComponent(boot.tenant) + '/editor/publish', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': boot.csrf },
+      body: JSON.stringify({ id: boot.page.id }),
     }).then(function (r) { return r.json(); });
   };
 })();

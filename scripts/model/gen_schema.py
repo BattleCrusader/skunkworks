@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Skunkworks data model — single source of truth. SITE VERSION 3, CONTROL VERSION 4.
+"""Skunkworks data model — single source of truth. SITE VERSION 5, CONTROL VERSION 4.
 
 Emits, from one spec:
   schema/control.sql                        DDL for control.db   (user_version 4)
-  schema/site.sql                           DDL for a tenant site.db (user_version 3)
+  schema/site.sql                           DDL for a tenant site.db (user_version 5)
   docs/debate/diagrams/r1-data-model.puml   the debate-round ER (kept, regenerated at v3)
   docs/sds/diagrams/er-data-model.puml      the SDS ER (same spec, same emitter)
 and renders both PNGs via the local `plantuml` binary.
@@ -32,7 +32,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # E-31 item 5: v4 adds `cms_plugin_installed.activation_seq`, the durable half of the ESM
 # cache-buster. The counter has to survive a restart or a new process re-imports the same URL
 # and gets the previous module namespace back — the exact failure the counter exists to prevent.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 # E-20 (02-errata §8): the control plane moves to v4 — `audit_seal` is a day segment, not a
 # cumulative snapshot — and `schema/control-r4.sql` is the v3 -> v4 delta.
 CONTROL_VERSION = 4
@@ -53,9 +53,11 @@ PATH_INTERNAL = ("{c} = '/' OR ({c} GLOB '/*' AND {c} NOT GLOB '//*' AND {c} NOT
 # The I8 ban, in the subset a CHECK can express: no inline script, no style element, no HTML
 # comment, no javascript: URL, no srcdoc. Event handlers (on<name>=) are the write validator's
 # job — SQLite has no regex, and a LIKE list of 70 handler names is not a control.
-BODY_BAN = ("body_html NOT LIKE '%<script%' AND body_html NOT LIKE '%<style%'"
-            " AND body_html NOT LIKE '%<!--%' AND body_html NOT LIKE '%javascript:%'"
-            " AND body_html NOT LIKE '%srcdoc%'")
+# The same five bans apply to whatever body a page stores, so the column name is a parameter:
+# the published body and the draft body must be equally unable to carry script.
+BODY_BAN = ("{c} NOT LIKE '%<script%' AND {c} NOT LIKE '%<style%'"
+            " AND {c} NOT LIKE '%<!--%' AND {c} NOT LIKE '%javascript:%'"
+            " AND {c} NOT LIKE '%srcdoc%'")
 
 # ---------------------------------------------------------------- spec: control.db
 CONTROL = {
@@ -216,10 +218,19 @@ SITE = {
  ("title","TEXT","NOT NULL CHECK(length(title) BETWEEN 1 AND 200)"),
  ("status","TEXT","NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','published','hidden'))"),
  ("template","TEXT","NOT NULL DEFAULT 'page' CHECK(template GLOB '[a-z][a-z0-9-]*')"),
- ("body_html","TEXT","NOT NULL DEFAULT '' CHECK(" + BODY_BAN + ")"),
+ ("body_html","TEXT","NOT NULL DEFAULT '' CHECK(" + BODY_BAN.format(c="body_html") + ")"),
  ("body_css","TEXT","NOT NULL DEFAULT ''"),
  ("rev","INTEGER","NOT NULL DEFAULT 0 CHECK(rev >= 0)"),
  ("body_sha","TEXT","NOT NULL DEFAULT '' CHECK(length(body_sha) IN (0,64))"),
+ # S8b (E-35): `body_*` above is the PUBLISHED body — the renderer reads it and only publish
+ # writes it. `draft_*` is the work in progress: the editor writes it, and the page list
+ # compares `draft_sha` with `body_sha` to answer "is there something to publish?". Kept as
+ # columns on the same row because a second table would need its own lifecycle, its own orphan
+ # sweep and its own answer to "what happens when the page is deleted".
+ ("draft_html","TEXT","NOT NULL DEFAULT '' CHECK(" + BODY_BAN.format(c="draft_html") + ")"),
+ ("draft_css","TEXT","NOT NULL DEFAULT ''"),
+ ("draft_sha","TEXT","NOT NULL DEFAULT '' CHECK(length(draft_sha) IN (0,64))"),
+ ("draft_updated_at","TEXT",None),
  ("managed_by","TEXT","NOT NULL DEFAULT 'editor' CHECK(managed_by IN ('editor','hand'))"),
  ("seo_json","TEXT",None),
  ("published_at","TEXT",None),

@@ -131,6 +131,7 @@ test('E1b — the editor has a toolbar of its own, and no button is a missing Fo
   for (const [id, name] of [
     ['skw-preview', 'Preview'],
     ['skw-save', 'Save'],
+    ['skw-publish', 'Publish'],
   ]) {
     const button = new RegExp(`<button[^>]*id="${id}"[^>]*>([\\s\\S]*?)</button>`).exec(res.body);
     assert.ok(button !== null, `${id} is missing`);
@@ -150,6 +151,11 @@ test('E1b — the editor has a toolbar of its own, and no button is a missing Fo
   // The save button is wired to the same POST the boot script already exposed, and Ctrl+S
   // does not open the browser's save dialog.
   assert.match(boot.body, /window\.skwSave\(\)/);
+  // S8b: Save writes a draft and Publish is the request that makes it live. The button and the
+  // request it calls are one contract; a toolbar with a Publish that posts to nothing is the
+  // defect this line exists to catch.
+  assert.match(boot.body, /window\.skwPublish = function \(\)/);
+  assert.match(boot.body, /\/editor\/publish/);
   assert.match(boot.body, /addEventListener\('keydown'/);
   assert.match(boot.body, /toLowerCase\(\) === 's'/);
 });

@@ -51,6 +51,10 @@ export interface SaveResult {
   id: number;
   created: boolean;
   rev: number;
+  /** True when this save wrote `draft_*` only — the page is live and its body was protected. */
+  draft: boolean;
+  /** The row's publication state after the write. */
+  status: string;
   bodyHtml: string;
   bodyCss: string;
   bodySha: string;
@@ -61,6 +65,7 @@ export interface SaveResult {
 interface PageRow {
   id: number;
   rev: number;
+  status: string;
   managed_by: string;
   template: string;
 }
@@ -184,7 +189,7 @@ export async function savePage(input: SaveInput): Promise<SaveResult> {
   const existing =
     input.pageId === undefined || input.pageId === null
       ? undefined
-      : (db.prepare('SELECT id, rev, managed_by, template FROM cms_page WHERE id = ?').get(input.pageId) as
+      : (db.prepare('SELECT id, rev, status, managed_by, template FROM cms_page WHERE id = ?').get(input.pageId) as
           | PageRow
           | undefined);
   if (input.pageId !== undefined && input.pageId !== null && existing === undefined) {
@@ -202,16 +207,43 @@ export async function savePage(input: SaveInput): Promise<SaveResult> {
     }
   }
 
-  const write = db.transaction((): { id: number; rev: number } => {
+  // A page that has been published (or hidden, which still has a real body) gets its live bytes
+  // protected. `status:'published'` is the direct-publish path — seeds, fixtures and tests; the
+  // editor route never sends it, and the operator's Publish button goes through `publishPage`.
+  const directPublish = input.status === 'published';
+  const protectsBody = !directPublish && existing !== undefined && existing.status !== 'draft';
+
+  const write = db.transaction((): { id: number; rev: number; draft: boolean } => {
+    // S8b (E-35). Two bodies, one row. `body_*` is what visitors are served and **only publish
+    // writes it**; `draft_*` is what the editor writes. A save on a page that is already live
+    // therefore writes the draft and leaves the live body alone — pressing Save in the canvas
+    // must not take a working site down, which is exactly what it used to do (it overwrote
+    // `body_html` and set `status='draft'` in one statement).
+    if (protectsBody && existing !== undefined) {
+      db.prepare(
+        `UPDATE cms_page
+            SET path = ?, slug = ?, title = ?, template = ?,
+                draft_html = ?, draft_css = ?, draft_sha = ?,
+                draft_updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = ?
+          WHERE id = ?`,
+      ).run(input.path, input.slug, input.title, input.template, canonical, css, sha, input.actorId ?? null, existing.id);
+      return { id: existing.id, rev: existing.rev, draft: true };
+    }
+
+    // Every other shape writes the body itself: a new page, a page that has never been published
+    // (its body is the only copy, and the O-29 preview token renders it), and a caller that asks
+    // for `status:'published'` directly (seeds and tests — the editor never sends it).
     let id: number;
     let rev: number;
     if (existing === undefined) {
       const info = db
         .prepare(
-          `INSERT INTO cms_page (path, slug, title, status, template, body_html, body_css, rev, body_sha, managed_by, updated_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+          `INSERT INTO cms_page (path, slug, title, status, template, body_html, body_css, rev, body_sha,
+                                 draft_html, draft_css, draft_sha, draft_updated_at, managed_by, updated_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?, ?)`,
         )
-        .run(input.path, input.slug, input.title, status, input.template, canonical, css, sha, managedBy, input.actorId ?? null);
+        .run(input.path, input.slug, input.title, status, input.template, canonical, css, sha, canonical, css, sha, managedBy, input.actorId ?? null);
       id = Number(info.lastInsertRowid);
       rev = 0;
     } else {
@@ -219,24 +251,61 @@ export async function savePage(input: SaveInput): Promise<SaveResult> {
       db.prepare(
         `UPDATE cms_page
             SET path = ?, slug = ?, title = ?, status = ?, template = ?, body_html = ?, body_css = ?,
-                rev = ?, body_sha = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = ?
+                rev = ?, body_sha = ?, draft_html = ?, draft_css = ?, draft_sha = ?,
+                draft_updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                published_at = CASE WHEN ? = 'published' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE published_at END,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = ?
           WHERE id = ?`,
-      ).run(input.path, input.slug, input.title, status, input.template, canonical, css, rev, sha, input.actorId ?? null, existing.id);
+      ).run(
+        input.path,
+        input.slug,
+        input.title,
+        status,
+        input.template,
+        canonical,
+        css,
+        rev,
+        sha,
+        canonical,
+        css,
+        sha,
+        status,
+        input.actorId ?? null,
+        existing.id,
+      );
       id = existing.id;
     }
     db.prepare(
       `INSERT INTO cms_page_revision (page_id, rev, body_html, body_css, note, created_by)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(id, rev, canonical, css, input.note ?? (existing === undefined ? 'created in the editor' : 'saved in the editor'), input.actorId ?? null);
-    return { id, rev };
+    return { id, rev, draft: false };
   });
 
-  const { id, rev } = write();
+  const written = write();
   // D17's graph: a body that names a key owns a `cms_asset_link`, which is what the export
-  // refuses a gated asset on (§11.3 refusal 2).
-  syncPageLinks(db, id);
+  // refuses a gated asset on (§11.3 refusal 2). The graph is scanned from `body_html` — the
+  // published body — because that is what an export ships. A draft that names a gated asset
+  // therefore does not block an export until it is published, which is the correct order.
+  syncPageLinks(db, written.id);
 
-  return { id, created: existing === undefined, rev, bodyHtml: canonical, bodyCss: css, bodySha: sha, items };
+  const statusAfter = protectsBody
+    ? (existing?.status ?? 'draft')
+    : directPublish
+      ? 'published'
+      : status;
+
+  return {
+    id: written.id,
+    created: existing === undefined,
+    rev: written.rev,
+    draft: written.draft,
+    status: statusAfter,
+    bodyHtml: canonical,
+    bodyCss: css,
+    bodySha: sha,
+    items,
+  };
 }
 
 /**
@@ -247,10 +316,22 @@ export function loadForEditor(
   db: Database.Database,
   registry: Registry,
   pageId: number,
-): { id: number; path: string; title: string; template: string; status: string; managedBy: string; bodyHtml: string; bodyCss: string; rev: number } {
+): {
+  id: number;
+  path: string;
+  title: string;
+  template: string;
+  status: string;
+  managedBy: string;
+  bodyHtml: string;
+  bodyCss: string;
+  rev: number;
+  /** There are unpublished changes: what the canvas holds is not what visitors are served. */
+  draft: boolean;
+} {
   const row = db
     .prepare(
-      `SELECT id, path, title, template, status, managed_by, body_html, body_css, rev
+      `SELECT id, path, title, template, status, managed_by, body_html, body_css, rev, draft_html, draft_css, draft_sha
          FROM cms_page WHERE id = ?`,
     )
     .get(pageId) as
@@ -264,11 +345,20 @@ export function loadForEditor(
         body_html: string;
         body_css: string;
         rev: number;
+        draft_html: string;
+        draft_css: string;
+        draft_sha: string;
       }
     | undefined;
   if (row === undefined) throw new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'no such page');
+  // The canvas opens what the operator last worked on, not what visitors are being served.
+  // `draft_sha = ''` is the honest "nothing pending"; comparing it with `body_sha` would also
+  // work, but the empty string is the state publish leaves behind, so it is the cheaper truth.
+  const hasDraft = row.draft_sha !== '';
+  const html = hasDraft ? row.draft_html : row.body_html;
+  const css = hasDraft ? row.draft_css : row.body_css;
   // Throws SKW_E_RT_COMPONENT_UNKNOWN, naming the type and the node.
-  analyseBody({ html: row.body_html, registry });
+  analyseBody({ html, registry });
   return {
     id: row.id,
     path: row.path,
@@ -276,8 +366,9 @@ export function loadForEditor(
     template: row.template,
     status: row.status,
     managedBy: row.managed_by,
-    bodyHtml: row.body_html,
-    bodyCss: row.body_css,
+    bodyHtml: html,
+    bodyCss: css,
     rev: row.rev,
+    draft: hasDraft,
   };
 }
