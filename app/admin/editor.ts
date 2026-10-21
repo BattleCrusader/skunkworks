@@ -170,7 +170,14 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 /* A page editor should show the page as the visitor sees it: white, not the theme's gutter. */
 #skw-canvas .gjs-cv-canvas,#skw-canvas .gjs-cv-canvas__frames,#skw-canvas .gjs-frame-wrapper{background:#e9e9ee}
 #skw-blocks h3{margin:.75rem 0 .25rem;font-size:.75rem;text-transform:uppercase;color:#666}
-#skw-blocks button{display:block;width:100%;text-align:left;margin:.15rem 0;padding:.35rem .5rem;cursor:grab}
+/* The palette is GrapesJS's block manager (S8j): its own elements, styled as our column's
+   buttons were, so the library keeps the drag and the column keeps its look. */
+#skw-blocks .gjs-block-category{width:100%}
+#skw-blocks .gjs-title{font-size:.75rem;text-transform:uppercase;color:#666;letter-spacing:.03em;margin:.75rem 0 .25rem;padding:0}
+#skw-blocks .gjs-blocks-c{display:block;padding:0}
+#skw-blocks .gjs-block{display:block;width:100%;text-align:left;margin:.15rem 0;padding:.35rem .5rem;cursor:grab;border:1px solid var(--line);border-radius:var(--r-in);background:#fff;font:inherit;font-size:13.5px;min-height:0;box-shadow:none}
+#skw-blocks .gjs-block:hover{border-color:var(--blue)}
+#skw-blocks .gjs-block.gjs-block--disabled{opacity:.45;cursor:not-allowed}
 #skw-settings .field{margin:.5rem 0}
 #skw-settings img{max-width:100%}
 #skw-notice{margin:0;padding:.6rem .8rem;background:#fdecec;border-bottom:1px solid #d9a3a3;color:#8a1c1c;font-weight:600}
@@ -275,6 +282,12 @@ const BOOT_SCRIPT = String.raw`
     // it into our own right-hand column keeps the capability and drops the missing-icon
     // chrome in one move.
     styleManager: { appendTo: '#skw-settings' },
+    // The palette is GrapesJS's own block manager, mounted in our column. Its views are what
+    // implement a block drag: they set the transfer payload *and* the editor's dragSource, which
+    // is what the canvas sorter reads on drop. Hand-rolled buttons in this column could show the
+    // insertion line (dragover is accepted for anything) and then drop nothing, because they set
+    // neither — the defect the operator reported as "the green line appears, then nothing".
+    blockManager: { appendTo: '#skw-blocks' },
   });
 
   // The toolbar. Four controls, wired to the editor's own commands, plus a dirty marker so
@@ -488,31 +501,21 @@ const BOOT_SCRIPT = String.raw`
   editor.on('canvas:frame:load:body', attachPasteGate);
   editor.on('load', attachPasteGate);
 
-  // 2. The palette, generated. One button per registry entry, grouped by category.
-  var blocks = document.getElementById('skw-blocks');
-  var byCategory = {};
+  // 2. The palette. Every registry entry becomes a block; the manager draws the DOM in our
+  //    column, groups them by category and owns the drag. The data-type attribute is kept on
+  //    each block's element so the picker can still find the entry a selection belongs to.
   boot.palette.forEach(function (item) {
-    (byCategory[item.category] = byCategory[item.category] || []).push(item);
-    editor.Blocks.add(item.id, { label: item.label, category: item.category, content: item.content });
-  });
-  boot.categories.forEach(function (category) {
-    var h = document.createElement('h3');
-    h.textContent = category;
-    blocks.appendChild(h);
-    (byCategory[category] || []).forEach(function (item) {
-      var button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = item.label;
-      button.dataset.type = item.type;
-      button.draggable = !readonly;
-      button.addEventListener('click', function () {
-        if (readonly) return;
-        var selected = editor.getSelected();
-        var container = selected ? selected : editor.getWrapper();
-        container.append(item.content)[0];
-      });
-      blocks.appendChild(button);
+    editor.Blocks.add(item.id, {
+      label: item.label,
+      category: item.category,
+      content: item.content,
+      // A hand-managed page is read-only in the canvas, so its palette must not insert either.
+      ...(readonly ? { disable: true } : {}),
     });
+  });
+  boot.palette.forEach(function (item) {
+    var view = editor.Blocks.get(item.id);
+    if (view) view.set('attributes', { 'data-type': item.type });
   });
 
   // 3. The document. page.bodyHtml is what the server validated; a hand-managed page is

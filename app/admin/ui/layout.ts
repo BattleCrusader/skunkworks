@@ -256,6 +256,14 @@ td form[action$="/disable"] button,td form[action$="/uninstall"] button{border-c
 .signin__card .submit{width:100%;min-height:44px;border-radius:var(--r-in);background:var(--blue);color:#fff;font-size:14px;font-weight:650;margin-top:4px;box-shadow:0 6px 16px rgba(37,99,235,.24);border:0}
 .signin__card .submit:hover{background:var(--blue-2)}
 .signin__after{margin:14px 0 0;text-align:center;font-size:12px;color:var(--muted);line-height:1.5}
+/* S8g: a package's declared form. One field per block — label, control, help — because the
+   property-sheet grid pairs a label with whatever cell comes next, and a help line is a cell. */
+.legacy form.fields{display:block;max-width:760px}
+.legacy form.fields .field{margin:0 0 20px}
+.legacy form.fields .field label{display:block;margin:0 0 6px;font-weight:600;color:inherit}
+.legacy form.fields .field input,.legacy form.fields .field select{width:100%;max-width:520px}
+.legacy form.fields .field textarea{width:100%;font:inherit;line-height:1.55}
+.legacy form.fields .field .help{margin:6px 0 0;color:var(--muted);font-size:12.5px;line-height:1.45}
 /* S8i: the sub-menu under Plugins — one group per loaded package, its screens beneath it. */
 .subnav{margin:0 0 18px;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r);background:var(--card)}
 .subnav ul{list-style:none;margin:0;padding:0}

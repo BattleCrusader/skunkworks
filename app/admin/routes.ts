@@ -2782,6 +2782,7 @@ ${body}
         ? declared.map((field) => ({ column: byName.get(field.name) as ColumnInfo, field }))
         : editable.map((column) => ({ column }));
 
+    const stacked = declared.length > 0;
     const controls = plans
       .map(({ column: c, field }) => {
         const value = row === null || row[c.name] === null || row[c.name] === undefined ? '' : String(row[c.name]);
@@ -2829,6 +2830,8 @@ ${body}
         }
         return `${label}<input id="f_${esc(c.name)}" name="${esc(c.name)}" type="text" value="${esc(value)}"${placeholder}${required}${described}>${hint}`;
       })
+      // A hidden field is not a question: it gets no block of its own.
+      .map((control) => (stacked && !control.startsWith('<input type="hidden"') ? `<div class="field">${control}</div>` : control))
       .join('\n');
 
     const readonly = info.columns
@@ -2842,7 +2845,7 @@ ${body}
       : `<form method="post" action="${action}/delete" data-csrf-token="${esc(csrf)}"><button type="submit">Delete</button></form>`;
 
     return `${back}<h1>${esc(heading)}${id === null ? ' — new' : ` — ${esc(id)}`}</h1>
-<form method="post" action="${action}" data-csrf-token="${esc(csrf)}">
+<form method="post" action="${action}" data-csrf-token="${esc(csrf)}"${stacked ? ' class="fields"' : ''}>
 ${controls}
 <button type="submit">Save</button>
 </form>
