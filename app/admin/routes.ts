@@ -2417,7 +2417,7 @@ ${items}
         reply.code(303).header('location', `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}/${encodeURIComponent(created.id)}`).send('');
         return;
       }
-      this.#rowsPage(reply, tenant, screen.table, session, screen.title);
+      this.#rowsPage(reply, tenant, screen.table, session, screen.title, `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}`);
       return;
     }
     if (parts.length === 1 && parts[0] === 'new') {
@@ -2534,17 +2534,21 @@ ${items}
     }
   }
 
-  #rowsPage(reply: FastifyReply, tenant: Tenant, table: string, session: SessionRecord, label?: string): void {
+  #rowsPage(reply: FastifyReply, tenant: Tenant, table: string, session: SessionRecord, label?: string, pathBase?: string): void {
     const db = this.#siteDb(tenant.key);
     try {
       const info = describeTable(db, table);
       const rows = listRows(db, table, 100);
+      // Where this table's rows live. A core table is under `/tables/`; a plugin's screen is at
+      // its own path, and linking a plugin's rows back into the Tables section would move the
+      // operator into a section that does not list them.
+      const base = pathBase ?? `/admin/t/${tenant.key}/tables/${table}`;
       const shown = info.columns.filter((c) => c.editable).slice(0, 6).map((c) => c.name);
       const head = [info.pk, ...shown.filter((c) => c !== info.pk)].map((c) => `<th>${esc(c)}</th>`).join('');
       const body = rows
         .map((row) => {
           const cells = [String(row[info.pk]), ...shown.filter((c) => c !== info.pk)].map((c) => `<td>${esc(String(row[c] ?? ''))}</td>`).join('');
-          return `<tr data-id="${esc(String(row[info.pk]))}">${cells}<td><a href="/admin/t/${esc(tenant.key)}/tables/${esc(table)}/${encodeURIComponent(String(row[info.pk]))}">edit</a></td></tr>`;
+          return `<tr data-id="${esc(String(row[info.pk]))}">${cells}<td><a href="${esc(base)}/${encodeURIComponent(String(row[info.pk]))}">edit</a></td></tr>`;
         })
         .join('\n');
       reply.type('text/html; charset=utf-8').send(
@@ -2552,10 +2556,13 @@ ${items}
           `Skunkworks — ${tenant.key} — ${table}`,
           `${crumbs([
             { label: 'Pages', href: `/admin/t/${tenant.key}/` },
-            { label: 'Tables', href: `/admin/t/${tenant.key}/tables` },
-            { label: label ?? table },
+            // A plugin's screen is not under Tables: its trail names the package's own screen
+            // instead of a section it does not belong to.
+            ...(label === undefined
+              ? [{ label: 'Tables', href: `/admin/t/${tenant.key}/tables` }, { label: table }]
+              : [{ label }]),
           ])}<h1>${esc(label ?? `${tenant.key} — ${table}`)}</h1>
-<p><a class="btn btn--sm" href="/admin/t/${esc(tenant.key)}/tables/${esc(table)}/new">New row</a></p>
+<p><a class="btn btn--sm" href="${esc(base)}/new">New row</a></p>
 <table data-role="rows"><thead><tr>${head}<th></th></tr></thead><tbody>
 ${body}
 </tbody></table>`,
@@ -2578,7 +2585,9 @@ ${body}
           `Skunkworks — ${tenant.key} — ${table}${id === null ? ' — new' : ` — ${id}`}`,
           `${crumbs([
             { label: 'Pages', href: `/admin/t/${tenant.key}/` },
-            { label: 'Tables', href: `/admin/t/${tenant.key}/tables` },
+            ...(label === undefined
+              ? [{ label: 'Tables', href: `/admin/t/${tenant.key}/tables` }]
+              : []),
             { label: label ?? info.name, href: `/admin/t/${tenant.key}/tables/${encodeURIComponent(info.name)}` },
             { label: id === null ? 'New row' : `Row ${id}` },
           ])}${this.#formHtml(tenant, info, row ?? null, id, session)}`,
