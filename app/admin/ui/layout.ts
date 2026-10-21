@@ -262,9 +262,23 @@ code{font-family:var(--mono)}
 .crumbs a{color:var(--blue-2)}
 .crumbs [aria-current="page"]{color:var(--ink-2);font-weight:600}
 .formback{margin:0 0 12px}
+/* S8d: the generated row form. Its markup is a flat label/input sequence — one per editable
+   column — so the layout is a two-column property sheet rather than a wrapper per field. */
+.legacy form{display:grid;grid-template-columns:minmax(170px,230px) minmax(0,1fr);gap:10px 16px;align-items:center;max-width:920px;margin:18px 0}
+.legacy form label{margin:0;font-size:12.5px;font-weight:600;color:var(--ink-2)}
+.legacy form label small{display:block;font-weight:400;font-size:11px;color:var(--muted);letter-spacing:.02em}
+.legacy form input,.legacy form textarea{width:100%;min-height:38px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:7px 10px;font:13px/1.45 var(--sans);background:#fff;color:var(--ink)}
+.legacy form input:focus,.legacy form textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.12);outline:0}
+.legacy form textarea{min-height:88px;font-family:var(--mono);font-size:12px}
+.legacy form input[type="number"]{max-width:220px}
+.legacy form button{grid-column:2;justify-self:start;min-height:36px;padding:0 16px;border-radius:var(--r-sm);border:1px solid var(--blue);background:var(--blue);color:#fff;font:600 13px/1 var(--sans);cursor:pointer}
+.legacy form[action$="/delete"] button{border-color:var(--red-line);background:var(--red-soft);color:#a02a2a}
 .legacy table{border-collapse:collapse;width:100%;margin:12px 0}
 .legacy th,.legacy td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;font-size:13px;vertical-align:top}
 .legacy th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.legacy ul[data-role="tables"]{list-style:none;margin:12px 0;padding:0;display:flex;flex-wrap:wrap;gap:8px}
+.legacy ul[data-role="tables"] a{display:inline-block;padding:7px 12px;border:1px solid var(--line-2);border-radius:var(--r-sm);background:#fff;font-size:13px;color:var(--ink-2)}
+.legacy ul[data-role="tables"] a:hover{border-color:var(--blue);color:var(--blue-2);text-decoration:none}
 .colophon{margin:34px 0 0;font-size:11.5px;color:var(--faint)}
 
 /* account: two narrow cards side by side, the sign-out card full width under them */
