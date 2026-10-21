@@ -72,8 +72,11 @@ test('the codes S1 raises are all mapped, and the four E-4 additions are part of
   // longer exists), and PL LOAD, BUSY and CONTEXT_ENDED join the area. PL SCHEMA,
   // DESTRUCTIVE_UPGRADE and REJECTED were already named by this list and had no HTTP status,
   // which is the defect the mapping case below now holds.
+  // S5 closeout: 84 -> 86 — RT NAV_TARGET_MISSING and NAV_HREF_REFUSED: `cms_nav` renders,
+  // and a menu row that cannot become a link is refused by name rather than emitted as a
+  // dead `href` (app/render/nav.ts).
   const total = Object.values(codes.areas).reduce((n, names) => n + names.length, 0);
-  assert.equal(total, 84, `the taxonomy holds ${total} codes, expected 84 (S5: +LOAD/BUSY/CONTEXT_ENDED, −OOM)`);
+  assert.equal(total, 86, `the taxonomy holds ${total} codes, expected 86 (S5 closeout: +NAV_TARGET_MISSING/HREF_REFUSED)`);
   for (const code of ['SKW_E_RT_PAGE_NOT_FOUND', 'SKW_E_PLT_INTERNAL', 'SKW_E_PLT_REQUEST_INVALID', 'SKW_E_PLT_BODY_TOO_LARGE']) {
     assert.equal(codes.retry_after?.[code], undefined, `${code} must not carry Retry-After`);
   }

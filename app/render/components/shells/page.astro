@@ -4,13 +4,22 @@
  *
  * It receives an already-loaded cms_page record from the app: the Astro layer
  * never opens a database (§2.2 — render-read handles belong to the app, and the
- * bundle has no SQLite).
+ * bundle has no SQLite). The same is true of `nav`: `loadNav()` in
+ * `app/render/nav.ts` reads `cms_nav`, resolves every href and refuses a row it
+ * cannot resolve; this component only writes the markup.
  */
+import NavList from './nav-list.astro';
+
 interface PageLike {
   title: string;
   bodyHtml: string;
   bodyCss: string;
   path: string;
+}
+interface NavItem {
+  label: string;
+  href: string;
+  children: NavItem[];
 }
 interface Props {
   page: PageLike;
@@ -22,8 +31,17 @@ interface Props {
    * interpolates it inside `<head>` and nowhere else.
    */
   head?: string;
+  /**
+   * The header and footer menus, from `cms_nav`. Empty on a site with no rows, and the
+   * shell then writes no `<header>`/`<footer>` at all — the exported static shell
+   * (`app/export/astro.ts`) carries no nav, and a page that emitted an empty `<nav>`
+   * would stop being byte-identical to it.
+   */
+  nav?: { header: NavItem[]; footer: NavItem[] };
 }
-const { page, tenantKey, head } = Astro.props as Props;
+const { page, tenantKey, head, nav } = Astro.props as Props;
+const header = nav !== undefined && nav.header.length > 0 ? nav.header : null;
+const footer = nav !== undefined && nav.footer.length > 0 ? nav.footer : null;
 ---
 <!doctype html>
 <html lang="en" data-tenant={tenantKey}>
@@ -33,7 +51,7 @@ const { page, tenantKey, head } = Astro.props as Props;
     <title>{page.title}</title>{head ? <Fragment set:html={head} /> : null}
     {page.bodyCss ? <style set:html={page.bodyCss} /> : null}
   </head>
-  <body data-page-path={page.path}>
-    <main set:html={page.bodyHtml} />
+  <body data-page-path={page.path}>{header !== null ? <header><nav aria-label="Main"><NavList items={header} /></nav></header> : null}
+    <main set:html={page.bodyHtml} />{footer !== null ? <footer><nav aria-label="Footer"><NavList items={footer} /></nav></footer> : null}
   </body>
 </html>

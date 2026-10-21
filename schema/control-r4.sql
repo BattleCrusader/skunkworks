@@ -51,6 +51,31 @@ BEGIN
   SELECT RAISE(ABORT, 'SKW_E_SEC_AUDIT_SEAL');
 END;
 
+-- 3. Two indexes for read paths that had none (S5 closeout).
+--
+--    `ix_user_email` — the login lookup, `SELECT ... FROM user_account WHERE email = ?`
+--    (app/admin/auth.ts). The only index on the column was `ux_user_email_global`, PARTIAL on
+--    `tenant_id IS NULL`, so it served the fleet operator alone and every tenant admin login
+--    scanned the table. This index is NON-UNIQUE ON PURPOSE: `Auth.authenticate()` refuses two
+--    rows with one email as *ambiguous* and answers the same 401 as a wrong password, so the
+--    response is not an oracle. A UNIQUE index would move that decision into SQLite — the
+--    second tenant's INSERT would fail with a constraint error — and the ambiguity branch the
+--    app is written around could never run. The index makes the lookup a seek; it does not
+--    assert a rule the app owns.
+--
+--    `ix_domain_tenant` — the tenant's host list, `WHERE tenant_id = ... ORDER BY is_primary
+--    DESC, host` (app/cli/export.ts). `ux_domain_primary` is partial on `is_primary = 1`, so a
+--    listing scanned. The column order is the listing's own order, so the seek and the sort are
+--    one index read and no temp b-tree.
+--
+--    Why the v4 delta and not a v5: `migrate` is version-gated, so a file already stamped v4
+--    will not re-run this delta and keeps the old plan. There is no deployed v4 database this
+--    repository knows of; if one appears before a v5 exists, the v5 delta must repeat these two
+--    statements. An ungated `CREATE INDEX IF NOT EXISTS` in the runner would hide exactly the
+--    divergence `comparePlanes` exists to catch, so there isn't one.
+CREATE INDEX ix_user_email ON user_account(email);
+CREATE INDEX ix_domain_tenant ON domain(tenant_id, is_primary DESC, host);
+
 PRAGMA user_version = 4;
 COMMIT;
 PRAGMA foreign_keys = ON;

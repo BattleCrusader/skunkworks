@@ -35,6 +35,7 @@ import {
 } from './db/migrate.ts';
 import { normalisePagePath, pageMiss } from './render/page.ts';
 import { renderStoredBody } from './render/body.ts';
+import { loadNav } from './render/nav.ts';
 import { CSP_HEADER, cspPolicy } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
 import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
@@ -598,6 +599,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     });
     if (loaded.page === null) throw pageMiss();
     const stored = loaded.page;
+    // §3/§4.4: the header and footer menus are `cms_nav` rows, read here because the
+    // Astro layer never opens a database (§2.2). `loadNav()` resolves every href and
+    // refuses a row it cannot resolve — a menu entry pointing at a page that does not
+    // exist is a dead link the CMS created itself, and the refusal names the row. It
+    // runs before the body render so no response carries an unresolvable menu.
+    const nav = loadNav(db);
     // §10.3/§11.2: the stored bytes are a fragment that names **keys**; `renderStoredBody`
     // unwraps a legacy row and derives every asset URL. It is the same function the three
     // exporters call, so a page cannot render one way here and another way in a bundle —
@@ -662,7 +669,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     // raw response before the hijack — the `onSend` hook above never sees this reply.
     reply.raw.setHeader(CSP_HEADER, cspPolicy());
     reply.hijack();
-    await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page, preview: loaded.preview, data, head });
+    await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page, preview: loaded.preview, data, head, nav });
     // `page.rendered` is an **action**: the return value is discarded and the payload is
     // observation only — `{tenant, path, status, ms}`. A throw here is caught by the dispatch
     // and counted; the response has already been written either way.

@@ -962,6 +962,25 @@
       ]
     },
     {
+      "file": "test/login-ambiguity.test.ts",
+      "worstIdleMs": 683,
+      "measuredOn": "2026-10-21",
+      "load1m": 4.9,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "3adbb022b3d59e191f1d6f9d0de290c673638a5799cd64edc5fefdca0827a094",
+      "runs": [
+        {
+          "ms": 683,
+          "at": "2026-10-21T03:45:21.554Z",
+          "load1mBefore": 4.9,
+          "load1mAfter": 4.9,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 5
+        }
+      ]
+    },
+    {
       "file": "test/admin-editor.test.ts",
       "worstIdleMs": 670,
       "measuredOn": "2026-10-21",
@@ -1119,6 +1138,25 @@
           "idle": true,
           "exitCode": 0,
           "tests": 6
+        }
+      ]
+    },
+    {
+      "file": "test/nav-render.test.ts",
+      "worstIdleMs": 541,
+      "measuredOn": "2026-10-21",
+      "load1m": 4.9,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "5bd15b250a9d876f6d810be70a33b8af201ce01406eae9a56ad2303327a75a2a",
+      "runs": [
+        {
+          "ms": 541,
+          "at": "2026-10-21T03:45:22.231Z",
+          "load1mBefore": 4.9,
+          "load1mAfter": 4.9,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 7
         }
       ]
     },
@@ -1417,6 +1455,25 @@
       ]
     },
     {
+      "file": "test/index-audit.test.ts",
+      "worstIdleMs": 168,
+      "measuredOn": "2026-10-21",
+      "load1m": 4.9,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "84e05318b4fde696dbfd569eecf942f2cf7df1313499b28d7cca34d56d01f8cd",
+      "runs": [
+        {
+          "ms": 168,
+          "at": "2026-10-21T03:45:20.719Z",
+          "load1mBefore": 4.9,
+          "load1mAfter": 4.9,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 7
+        }
+      ]
+    },
+    {
       "file": "test/witness.test.ts",
       "worstIdleMs": 162,
       "measuredOn": "2026-10-21",
@@ -1493,5 +1550,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-21T01:13:58.244Z"
+  "updatedAt": "2026-10-21T03:45:22.485Z"
 }

@@ -1,0 +1,29 @@
+---
+/**
+ * One menu level — a `<ul>` of `cms_nav` rows, recursing into a child level.
+ *
+ * The items arrive already ordered and already validated by `app/render/nav.ts`
+ * (the app owns the database, §2.2); this component owns the markup and nothing
+ * else. Astro escapes `{item.label}` and `href={item.href}`, so a label with `<`
+ * in it is text and a resolved href is an attribute value — the reason the href
+ * is resolved in TypeScript and not assembled here.
+ *
+ * The template is deliberately one line per element: Astro preserves the
+ * whitespace between tags, and a menu that changes its bytes because someone
+ * re-indented the component would break the export's byte-identity gate for no
+ * reason a reader could see.
+ */
+import NavList from './nav-list.astro';
+
+interface Item {
+  label: string;
+  href: string;
+  children: Item[];
+}
+interface Props {
+  items: Item[];
+}
+const { items } = Astro.props as Props;
+---
+
+<ul>{items.map((item) => (<li><a href={item.href}>{item.label}</a>{item.children.length > 0 ? <NavList items={item.children} /> : null}</li>))}</ul>

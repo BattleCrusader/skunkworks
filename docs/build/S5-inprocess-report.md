@@ -1198,3 +1198,260 @@ Two things the earlier attempts in this pass found, recorded because they are no
 | the budget rows | `node scripts/measure/test-file-budgets.mjs --files test/plugin-install.test.ts,test/plugin-lifecycle.test.ts` | two rows, loads 5.66 |
 | the whole gate | `bash scratch/fix/run3.sh` | three consecutive exit 0, 597/597: §12.6 |
 
+---
+
+## 13. Closeout — the login scan, the domain scan, the index-audit gate, and `cms_nav`
+
+**Date:** 2026-10-21. **Scope:** the last backend pass before the CMS goes to real clients — the
+two read paths that scan unauthenticated or tenant input, the gate that keeps a plan from
+regressing silently, and the navigation table that had no reader. **Nothing was committed.**
+
+`make test` is **exit 0 at 616/616 node tests** (597 + the 19 in this section), `27/27` claims,
+frozen `PASS` (`pointers: 33/33`), `verify-dist` 6/6, `verify-no-leak: clean` with its negative
+control, node phase **143.1 s**, whole gate **167.39 s wall clock**, load **4.90 at launch → 3.74 at
+the end** on the 8-CPU box (`darwin 24.6.0 arm64`, node v22.23.1, better-sqlite3 13 /
+SQLite 3.53.4). Repeats on the final bytes (after the last edit) are **616/616 in 159.25 s and
+161.36 s**, both exit 0, with the 1-minute load reaching **11–12** while they ran — the box was
+shared, and the gate is green loaded as well as idle. An earlier full run in this pass came back **614/616**: the two failures were
+`T5` (Pebble, `400 JWS has an invalid anti-replay nonce` — the 1-in-8 flake §11.5 documents, 95.6 s
+in that run) and `B2` in `test/timeout-budget.test.ts` because the three new test files had no rows
+in `test/perf-budgets.json`. The rows were then measured with the documented script (168 / 683 / 541 ms,
+load 4.90) and B2 is 4/4; T5 has been green since.
+
+### 13.1 Item 1 — the login path was an unindexed scan, on unauthenticated input
+
+`app/admin/auth.ts:267` authenticates with
+
+```sql
+SELECT id, tenant_id, email, password_hash, role, totp_secret, failed_logins, locked_until
+  FROM user_account WHERE email = ?
+```
+
+and the only index on `user_account(email)` was
+`ux_user_email_global ON user_account(email) WHERE tenant_id IS NULL` — **partial**, so it covers the
+fleet operator and nobody else. Every tenant admin login read the whole table, before the password
+was checked, on a form that takes an unauthenticated `email`.
+
+The index added is **non-unique on purpose**:
+
+```sql
+CREATE INDEX ix_user_email ON user_account(email);
+```
+
+`Auth.authenticate()` refuses two rows with one email as *ambiguous* and returns the same 401 as a
+wrong password, so the response cannot be used to learn that an email exists twice. A UNIQUE index
+would move that decision into SQLite: the second tenant's `INSERT` would fail with a constraint
+error at provisioning time, and the ambiguity branch the code is written around could never run.
+The index makes the lookup a seek; it does not assert a rule the app owns. The reason is in three
+places a reader will hit: the generator comment (`scripts/model/gen_schema.py`), the migration
+comment (`schema/control-r4.sql`), and the assertion named "the login index is non-unique on
+purpose" in `test/index-audit.test.ts`.
+
+| | plan (`EXPLAIN QUERY PLAN`) | measured |
+|---|---|---|
+| before (`HEAD`) | `SCAN user_account` | 0.7296 ms/lookup |
+| after | `SEARCH user_account USING INDEX ix_user_email (email=?)` | 0.0016 ms/lookup |
+
+Measured on 20,000 `user_account` rows, 200 lookups after a 50-lookup warm-up, same process, same
+box, load **5.00 → 5.16** (`scratch/index-before-after.mjs`). The 456× is real and it is *not* the
+login's cost: a real login spends ~30–50 ms in one argon2id verify at `m=19456,t=2,p=1`, and the
+0.73 ms query was a small part of it. The defect was the scan of unauthenticated input and the
+linear growth behind it, not a slow login. That distinction is why the gate asserts the plan rather
+than a duration.
+
+**The ambiguity refusal still works, proved after the index** (`test/login-ambiguity.test.ts`, 5/5):
+
+- two `user_account` rows with one email in two tenants are **storable** (the insert succeeds; the
+  index is not a uniqueness constraint) and `PRAGMA index_list` says `unique = 0`;
+- `Auth.authenticate()` with the *correct* password of both rows returns `ok: false`,
+  `reason: 'ambiguous'`, code `SKW_E_SEC_AUTH_INVALID`, status 401;
+- the wire body for the ambiguous email is byte-identical to the body for an unknown email after
+  `requestId` is scrubbed, and contains no `ambiguous`/`two`/`tenant`;
+- a single-row email still logs in (200 with a `csrfToken`) — the index is not a refusal.
+
+### 13.2 Item 2 — `domain(tenant_id)` had no index except the partial primary one
+
+`app/cli/export.ts:117` lists a tenant's hosts with
+
+```sql
+SELECT host, kind, is_primary, cert_state FROM domain
+ WHERE tenant_id = (SELECT id FROM tenant WHERE key = ?)
+ ORDER BY is_primary DESC, host
+```
+
+`ux_domain_primary ON domain(tenant_id) WHERE is_primary = 1` is partial, so the listing scanned
+`domain` and then sorted it with a temp b-tree. The index added is
+
+```sql
+CREATE INDEX ix_domain_tenant ON domain(tenant_id, is_primary DESC, host);
+```
+
+The trailing columns are the listing's own `ORDER BY`: the seek and the sort become one index read,
+so the temp b-tree disappears as well. The leading column is the predicate, so any other
+`WHERE tenant_id = ?` read still uses it.
+
+| | plan | measured |
+|---|---|---|
+| before | `SCAN domain \| SCALAR SUBQUERY 1 \| SEARCH tenant USING COVERING INDEX sqlite_autoindex_tenant_1 (key=?) \| USE TEMP B-TREE FOR ORDER BY` | 0.2412 ms/listing |
+| after | `SEARCH domain USING INDEX ix_domain_tenant (tenant_id=?) \| SCALAR SUBQUERY 1 \| SEARCH tenant USING COVERING INDEX sqlite_autoindex_tenant_1 (key=?)` | 0.0021 ms/listing |
+
+2,000 tenants / 8,000 domains, 1,000 listings per run, load 5.00 → 5.16, same script.
+
+**Migration.** Both indexes are in the generated DDL (`schema/control.sql`, from the one spec in
+`gen_schema.py`) and in `schema/control-r4.sql`, so the v3 → v4 chain still lands on the fresh
+schema — `test/migrate.test.ts` and `verify_claims.py` check 20 compare the index set and pass.
+`migrate` is version-gated, so a file **already stamped v4** will not re-run the delta and keeps
+the old plan; there is no deployed v4 database this repository knows of, and the delta says so. If
+one appears before a v5, the v5 delta must repeat the two statements — an ungated
+`CREATE INDEX IF NOT EXISTS` in the runner would hide exactly the divergence `comparePlanes` exists
+to catch, so there is deliberately none.
+
+### 13.3 Item 3 — the index-audit gate
+
+`test/index-audit.test.ts` (7 tests) runs `EXPLAIN QUERY PLAN` over **36 statements transcribed
+from the request path** — tenancy resolution, the page lookups (draft and published), nav, assets,
+the download plane, forms, settings, plugins, audit, and the admin's session/login reads — against
+the DDL the image ships (`schema/site.sql`, `schema/control.sql`, built fresh in memory). Each entry
+carries the `file:line` it was taken from. A `SCAN` fails with the query name, the plan text and the
+source:
+
+```
+index audit: 2 SCAN(s)
+domain.by_tenant: SCAN (expected SEARCH) — plan: SCAN domain | SCALAR SUBQUERY 1 |
+  SEARCH tenant USING COVERING INDEX sqlite_autoindex_tenant_1 (key=?) | USE TEMP B-TREE FOR ORDER BY
+  [app/cli/export.ts:117]
+login.by_email: SCAN (expected SEARCH) — plan: SCAN user_account [app/admin/auth.ts:267]
+```
+
+That is the run **before** the two indexes were added — the gate was written and run red first. It is
+7/7 green now.
+
+**The allowlist is three entries, each a sentence, and it is checked in both directions.** An entry
+must still describe a real `SCAN`, or the gate fails as a *stale allowlist entry* — a comment that no
+longer matches reality is worse than no comment. The three:
+
+1. `audit.newest` — `SELECT … FROM cms_audit ORDER BY ts DESC LIMIT 50`. The plan reads
+   `SCAN cms_audit USING INDEX ix_ca_ts`: SQLite walks the index backwards and stops after 50 rows.
+   There is no table walk and no temp b-tree, and the gate asserts the absence of
+   `USE TEMP B-TREE` on this query specifically, because a sort is the thing that would make the
+   word "SCAN" true.
+2. `control.tenants_all` and 3. `control.domains_all` — `SELECT … FROM tenant` and
+   `SELECT host, tenant_id FROM domain` in `app/tenancy/cache.ts`. No predicate: the cache loads the
+   whole routing table at boot and on a revision bump, and these are the control plane's registry
+   tables — one row per tenant, one per host, a documented small set (SDS §5.3). An index cannot
+   improve reading every row.
+
+**Negative control, run in the gate itself** (not a paragraph): a scratch copy of the same DDL drops
+the new index and the audit is required to go red naming that query —
+
+- `DROP INDEX ix_user_email` → exactly one failure, `login.by_email: SCAN (expected SEARCH) — plan:
+  SCAN user_account`;
+- `DROP INDEX ix_domain_tenant` → exactly one failure, `domain.by_tenant: SCAN (expected SEARCH) —
+  plan: SCAN domain | …`.
+
+Both are green as controls (they expect the red) and would fail if the audit stopped detecting scans.
+The gate also asserts the index **shape**: `ix_user_email` is non-unique and non-partial on `email`;
+`ix_domain_tenant` is non-unique on `(tenant_id, is_primary, host)`. Dropping an index from
+`gen_schema.py` therefore goes red twice — once on the plan, once on the shape.
+
+The control was also run against the **shipped file**, not only a scratch copy: the
+`CREATE INDEX ix_user_email …` line was deleted from `schema/control.sql`, the gate was run, and it
+went red at `3 pass / 4 fail` with
+
+```
+login.by_email: SCAN (expected SEARCH) — plan: SCAN user_account [app/admin/auth.ts:267]
+```
+
+then the file was restored and `diff` confirmed byte-identical. That is the failure a real
+regression would print.
+
+**What the gate does not cover, measured rather than assumed:** `app/download/code.ts:242`
+(`SELECT id FROM cms_download_code WHERE order_ref = ? AND revoked_at IS NULL`) also scans. It is on
+the **code-issue** path — one lookup per order webhook — not a per-request read, so it is outside
+this gate's list and was not given an index; it is recorded here rather than allowlisted, because an
+allowlist entry is a claim that a scan is legitimate and this one is only infrequent.
+
+### 13.4 Item 4 — the nav verdict: `cms_nav` rendered nowhere, and now renders in the shell
+
+**Verdict: nothing rendered navigation from `cms_nav`.** At `HEAD`, `git grep -n cms_nav HEAD -- app/`
+returned exactly one hit: a comment in `app/assets/url.ts:8` ("a page body, a datasource row and a
+`cms_nav.href_target` all carry the key"). The `nav` array at `app/admin/routes.ts:788` is the admin
+console's own hard-coded list, not rows. None of the three export writers (`app/export/project.ts`,
+`astro.ts`, `static.ts`) reads the table; `shellSource()` in `app/export/astro.ts` is a generated
+string with one `<main>` and no menu. So the table, its `ux_nav_pos` index and its CRUD form were
+write-only: a tenant site had no header or footer menu at all.
+
+**Wired, minimally, in the shell:**
+
+- `app/render/nav.ts` — `loadNav(db)` runs one query per location
+  (`WHERE location = ? AND visible = 1 ORDER BY ifnull(parent_id, 0), position`), which is a
+  **SEARCH** on `ux_nav_pos` (it is one of the 36 audited statements), plus one indexed lookup per
+  `page`/`asset` row to resolve its href; the tree is assembled in memory — a query per parent
+  would be `WHERE parent_id = ?`, whose leading column that index does not have. `position` order is
+  the query's, so the order a client sets is the order that renders.
+- Href resolution, all of it before any markup: `page` rows must name a path with a **published**
+  `cms_page`; `asset` rows resolve through the same `assetUrl()` the page bodies use, and a gated
+  asset is refused (it has no farm link — publishing one would be a 404 dressed as a resource);
+  `url` rows must be `http:`/`https:` (`javascript:` in an `href` is the one XSS a server-side
+  renderer can hand a browser with no script tag). `visible = 0` rows do not render, and neither do
+  their descendants.
+- `app/render/components/shells/nav-list.astro` (recursive) rendered by `page.astro` as
+  `<header><nav aria-label="Main">…</nav></header>` and `<footer><nav aria-label="Footer">…</nav></footer>`;
+  `app/main.ts` passes the tree in the Astro locals. When both menus are empty the shell writes no
+  `<header>`/`<footer>` and not one byte changes — which is why the three export trees are still
+  byte-identical to the served pages in `test/export-targets.test.ts` (T1/T2/T3 green).
+
+**Refusal by name.** A nav row the renderer cannot resolve fails the render instead of rendering a
+dead link. The error names the row id, its label, its kind and its target:
+`SKW_E_RT_NAV_TARGET_MISSING` for a `page`/`asset` target with no row behind it (or a draft, which
+is not a page yet), `SKW_E_RT_NAV_HREF_REFUSED` for a non-internal path, a non-http(s) URL, a gated
+asset or a parent cycle. Both are 500: the page exists, the site's configuration cannot produce it.
+`safeMessage()` drops anything containing a slash from the wire body, so the browser gets the code
+and the log gets the name — the test asserts the thrown message (`nav item <id> "Careers" (page)
+points at a path with no published page: /careers`), and the HTTP test asserts the response is not
+200 and carries neither `href="/careers"` nor the label.
+
+`test/nav-render.test.ts` is 7/7: a header with `Company` (positions 0) over `Story`/`Team`
+(positions 0/1) and `Careers`/`Contact` (1/2) renders in that order, nested inside its parent, with
+the invisible row absent and the footer's off-site link intact; a missing page, a draft target, a
+`javascript:` URL and a gated asset are each refused by name; the served page with a dead menu entry
+is not a 200.
+
+**What item 4 does not claim.** The three **export** targets still do not carry nav: `Projection`
+(version 2) has pages, assets and library rows and no nav, so an exported tree's `Shell.astro` has
+an empty menu even when the served site has one. SDS §11.1's table lists "Pages, slugs, nav" as
+projected, so this is a real remaining gap, not a decision. It is invisible to today's byte-identity
+gate only because no fixture seeds `cms_nav`; a tenant with nav rows exported tomorrow would serve a
+different menu than its live site. Closing it means a `Projection` nav field plus matching markup in
+`shellSource()` **and** `static.ts` (three renderers kept byte-identical), which is a slice of its
+own — it is not half-done here. Second: the refusal happens at **render** time; the admin CRUD form
+still accepts a nav row that points nowhere, so the first visitor sees the 500. Validating at write
+time is the better place for it and is not in this pass.
+
+### 13.5 What this pass does not claim
+
+- **Not a login speed-up.** The query went from 0.73 ms to 0.0016 ms; argon2 dominates a login. The
+  claim is the plan and the removal of a scan over unauthenticated input.
+- **No deployed-database migration.** `migrate` is version-gated: a v4 control.db keeps the old plan
+  until a v5 delta repeats the two `CREATE INDEX` statements. Fresh installs, and v3 files migrating
+  now, get them. There is no deployed v4 file this repository knows of.
+- **Two SDS numbers are stale and were not edited.** §15 says "26 explicit indexes" and "110,592 B"
+  for an empty `control.db`; the tree already had 30 explicit indexes (36 CREATE TABLE, not 35) and a
+  122,880 B empty control.db **before** this pass. It is 32 indexes and 131,072 B now. The SDS is the
+  register and this pass did not own it; the numbers are recorded here rather than quietly changed.
+- **`make test-perf` was not run.** The query timing above is a micro-benchmark with the load quoted;
+  it is not the perf gate, which requires an idle box by its own definition.
+- **No commit.** `git status` holds the work; nothing was staged or committed.
+
+### 13.6 Commands this section rests on
+
+| What | Command | Result |
+|---|---|---|
+| red before green, login + domain | `node scripts/run-node-tests.mjs --timeout=126000 test/index-audit.test.ts` | first run 1 pass / 6 fail (the audit case naming both queries; the shape and control cases also need the indexes); 7/7 after |
+| the ambiguity proof | `… test/login-ambiguity.test.ts` | first run 2/5 (shape and plan red on the missing index); 5/5 after |
+| the nav verdict and its gate | `… test/nav-render.test.ts` | 0/1 before (`ERR_MODULE_NOT_FOUND app/render/nav.ts`); 7/7 after |
+| before/after plans and ms | `node scratch/index-before-after.mjs` | §13.1/§13.2 tables, load 5.00 → 5.16 |
+| schema and chain | `python3 scripts/model/validate_schema.py` | `FAILURES: none`; control 9 tables / 11 indexes |
+| migration convergence | `… test/migrate.test.ts test/export-targets.test.ts test/error-codes.test.ts test/export-determinism.test.ts` | 32/32 |
+| the budget rows | `node scripts/measure/test-file-budgets.mjs --files test/index-audit.test.ts,test/login-ambiguity.test.ts,test/nav-render.test.ts` | 168 / 683 / 541 ms, load 4.90 |
+| the whole gate | `make test` | exit 0, 616/616, 167.39 s, load 4.90 → 3.74; repeat on the final bytes 616/616 in 159.25 s |

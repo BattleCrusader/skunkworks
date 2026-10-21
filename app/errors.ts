@@ -119,6 +119,14 @@ export const HTTP: Record<string, number> = {
   SKW_E_RT_TEMPLATE_UNKNOWN: 422,
   SKW_E_RT_SOURCE_TIMEOUT: 504,
   SKW_E_RT_LOOP_CONGESTED: 503,
+  // §3/§4.4 (S5 closeout): `cms_nav` renders. A menu row that cannot become a link is a
+  // config defect, not a visitor's mistake: the page the request named exists, but the
+  // server cannot render it without emitting a dead `href`. 500 is the honest status —
+  // the site is misconfigured. TARGET_MISSING is a `page`/`asset` row with no row behind
+  // it; HREF_REFUSED is a link that must not be written at all (`javascript:`, a gated
+  // asset, a non-internal path, a cycle).
+  SKW_E_RT_NAV_TARGET_MISSING: 500,
+  SKW_E_RT_NAV_HREF_REFUSED: 500,
   // §11.3's six pre-flight refusals and the plugin plane's export/trust codes: frozen in
   // the JSON from S1/S2, first mapped here because S4b's exporters are the caller.
   SKW_E_EXP_GATED_ASSETS: 409,

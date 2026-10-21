@@ -2,13 +2,17 @@
 export const prerender = false;
 import PageShell from '../components/shells/page.astro';
 
+import type { NavTree } from '../nav.ts';
+
 interface Locals {
   tenantKey: string;
   path: string;
   page: { title: string; bodyHtml: string; bodyCss: string; path: string };
   /** §13.3.4 `page.head`: passed through from the app, never assembled here. */
   head?: string;
+  /** `cms_nav`, already loaded, resolved and ordered by the app (`app/render/nav.ts`). */
+  nav: NavTree;
 }
-const { tenantKey, page, head } = Astro.locals as unknown as Locals;
+const { tenantKey, page, head, nav } = Astro.locals as unknown as Locals;
 ---
-<PageShell page={page} tenantKey={tenantKey} head={head} />
+<PageShell page={page} tenantKey={tenantKey} head={head} nav={nav} />

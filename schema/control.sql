@@ -32,6 +32,7 @@ CREATE TABLE domain (
   cert_state TEXT NOT NULL DEFAULT 'none' CHECK(cert_state IN ('none','requested','issued','failed')),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+CREATE INDEX ix_domain_tenant ON domain(tenant_id, is_primary DESC, host);
 -- one primary host per tenant; partial unique is legal here because no FK points at domain
 CREATE UNIQUE INDEX ux_domain_primary ON domain(tenant_id) WHERE is_primary = 1;
 
@@ -53,6 +54,7 @@ CREATE TABLE user_account (
   CONSTRAINT ux_user_tenant_email UNIQUE(tenant_id, email),
   CHECK((tenant_id IS NULL) = (role = 'fleet_admin'))
 );
+CREATE INDEX ix_user_email ON user_account(email);
 -- fleet operators have no tenant, so UNIQUE(tenant_id,email) would not constrain them
 CREATE UNIQUE INDEX ux_user_email_global ON user_account(email) WHERE tenant_id IS NULL;
 

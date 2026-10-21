@@ -84,7 +84,13 @@ CONTROL = {
  ("is_primary","INTEGER","NOT NULL DEFAULT 0 CHECK(is_primary IN (0,1))"),
  ("cert_state","TEXT","NOT NULL DEFAULT 'none' CHECK(cert_state IN ('none','requested','issued','failed'))"),
  ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
-], checks=[], partials=[
+], checks=[], indexes=[
+ # The tenant's domain list (`app/cli/export.ts:117`, and the admin's host list): before this
+ # index the only index on `domain` was `ux_domain_primary`, partial on `is_primary = 1`, so a
+ # listing scanned the whole table and then sorted it. The column order is the listing's own
+ # `ORDER BY is_primary DESC, host`, so the seek and the order are one index read.
+ ("ix_domain_tenant","tenant_id, is_primary DESC, host",False),
+], partials=[
  ("ux_domain_primary","tenant_id","is_primary = 1","one primary host per tenant; partial unique is legal here because no FK points at domain"),
 ]),
 "user_account": dict(note="tenant_id IS NULL = fleet operator. Never exported. SKW_FLEET_MODE=0 refuses to create or authenticate the fleet_admin role (O-33).", cols=[
@@ -103,6 +109,14 @@ CONTROL = {
  ("last_login_at","TEXT",None),
 ], checks=["CHECK((tenant_id IS NULL) = (role = 'fleet_admin'))"], uniques=[
  ("ux_user_tenant_email","tenant_id, email"),
+], indexes=[
+ # THE LOGIN PATH (`app/admin/auth.ts:267`, `WHERE email = ?`). Non-unique **on purpose**:
+ # `Auth.authenticate()` treats two rows with one email as ambiguous and answers the same 401
+ # as a wrong password, so the response is not an oracle. A UNIQUE index would move that
+ # decision into SQLite and turn the second tenant's INSERT into a constraint error — the code
+ # would keep a branch it can never reach. The index exists to make the lookup a seek; it must
+ # not assert a rule the app owns.
+ ("ix_user_email","email",False),
 ], partials=[
  ("ux_user_email_global","email","tenant_id IS NULL","fleet operators have no tenant, so UNIQUE(tenant_id,email) would not constrain them"),
 ]),
