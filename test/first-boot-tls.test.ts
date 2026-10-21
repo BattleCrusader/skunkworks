@@ -56,6 +56,21 @@ let up = false;
 let installLog = '';
 let nginxStartedAt = '';
 
+/**
+ * Where the file's wall clock goes. The file is the reason `TEST_TIMEOUT_MS` is what it is, so
+ * it reports its own breakdown on every run: setup (tsc, export, install.sh, image build),
+ * `docker compose up`, nginx answering TLS, the app answering 200, Pebble issuance, teardown.
+ * `test/perf-budgets.json` records the total; this line says which part is the budget.
+ */
+const FILE_STARTED_AT = Date.now();
+const PHASES: { name: string; ms: number }[] = [];
+let bootFirstAnswerMs = -1;
+let bootReadyMs = -1;
+
+function phase(name: string, startedAt: number): void {
+  PHASES.push({ name, ms: Date.now() - startedAt });
+}
+
 function sh(cmd: string, args: readonly string[], opts: { cwd?: string; env?: Record<string, string>; timeout?: number } = {}): {
   status: number | null;
   stdout: string;
@@ -113,21 +128,32 @@ function get(path: string, host = 'acme.test'): Promise<TlsAnswer> {
   });
 }
 
-function composeUp(timeout = 30_000): Promise<boolean> {
-  const deadline = Date.now() + timeout;
+interface Boot {
+  ok: boolean;
+  /** ms from the poll's start until *any* HTTPS answer: nginx is up (a 502 is an answer). */
+  firstAnswerMs: number;
+  /** ms from the poll's start until a 200: the app has migrated and is serving. */
+  readyMs: number;
+}
+
+function composeUp(timeout = 30_000): Promise<Boot> {
+  const startedAt = Date.now();
+  const deadline = startedAt + timeout;
   return (async () => {
+    let firstAnswerMs = -1;
     while (Date.now() < deadline) {
       try {
         // 200, not "any answer": nginx answers 502 while the app is still migrating, and a
         // gate that accepted 502 would call a half-started stack a served site.
         const answer = await get('/pricing');
-        if (answer.status === 200) return true;
+        if (firstAnswerMs < 0) firstAnswerMs = Date.now() - startedAt;
+        if (answer.status === 200) return { ok: true, firstAnswerMs, readyMs: Date.now() - startedAt };
       } catch {
         /* not listening yet */
       }
       spawnSync('sleep', ['0.5']);
     }
-    return false;
+    return { ok: false, firstAnswerMs, readyMs: Date.now() - startedAt };
   })();
 }
 
@@ -142,12 +168,18 @@ function certState(host: string): string {
 
 before(async () => {
   // The app container runs this tree's compiled dist/: the image's bytes are S4d's.
+  let startedAt = Date.now();
   const compile = sh(join(REPO, 'node_modules', '.bin', 'tsc'), ['-p', 'tsconfig.json']);
   assert.equal(compile.status, 0, `tsc failed:\n${compile.stdout}\n${compile.stderr}`);
+  phase('tsc', startedAt);
 
   // A previous aborted run must not poison this one (or the leak audit).
+  startedAt = Date.now();
   sh('docker', ['rm', '-f', PEBBLE]);
   sh('docker', ['network', 'rm', `${PROJECT}_default`]);
+  phase('docker cleanup', startedAt);
+
+  startedAt = Date.now();
   fixture = makeFixture({ specs: [{ key: 'acme', hosts: ['acme.test', 'www.acme.test'] }] });
   // The tenant on the *source* box had TLS — the exact input that produced the QA's dead
   // first boot. The exporter must not carry that claim into a bundle.
@@ -218,6 +250,7 @@ before(async () => {
       '    image: skw-acme:s4e',
     ].join('\n'),
   );
+  phase('fixture + export + install tree', startedAt);
 
   // The app image is needed only for its runtime `node_modules` (native modules compiled for
   // linux/arm64); `dist/` is mounted over the image's own. It was built on this box in S4d and
@@ -229,13 +262,16 @@ before(async () => {
   // and this gate was the last thing still asking for one.
   for (const service of ['nginx', 'app', 'acme']) trackContainer(`${PROJECT}-${service}-1`);
 
+  startedAt = Date.now();
   const appImage = sh('docker', ['image', 'inspect', 'skw-app:s4d']);
   assert.equal(appImage.status, 0, 'no skw-app:s4d image on this box (and the registry is unreachable): the composed gate cannot run');
   for (const [tag, file, context] of [['skw-acme:s4e', 'acme/Dockerfile', '.']] as const) {
     const built = sh('docker', ['build', '-t', tag, '-f', file, context]);
     assert.equal(built.status, 0, `could not build ${tag}:\n${built.stderr}`);
   }
+  phase('image check + acme build', startedAt);
 
+  startedAt = Date.now();
   const env = { ...process.env, SKW_ENV_FILE: join(installDir, '.env') };
   const install = spawnSync(join(installDir, 'install.sh'), ['--bundle', installDir, '--target', join(installDir, 'data'), '--runtime', REPO, '--no-compose'], {
     cwd: installDir,
@@ -245,23 +281,36 @@ before(async () => {
   });
   installLog = `${install.stdout}\n${install.stderr}`;
   installed = install.status === 0;
-
-
+  phase('install.sh', startedAt);
 });
 
 after(() => {
+  let startedAt = Date.now();
   if (installDir !== '') {
     const logs = compose(['logs', '--no-color'], {}).stdout;
     writeFileSync(join(REPO, 'scratch', `s4e-first-boot-${process.pid}.log`), `${logs}\n--- install ---\n${installLog}`);
   }
+  phase('logs capture', startedAt);
   // Pebble first: it holds an attachment on the compose network, so `compose down` cannot
   // remove that network while Pebble is on it (measured: `skw-s4e-boot_default` survived and
   // the leak gate named it).
+  startedAt = Date.now();
   sh('docker', ['rm', '-f', PEBBLE]);
   compose(['down', '-v', '--remove-orphans'], {});
   for (const service of ['nginx', 'app', 'acme']) removeContainer(`${PROJECT}-${service}-1`);
   sh('docker', ['network', 'rm', `${PROJECT}_default`]);
+  phase('teardown', startedAt);
+  startedAt = Date.now();
   fixture?.cleanup();
+  phase('fixture cleanup', startedAt);
+
+  const total = Date.now() - FILE_STARTED_AT;
+  const accounted = PHASES.reduce((sum, entry) => sum + entry.ms, 0);
+  process.stdout.write(
+    `# first-boot-tls phases: total=${total} ms, unaccounted=${total - accounted} ms; ` +
+      `${PHASES.map((entry) => `${entry.name}=${entry.ms}`).join('; ')}; ` +
+      `https first-answer=${bootFirstAnswerMs} ms, 200=${bootReadyMs} ms\n`,
+  );
 });
 
 test('T1 — the bundle claims no certificate: the seed says `none` and no private key travels', () => {
@@ -307,9 +356,16 @@ test('T3 — compose up serves the page over HTTPS with the self-signed pair, an
   // T4's condition, set for this boot: no CA is reachable (the shell environment wins over
   // `.env` in compose). The service must log the failure and leave `cert_state` alone rather
   // than inventing `failed` or `issued`.
+  let startedAt = Date.now();
   const started = compose(['up', '-d', '--remove-orphans'], { SKW_ACME_DIRECTORY: 'http://127.0.0.1:9/dir' });
   assert.equal(started.status, 0, `compose up failed:\n${started.stdout}\n${started.stderr}`);
-  up = await composeUp(180_000);
+  phase('compose up -d (containers started)', startedAt);
+  startedAt = Date.now();
+  const boot = await composeUp(180_000);
+  up = boot.ok;
+  bootFirstAnswerMs = boot.firstAnswerMs;
+  bootReadyMs = boot.readyMs;
+  phase('https served (nginx + app)', startedAt);
   assert.equal(up, true, `nginx never answered on 443:\n${compose(['ps', '-a'], {}).stdout}\n${compose(['logs', '--no-color', 'nginx'], {}).stdout}${compose(['logs', '--no-color', 'nginx'], {}).stderr}`);
 
   const answer = await get('/pricing');
@@ -365,6 +421,7 @@ test('T5 — against Pebble, the acme service issues, replaces the pair, sets `i
     }),
   );
   const network = `${PROJECT}_default`;
+  let startedAt = Date.now();
   sh('docker', ['rm', '-f', PEBBLE]);
   const pebble = sh('docker', [
     'run', '-d', '--name', PEBBLE, '--network', network,
@@ -374,17 +431,22 @@ test('T5 — against Pebble, the acme service issues, replaces the pair, sets `i
     'ghcr.io/letsencrypt/pebble:latest', '-config', '/test/gate-config.json',
   ]);
   assert.equal(pebble.status, 0, `pebble did not start:\n${pebble.stderr}`);
+  phase('pebble container start', startedAt);
 
   // Point the same service at Pebble and recreate it. The nginx container is untouched.
+  startedAt = Date.now();
   const restarted = compose(['up', '-d', '--force-recreate', 'acme'], {
     SKW_ACME_DIRECTORY: `https://${PEBBLE}:14000/dir`,
     SKW_ACME_INSECURE: '1',
   });
   assert.equal(restarted.status, 0, `compose up acme failed:\n${restarted.stdout}\n${restarted.stderr}`);
+  phase('acme recreate', startedAt);
 
   // Wait for the state machine to reach `issued` (the order + challenge + finalize round trip).
+  startedAt = Date.now();
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline && certState('acme.test') !== 'issued') spawnSync('sleep', ['1']);
+  phase('acme issuance (state=issued)', startedAt);
   const logs = compose(['logs', '--no-color', 'acme'], {}).stdout;
   assert.equal(certState('acme.test'), 'issued', `cert_state never reached issued; acme said:\n${logs}`);
   assert.equal(certState('www.acme.test'), 'issued');
@@ -398,6 +460,7 @@ test('T5 — against Pebble, the acme service issues, replaces the pair, sets `i
   // …and nginx is serving it, without a restart: the same process answered before and after.
   // A HUP briefly drops connections while the workers are replaced, so the read is retried
   // until it succeeds; the certificate itself is the assertion, not the first attempt.
+  startedAt = Date.now();
   let afterIssue = before;
   const serveDeadline = Date.now() + 20_000;
   while (Date.now() < serveDeadline) {
@@ -409,6 +472,7 @@ test('T5 — against Pebble, the acme service issues, replaces the pair, sets `i
     }
     spawnSync('sleep', ['0.5']);
   }
+  phase('nginx HUP + CA cert served', startedAt);
   assert.notEqual(afterIssue.fingerprint, before.fingerprint, 'nginx is still serving the self-signed pair');
   assert.match(afterIssue.issuer, /Pebble/i, `the served certificate's issuer is ${afterIssue.issuer}`);
   assert.equal(afterIssue.status, 200);

@@ -90,12 +90,24 @@ typecheck:
 # against a 10.47 s idle runtime under 6× CPU load, `test/integration/three-hosts.test.ts` losing
 # a 17 MiB response at 14×, and a loaded `hermes verify` recording 13 of 300 failing.
 #
-# TEST_TIMEOUT_MS is derived, not guessed: the worst-case **idle** per-file runtime on this box
-# after the perf split is test/ddl-runner.test.ts at 8.99 s, and 40000 is 4.4× that (the old 15000
-# was 1.5× the old worst case, test/sources.test.ts at 10.26 s, which is why moderate load killed
-# it). Both budgets matter: node applies --test-timeout to each test *and* to the file-level
+# TEST_TIMEOUT_MS is derived, not guessed, and its input is recorded rather than remembered.
+#
+# `test/perf-budgets.json` is the table: every non-perf test file, measured alone, with the
+# worst idle run, the date, the 1-minute load, the box and the file's sha256. "Idle" means the
+# run started at a 1-minute load <= the CPU count, the same threshold perf-preflight refuses
+# at. `test/timeout-budget.test.ts` asserts this constant is exactly ceil(4 x the largest
+# recorded worst idle run), names the file that set it when the two disagree, and fails if a
+# heavy file's bytes changed since it was measured.
+#
+# Derived 2026-10-21 from test/first-boot-tls.test.ts at 31 273 ms (load 7.32, 8 cpus):
+# 4 x 31 273 = 125 092 -> 126 000. The old 40000 was 4.4x test/ddl-runner.test.ts at 8.99 s
+# from S2; when first-boot-tls arrived at 30.76 s nothing compared the two, and the file spent
+# four slices at 77% of the budget before losing a run at load 36.40. Re-measure with
+# `node scripts/measure/test-file-budgets.mjs`; never edit a row by hand to quiet this gate.
+#
+# Both budgets matter: node applies --test-timeout to each test *and* to the file-level
 # subtest, so a file whose total exceeds it fails even when every test inside it fits.
-TEST_TIMEOUT_MS ?= 40000
+TEST_TIMEOUT_MS ?= 126000
 PERF_TIMEOUT_MS ?= 180000
 
 TEST_FILES := $(shell find test -name '*.test.ts' -not -path 'test/perf/*' | sort)

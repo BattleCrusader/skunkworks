@@ -350,26 +350,42 @@ test('C6. a DDL audit row tampered with and recomputed still fails against the s
   const db = open(path);
   try {
     assert.equal(verifyChain(db).ok, true);
-    // §9.6's anchor, written by the module S2d ships. A day that has ended, sealed the day after
-    // (E-20 rule 1: a day that can still grow has no segment).
-    sealNow(db, control, 'acme', '2026-10-20', Date.parse('2026-10-21T00:00:05Z'));
-    assert.equal(verifyAgainstSeal(db, control, 'acme', '2026-10-20').status, 'verified');
+    // Recompute every hash after a write that the append-only trigger would refuse. The test
+    // already does this after the tamper; it does it here too because the rows must be given a
+    // **date that has ended**, and that date is derived from the clock, not typed in.
+    const rechain = (): void => {
+      const rows = db.prepare('SELECT * FROM cms_audit ORDER BY id').all() as Record<string, unknown>[];
+      let prev = '';
+      const stamp = db.prepare('UPDATE cms_audit SET prev_hash = ?, hash = ? WHERE id = ?');
+      for (const row of rows) {
+        const hash = auditHash(prev, row as never);
+        stamp.run(prev, hash, row.id as number);
+        prev = hash;
+      }
+    };
 
-    // Tamper: rewrite what the DDL row claims, delete the append-only trigger, and
-    // recompute every hash so the file is internally consistent.
+    // This line used to be `sealNow(db, control, 'acme', '2026-10-20', Date.parse('2026-10-21T00:00:05Z'))`,
+    // with the audit rows stamped by the real clock. It passed until the wall clock crossed
+    // 2026-10-21T00:00:05Z, then failed for good: the rows were no longer on 2026-10-20, so the
+    // day's segment was `empty` and the seal had nothing to verify. Measured at 11:03 AEDT
+    // (00:03Z) on 2026-10-21: `+ 'empty' - 'verified'`. The day and the instant now come from
+    // the same `now`, so the seal is on-time whatever the calendar says.
     db.exec('DROP TRIGGER trg_cms_audit_append_only');
+    const now = Date.now();
+    const day = new Date(now - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    db.prepare('UPDATE cms_audit SET ts = ?').run(`${day}T12:00:00.000Z`);
+    rechain();
+    assert.equal(verifyChain(db).ok, true, 'the backdated chain must walk before it can be sealed');
+    sealNow(db, control, 'acme', day, now);
+    assert.equal(verifyAgainstSeal(db, control, 'acme', day).status, 'verified');
+
+    // Tamper: rewrite what the DDL row claims and recompute every hash so the file is
+    // internally consistent. The append-only trigger is already gone above.
     db.prepare("UPDATE cms_audit SET action = 'ddl.drop_table' WHERE id = 2").run();
-    const rows = db.prepare('SELECT * FROM cms_audit ORDER BY id').all() as Record<string, unknown>[];
-    let prev = '';
-    const stamp = db.prepare('UPDATE cms_audit SET prev_hash = ?, hash = ? WHERE id = ?');
-    for (const row of rows) {
-      const hash = auditHash(prev, row as never);
-      stamp.run(prev, hash, row.id as number);
-      prev = hash;
-    }
+    rechain();
     assert.equal(verifyChain(db).ok, true, 'the recomputed chain must walk — otherwise the seal is not what catches it');
     assert.throws(
-      () => verifyAgainstSeal(db, control, 'acme', '2026-10-20'),
+      () => verifyAgainstSeal(db, control, 'acme', day),
       (err: unknown) => err instanceof AppError && err.code === 'SKW_E_SEC_AUDIT_SEAL',
     );
   } finally {

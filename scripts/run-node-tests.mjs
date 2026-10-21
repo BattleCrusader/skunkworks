@@ -62,6 +62,10 @@ const DOCKER_FLAG = process.env.SKW_SKIP_DOCKER === '1';
 const childEnv = { ...process.env };
 delete childEnv.NODE_TEST_CONTEXT;
 delete childEnv.NODE_TEST_FILTER;
+// The budget this run is actually under, exported so `test/timeout-budget.test.ts` can assert
+// the value in force (not just the Makefile default). `make test TEST_TIMEOUT_MS=…` therefore
+// cannot lower the budget without a named red test.
+childEnv.SKW_TEST_TIMEOUT_MS = String(timeoutMs);
 
 const child = spawn(
   process.execPath,

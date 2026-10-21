@@ -11,7 +11,7 @@
  * refusal is the exact failure mode the S4c report exists to avoid.
  */
 import { execFileSync } from 'node:child_process';
-import { closeSync, existsSync, mkdtempSync, openSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, rmSync, statfsSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,7 +29,8 @@ export function makeSmallVolume(sizeMb = 1): SmallVolume {
         '(darwin: hdiutil disk image). Provide a tmpfs mount or run this gate on macOS — a skip is a failure (E-15).',
     );
   }
-  const image = join(mkdtempSync(join(tmpdir(), 'skw-dmg-')), 'volume.dmg');
+  const dir = mkdtempSync(join(tmpdir(), 'skw-dmg-'));
+  const image = join(dir, 'volume.dmg');
   execFileSync('hdiutil', ['create', '-size', `${sizeMb}m`, '-fs', 'HFS+', '-volname', 'skwfull', image, '-quiet']);
   const attach = execFileSync('hdiutil', ['attach', image, '-nobrowse'], { encoding: 'utf8' });
   const mount = /(\/Volumes\/[^\s]+)/.exec(attach)?.[1];
@@ -39,10 +40,11 @@ export function makeSmallVolume(sizeMb = 1): SmallVolume {
   return {
     root: mount,
     freeBytes(): number {
-      const stats = execFileSync('df', ['-k', mount], { encoding: 'utf8' });
-      const line = stats.trim().split('\n')[1] ?? '';
-      const available = Number(line.split(/\s+/)[3] ?? '0');
-      return available * 1024;
+      // `statfs(2)` in-process, not `df(1)`: `fillUntil` probes after every 4 KiB write, and a
+      // `df` fork per probe cost this file 24 s of its 34 s runtime (measured 2026-10-21, load
+      // 8.94). The number is the same `bavail × bsize` df prints.
+      const stats = statfsSync(mount);
+      return Number(stats.bavail) * Number(stats.bsize);
     },
     detach(): void {
       try {
@@ -51,6 +53,9 @@ export function makeSmallVolume(sizeMb = 1): SmallVolume {
         /* already gone */
       }
       rmSync(image, { force: true });
+      // The mount is gone; its scratch directory is not. 288 of these had accumulated on the
+      // dev box from earlier runs — a leak the detach path itself created.
+      rmSync(dir, { recursive: true, force: true });
     },
   };
 }

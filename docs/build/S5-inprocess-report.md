@@ -822,3 +822,102 @@ Every file this pass touched — `nginx-media-e2e`, `farm`, `ddl-runner`, `plugi
 | the whole gate | `make test` | **exit 0** 583/583 in runs A and C; run B exit 2 on a per-file timeout only; loads in §10.5 |
 | the file that lost run B, alone | `node --test test/first-boot-tls.test.ts` | 5/5 in **30.76 s** at load 25.16 — 77% of the 40 s budget |
 
+## 11. `TEST_TIMEOUT_MS` — the constant that could not name its input
+
+### 11.1 What rotted, and what the table found that the comment could not
+
+S2 derived `TEST_TIMEOUT_MS = 40000` as 4.4× the then-worst idle file, `test/ddl-runner.test.ts` at 9.04 s. The derivation was a sentence in the `Makefile`: true when written, unreadable to any gate. `test/first-boot-tls.test.ts` then arrived at 30.76 s alone at load 25.16 — 77 % of 40 s — and §10.5's run B lost it at load 36.40 with **0 assertion failures**. Four slices of headroom were spent silently because no code compared the constant with the file set it was supposed to cover.
+
+The table found a second fact the sentence could not see: `first-boot-tls` was not even the heaviest file. `test/export-resilience.test.ts` measured **34 199 ms** at load 8.94 in the first sweep, and it was not slow because exporting is slow. `test/helpers/full-disk.ts` forked `df` after every 4 KiB write while filling a 1 MB disk image, and the test leaked a mounted volume on the D1 path: **99 `/Volumes/skwfull*` mounts and 288 `skw-dmg-*` scratch directories** were attached on this box by the time it was measured. A measurement table found both in one pass; the comment had never looked.
+
+### 11.2 The mechanism: a table, a gate, and a measurement command
+
+| Piece | What it does |
+|---|---|
+| `test/perf-budgets.json` | 73 rows, one per non-perf test file: `worstIdleMs`, `measuredOn`, `load1m`, `box`, `sha256`, and the `runs` behind the worst value. "Idle" is the preflight's own definition: the run **started** at a 1-minute load ≤ the CPU count. Loaded runs are recorded and excluded; a file with no idle run has no `worstIdleMs` and cannot set the budget. |
+| `test/timeout-budget.test.ts` | B1 row integrity; B2 completeness (every non-perf test file has a row, so a new file cannot enter the suite unmeasured) and hash freshness for every row ≥ 3 s and for the largest row; B3 `TEST_TIMEOUT_MS` exactly `ceil(4 × max / 1000) × 1000`, both in the Makefile **and** in the value the runner exported (`SKW_TEST_TIMEOUT_MS`); B4 in-suite negative controls (a raised row and a forged hash must both be red and name the file). |
+| `scripts/measure/test-file-budgets.mjs` | Runs each file alone through the same `scripts/run-node-tests.mjs`, waits for an idle window, records before/after load on every run, keeps the worst idle run, and rewrites the table. |
+
+The gate reads the **effective** budget, not only the Makefile: `scripts/run-node-tests.mjs` now exports `SKW_TEST_TIMEOUT_MS`, so `make test TEST_TIMEOUT_MS=…` cannot lower or raise the constant without a named red test. A row at or above 3 s is tied to its file's sha256 — edit a heavy test and the gate names it and asks for a re-measurement instead of comparing today's budget to yesterday's bytes.
+
+**Failing test first.** With no table, all four gate tests were red; the first was `'/…/test/perf-budgets.json does not exist: TEST_TIMEOUT_MS has no recorded input'` (`scratch/evidence-missing-table.log`).
+
+### 11.3 The measurements
+
+Every number was taken one file at a time, `--test-concurrency=1`, on this box: `cyberdeth.za.net`, macOS 15.7.4 arm64, **8 cpus**, 16 GiB, Node v22.23.1, Docker 29.7.2 (4-cpu / 1.5 GiB VM), 2026-10-21 between 10:36 and 11:04 AEDT. `load1m` is the 1-minute average when the run that produced `worstIdleMs` started.
+
+| worst idle ms | load1m | measured | file |
+|---:|---:|---|---|
+| **31 273** | 7.32 | 2026-10-21 | `test/first-boot-tls.test.ts` |
+| 9 025 | 7.79 | 2026-10-21 | `test/ddl-runner.test.ts` |
+| 8 639 | 7.70 | 2026-10-21 | `test/nginx-e2e.test.ts` |
+| 7 263 | 5.28 | 2026-10-21 | `test/install-bundle.test.ts` |
+| 7 129 | 7.98 | 2026-10-21 | `test/export-resilience.test.ts` |
+| 7 035 | 7.15 | 2026-10-21 | `test/nginx-media-e2e.test.ts` |
+| 6 008 | 7.91 | 2026-10-21 | `test/env.test.ts` |
+| 5 788 | 7.66 | 2026-10-21 | `test/download-redeem.test.ts` |
+| 5 028 | 7.89 | 2026-10-21 | `test/download-consume.test.ts` |
+| 4 875 | 8.00 | 2026-10-21 | `test/install.test.ts` |
+| 4 364 | 7.60 | 2026-10-21 | `test/download-watermark.test.ts` |
+| 3 956 | 6.34 | 2026-10-21 | `test/island-ua.test.ts` |
+
+The full set is `test/perf-budgets.json` (73 files; the suite is 587 tests). `test/nginx-gated-e2e.test.ts` is 2 159 ms at load 7.15; `test/farm.test.ts` 3 357 ms at 7.32.
+
+**Where `first-boot-tls`'s 26–31 s goes.** The file now prints its own phase line on every run. This is one full run at load 5.86 → 6.05, `total=25 672 ms` (wall 25 931 ms), 5/5:
+
+| phase | ms | share |
+|---|---:|---:|
+| ACME: Pebble start + `acme` recreate + issuance to `issued` | 12 480 | 48.6 % |
+| Docker lifecycle: image build + `compose up -d` + nginx's first TLS answer + `compose down -v` | 6 816 | 26.5 % |
+| setup: `tsc` + `install.sh` + fixture/export | 4 034 | 15.7 % |
+| served-response checks: app 200, `nginx -s HUP` + new cert | 1 383 | 5.4 % |
+| unaccounted (T1/T2/T4 bodies, module load) | 951 | 3.7 % |
+
+The narrowest reading of "container startup" — `compose up -d` returning plus nginx's first TLS answer — is **1 466 ms, 5.7 %**. Teardown alone is 4 363 ms. The 30 s is a real three-service install, a real Pebble ACME round trip (8 549 ms in issuance alone) and a real teardown, not a container-start stall. **The fix for this file is the budget**, and the phase line is the evidence a future reader needs to re-derive it. No test-design change could remove 20 s without removing what T1–T5 assert.
+
+**The test-design fix was `export-resilience`, where the cost was waste.** `statfsSync` replaces the `df` fork per 4 KiB write; D1/D5 detach their own volumes in `finally` (the module-level `volume` variable meant D1's mount was overwritten by D2's and never detached); `detach()` removes its `mkdtemp` directory. Measured: **34 199 ms → 7 129 ms** (79 % less), 5/5 both before and after, and the run now leaves **0** mounts and **0** scratch dirs.
+
+### 11.4 Negative controls
+
+1. **A row below the measurement, constant untouched.** `first-boot-tls`'s `worstIdleMs` 31 273 → 5 000 while the Makefile stayed at 126 000. The gate went red and named the file and its real value: `test/first-boot-tls.test.ts: worstIdleMs 5000 is not the maximum of its idle runs (31273)`. B2/B3 additionally named `test/nginx-e2e.test.ts` as the new heaviest and the constant as "above the derived value" (`scratch/evidence-budget-red.log`). Restored.
+2. **An understated row and a budget derived from it.** Row 5 000, `TEST_TIMEOUT_MS=20000` (4 × 5 000, so the table and the constant agree), then the file itself: `not ok 1 - test/first-boot-tls.test.ts`, `error: 'test timed out after 20000ms'`, `# cancelled 1`, the runner banner `CANCELLED TESTS — THIS RUN IS NOT A GATE (1 cancelled)`, exit 1 (`scratch/neg-control-timeout.log`). This is the original failure reproduced: an understated table does not merely look wrong, it loses the run.
+3. **The effective budget, not the Makefile.** Runner `--timeout=125000` (1 s below the derivation), Makefile unchanged: B2/B3 red with `the budget in force is 125000 ms, below the derived floor of 126000 ms = 4 × 31273 ms, the worst idle run of test/first-boot-tls.test.ts … That file sets the budget.` (`scratch/evidence-effective-budget.log`).
+4. **In-suite controls.** B4 runs on every gate invocation: a heaviest row raised to 125 092 ms and a forged sha256 on that row both produce red, named failures. A checker that cannot fail is not a checker.
+5. **A new file the table has never seen.** A probe `test/zz-unmeasured-probe.test.ts` was added and the gate run: red, `these test files have no row in test/perf-budgets.json, so TEST_TIMEOUT_MS cannot see them: test/zz-unmeasured-probe.test.ts — measure them with "node scripts/measure/test-file-budgets.mjs --files test/zz-unmeasured-probe.test.ts"` (`scratch/evidence-completeness.log`). The probe was removed; the gate is green. This is the control for the actual rot: a heavier file appearing and no number moving.
+
+### 11.5 Re-derivation and stability
+
+`ceil(4 × 31 273 / 1000) × 1000 = 126 000`. The Makefile carries the file, the measurement, the load, the date and the old derivation beside the number.
+
+Three consecutive `make test` runs, back to back, nothing else started by this pass:
+
+| run | load (start → end, 1 min) | node suite | result |
+|---|---|---|---|
+| 1 | 5.83 → 7.86 | 587/587, 155.72 s | **exit 0** — claims 27/27, frozen PASS, dist 6/6, no-leak clean |
+| 2 | 7.86 → 13.16 | 587/587, 157.21 s | **exit 0** — as run 1 |
+| 3 | 13.16 → 8.01 | 587/587, 157.43 s | **exit 0** — as run 1 |
+
+An earlier sequence is worth recording because it found two failures that were not the budget. Run 1 was green (587/587, 145.27 s, load 5.91 → 5.84). Run 2 lost **T5** at 94.6 s: `400 JWS has an invalid anti-replay nonce`, a pre-existing Pebble/ACME flake that the old 40 s budget would have hidden as a cancel; it occurred once in eight `first-boot-tls` runs measured today, and 3/3 standalone runs after it were green. Run 3 lost **C6 in `ddl-runner`**: the test sealed the hard-coded day `2026-10-20` at the hard-coded instant `2026-10-21T00:00:05Z` while its audit rows were stamped by the real clock. At 11:03 AEDT (00:03Z) the rows were no longer on 2026-10-20, the segment was `empty`, and `verifyAgainstSeal` returned `empty` where the test expected `verified`. That failure was permanent from that minute on, not a flake: the day and the instant now come from one `now` (the rows are backdated to yesterday noon, the seal is on-time), and `ddl-runner` is 18/18 in 9.0 s. The three runs in the table above were taken after both findings, and after the gate's completeness check was added.
+
+### 11.6 What this changes, and what it costs
+
+- A hung unit test now takes up to 126 s to fail instead of 40 s. That is the price of one constant covering the heaviest file. Per-file budgets would keep 40 s for the other 72 files, but node has one `--test-timeout` per invocation and E-8 wants one runner invocation with one summary; the table makes the trade visible instead of implicit.
+- `docs/sds/02-errata.md`'s S2 amendment still says `40 000 ms today`. It is the record of that amendment, not a live claim; the live derivation is `Makefile` + `test/perf-budgets.json` + `test/timeout-budget.test.ts`.
+- The table is now the only place a per-file runtime is authoritative. Re-measuring is a command, not a memory: `node scripts/measure/test-file-budgets.mjs` (all files) or `--files <file>` (one). Do not hand-edit a row to quiet the gate; the gate checks the row against its own runs and the file's bytes.
+
+### 11.7 The commands this section rests on
+
+| What | Command | Result |
+|---|---|---|
+| the table | `node scripts/measure/test-file-budgets.mjs --fresh --exclude test/timeout-budget.test.ts` | 72 files, one idle run each, loads 5.28–8.00 |
+| the missing-idle rows | `node scripts/measure/test-file-budgets.mjs --files <7 files>` | all 7 acquired an idle run; loads 5.28–6.34 |
+| the gate | `node scripts/run-node-tests.mjs --timeout=126000 test/timeout-budget.test.ts` | 4/4, exit 0 |
+| the gate with no table | `mv test/perf-budgets.json …` + the gate | 4/4 red, first failure names the missing file |
+| the budget control | row 5 000 ms, Makefile 126 000 | B1 red: `worstIdleMs 5000 is not the maximum of its idle runs (31273)` |
+| the real timeout control | row 5 000 ms, Makefile 20 000, run the file | `not ok 1 - test/first-boot-tls.test.ts`, `timed out after 20000ms`, exit 1 |
+| the effective budget | runner `--timeout=125000` | red: 125 000 is below the 126 000 derived floor |
+| `first-boot-tls` alone | `node scripts/run-node-tests.mjs --timeout=126000 test/first-boot-tls.test.ts` | 5/5 ×3; 25 931 / 31 273 ms; phase line per run |
+| `export-resilience` alone | same runner, that file | 5/5; 34 199 ms before, 7 129 ms after; 0 mounts/dirs left |
+| `ddl-runner` alone | same runner, that file | 18/18 in 9 025 ms after C6's date fix |
+| the whole gate | `make test` | three consecutive runs: §11.5 |
+

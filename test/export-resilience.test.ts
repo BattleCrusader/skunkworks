@@ -50,12 +50,15 @@ function fixture(): Fixture {
   return f;
 }
 
-let volume: SmallVolume | undefined;
-
 function fullVolume(sizeMb = 1, leaveBytes = 12 * 1024): SmallVolume {
-  volume = makeSmallVolume(sizeMb);
-  fillUntil(volume, leaveBytes);
-  return volume;
+  const vol = makeSmallVolume(sizeMb);
+  try {
+    fillUntil(vol, leaveBytes);
+  } catch (err) {
+    vol.detach();
+    throw err;
+  }
+  return vol;
 }
 
 test('D1 — a full disk is refused before the write, leaving every existing byte intact', () => {
@@ -91,6 +94,7 @@ test('D1 — a full disk is refused before the write, leaving every existing byt
     assert.equal(sha(sentinel), before.sentinel, 'the sentinel is byte-identical');
     assert.equal(sha(f.sitePath('acme')), before.site, "the tenant's database is byte-identical");
   } finally {
+    vol.detach();
     f.cleanup();
   }
 });
@@ -227,8 +231,7 @@ test('D5 — the CLI maps both refusals to their §11.3 exit codes', () => {
     assert.match(busy.stderr, /SKW_E_EXP_WRITER_ACTIVE/);
     rmSync(join(f.dir, '.export-acme.lock'), { force: true });
   } finally {
-    if (volume !== undefined) volume.detach();
-    volume = undefined;
+    vol.detach();
     f.cleanup();
   }
 });
