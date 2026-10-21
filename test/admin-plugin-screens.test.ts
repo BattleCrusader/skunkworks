@@ -268,7 +268,13 @@ test('S8h-1. a plugin block is in the palette, and the page the visitor gets is 
   const entry = payload.palette.find((item) => item.label === 'Blog: recent posts');
   assert.ok(entry !== undefined, 'the blog block is not in the palette');
   assert.equal(entry.category, 'Plugins');
-  assert.match(entry.content, /data-skw-block="blog\/recent-posts"/);
+  // A plugin block is the front-end's own `list` component, pointed at the package's data — not a
+  // second kind of widget with its own look.
+  assert.match(entry.content, /data-gjs-type="list"/);
+  assert.match(entry.content, /data-source="blog\/recent-posts"/);
+  assert.match(entry.content, /data-limit="5"/);
+  assert.match(entry.content, /data-repeat/);
+  assert.match(entry.content, /data-bind-title="title"/);
 
   // Two posts: one published with markup in its title, one draft.
   const db = new Database(fixture.sitePath('acme'));
@@ -278,9 +284,13 @@ test('S8h-1. a plugin block is in the palette, and the page the visitor gets is 
     );
     insert.run('Published <script>alert(1)</script>', 'published-post', 'body', 'published', '2026-03-01', '2026-03-01T00:00:00.000Z');
     insert.run('Secret draft', 'secret-draft', 'body', 'draft', null, '2026-03-02T00:00:00.000Z');
-    // The page an operator would have built by dropping the block into the canvas.
+    // The page an operator would have built by dropping the block into the canvas: the registry's
+    // own list component, with the package's source written into it.
     db.prepare("UPDATE cms_page SET body_html = ? WHERE path = '/pricing'").run(
-      '<h1>Pricing</h1><div class="skw-block" data-skw-block="blog/recent-posts"></div>',
+      '<h1>Pricing</h1><div class="list" data-gjs-type="list" data-source="blog/recent-posts" data-limit="5">' +
+        '<article class="card" data-repeat><h3 class="card__title" data-bind-title="title">Post title</h3>' +
+        '<a class="card__link" data-bind-href-slug="slug" href="/blog/post">Read</a></article>' +
+        '<p class="list__empty" data-empty>No posts yet.</p></div>',
     );
   } finally {
     db.close();
@@ -289,24 +299,63 @@ test('S8h-1. a plugin block is in the palette, and the page the visitor gets is 
   // What a visitor gets. The host drew the list; the package supplied no markup.
   const page = await call({ port, path: '/pricing', host: 'acme.test' });
   assert.equal(page.status, 200, page.body);
-  assert.match(page.body, /<section class="skw-block">/, 'the marker was replaced with host markup');
+  // The site's own component and the site's own CSS — the front-end look, not a plugin's.
+  assert.match(page.body, /data-gjs-type="list"/, 'the list component is what renders');
+  assert.match(page.body, /class="list"/, "the front-end's own list class, so the site's CSS applies");
+  assert.match(page.body, /<article class="card"/, 'the repeat child is cloned from the registry markup');
   assert.match(page.body, /Published &lt;script&gt;/, 'a title is text, not markup');
   assert.doesNotMatch(page.body, /<script>alert\(1\)<\/script>/, 'a title must never become script');
   assert.doesNotMatch(page.body, /Secret draft/, 'a draft is not published by the block');
   assert.match(page.body, /href="\/blog\/published-post"/, 'the link template is filled from the row');
-  assert.doesNotMatch(page.body, /data-skw-block=/, 'no marker survives into the page');
+  assert.doesNotMatch(page.body, /data-repeat/, 'the template is replaced by one clone per row');
+  assert.doesNotMatch(page.body, /Post title/, 'no placeholder copy survives a resolved block');
 
   // And a marker nothing claims renders nothing at all — a disabled or uninstalled package.
   const db2 = new Database(fixture.sitePath('acme'));
   try {
     db2.prepare("UPDATE cms_page SET body_html = ? WHERE path = '/pricing'").run(
-      '<h1>Pricing</h1><div data-skw-block="blog/no-such-block"></div><p>after</p>',
+      '<h1>Pricing</h1><div class="list" data-gjs-type="list" data-source="blog/no-such-block">' +
+        '<article class="card" data-repeat><h3 data-bind-title="title">Post title</h3></article>' +
+        '<p class="list__empty" data-empty>No posts yet.</p></div><p>after</p>',
     );
   } finally {
     db2.close();
   }
   const orphan = await call({ port, path: '/pricing', host: 'acme.test' });
-  assert.equal(orphan.status, 200, 'a marker for a package that is not loaded must not 500 the page');
-  assert.doesNotMatch(orphan.body, /no-such-block/);
+  assert.equal(orphan.status, 200, 'a source nothing claims must not 500 the page');
   assert.match(orphan.body, /<p>after<\/p>/, 'the rest of the page is untouched');
+  // Unresolved: the component is left exactly as authored, placeholder copy included — the
+  // operator sees in the page what the canvas showed them.
+  assert.match(orphan.body, /Post title/);
+});
+
+/**
+ * S8i. "If a plugin is enabled and it has its own gui/forms, you should be able to access it through
+ * a sub-menu under the plugins menu."
+ *
+ * Before this, a package's screens were a flat list at the bottom of the Plugins page and a bare
+ * link, so an operator had to know the path. The sub-menu groups them by package, and the package's
+ * own row in the table carries the same links.
+ */
+test('S8i-1. the Plugins screen has a sub-menu of each loaded package\'s own screens', async () => {
+  const plugins = await get('/admin/t/acme/plugins');
+  assert.equal(plugins.status, 200, plugins.body);
+  assert.match(plugins.body, /<nav class="subnav" aria-label="Plugin screens">/);
+  // Grouped by package, with the screen's own title as the link text.
+  assert.match(plugins.body, /<span class="subnav__group">blog<\/span><ul><li><a href="\/admin\/t\/acme\/blog">Blog posts<\/a><\/li><\/ul>/);
+  // And the same entry beside the package's row, so it is reachable from where a package is managed.
+  assert.match(plugins.body, /data-plugin="blog"[\s\S]*?<a class="btn btn--sm" href="\/admin\/t\/acme\/blog">Blog posts<\/a>/);
+
+  // A disabled package has no screen and no sub-menu entry: `loaded` is the only list this reads.
+  assert.equal((await post('/admin/t/acme/plugins/disable', { plugin: 'blog' })).status, 303);
+  const off = await get('/admin/t/acme/plugins');
+  assert.doesNotMatch(off.body, /subnav__group">blog/);
+  assert.doesNotMatch(off.body, /href="\/admin\/t\/acme\/blog"/);
+
+  // The editor palette follows the same rule: no loaded package, no block.
+  const editor = await get('/admin/t/acme/editor?page=1');
+  assert.doesNotMatch(editor.body, /data-source="blog\/recent-posts"/);
+
+  // Back on for the rest of the file.
+  assert.equal((await post('/admin/t/acme/plugins/enable', { plugin: 'blog' })).status, 303);
 });

@@ -25,8 +25,27 @@ import { join } from 'node:path';
 
 import type { PaletteItem, Registry } from '../editor/registry.ts';
 import { palette, paletteCategories, typeDefinitions } from '../editor/registry.ts';
-import { blockMarker } from '../render/blocks.ts';
+
 import { DATA_GJS_TYPE_PATTERN } from '../editor/paste.ts';
+
+/**
+ * S8h: the `list` component the registry ships, with this block's source and limit written into it.
+ *
+ * A plugin block is not a new component — it is the front-end's own repeating list, pointed at a
+ * package's data. That is what makes it look native and what keeps a package from shipping markup:
+ * the canvas and the renderer both see a component the host already owns.
+ */
+function listComponentFor(registry: Registry, source: string, limit: number): string {
+  const entry = registry.entries.find((item) => item.type === 'list' && item.html !== null);
+  if (entry === undefined || entry.html === null) {
+    // The registry is a shipped file, not a runtime input; a missing `list` is a broken build,
+    // and a marker that renders nothing is a better failure than a page with placeholder copy.
+    return `<div data-unresolved-source="${source}"></div>`;
+  }
+  return entry.html
+    .replace(/data-source="[^"]*"/, `data-source="${source}"`)
+    .replace(/data-limit="[^"]*"/, `data-limit="${limit}"`);
+}
 
 export interface EditorPageInput {
   tenant: string;
@@ -52,7 +71,7 @@ export interface EditorPageInput {
    * that inserts a marker; the host draws the view at render time. A disabled package's blocks
    * are absent from this list, which is how the palette and the renderer stay in step.
    */
-  blocks?: { id: string; label: string; plugin: string }[];
+  blocks?: { id: string; label: string; plugin: string; limit: number }[];
 }
 
 /** `JSON.stringify` inside a `<script type="application/json">`: `<` must not close it. */
@@ -79,7 +98,7 @@ export function editorBootPayload(input: EditorPageInput): {
       category: 'Plugins',
       type: 'block',
       kind: 'block' as const,
-      content: blockMarker(block.id),
+      content: listComponentFor(input.registry, block.id, block.limit),
       // No settings panel: the block's view is the package's declaration, not a page decision.
       editable: [],
     })),

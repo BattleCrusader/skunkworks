@@ -37,7 +37,7 @@ import {
 } from './db/migrate.ts';
 import { normalisePagePath, pageMiss } from './render/page.ts';
 import { renderStoredBody } from './render/body.ts';
-import { resolveBlocks } from './render/blocks.ts';
+import { resolveSourceBlocks } from './render/blocks.ts';
 import { loadNav } from './render/nav.ts';
 import { CSP_HEADER, cspPolicy, cspPolicyWithNonce } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
@@ -691,7 +691,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       // over its own table. They are resolved here — after the stored body is unwrapped and
       // before any filter sees it — because the host draws those views (§10.5: no plugin markup
       // on a tenant's origin). A marker whose package is disabled renders nothing.
-      const withBlocks = resolveBlocks(db, ctx.tenant.key, stored.bodyHtml, (tenant, id) => {
+      const withBlocks = resolveSourceBlocks(db, ctx.tenant.key, stored.bodyHtml, (tenant, id) => {
         for (const entry of plugins.registry.plugins(tenant)) {
           const block = entry.blocks.get(id);
           if (block !== undefined) return block;

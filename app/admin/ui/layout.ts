@@ -256,6 +256,14 @@ td form[action$="/disable"] button,td form[action$="/uninstall"] button{border-c
 .signin__card .submit{width:100%;min-height:44px;border-radius:var(--r-in);background:var(--blue);color:#fff;font-size:14px;font-weight:650;margin-top:4px;box-shadow:0 6px 16px rgba(37,99,235,.24);border:0}
 .signin__card .submit:hover{background:var(--blue-2)}
 .signin__after{margin:14px 0 0;text-align:center;font-size:12px;color:var(--muted);line-height:1.5}
+/* S8i: the sub-menu under Plugins — one group per loaded package, its screens beneath it. */
+.subnav{margin:0 0 18px;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r);background:var(--card)}
+.subnav ul{list-style:none;margin:0;padding:0}
+.subnav>ul>li{margin:0 0 8px}
+.subnav__group{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.subnav>ul>li>ul{margin:2px 0 0;padding-left:0}
+.subnav a{font-size:14px}
+.subnav__empty{margin:0 0 18px;color:var(--muted);font-size:13px}
 /* S8f: one sentence from a failed attempt, above the form it belongs to. */
 .signin__error{margin:0 0 16px;padding:10px 12px;border:1px solid #f0c2bd;border-radius:var(--r-in);background:#fdf3f2;color:#8f2b21;font-size:13px;line-height:1.45}
 .signin__foot{text-align:center;font-size:11.5px;color:var(--muted);margin-top:18px;line-height:1.6}

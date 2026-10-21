@@ -1406,6 +1406,17 @@ ${items}
     const loadedIds = new Set(loaded.map((entry) => entry.pluginId));
     const csrf = this.sessions.csrfToken(session);
 
+    // S8i: a loaded package's own screens, grouped by package. This is the sub-menu: an enabled
+    // package with forms is reachable from the Plugins screen, not only by typing its path.
+    const screensByPlugin = new Map<string, { href: string; title: string }[]>();
+    for (const entry of loaded) {
+      const screens = [...entry.screens.values()].map((screen) => ({
+        href: screenHref(tenant.key, screen.path),
+        title: screen.title,
+      }));
+      if (screens.length > 0) screensByPlugin.set(entry.pluginId, screens);
+    }
+
     const noticeRows =
       notices.length === 0
         ? '<tr><td colspan="4">No notices: nothing has failed and nothing has been disabled since boot.</td></tr>'
@@ -1449,7 +1460,11 @@ ${items}
   <input type="hidden" name="csrf" value="${esc(csrf)}">
   <button type="submit" title="archive this package's rows first, then drop its tables">Uninstall</button>
 </form>`;
-              return `<tr data-plugin="${esc(row.plugin_id)}"><td>${esc(row.plugin_id)}</td><td>${esc(row.version)}</td><td>${esc(state)}</td><td>${row.activation_seq}</td><td>${action}${off}${uninstall}</td></tr>`;
+              const screens = screensByPlugin.get(row.plugin_id) ?? [];
+              const open = screens
+                .map((screen) => `<a class="btn btn--sm" href="${esc(screen.href)}">${esc(screen.title)}</a>`)
+                .join(' ');
+              return `<tr data-plugin="${esc(row.plugin_id)}"><td>${esc(row.plugin_id)}</td><td>${esc(row.version)}</td><td>${esc(state)}</td><td>${row.activation_seq}</td><td>${open === '' ? '' : `${open} `}${action}${off}${uninstall}</td></tr>`;
             })
             .join('\n');
 
@@ -1459,6 +1474,22 @@ ${items}
         : `<ul>${loaded
             .map((entry) => `<li>${esc(entry.pluginId)}@${esc(entry.version)} — act ${entry.activationSeq} — hooks: ${esc([...entry.hooks.keys()].sort().join(', ') || 'none')}</li>`)
             .join('')}</ul>`;
+
+    const subnav =
+      screensByPlugin.size === 0
+        ? '<p class="subnav__empty">No loaded package has a screen of its own.</p>'
+        : `<nav class="subnav" aria-label="Plugin screens">
+<ul>
+${[...screensByPlugin]
+  .map(
+    ([plugin, screens]) =>
+      `<li><span class="subnav__group">${esc(plugin)}</span><ul>${screens
+        .map((screen) => `<li><a href="${esc(screen.href)}">${esc(screen.title)}</a></li>`)
+        .join('')}</ul></li>`,
+  )
+  .join('\n')}
+</ul>
+</nav>`;
 
     const pluginHrefs =
       runtime === null
@@ -1472,6 +1503,8 @@ ${items}
         `Skunkworks — ${tenant.key} — plugins`,
         `<h1>Plugins — ${esc(tenant.key)}</h1>
 ${flash === undefined ? '' : `<p role="status">${esc(flash)}</p>`}
+<h2>Plugin screens</h2>
+${subnav}
 <h2>Notices</h2>
 <p>A notice is recorded when a package fails to load, fails three times in 60 s and is disabled, or is refused because its root is revoked. A notice is not a warning: the plugin is not running.</p>
 <table>
@@ -2132,7 +2165,7 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
         // S8h: every block the tenant's *loaded* packages registered. Loaded is the whole rule:
         // a disabled package has no entry, so its blocks leave the palette without a restart.
         blocks: (this.#plugins?.registry.plugins(tenant.key) ?? []).flatMap((entry) =>
-          [...entry.blocks.values()].map((block) => ({ id: block.id, label: block.label, plugin: entry.pluginId })),
+          [...entry.blocks.values()].map((block) => ({ id: block.id, label: block.label, plugin: entry.pluginId, limit: block.limit })),
         ),
       });
       reply.header('cache-control', 'no-store');
