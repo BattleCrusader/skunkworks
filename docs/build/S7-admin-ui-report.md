@@ -98,8 +98,24 @@ on the media screen), and every tenant value in it is escaped before interpolati
 
 | | Files | Tests | Pass | Fail | Skipped |
 |---|---|---|---|---|---|
-| Before S7 (`make test`) | 78 | 621 | 621 | 0 | 0 |
-| After S7 (`make test`) | 79 | 629 | 629 | 0 | 0 |
+| Before S7 (`make test`, 19:04–19:13) | 78 | 621 | 621 | 0 | 0 |
+| After S7 alone (`make test`, 19:22–19:31) | 79 | 629 | 629 | 0 | 0 |
+| Current tree = HEAD (`make test`, 20:02–20:05, re-run after the last edit) | 79 | 631 | 631 | 0 | 0 |
+
+**The tree was shared.** Another agent was editing the same working copy while this ran (the
+cleartext/HTTPS nginx change: `tools/nginx_gen.ts`, `nginx/conf.d/10-app.conf`,
+`test/helpers/nginx.ts`, `test/nginx-config.test.ts`, `test/first-boot-tls.test.ts`, and two tests
+of its own — hence 631 rather than 629). Its edit to `test/first-boot-tls.test.ts` invalidated that
+file's row in `test/perf-budgets.json`, so the row was re-measured here with
+`scripts/measure/test-file-budgets.mjs` (an idle run: 31 664 ms, the new bytes' sha) and
+`TEST_TIMEOUT_MS` was set to the derived 127 000 by that other change. Nothing else in the table
+moved; the new `test/admin-ui.test.ts` row is mine (`899 ms`).
+
+That agent then committed the whole working copy — its `git add -A` swept this phase's new files
+into **`43d5e71 fix: plain http must never serve the admin login form`**, a commit about its own
+nginx fix. **No commit was made here**, and no history was rewritten to separate them; the diff of
+this phase is the `app/admin/**`, `docs/**` and `test/admin-ui.test.ts` half of that commit, listed
+in full by `git show --stat 43d5e71`.
 
 New: `test/admin-ui.test.ts`, eight tests (`S7-1`…`S7-8`). They were written and run **before**
 the screens existed: seven of the eight failed against the pre-S7 tree (the eighth, `S7-6`,
@@ -143,6 +159,14 @@ debugging port, because the session cookie only exists over https).
 | Sign in | `docs/design/admin/screens/01-signin.png` | card, three labelled fields, step dots, blue submit; no unstyled markup |
 | Your pages | `docs/design/admin/screens/02-pages.png` | banner, three rows with initials/pills/dates, tiles 2 · 1 · 21, More list |
 | Photos & files | `docs/design/admin/screens/03-media.png` | six tiles, usage lines, gated tile dashed + lock + Share, unused tile with Delete |
+
+Each was inspected at 1280 × 1800 and again zoomed (the sign-in card, the page rows, the gated
+tile). Two defects that inspection found were fixed and the screens re-rendered: the thumbnails
+did not load, because the harness had no `/media/` arm (nginx serves that path, not Node); and the
+search field clipped its own placeholder while the tile footers were pinned to the bottom, leaving
+an uneven gap in the shorter tiles. The "More in this admin" list also offered a link to the JSON
+`/pages` read, which was removed. The final renders were taken after the last code change and are
+byte-identical to the ones inspected (`md5` equality).
 
 `/media/` is nginx's arm in production (`try_files` over `content/public/`), so the harness's proxy
 performs the same lookup — that is why the thumbnails are the real renditions and why a gated key
