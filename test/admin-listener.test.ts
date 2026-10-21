@@ -39,7 +39,7 @@ import { buildApp, type AppHandle } from '../app/main.ts';
 import { loadEnv } from '../app/env.ts';
 import { ADMIN_COOKIE_PATH, sessionCookieName } from '../app/admin/session.ts';
 import { makeFixture, type Fixture } from './helpers/fixture.ts';
-import { call, type Res } from './helpers/http.ts';
+import { call, header, type Res } from './helpers/http.ts';
 import { ADMIN_HOST, TOTP_SECRET, currentTotp, login, openSession, seedUser, setCookie } from './helpers/admin.ts';
 
 /** No admin host exists any more; this name is a *tenant* host (D37). */
@@ -186,11 +186,14 @@ test('(f) D37 — a fleet session gets the console at /fleet and nothing at /adm
   assert.ok(consoleRes.body.includes('data-tenant="acme"'), 'the fleet sees the tenants');
   assert.ok(consoleRes.body.includes('https://acme.test/admin'), 'and where each one is administered');
 
-  // A fleet session has no tenant, so every /admin path is refused — including `/admin`
-  // itself, which is now a *tenant* home and needs a tenant session.
+  // A fleet session has no tenant, so `/admin` is not its home. S8a/E-34: that answer is now
+  // the login redirect rather than a 404 — the fleet cookie is named for `/fleet` and is not
+  // a tenant session on this Host either way. What must not change is the substance: nothing
+  // of the tenant's admin, and nothing of the fleet console, may appear in the answer.
   const admin = await call({ port, path: '/admin', host: TENANT_HOST, headers: { cookie: session.cookie } });
-  assert.equal(admin.status, 404, 'a fleet session has no tenant home');
-  assert.equal(codeOf(admin), 'SKW_E_PLT_TENANT_UNKNOWN');
+  assert.equal(admin.status, 302, admin.body);
+  assert.equal(header(admin, 'location'), '/admin/login');
+  assert.doesNotMatch(admin.body, /Your pages|data-tenant=|tenant-switcher/);
 });
 
 test('(g) D37 — the login sets this tenant\'s cookie at Path=/admin, with no Domain and no fleet path', async () => {

@@ -247,6 +247,21 @@ code{font-family:var(--mono)}
 .legacy th,.legacy td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;font-size:13px;vertical-align:top}
 .legacy th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .colophon{margin:34px 0 0;font-size:11.5px;color:var(--faint)}
+
+/* account: two narrow cards side by side, the sign-out card full width under them */
+.acct{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
+.acct__card{padding:20px 20px 18px}
+.acct__card--wide{grid-column:1/-1}
+.acct__card h2{margin:0 0 4px;font-size:16px;font-weight:650;letter-spacing:-.01em}
+.acct__lede{margin:0 0 14px;font-size:13px;color:var(--muted);max-width:52ch}
+.acct__card form{margin:0}
+.acct__flash{display:flex;gap:10px;align-items:flex-start;margin:0 0 16px;padding:12px 14px;border-radius:var(--r-in);font-size:13.5px;line-height:1.5;border:1px solid}
+.acct__flash--ok{background:var(--green-soft);border-color:var(--green-line);color:var(--green-ink)}
+.acct__flash--bad{background:var(--amber-soft);border-color:var(--amber-line);color:var(--amber-ink)}
+.acct__flash svg{flex:none;margin-top:1px}
+/* the app bar's identity block is a link now: it is the way to the account screen */
+a.who:hover{text-decoration:none}
+a.who:hover b{color:var(--blue-2);text-decoration:underline}
 @media (max-width:1100px){.mediagrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:720px){
   .mediagrid{grid-template-columns:minmax(0,1fr)}
@@ -301,11 +316,21 @@ function barOf(input: LayoutInput): string {
       ? ''
       : `<span class="tenantpill"><i aria-hidden="true"></i>${esc(tenantName)}</span>`;
   const user = input.user;
+  // The identity block is the way to the account screen: until S8a it was inert text on a
+  // bar with no control that reached `logout` at all. With no tenant (the fleet console)
+  // there is no `/admin/t/…/account` to point at, so it stays text there.
+  const accountHref =
+    input.tenant === undefined || input.tenant === null || user === undefined || user === null
+      ? null
+      : `/admin/t/${encodeURIComponent(input.tenant.key)}/account`;
   const who =
     user === undefined || user === null
       ? ''
-      : `<span class="avatar" aria-hidden="true">${esc(initials(user.email))}</span>
-      <span class="who"><b>${esc(user.role === 'owner' ? 'Owner' : user.role === 'editor' ? 'Editor' : user.role === 'viewer' ? 'Viewer' : 'Fleet operator')}</b>${esc(user.email)}</span>`;
+      : `${accountHref === null ? '' : `<a class="who" href="${esc(accountHref)}" title="Your account">`}
+      <span class="avatar" aria-hidden="true">${esc(initials(user.email))}</span>
+      <span class="who"><b>${esc(user.role === 'owner' ? 'Owner' : user.role === 'editor' ? 'Editor' : user.role === 'viewer' ? 'Viewer' : 'Fleet operator')}</b>${esc(user.email)}</span>${
+        accountHref === null ? '' : '</a>'
+      }`;
   return `  <header class="appbar">
     <span class="brand"><span class="brand__mark" aria-hidden="true">S</span><b>Skunkworks</b></span>
     ${pill}${navOf(input)}

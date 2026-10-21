@@ -1,0 +1,30 @@
+{
+  "id": "blog",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "hooks": [],
+  "description": "A blog with one owned table, a declarative admin screen and a public JSON feed of published posts. It declares no hooks: the screen is where posts are listed and edited, and the only public URL it answers is GET /_plugin/blog/posts.",
+  "capabilities": ["store.query", "settings.get"],
+  "tables": [
+    {
+      "name": "p_blog_post",
+      "export": "rows",
+      "columns": [
+        { "name": "title", "type": "TEXT", "notNull": true },
+        { "name": "slug", "type": "TEXT", "notNull": true, "indexed": true },
+        { "name": "body", "type": "TEXT", "notNull": true },
+        {
+          "name": "status",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "draft",
+          "indexed": true
+        },
+        { "name": "published_at", "type": "TEXT", "indexed": true },
+        { "name": "created_at", "type": "TEXT", "notNull": true, "indexed": true }
+      ]
+    }
+  ],
+  "settings": [{ "key": "page_size", "type": "int" }],
+  "endpoints": [{ "name": "posts", "method": "GET" }]
+}

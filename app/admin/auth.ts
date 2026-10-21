@@ -256,6 +256,36 @@ export class Auth {
   }
 
   /**
+   * Re-verify the password on the account this session already owns.
+   *
+   * Deliberately *not* `authenticate()`: that path needs an email (which the operator may
+   * be in the middle of changing) and, when the allowlist is empty, a TOTP code. Both
+   * belong to signing in, not to confirming that the person at the keyboard is the person
+   * the session belongs to. One argon2 verify through the same semaphore, and — E-16's
+   * rule, kept here for its own reason — the verify runs even when the row is missing, so
+   * the work does not say whether the account exists.
+   */
+  async verifyPassword(userId: number, password: string): Promise<boolean> {
+    const db = openAdminWrite(this.#controlPath, this.#busyTimeoutMs);
+    let stored: string | undefined;
+    try {
+      const row = db.prepare('SELECT password_hash FROM user_account WHERE id = ?').get(userId) as
+        | { password_hash: string }
+        | undefined;
+      stored = row?.password_hash;
+    } finally {
+      db.close();
+    }
+    let ok = false;
+    try {
+      ok = await this.#semaphore.run(() => verify(stored ?? DUMMY_HASH, password));
+    } catch {
+      ok = false;
+    }
+    return stored !== undefined && ok;
+  }
+
+  /**
    * One lookup, exactly one argon2id verify, and the same 401 for a wrong
    * password, an unknown email and a wrong TOTP. The failure counters are written
    * in one statement so two concurrent attempts cannot each read the old count.

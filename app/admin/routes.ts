@@ -113,6 +113,7 @@ import {
 } from '../tenancy/resolve.ts';
 import { Auth, Semaphore, verifyTotp, type LoginFailureReason } from './auth.ts';
 import { groupOf, newSecret, otpauthUri } from './totp.ts';
+import { accountScreen } from './ui/account.ts';
 import { layout, type NavKey, type NavItem } from './ui/layout.ts';
 import { pageListScreen, type PageRow } from './ui/pageList.ts';
 import { mediaLibraryScreen, type MediaAsset } from './ui/mediaLibrary.ts';
@@ -217,6 +218,15 @@ function fieldsOf(body: unknown): Record<string, string | undefined> {
   }
   return out;
 }
+
+/** A browser form sends `Accept: text/html`; a JSON client does not. */
+function wantsHtml(req: FastifyRequest): boolean {
+  const accept = header(req, 'accept') ?? '';
+  return accept.includes('text/html') && !accept.includes('application/json');
+}
+
+/** Good enough to refuse a typo, and the only thing this screen has to get right. */
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 /** The only escaping in this file: every interpolation into HTML goes through it. */
 function esc(value: string): string {
@@ -423,8 +433,19 @@ export class AdminSurface {
 
     if (seg.length === 1) {
       this.#requireMethod(req, 'GET');
-      const session = this.#requireSession(req, tenant);
-      this.#assertTenantMatches(session, tenant);
+      // S8a: `/admin` is where every operator is told to go, so it answers a person with
+      // no session by sending them to the form that fixes that. It used to be the same
+      // `404 SKW_E_PLT_TENANT_UNKNOWN` as a missing page (§5.3 row 7, whose concern is that
+      // an unauthenticated *API* answer must not report 401/403) — but a redirect to a
+      // 200 login page is neither of those, and `/admin/login` is already publicly served
+      // on this very Host, so nothing about the tenant's existence is newly revealed.
+      const session = this.sessionFor(header(req, 'cookie'), tenant);
+      if (session === null || session.tenantId !== tenant.id) {
+        // 302: this is a GET and the answer is another GET. 303 would say "what you just
+        // POSTed was accepted", which nothing was.
+        this.#seeOther(reply, '/admin/login', 302);
+        return;
+      }
       await this.#tenantHome(reply, tenant, session);
       return;
     }
@@ -793,7 +814,29 @@ ${items}
       this.#assertCsrf(req, session);
       this.sessions.revoke(session.id, Date.now());
       reply.header('set-cookie', this.sessions.clearCookieHeader(sessionCookieName(tenant.key), ADMIN_COOKIE_PATH));
+      // A form posts here with no `Accept: application/json`; a browser that is handed a
+      // JSON body after signing out has no way back to the login page.
+      if (wantsHtml(req)) {
+        this.#seeOther(reply, '/admin/login');
+        return;
+      }
       reply.send({ ok: true });
+      return;
+    }
+    if (action === 'account' && req.method === 'GET') {
+      this.#account(reply, req, tenant, session);
+      return;
+    }
+    if (action === 'account/password' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      await this.#accountPassword(req, reply, tenant, session);
+      return;
+    }
+    if (action === 'account/email' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#accountEmail(req, reply, tenant, session);
       return;
     }
     if (action === 'totp/enrol' && req.method === 'POST') {
@@ -938,6 +981,7 @@ ${items}
       { href: `/admin/t/${tenant.key}/tables`, label: 'Tables' },
       { href: `/admin/t/${tenant.key}/sources`, label: 'Data sources' },
       ...(this.#env.schemaEdit === 'on' ? [{ href: `/admin/t/${tenant.key}/builder`, label: 'Table builder' }] : []),
+      { href: `/admin/t/${tenant.key}/account`, label: 'Account' },
       { href: `/admin/t/${tenant.key}/session`, label: 'Session' },
     ];
     const items = await filterSite<{ href: string; label: string }[]>(
@@ -977,6 +1021,156 @@ ${items}
         ...(rows === null ? { unavailable: true } : {}),
       }),
     );
+  }
+
+  // --- S8a: the operator's own account -----------------------------------
+
+  /**
+   * One POST, one 303. No write in this file renders its result: a refresh after a
+   * password change must not repeat it, and a form that answers with JSON leaves the
+   * operator looking at `{"ok":true}`.
+   */
+  #seeOther(reply: FastifyReply, location: string, code: 302 | 303 = 303): void {
+    reply.header('cache-control', 'no-store').code(code).header('location', location).send('');
+  }
+
+  #account(reply: FastifyReply, req: FastifyRequest, tenant: Tenant, session: SessionRecord): void {
+    const user = this.auth.userById(session.userId);
+    // A session whose row is gone is not an account screen: the same 404 every other
+    // tenant route answers when the identity behind it has disappeared.
+    if (user === null) throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no such account');
+
+    const changed = queryValue(req.url, 'changed');
+    const emailOk = queryValue(req.url, 'email');
+    const err = queryValue(req.url, 'e');
+    const flash =
+      changed === '1' ? 'changed' : emailOk === '1' ? 'email' : err === 'email' ? 'format' : err;
+
+    reply.type('text/html; charset=utf-8').send(
+      accountScreen({
+        tenant: { key: tenant.key, label: tenant.key },
+        user: { email: user.email, role: user.role },
+        csrf: this.sessions.csrfToken(session),
+        flash,
+        notices: this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length,
+        minPasswordLength: PASSWORD_MIN_LENGTH,
+      }),
+    );
+  }
+
+  /**
+   * Change the password from a session that already authenticated.
+   *
+   * The current password is re-verified (one argon2 verify via `Auth.verifyPassword`) and
+   * every *other* session of the account is revoked in the same transaction — a password
+   * change is the one moment a stolen cookie must stop working, which is the same rule
+   * E-19's reset consumer follows. This session is deliberately spared: it is where the
+   * operator just proved they are the operator.
+   */
+  async #accountPassword(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
+    const base = `/admin/t/${tenant.key}/account`;
+    const fields = fieldsOf(req.body);
+    const current = fields.current_password;
+    const next = fields.new_password;
+    if (current === undefined || next === undefined) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'current_password and new_password are required');
+    }
+    if ([...next].length < PASSWORD_MIN_LENGTH) {
+      this.#seeOther(reply, `${base}?e=short`);
+      return;
+    }
+    if (next === current) {
+      this.#seeOther(reply, `${base}?e=same`);
+      return;
+    }
+    const ok = await this.auth.verifyPassword(session.userId, current);
+    if (!ok) {
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.auth.userById(session.userId)?.email ?? 'unknown',
+        action: 'admin.password.change.failed',
+        targetKind: 'user_account',
+        targetId: String(session.userId),
+        ip: req.socket.remoteAddress ?? '',
+      });
+      this.#seeOther(reply, `${base}?e=current`);
+      return;
+    }
+
+    const hash = await this.auth.hashPassword(next);
+    const atMs = Date.now();
+    const db = openAdminWrite(this.#controlPath, this.#env.dbBusyTimeoutMs);
+    try {
+      const tx = db.transaction(() => {
+        const changed = db
+          .prepare(
+            `UPDATE user_account
+                SET password_hash = ?, must_change = 0, failed_logins = 0, locked_until = NULL
+              WHERE id = ?`,
+          )
+          .run(hash, session.userId);
+        if (changed.changes !== 1) return false;
+        db.prepare('UPDATE session SET revoked_at = ? WHERE user_id = ? AND id <> ? AND revoked_at IS NULL').run(
+          new Date(atMs).toISOString(),
+          session.userId,
+          session.id,
+        );
+        return true;
+      });
+      if (!tx()) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such account');
+    } finally {
+      db.close();
+    }
+
+    this.#audit({
+      tenantId: tenant.id,
+      userId: session.userId,
+      label: this.auth.userById(session.userId)?.email ?? 'unknown',
+      action: 'admin.password.change',
+      targetKind: 'user_account',
+      targetId: String(session.userId),
+      ip: req.socket.remoteAddress ?? '',
+    });
+    this.#seeOther(reply, `${base}?changed=1`);
+  }
+
+  #accountEmail(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const base = `/admin/t/${tenant.key}/account`;
+    const fields = fieldsOf(req.body);
+    const email = (fields.email ?? '').trim();
+    // 254 is the only length the transport actually promises (RFC 5321 §4.5.3.1.3).
+    if (email === '' || email.length > 254 || !EMAIL_SHAPE.test(email)) {
+      this.#seeOther(reply, `${base}?e=email`);
+      return;
+    }
+    const db = openAdminWrite(this.#controlPath, this.#env.dbBusyTimeoutMs);
+    try {
+      try {
+        const changed = db.prepare('UPDATE user_account SET email = ? WHERE id = ?').run(email, session.userId);
+        if (changed.changes !== 1) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such account');
+      } catch (err) {
+        // `UNIQUE(tenant_id, email)`: two accounts here cannot share an address, and that
+        // is a sentence for the operator rather than a 500.
+        if (err instanceof Error && /UNIQUE|constraint/i.test(err.message)) {
+          this.#seeOther(reply, `${base}?e=taken`);
+          return;
+        }
+        throw err;
+      }
+    } finally {
+      db.close();
+    }
+    this.#audit({
+      tenantId: tenant.id,
+      userId: session.userId,
+      label: email,
+      action: 'admin.email.change',
+      targetKind: 'user_account',
+      targetId: String(session.userId),
+      ip: req.socket.remoteAddress ?? '',
+    });
+    this.#seeOther(reply, `${base}?email=1`);
   }
 
   /**

@@ -1,0 +1,29 @@
+{
+  "id": "contact",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "hooks": [],
+  "description": "A contact-capture package: one owned table, a declarative Messages screen, and a public POST /_plugin/contact/submit that validates its body and inserts a row. It answers {ok:true} and never echoes the submitted message back.",
+  "capabilities": ["store.insert"],
+  "tables": [
+    {
+      "name": "p_contact_message",
+      "export": "rows",
+      "columns": [
+        { "name": "name", "type": "TEXT", "notNull": true },
+        { "name": "email", "type": "TEXT", "notNull": true },
+        { "name": "message", "type": "TEXT", "notNull": true },
+        {
+          "name": "status",
+          "type": "TEXT",
+          "notNull": true,
+          "default": "new"
+        },
+        { "name": "created_at", "type": "TEXT", "notNull": true, "indexed": true },
+        { "name": "ip_hash", "type": "TEXT" }
+      ]
+    }
+  ],
+  "settings": [],
+  "endpoints": [{ "name": "submit", "method": "POST" }]
+}

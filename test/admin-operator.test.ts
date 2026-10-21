@@ -116,11 +116,30 @@ after(async () => {
 
 // --- D29: the console, the switcher, the one login URL ----------------------
 
-test('D37-1. GET /admin with no session is the row-7 404, not a login redirect', async () => {
+// S8a / E-34 — REWRITTEN, not deleted. `/admin` used to answer the row-7 404, which is the
+// right answer for an unauthenticated *API* request and the wrong one for the address every
+// operator is told to visit: it left the front door indistinguishable from a missing page.
+// It now redirects to `/admin/login`, which this Host already serves at 200 — so the redirect
+// itself reveals nothing that a browser could not have seen by asking for the login page.
+// The property row 7 protects is asserted below on a path where it still matters.
+test('D37-1. GET /admin with no session redirects to the login page', async () => {
   const res = await call({ port, path: '/admin', host: ADMIN_HOST });
-  assert.equal(res.status, 404);
-  assert.equal(codeOf(res), 'SKW_E_PLT_TENANT_UNKNOWN');
-  assert.equal(header(res, 'location'), undefined, 'never a redirect');
+  assert.equal(res.status, 302);
+  assert.equal(header(res, 'location'), '/admin/login');
+  assert.equal(String(header(res, 'cache-control')), 'no-store');
+  // No session is minted by looking at the door.
+  assert.equal(header(res, 'set-cookie'), undefined);
+});
+
+test('D37-1b. an unauthenticated tenant-scoped admin path is still the row-7 404, not a redirect', async () => {
+  // This is the rule E-34 does not touch: a JSON read with no session reports "no tenant
+  // here", never 401/403, and never a redirect that confirms the endpoint exists.
+  for (const path of ['/admin/t/acme/pages', '/admin/t/acme/session', '/admin/api/tenants/acme/health']) {
+    const res = await call({ port, path, host: ADMIN_HOST });
+    assert.equal(res.status, 404, `${path} answered ${res.status}`);
+    assert.equal(codeOf(res), 'SKW_E_PLT_TENANT_UNKNOWN', path);
+    assert.equal(header(res, 'location'), undefined, `${path} must not redirect`);
+  }
 });
 
 test('D37-2. /admin is this Host\'s tenant home: their own pages, and no fleet inventory', async () => {
