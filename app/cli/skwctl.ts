@@ -55,7 +55,7 @@ import { appendAudit, verifyChain, verifyAgainstSeal } from '../audit/chain.ts';
 import { AppError } from '../errors.ts';
 import { assertNotRevoked, installPlugin, inspectPackage, installedPlugins, uninstallPlugin } from '../plugins/install.ts';
 import { revocationPath, revokeRoot } from '../plugins/revocation.ts';
-import { importPublisherKey, readTrustStore, trustDirFor, type InstallScreen } from '../plugins/trust.ts';
+import { importPublisherKey, readTrustStore, trustDirFor, CAPABILITIES_ARE_DISCLOSURE, type InstallScreen } from '../plugins/trust.ts';
 import { healGaps, lastEndedDay, sealDay, sealStatus } from '../audit/scheduler.ts';
 import { SESSION_ABSOLUTE_MS } from '../admin/session.ts';
 import { TOTP_PARAMETERS, groupOf, newPassword, newSecret, otpauthUri } from '../admin/totp.ts';
@@ -708,14 +708,20 @@ function screenLines(screen: InstallScreen): string[] {
     }`,
   );
   lines.push(
-    `${pad('test report')}${screen.test_report.ran_at}  sha256:${screen.test_report.sha256.slice(0, 16)}…  runner ${screen.test_report.runner_image_digest}`,
+    `${pad('test report')}${screen.test_report.ran_at}  sha256:${screen.test_report.sha256.slice(0, 16)}…  image ${screen.test_report.runner_image_digest}`,
   );
   if (screen.capabilities.length === 0) {
-    lines.push(`${pad('capabilities')}none — it can reach neither this site's data nor its mailer`);
+    // D1: this line used to read "none — it can reach neither this site's data nor its mailer".
+    // That is false in-process: a package can open `data/control.db` itself (§13.3.7). What is
+    // true is that it asks this CMS for nothing.
+    lines.push(`${pad('capabilities')}none declared — the package asks this CMS for no operations`);
   } else {
-    lines.push(`${pad('capabilities')}${screen.capabilities.length} granted:`);
+    lines.push(`${pad('capabilities')}${screen.capabilities.length} declared:`);
     for (const cap of screen.capabilities) lines.push(`                     ${cap.op.padEnd(16)}${cap.plain}`);
   }
+  // E-33 item 6, verbatim and on one line: the list above is disclosure, not containment.
+  // `test/plugin-install.test.ts` P1 asserts this string character for character.
+  lines.push(`${pad('what this means')}${CAPABILITIES_ARE_DISCLOSURE}`);
   if (screen.tables.length === 0) {
     lines.push(`${pad('tables')}none`);
   } else {
@@ -817,11 +823,14 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
     if (result.unsigned) {
       ctx.stdout('plugin: *** UNSIGNED *** this package is not vouched for by any key; the audit row records allow_unsigned=true');
     }
-    // The runner scans `<data>/plugins` **at start** (runner/server.mjs) and holds the
-    // package list; the app reads the row per request, but the code is not loaded until
-    // the runner restarts. Say so, rather than leaving a green install that 500s on first
-    // render — the exact failure mode `bundle_verify` refuses for.
-    ctx.stdout(`plugin: the runner scans ${pluginsRoot} at start; restart the runner service to load ${result.plugin}`);
+    // In-process (D36): nothing scans `<data>/plugins` at start and there is no service to
+    // restart. The row is the whole statement of what runs, and the next request's `sync`
+    // reads it (§13.3.8), so say that instead of sending the operator to look for a runner.
+    ctx.stdout(
+      result.enabled
+        ? `plugin: in-process; ${result.plugin} is live from the site's next request — no restart, no service`
+        : `plugin: in-process; the site loads ${result.plugin} on the first request after \`skwctl plugin enable\` — no restart, no service`,
+    );
     return EXIT_OK;
   }
 
@@ -1003,10 +1012,14 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
     ctx.stdout(
       `plugin: package ${result.package_removed ? 'removed' : 'was already absent'}; its endpoint is 404 from the next request`,
     );
-    // The runner holds the package list from its own start; a removed tree is refused at the
-    // next restart, and the host refuses the endpoint immediately (no row). Say which half is
-    // which, so "uninstalled" and "not loaded" cannot be confused.
-    ctx.stdout(`plugin: restart the runner service to release the code for ${result.plugin}`);
+    // In-process (D36): the row and the package tree are both gone, so the next request's
+    // `sync` prunes the hooks (§13.3.8) — no service to restart. Say which half is which, and
+    // say the one thing this command cannot do: it runs in its own process and cannot see the
+    // site's in-flight requests, so the drain lives on the admin surface (which can).
+    ctx.stdout('plugin: in-process; the running site drops the hooks on its next request — no restart, no service');
+    ctx.stdout(
+      `plugin: this command runs in its own process and cannot see the site's in-flight requests; on a live site uninstall from /admin/t/${encodeURIComponent(tenant)}/plugins so the drain runs first and refuses SKW_E_PL_BUSY rather than dropping a table under a request`,
+    );
     return EXIT_OK;
   }
 

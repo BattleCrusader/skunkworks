@@ -1,0 +1,230 @@
+[
+  {
+    "id": "M1-capability-comparison",
+    "file": "app/plugins/context.ts",
+    "claim": "the one capability check refuses an undeclared capability, naming the method and capability",
+    "old": "    if (!grant.includes(capability)) {",
+    "new": "    if (false) { // MUTATION QA3: the capability comparison deleted",
+    "test": [
+      "test/plugin-scope.test.ts"
+    ],
+    "expect_red": "^S3\\.",
+    "expect_green": "^S[12] "
+  },
+  {
+    "id": "M2-database-list",
+    "file": "app/plugins/context.ts",
+    "claim": "a second attached database refuses the call and flags disable_plugin",
+    "old": "  if (names.length !== 1 || names[0] !== 'main') {",
+    "new": "  if (false) { // MUTATION QA3: the database_list assertion deleted",
+    "test": [
+      "test/plugin-scope.test.ts"
+    ],
+    "expect_red": "^S5 ",
+    "expect_green": "^S6 "
+  },
+  {
+    "id": "M3-context-ended",
+    "file": "app/plugins/context.ts",
+    "claim": "a facade used after the request refuses SKW_E_PL_CONTEXT_ENDED",
+    "old": "    if (closed) {",
+    "new": "    if (false) { // MUTATION QA3: the closed flag no longer refuses",
+    "test": [
+      "test/plugin-scope.test.ts"
+    ],
+    "expect_red": "^S6 ",
+    "expect_green": "^S5 "
+  },
+  {
+    "id": "M4-failure-threshold",
+    "file": "app/plugins/runtime.ts",
+    "claim": "three failures in 60 s disable the plugin and prune its hooks",
+    "old": "    if (count < 3) return;",
+    "new": "    if (count < 4) return; // MUTATION QA3: the threshold moved",
+    "test": [
+      "test/plugin-load.test.ts"
+    ],
+    "expect_red": "^L7 ",
+    "expect_green": "^L8 "
+  },
+  {
+    "id": "M5-disable-prunes",
+    "file": "app/plugins/runtime.ts",
+    "claim": "disable removes the registry entry rather than setting a flag",
+    "old": "    const removed = this.registry.remove(tenant, pluginId);",
+    "new": "    const removed = undefined; // MUTATION QA3: disable no longer prunes the registry",
+    "test": [
+      "test/plugin-load.test.ts"
+    ],
+    "expect_red": "^L8 ",
+    "expect_green": "^L9 "
+  },
+  {
+    "id": "M6-cache-buster",
+    "file": "app/plugins/runtime.ts",
+    "claim": "the import URL carries ?tenant=&act= so a re-enable is a new module instance",
+    "old": "?tenant=${encodeURIComponent(tenant)}&act=${String(activationSeq)}",
+    "new": "?tenant=${encodeURIComponent(tenant)}",
+    "test": [
+      "test/plugin-load.test.ts"
+    ],
+    "expect_red": "^L9 ",
+    "expect_green": "^L8 "
+  },
+  {
+    "id": "M7-row-floor",
+    "file": "app/plugins/registry.ts",
+    "claim": "activation_seq continues from the row across a restart",
+    "old": "    const next = Math.max(SEQUENCES.get(key) ?? 0, floor) + 1;",
+    "new": "    const next = Math.max(SEQUENCES.get(key) ?? 0, floor * 0) + 1; // MUTATION QA3: the row floor ignored",
+    "test": [
+      "test/plugin-activation-seq.test.ts"
+    ],
+    "expect_red": "^A3\\.",
+    "expect_green": "^A2\\."
+  },
+  {
+    "id": "M8-hook-page-head",
+    "file": "app/main.ts",
+    "claim": "page.head fires at the render call site with {tenant,path} and its string reaches <head>",
+    "old": "head = await filterSite<string>('page.head', ctx.tenant.key,",
+    "new": "head = await filterSite<string>('page.head', '__none__',",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H1\\.",
+    "expect_green": "^H2\\."
+  },
+  {
+    "id": "M9-hook-content-render",
+    "file": "app/main.ts",
+    "claim": "content.render.html fires with {tenant,path,page} and replaces only the body",
+    "old": "      page.bodyHtml = await filterSite<string>(\n        'content.render.html',\n        ctx.tenant.key,",
+    "new": "      page.bodyHtml = await filterSite<string>(\n        'content.render.html',\n        '__none__',",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H2\\.",
+    "expect_green": "^H1\\."
+  },
+  {
+    "id": "M10-hook-asset-url",
+    "file": "app/main.ts",
+    "claim": "asset.url fires per asset with {tenant,key,url} and the returned URL is emitted",
+    "old": "        const hooked = await filterSite<string>('asset.url', ctx.tenant.key,",
+    "new": "        const hooked = await filterSite<string>('asset.url', '__none__',",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H3\\.",
+    "expect_green": "^H2\\."
+  },
+  {
+    "id": "M11-hook-page-rendered",
+    "file": "app/main.ts",
+    "claim": "page.rendered fires after the response with {tenant,path,status,ms}",
+    "old": "    await actionSite('page.rendered', ctx.tenant.key, {",
+    "new": "    await actionSite('page.rendered', '__none__', {",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H10\\.",
+    "expect_green": "^H1\\."
+  },
+  {
+    "id": "M12-hook-form-validate",
+    "file": "app/forms/intake.ts",
+    "claim": "form.validate fires with {tenant,form,values} and may refuse what core accepted",
+    "old": "  const verdict = await filterSite<FormVerdict>(\n    'form.validate',\n    opts.tenant,",
+    "new": "  const verdict = await filterSite<FormVerdict>(\n    'form.validate',\n    '__none__',",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H4\\.",
+    "expect_green": "^H5\\."
+  },
+  {
+    "id": "M13-hook-form-submitted",
+    "file": "app/forms/intake.ts",
+    "claim": "form.submitted fires after the commit with the row id",
+    "old": "  await actionSite('form.submitted', opts.tenant,",
+    "new": "  await actionSite('form.submitted', '__none__',",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H5\\.",
+    "expect_green": "^H4\\."
+  },
+  {
+    "id": "M14-hook-admin-login",
+    "file": "app/admin/routes.ts",
+    "claim": "admin.login fires post-authentication with the operator id",
+    "old": "      await actionSite('admin.login', tenant.key,",
+    "new": "      await actionSite('admin.login', '__none__',",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H9\\.",
+    "expect_green": "^H6\\."
+  },
+  {
+    "id": "M15-hook-admin-menu",
+    "file": "app/admin/routes.ts",
+    "claim": "admin.menu fires with core's items and keeps a declared screen while dropping an undeclared href",
+    "old": "    const items = await filterSite<{ href: string; label: string }[]>(\n      'admin.menu',\n      tenant.key,",
+    "new": "    const items = await filterSite<{ href: string; label: string }[]>(\n      'admin.menu',\n      '__none__',",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H6\\.",
+    "expect_green": "^H9\\."
+  },
+  {
+    "id": "M16-hook-download-redeemed",
+    "file": "app/download/plane.ts",
+    "claim": "download.redeemed fires on a real redemption with codeId/assetKey/jti",
+    "old": "      await actionSite('download.redeemed', tenantKey,",
+    "new": "      await actionSite('download.redeemed', '__none__',",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H8\\.",
+    "expect_green": "^H9\\."
+  },
+  {
+    "id": "M17-hook-plugin-enabled",
+    "file": "app/plugins/runtime.ts",
+    "claim": "plugin.enabled fires after the commit",
+    "old": "        (entryRegs.hooks.get('plugin.enabled') ?? []).map((fn) => ({ pluginId, fn })),",
+    "new": "        [], // MUTATION QA3: plugin.enabled dispatched with no callbacks",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H11\\.",
+    "expect_green": "^H10\\."
+  },
+  {
+    "id": "M18-hook-plugin-disabled",
+    "file": "app/plugins/runtime.ts",
+    "claim": "plugin.disabled fires on disable, before the prune",
+    "old": "      const callbacks = entry.hooks.get('plugin.disabled') ?? [];",
+    "new": "      const callbacks = [] as { pluginId: string; fn: never }[]; // MUTATION QA3",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H11\\.",
+    "expect_green": "^H10\\."
+  },
+  {
+    "id": "M19-hook-mail-template",
+    "file": "app/plugins/context.ts",
+    "claim": "mail.template fires inside the host's own send path and its returned vars are what the host measures",
+    "old": "      const hooked = await filterSite<Record<string, unknown>>(\n        'mail.template',\n        deps.tenant,",
+    "new": "      const hooked = await filterSite<Record<string, unknown>>(\n        'mail.template',\n        '__none__',",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "expect_red": "^H7\\.",
+    "expect_green": "^H8\\."
+  }
+]

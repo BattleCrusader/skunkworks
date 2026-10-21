@@ -1,0 +1,7 @@
+in_flight_before_uninstall: 1
+uninstall_during_request: status=409 code=SKW_E_PL_BUSY waited_ms=5016
+message: gatehook was not uninstalled: tenant acme still has 1 request(s) in flight after 5000 ms, and nothing was removed
+held_request_after_release: status=200 body={"held":true,"plugin":"gatehook"}
+uninstall_when_idle: status=303 waited_ms=5 flash=/admin/t/acme/plugins?result=gatehook uninstalled (tables: none; archive /var/folders/sc/90s9zqm54p5f2mj8tx1bzlx40000gn/T/skw-s1-8PAeMT/plugin-archive/gatehook-1.0.0-2026-10-21T01-34-06-000Z.json).
+package_on_disk_after: false
+archive: gatehook-1.0.0-2026-10-21T01-34-06-000Z.json 1600 bytes

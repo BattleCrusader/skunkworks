@@ -10,7 +10,7 @@
  *   2. **revocation** — `cms_plugin_revoked` names a package root; that root cannot be
  *      installed or enabled whatever it says about itself.
  *   3. **the test report** — `{plugin, version, root_hash, runner_image_digest, ran_at}`,
- *      written by the packager's run inside the runner image. Missing, for another root,
+ *      written by the packager's run inside the test image. Missing, for another root,
  *      or for another image digest is `SKW_E_PL_TESTS_STALE`: a plugin cannot ship
  *      untested and be discovered by a client's contact form.
  *   4. **schema range, export class, migration grammar** — `SKW_E_PL_SCHEMA`,
@@ -52,6 +52,16 @@ export interface TestReport {
   plugin: string;
   version: string;
   root_hash: string;
+  /**
+   * The image the package's tests ran in, as a digest.
+   *
+   * The name survives D36 on purpose and this comment is the reason: it is a field of the
+   * report the packager writes and `bundle_verify` reads, so renaming it is a wire-format
+   * change, not a UI fix. What it does **not** name is a service — the runner service is gone
+   * (`02-errata` E-31), and the operator screen therefore says "image", not "runner"
+   * (`test/plugin-install.test.ts` P3/P4 hold that, and this comment is the one allowlisted
+   * exception in its scan).
+   */
   runner_image_digest: string;
   ran_at: string;
 }
@@ -79,7 +89,7 @@ export interface InstallRequest {
   firstPartyKeys?: string[];
   /** `test-report.json` from the packager. Absent is a refusal, not a warning. */
   testReportPath?: string;
-  /** The digest of the runner image that will run it; a report for another image is stale. */
+  /** The digest of the test image that will run it; a report for another image is stale. */
   runnerImageDigest?: string;
   enable?: boolean;
   now?: string;
@@ -135,7 +145,7 @@ const CHECKPOINT_PAUSE_MS = 20;
 /** A report for another package or another image is stale; there is no "close enough". */
 export function readTestReport(path: string, root: string, digest: string): { sha: string; report: TestReport } {
   if (!existsSync(path)) {
-    refuse('SKW_E_PL_TESTS_STALE', `no test report: the packager must run plugin.json.tests inside the runner image (${path})`, {
+    refuse('SKW_E_PL_TESTS_STALE', `no test report: the packager must run plugin.json.tests inside the test image (${path})`, {
       expected_runner_image_digest: digest,
     });
   }
@@ -153,7 +163,7 @@ export function readTestReport(path: string, root: string, digest: string): { sh
     });
   }
   if (report.runner_image_digest !== digest) {
-    refuse('SKW_E_PL_TESTS_STALE', 'the test report was produced by another runner image', {
+    refuse('SKW_E_PL_TESTS_STALE', 'the test report was produced with a different test image', {
       report_runner_image_digest: report.runner_image_digest ?? null,
       runner_image_digest: digest,
     });
@@ -617,7 +627,7 @@ export function uninstallPlugin(input: UninstallRequest): UninstallResult {
     }
 
     // After COMMIT: a crash before this leaves a package tree with no row, which the next
-    // install replaces and the runner refuses to serve (no row ⇒ no endpoint).
+    // install replaces and the site refuses to serve (no row ⇒ no endpoint).
     const target = packageDir(input.pluginsRoot, row.plugin_id);
     const packageRemoved = isDirectory(target);
     if (packageRemoved) rmSync(target, { recursive: true, force: true });

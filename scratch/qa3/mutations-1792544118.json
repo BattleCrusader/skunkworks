@@ -1,0 +1,30 @@
+[
+  {
+    "id": "M19-hook-mail-template",
+    "file": "app/plugins/context.ts",
+    "claim": "mail.template fires inside the host's own send path and its returned vars are what the host measures",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "82fc72c80b6d8ede6f8fa013408c33f5eb852b7b0e4e8357487a00151a79eb2d",
+    "after": "82fc72c80b6d8ede6f8fa013408c33f5eb852b7b0e4e8357487a00151a79eb2d",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.9,
+    "red": [
+      "H7. mail.template \u2014 the returned vars are what the host measured"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 11,
+      "fail": 1
+    },
+    "expected_red": "^H7\\.",
+    "expected_red_matched": [
+      "H7. mail.template \u2014 the returned vars are what the host measured"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M19-hook-mail-template.log",
+    "status": "RED-AS-EXPECTED"
+  }
+]

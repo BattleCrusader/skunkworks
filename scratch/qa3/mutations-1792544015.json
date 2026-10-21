@@ -1,0 +1,482 @@
+[
+  {
+    "id": "M1-capability-comparison",
+    "file": "app/plugins/context.ts",
+    "claim": "the one capability check refuses an undeclared capability, naming the method and capability",
+    "test": [
+      "test/plugin-scope.test.ts"
+    ],
+    "before": "82fc72c80b6d8ede6f8fa013408c33f5eb852b7b0e4e8357487a00151a79eb2d",
+    "after": "82fc72c80b6d8ede6f8fa013408c33f5eb852b7b0e4e8357487a00151a79eb2d",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.3,
+    "red": [
+      "S3. an undeclared capability is refused SKW_E_PL_REJECTED before p_notes_note is touched"
+    ],
+    "counts": {
+      "tests": 7,
+      "pass": 6,
+      "fail": 1
+    },
+    "expected_red": "^S3\\.",
+    "expected_red_matched": [
+      "S3. an undeclared capability is refused SKW_E_PL_REJECTED before p_notes_note is touched"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M1-capability-comparison.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M2-database-list",
+    "file": "app/plugins/context.ts",
+    "claim": "a second attached database refuses the call and flags disable_plugin",
+    "test": [
+      "test/plugin-scope.test.ts"
+    ],
+    "before": "82fc72c80b6d8ede6f8fa013408c33f5eb852b7b0e4e8357487a00151a79eb2d",
+    "after": "82fc72c80b6d8ede6f8fa013408c33f5eb852b7b0e4e8357487a00151a79eb2d",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.2,
+    "red": [
+      "S5 \u2014 a connection with a second attached database is refused and flagged for disable"
+    ],
+    "counts": {
+      "tests": 7,
+      "pass": 6,
+      "fail": 1
+    },
+    "expected_red": "^S5 ",
+    "expected_red_matched": [
+      "S5 \u2014 a connection with a second attached database is refused and flagged for disable"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M2-database-list.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M3-context-ended",
+    "file": "app/plugins/context.ts",
+    "claim": "a facade used after the request refuses SKW_E_PL_CONTEXT_ENDED",
+    "test": [
+      "test/plugin-scope.test.ts"
+    ],
+    "before": "82fc72c80b6d8ede6f8fa013408c33f5eb852b7b0e4e8357487a00151a79eb2d",
+    "after": "82fc72c80b6d8ede6f8fa013408c33f5eb852b7b0e4e8357487a00151a79eb2d",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.2,
+    "red": [
+      "S6 \u2014 a context used after its request ended refuses SKW_E_PL_CONTEXT_ENDED, not a reused handle"
+    ],
+    "counts": {
+      "tests": 7,
+      "pass": 6,
+      "fail": 1
+    },
+    "expected_red": "^S6 ",
+    "expected_red_matched": [
+      "S6 \u2014 a context used after its request ended refuses SKW_E_PL_CONTEXT_ENDED, not a reused handle"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M3-context-ended.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M4-failure-threshold",
+    "status": "SKIPPED",
+    "why": "pattern occurs 0 times",
+    "before": "27eccd80737ae5084e1bbbda9695e736303b0419b8a11886d65cc36a50fc7110"
+  },
+  {
+    "id": "M5-disable-prunes",
+    "file": "app/plugins/runtime.ts",
+    "claim": "disable removes the registry entry rather than setting a flag",
+    "test": [
+      "test/plugin-load.test.ts"
+    ],
+    "before": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "after": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.3,
+    "red": [
+      "L8 \u2014 disable removes the hooks; it does not set a flag that a later refactor can invert",
+      "L9 \u2014 re-enabling produces a new module instance: the module counter reads 1 again"
+    ],
+    "counts": {
+      "tests": 10,
+      "pass": 8,
+      "fail": 2
+    },
+    "expected_red": "^L8 ",
+    "expected_red_matched": [
+      "L8 \u2014 disable removes the hooks; it does not set a flag that a later refactor can invert"
+    ],
+    "unexpectedly_red": [
+      "L9 \u2014 re-enabling produces a new module instance: the module counter reads 1 again"
+    ],
+    "log": "scratch/qa3/mut-M5-disable-prunes.log",
+    "status": "UNEXPECTED"
+  },
+  {
+    "id": "M6-cache-buster",
+    "file": "app/plugins/runtime.ts",
+    "claim": "the import URL carries ?tenant=&act= so a re-enable is a new module instance",
+    "test": [
+      "test/plugin-load.test.ts"
+    ],
+    "before": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "after": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.2,
+    "red": [
+      "L9 \u2014 re-enabling produces a new module instance: the module counter reads 1 again"
+    ],
+    "counts": {
+      "tests": 10,
+      "pass": 9,
+      "fail": 1
+    },
+    "expected_red": "^L9 ",
+    "expected_red_matched": [
+      "L9 \u2014 re-enabling produces a new module instance: the module counter reads 1 again"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M6-cache-buster.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M7-row-floor",
+    "file": "app/plugins/registry.ts",
+    "claim": "activation_seq continues from the row across a restart",
+    "test": [
+      "test/plugin-activation-seq.test.ts"
+    ],
+    "before": "6f2e3efbf1217313bcd1d28dac362c3da17b4c07b080ea9a500f893d2fbf8d86",
+    "after": "6f2e3efbf1217313bcd1d28dac362c3da17b4c07b080ea9a500f893d2fbf8d86",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.4,
+    "red": [
+      "A3. a restart continues from the row: two processes, two new numbers"
+    ],
+    "counts": {
+      "tests": 4,
+      "pass": 3,
+      "fail": 1
+    },
+    "expected_red": "^A3\\.",
+    "expected_red_matched": [
+      "A3. a restart continues from the row: two processes, two new numbers"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M7-row-floor.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M8-hook-page-head",
+    "file": "app/main.ts",
+    "claim": "page.head fires at the render call site with {tenant,path} and its string reaches <head>",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "6beca526c5898af0bffedfd9061890f5fa16824dee6d5b3a5cdb737bcbca2e03",
+    "after": "6beca526c5898af0bffedfd9061890f5fa16824dee6d5b3a5cdb737bcbca2e03",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.8,
+    "red": [
+      "H1. page.head \u2014 the returned markup is in the served <head>, and the call carried the path"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 11,
+      "fail": 1
+    },
+    "expected_red": "^H1\\.",
+    "expected_red_matched": [
+      "H1. page.head \u2014 the returned markup is in the served <head>, and the call carried the path"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M8-hook-page-head.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M9-hook-content-render",
+    "file": "app/main.ts",
+    "claim": "content.render.html fires with {tenant,path,page} and replaces only the body",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "6beca526c5898af0bffedfd9061890f5fa16824dee6d5b3a5cdb737bcbca2e03",
+    "after": "6beca526c5898af0bffedfd9061890f5fa16824dee6d5b3a5cdb737bcbca2e03",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.6,
+    "red": [
+      "H2. content.render.html \u2014 the body is replaced and the status/route are not"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 11,
+      "fail": 1
+    },
+    "expected_red": "^H2\\.",
+    "expected_red_matched": [
+      "H2. content.render.html \u2014 the body is replaced and the status/route are not"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M9-hook-content-render.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M10-hook-asset-url",
+    "file": "app/main.ts",
+    "claim": "asset.url fires per asset with {tenant,key,url} and the returned URL is emitted",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "6beca526c5898af0bffedfd9061890f5fa16824dee6d5b3a5cdb737bcbca2e03",
+    "after": "6beca526c5898af0bffedfd9061890f5fa16824dee6d5b3a5cdb737bcbca2e03",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.6,
+    "red": [
+      "H3. asset.url \u2014 the emitted src is the filter's URL; the call carried the key and the original"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 11,
+      "fail": 1
+    },
+    "expected_red": "^H3\\.",
+    "expected_red_matched": [
+      "H3. asset.url \u2014 the emitted src is the filter's URL; the call carried the key and the original"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M10-hook-asset-url.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M11-hook-page-rendered",
+    "file": "app/main.ts",
+    "claim": "page.rendered fires after the response with {tenant,path,status,ms}",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "6beca526c5898af0bffedfd9061890f5fa16824dee6d5b3a5cdb737bcbca2e03",
+    "after": "6beca526c5898af0bffedfd9061890f5fa16824dee6d5b3a5cdb737bcbca2e03",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.6,
+    "red": [
+      "H10. page.rendered \u2014 an action: `{path, status, ms}`, and its return value is ignored"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 11,
+      "fail": 1
+    },
+    "expected_red": "^H10\\.",
+    "expected_red_matched": [
+      "H10. page.rendered \u2014 an action: `{path, status, ms}`, and its return value is ignored"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M11-hook-page-rendered.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M12-hook-form-validate",
+    "file": "app/forms/intake.ts",
+    "claim": "form.validate fires with {tenant,form,values} and may refuse what core accepted",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "e8d6e9a8c648ff1b4b0a3b89ca8508846ff0b8f502f8996ec2154cee327a06c8",
+    "after": "e8d6e9a8c648ff1b4b0a3b89ca8508846ff0b8f502f8996ec2154cee327a06c8",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.6,
+    "red": [
+      "H4. form.validate \u2014 a plugin may refuse what core accepted: 422, no row",
+      "H5. form.submitted \u2014 after the commit, with the id the row got"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 10,
+      "fail": 2
+    },
+    "expected_red": "^H4\\.",
+    "expected_red_matched": [
+      "H4. form.validate \u2014 a plugin may refuse what core accepted: 422, no row"
+    ],
+    "unexpectedly_red": [
+      "H5. form.submitted \u2014 after the commit, with the id the row got"
+    ],
+    "log": "scratch/qa3/mut-M12-hook-form-validate.log",
+    "status": "UNEXPECTED"
+  },
+  {
+    "id": "M13-hook-form-submitted",
+    "file": "app/forms/intake.ts",
+    "claim": "form.submitted fires after the commit with the row id",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "e8d6e9a8c648ff1b4b0a3b89ca8508846ff0b8f502f8996ec2154cee327a06c8",
+    "after": "e8d6e9a8c648ff1b4b0a3b89ca8508846ff0b8f502f8996ec2154cee327a06c8",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.6,
+    "red": [
+      "H5. form.submitted \u2014 after the commit, with the id the row got"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 11,
+      "fail": 1
+    },
+    "expected_red": "^H5\\.",
+    "expected_red_matched": [
+      "H5. form.submitted \u2014 after the commit, with the id the row got"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M13-hook-form-submitted.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M14-hook-admin-login",
+    "file": "app/admin/routes.ts",
+    "claim": "admin.login fires post-authentication with the operator id",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "e60074949d84d723a7257d38406f9c8cc49315b707acff7dae54af924f145d63",
+    "after": "e60074949d84d723a7257d38406f9c8cc49315b707acff7dae54af924f145d63",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.6,
+    "red": [
+      "H9. admin.login \u2014 post-authentication, with the operator id"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 11,
+      "fail": 1
+    },
+    "expected_red": "^H9\\.",
+    "expected_red_matched": [
+      "H9. admin.login \u2014 post-authentication, with the operator id"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M14-hook-admin-login.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M15-hook-admin-menu",
+    "file": "app/admin/routes.ts",
+    "claim": "admin.menu fires with core's items and keeps a declared screen while dropping an undeclared href",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "e60074949d84d723a7257d38406f9c8cc49315b707acff7dae54af924f145d63",
+    "after": "e60074949d84d723a7257d38406f9c8cc49315b707acff7dae54af924f145d63",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.6,
+    "red": [
+      "H6. admin.menu \u2014 a declared screen is added and an undeclared href is dropped"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 11,
+      "fail": 1
+    },
+    "expected_red": "^H6\\.",
+    "expected_red_matched": [
+      "H6. admin.menu \u2014 a declared screen is added and an undeclared href is dropped"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M15-hook-admin-menu.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M16-hook-download-redeemed",
+    "file": "app/download/plane.ts",
+    "claim": "download.redeemed fires on a real redemption with codeId/assetKey/jti",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "221297e95269cd0464e5f8d664917d1389408979aa7c7b1be5f22c818137d697",
+    "after": "221297e95269cd0464e5f8d664917d1389408979aa7c7b1be5f22c818137d697",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.6,
+    "red": [
+      "H8. download.redeemed \u2014 a real redemption fires the action with codeId, assetKey and jti"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 11,
+      "fail": 1
+    },
+    "expected_red": "^H8\\.",
+    "expected_red_matched": [
+      "H8. download.redeemed \u2014 a real redemption fires the action with codeId, assetKey and jti"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M16-hook-download-redeemed.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M17-hook-plugin-enabled",
+    "file": "app/plugins/runtime.ts",
+    "claim": "plugin.enabled fires after the commit",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "after": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "restored_identical": true,
+    "exit": 0,
+    "elapsed_s": 0.6,
+    "red": [],
+    "counts": {
+      "tests": 12,
+      "pass": 12,
+      "fail": 0
+    },
+    "expected_red": "^H11\\.",
+    "expected_red_matched": [],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M17-hook-plugin-enabled.log",
+    "status": "UNEXPECTED"
+  },
+  {
+    "id": "M18-hook-plugin-disabled",
+    "file": "app/plugins/runtime.ts",
+    "claim": "plugin.disabled fires on disable, before the prune",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "after": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "restored_identical": true,
+    "exit": 0,
+    "elapsed_s": 0.6,
+    "red": [],
+    "counts": {
+      "tests": 12,
+      "pass": 12,
+      "fail": 0
+    },
+    "expected_red": "^H11\\.",
+    "expected_red_matched": [],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M18-hook-plugin-disabled.log",
+    "status": "UNEXPECTED"
+  }
+]

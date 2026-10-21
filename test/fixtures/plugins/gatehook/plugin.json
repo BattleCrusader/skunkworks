@@ -1,0 +1,11 @@
+{
+  "id": "gatehook",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "hooks": [],
+  "endpoints": [{ "name": "hold", "method": "GET" }],
+  "description": "U1's witness: a package whose GET /_plugin/gatehook/hold endpoint HOLDS the request open until the gate writes a release file. It exists so uninstall's drain is tested against a real in-flight request — one the app counted with plugins.enter(), on a package whose tables are about to be dropped — rather than against a fake counter.",
+  "capabilities": [],
+  "tables": [],
+  "settings": []
+}

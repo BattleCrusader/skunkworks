@@ -1,0 +1,6 @@
+process A pid=27778 notices=1 code=SKW_E_PL_LOAD at=2026-10-21T01:34:09.558Z
+process A message: badshape does not export activate(ctx); the manifest's main is not a plugin
+process B pid=27780 status=200
+process B notices table:
+<tr data-notice="badshape"><td>badshape</td><td><code>SKW_E_PL_LOAD</code></td><td>badshape does not export activate(ctx); the manifest&#39;s main is not a plugin</td><td>2026-10-21T01:34:09.558Z</td></tr>
+process B shows A's instant: true

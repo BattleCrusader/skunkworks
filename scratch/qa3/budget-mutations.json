@@ -1,0 +1,36 @@
+[
+  {
+    "id": "MB1-makefile-below-floor",
+    "file": "Makefile",
+    "claim": "TEST_TIMEOUT_MS is exactly the derivation, not a knob",
+    "old": "TEST_TIMEOUT_MS ?= 126000",
+    "new": "TEST_TIMEOUT_MS ?= 125000",
+    "test": [
+      "test/timeout-budget.test.ts"
+    ],
+    "expect_red": "^B[23] "
+  },
+  {
+    "id": "MB2-heavy-file-edited",
+    "file": "test/first-boot-tls.test.ts",
+    "claim": "a heavy file whose bytes changed is named as stale",
+    "old": "import assert from 'node:assert/strict';",
+    "new": "// MUTATION QA3: one comment line makes these bytes different from the measured ones\nimport assert from 'node:assert/strict';",
+    "test": [
+      "test/timeout-budget.test.ts"
+    ],
+    "expect_red": "^B2 "
+  },
+  {
+    "id": "MB3-light-file-edited",
+    "file": "test/cli-bootstrap.test.ts",
+    "claim": "a row below staleCheckFloorMs is NOT hash-checked (the documented hole)",
+    "old": "import assert from 'node:assert/strict';",
+    "new": "// MUTATION QA3: a row below the 3 s floor, edited, and the gate cannot see it\nimport assert from 'node:assert/strict';",
+    "test": [
+      "test/timeout-budget.test.ts"
+    ],
+    "expect_green_run": true,
+    "expect_red": "$^"
+  }
+]

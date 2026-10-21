@@ -426,8 +426,23 @@ export const CAPABILITY_TEXT: Readonly<Record<string, string>> = {
   'util.now': 'read the clock',
   'util.random': 'generate random bytes',
   'util.hash': 'hash a value',
-  'log.write': 'write a line to the runner log',
+  'log.write': 'write a line to the site log',
 };
+
+/**
+ * E-33 item 6 / `SDS.md` §13.3.7's drop-in sentence, **verbatim**, printed under every
+ * capability list on the install screen.
+ *
+ * The screen shows the `capabilities` array in plain words, and a non-developer reads a list of
+ * permissions as a boundary. After D36 there is no layer doing the containing: a plugin runs in
+ * the site's own process and can open `data/control.db` with its own `better-sqlite3` handle or
+ * send mail through a socket it opens itself (§13.3.7, §13.4 item 5). Capabilities are
+ * **disclosure**, and this is the sentence that says so — `test/plugin-install.test.ts` P1
+ * asserts it appears character for character, parsed out of `docs/sds/02-errata.md` so the
+ * screen and the errata cannot drift apart.
+ */
+export const CAPABILITIES_ARE_DISCLOSURE =
+  "Capabilities describe what this plugin asks the CMS for. They do not limit what its code can do: a plugin runs inside the site's process, with the site's own access to its files and databases.";
 
 export interface InstallScreen {
   plugin: string;

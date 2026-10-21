@@ -105,9 +105,12 @@ test('O1 — plugin install puts the package where compose mounts it, and the ex
   assert.equal(installed.status, 0, `${installed.stderr}\n${installed.stdout}`);
   assert.match(installed.stdout, /\*\*\* UNSIGNED/);
   assert.match(installed.stdout, /plugin: installed id=contact version=1\.4\.0 .*enabled=yes/);
-  // The code is not live until the runner reloads its registry; a green install that did not
-  // say so is how a plugin 500s on the client's first render.
-  assert.match(installed.stdout, /the runner scans .* at start; restart the runner service to load contact/);
+  // D1: this line used to read "the runner scans … at start; restart the runner service to load
+  // contact" — a service D36 deleted. In-process there is nothing to restart: the row is the
+  // statement of what runs and the next request's `sync` reads it. Assert the true sentence,
+  // and assert the screen does not name a runner at all (the negative half is the point).
+  assert.match(installed.stdout, /plugin: in-process; contact is live from the site's next request — no restart, no service/);
+  assert.doesNotMatch(installed.stdout, /runner/i);
   assert.equal(existsSync(join(fixture.dir, 'plugins', 'contact', 'plugin.json')), true, 'the package is not at <data>/plugins/contact');
 
   const installedRow = row();
@@ -237,7 +240,15 @@ test('O4 — install → uninstall archives the plugin’s rows, drops its table
   const removed = skwctl(['plugin', 'uninstall', 'guestbook', '--tenant', 'acme', '--archive-dir', archiveDir]);
   assert.equal(removed.status, 0, `${removed.stderr}\n${removed.stdout}`);
   assert.match(removed.stdout, /plugin: uninstalled id=guestbook version=1\.4\.0 .*tables=p_guestbook_note\(2\) settings=1/);
-  assert.match(removed.stdout, /plugin: restart the runner service to release the code for guestbook/);
+  // D1: the old assertion pinned "restart the runner service to release the code" — a service
+  // that does not exist. The true statement is that the next request prunes the hooks, and the
+  // CLI must also say the one thing it cannot do: drain, because it is another process.
+  assert.match(removed.stdout, /plugin: in-process; the running site drops the hooks on its next request — no restart, no service/);
+  assert.match(
+    removed.stdout,
+    /runs in its own process and cannot see the site's in-flight requests; on a live site uninstall from \/admin\/t\/acme\/plugins/,
+  );
+  assert.doesNotMatch(removed.stdout, /runner/i);
 
   // The archive is real, 0600, table-scoped, and contains the rows (the register's O-40
   // "v2 experiment", delivered): restoring it cannot roll back unrelated tenant edits.

@@ -166,6 +166,25 @@
       ]
     },
     {
+      "file": "test/plugin-lifecycle.test.ts",
+      "worstIdleMs": 5758,
+      "measuredOn": "2026-10-21",
+      "load1m": 5.66,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "e657111475a9e573775f855617af316d97913e9d786100575bc174166051fda2",
+      "runs": [
+        {
+          "ms": 5758,
+          "at": "2026-10-21T01:13:57.856Z",
+          "load1mBefore": 5.66,
+          "load1mAfter": 5.37,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 4
+        }
+      ]
+    },
+    {
       "file": "test/download-consume.test.ts",
       "worstIdleMs": 5028,
       "measuredOn": "2026-10-21",
@@ -1161,6 +1180,25 @@
       ]
     },
     {
+      "file": "test/plugin-install.test.ts",
+      "worstIdleMs": 474,
+      "measuredOn": "2026-10-21",
+      "load1m": 5.66,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "219a0d8dd0edae0680c17e0901734d266d9c9731a14527ce5af5ef31850456b9",
+      "runs": [
+        {
+          "ms": 474,
+          "at": "2026-10-21T01:13:51.926Z",
+          "load1mBefore": 5.66,
+          "load1mAfter": 5.66,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 5
+        }
+      ]
+    },
+    {
       "file": "test/editor-paste.test.ts",
       "worstIdleMs": 461,
       "measuredOn": "2026-10-21",
@@ -1455,5 +1493,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-21T00:17:03.156Z"
+  "updatedAt": "2026-10-21T01:13:58.244Z"
 }

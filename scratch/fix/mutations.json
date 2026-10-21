@@ -1,0 +1,90 @@
+[
+  {
+    "id": "MD1a",
+    "why": "D1 — the E-33 sentence deleted from the install screen",
+    "file": "app/cli/skwctl.ts",
+    "test": "test/plugin-install.test.ts",
+    "sha256_before": "99b34cec5ede3cf7c3834ea681a683b157a7df46bb340662172ca010ceafd04f",
+    "sha256_after": "99b34cec5ede3cf7c3834ea681a683b157a7df46bb340662172ca010ceafd04f",
+    "restored_identical": true,
+    "exit": 1,
+    "red": [
+      "not ok 2 - P1 — the install screen carries E-33 item 6's sentence verbatim, and the sentence is the errata's"
+    ],
+    "expect_red": [
+      "P1"
+    ],
+    "first_error": "error: |-"
+  },
+  {
+    "id": "MD1b",
+    "why": "D1 — the false containment claim put back on the zero-capability line",
+    "file": "app/cli/skwctl.ts",
+    "test": "test/plugin-install.test.ts",
+    "sha256_before": "99b34cec5ede3cf7c3834ea681a683b157a7df46bb340662172ca010ceafd04f",
+    "sha256_after": "99b34cec5ede3cf7c3834ea681a683b157a7df46bb340662172ca010ceafd04f",
+    "restored_identical": true,
+    "exit": 1,
+    "red": [
+      "not ok 3 - P2 — a zero-capability package asks for nothing; it is never described as unable to reach site data"
+    ],
+    "expect_red": [
+      "P2"
+    ],
+    "first_error": "error: |-"
+  },
+  {
+    "id": "MD3a",
+    "why": "D3 — uninstall() skips the drain (the pre-fix behaviour: no caller of uninstallBegin)",
+    "file": "app/plugins/runtime.ts",
+    "test": "test/plugin-lifecycle.test.ts",
+    "sha256_before": "7edad9d32e95640abba854c6d18d917df8b5ebbda2be0a6dd6bab61290e974fb",
+    "sha256_after": "7edad9d32e95640abba854c6d18d917df8b5ebbda2be0a6dd6bab61290e974fb",
+    "restored_identical": true,
+    "exit": 1,
+    "red": [
+      "not ok 1 - U1 — an in-flight request drains for the full 5 s, refuses SKW_E_PL_BUSY naming the plugin, and removes nothing"
+    ],
+    "expect_red": [
+      "U1"
+    ],
+    "first_error": "error: |-"
+  },
+  {
+    "id": "MD3b",
+    "why": "D3 — the busy refusal rethrown as drain() writes it, naming the tenant and not the plugin",
+    "file": "app/plugins/runtime.ts",
+    "test": "test/plugin-lifecycle.test.ts",
+    "sha256_before": "7edad9d32e95640abba854c6d18d917df8b5ebbda2be0a6dd6bab61290e974fb",
+    "sha256_after": "7edad9d32e95640abba854c6d18d917df8b5ebbda2be0a6dd6bab61290e974fb",
+    "restored_identical": true,
+    "exit": 1,
+    "red": [
+      "not ok 1 - U1 — an in-flight request drains for the full 5 s, refuses SKW_E_PL_BUSY naming the plugin, and removes nothing",
+      "not ok 2 - U2 — an idle uninstall drains immediately and removes: archive, tables, row, package",
+      "not ok 3 - U3 — a second uninstall refuses SKW_E_PL_UNAVAILABLE, and says so on both surfaces",
+      "not ok 4 - U0 — the installed-package list the route acts on is the runtime’s, not a second source"
+    ],
+    "expect_red": [
+      "U1"
+    ],
+    "first_error": "error: 'the refusal must name the plugin, not only the tenant'"
+  },
+  {
+    "id": "MN5a",
+    "why": "notices — the durable write removed: the pre-fix state (an in-memory array only)",
+    "file": "app/plugins/runtime.ts",
+    "test": "test/admin-plugin-notices.test.ts",
+    "sha256_before": "7edad9d32e95640abba854c6d18d917df8b5ebbda2be0a6dd6bab61290e974fb",
+    "sha256_after": "7edad9d32e95640abba854c6d18d917df8b5ebbda2be0a6dd6bab61290e974fb",
+    "restored_identical": true,
+    "exit": 1,
+    "red": [
+      "not ok 6 - N5. the reason and the instant survive a real restart: two OS processes, one data directory"
+    ],
+    "expect_red": [
+      "N5"
+    ],
+    "first_error": "error: 'the restarted process must still show the notice'"
+  }
+]

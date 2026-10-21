@@ -47,11 +47,13 @@ import { pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
 
 import { AppError } from '../errors.ts';
+import { appendAudit } from '../audit/chain.ts';
 import { openAdminWrite, openRenderRead } from '../db/classes.ts';
 import { makePluginContext, type PluginContext } from './context.ts';
 import { HookBus, type HookFailure } from './hooks.ts';
 import { HOOK_NAMES, packageDir, packageRootHash, parseManifest, type Manifest } from './manifest.ts';
 import { revokedRoot } from './revocation.ts';
+import { uninstallPlugin, type UninstallResult } from './install.ts';
 import { ActivationRecorder, PluginRegistry, type RegistryEntry } from './registry.ts';
 import { trustDirFor, verifyPackageSignature } from './trust.ts';
 
@@ -77,6 +79,15 @@ export interface PluginNotice {
   code: string;
   message: string;
   at: string;
+}
+
+/** The audit action a notice is written under. One row per failure, in the tenant's `cms_audit`. */
+const NOTICE_ACTION = 'plugin.failed';
+/** There is no user in a shell or at boot; the label says which writer it was. */
+const NOTICE_ACTOR = { userId: null, label: 'plugin-runtime' } as const;
+
+function noticeKey(notice: PluginNotice): string {
+  return `${notice.plugin}\u0000${notice.code}\u0000${notice.at}`;
 }
 
 export interface PluginRuntimeOptions {
@@ -141,12 +152,107 @@ export class PluginRuntime {
     return this.options.emailMode;
   }
 
+  /**
+   * The notices an operator sees: what failed in **this** process, merged with what failed before
+   * the last restart.
+   *
+   * The limitation `S4-qa3.md` records twice (§4 item 1, and NOT COVERED row 4) is the one this
+   * fixes: the array below is process-local, so a plugin auto-disabled at 03:00 and a box
+   * restarted at 03:05 showed `disabled` with no reason on
+   * the screen an operator opens precisely *because* something is wrong. Notices are now also
+   * written to the tenant's `cms_audit` (`action='plugin.failed'`, `after_json` carrying the
+   * code, the message and the instant) and read back here. The audit table is the right store
+   * for three reasons, and the third is the one that decided it:
+   *
+   *   1. it already exists in every `site.db` version — no schema bump, so no gate that asserts
+   *      `user_version = 4` changes meaning;
+   *   2. it is append-only by trigger (`trg_cms_audit_append_only`, `..._no_delete`), so a notice
+   *      cannot be edited or back-dated by the code that wrote it;
+   *   3. a notice *is* an audit event — the same failure the chain records, seen by the person
+   *      who has to act on it — so there is one record of it rather than two that can disagree.
+   *
+   * What that costs, stated: an immutable log means a notice for a package that was later
+   * uninstalled stays readable. The screen shows the notices table and the installed table side
+   * by side, which is the honest presentation of "this failed, at this time" — the audit chain
+   * is not a garbage collector and this does not pretend it is.
+   */
   noticesFor(tenant: string): PluginNotice[] {
-    return this.notices.filter((n) => n.tenant === tenant);
+    const live = this.notices.filter((n) => n.tenant === tenant);
+    const seen = new Set(live.map(noticeKey));
+    const merged = [...live];
+    for (const persisted of this.persistedNotices(tenant)) {
+      const key = noticeKey(persisted);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(persisted);
+    }
+    return merged.sort((a, b) => (a.at === b.at ? (a.plugin < b.plugin ? -1 : a.plugin > b.plugin ? 1 : 0) : a.at < b.at ? -1 : 1));
   }
 
-  allNotices(): readonly PluginNotice[] {
-    return this.notices;
+  /**
+   * The latest persisted notice per plugin, from the tenant's audit chain.
+   *
+   * Latest, not every row: the chain keeps the history and this is the "what is wrong now" list.
+   * A read that fails (no `site.db`, a locked file, a v1 database with no `cms_audit`) answers
+   * `[]` — the in-memory notices are still returned, because a database problem must not hide a
+   * failure that this process witnessed.
+   */
+  private persistedNotices(tenant: string): PluginNotice[] {
+    let db: Database.Database | null = null;
+    try {
+      db = openRenderRead(this.sitePath(tenant), this.options.syncBusyTimeoutMs ?? 5000);
+      const table = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_audit'`).get();
+      if (table === undefined) return [];
+      const rows = db
+        .prepare(`SELECT target_id, after_json, ts FROM cms_audit WHERE action = ? ORDER BY id`)
+        .all(NOTICE_ACTION) as { target_id: string | null; after_json: string | null; ts: string }[];
+      const latest = new Map<string, PluginNotice>();
+      for (const row of rows) {
+        if (row.target_id === null || row.after_json === null) continue;
+        let detail: { code?: unknown; message?: unknown; at?: unknown };
+        try {
+          detail = JSON.parse(row.after_json) as typeof detail;
+        } catch {
+          continue;
+        }
+        latest.set(row.target_id, {
+          plugin: row.target_id,
+          tenant,
+          code: typeof detail.code === 'string' ? detail.code : 'SKW_E_PL_LOAD',
+          message: typeof detail.message === 'string' ? detail.message : '',
+          at: typeof detail.at === 'string' ? detail.at : row.ts,
+        });
+      }
+      return [...latest.values()];
+    } catch {
+      return [];
+    } finally {
+      db?.close();
+    }
+  }
+
+  /**
+   * Write the notice into the tenant's audit chain. Best effort **by design**: the plugin is
+   * already disabled by the time this runs, and an audit write that throws must not turn a
+   * contained failure into a 500 on the request that found it. The in-memory notice is still
+   * added, so the operator sees it in this process even when the row cannot be written.
+   */
+  private persistNotice(db: Database.Database, tenant: string, notice: PluginNotice): void {
+    if (tenant === '') return;
+    try {
+      appendAudit(
+        db,
+        NOTICE_ACTOR,
+        NOTICE_ACTION,
+        'cms_plugin_installed',
+        notice.plugin,
+        null,
+        { code: notice.code, message: notice.message, at: notice.at },
+        Date.parse(notice.at),
+      );
+    } catch {
+      /* see the docstring: the notice is live either way */
+    }
   }
 
   sitePath(tenant: string): string {
@@ -429,13 +535,17 @@ export class PluginRuntime {
     }
     const key = `${tenant ?? ''}\u0000${pluginId}`;
     this.failed.add(key);
-    this.notices.push({
+    const notice: PluginNotice = {
       plugin: pluginId,
       tenant: tenant ?? '',
       code: failureCode,
       message: message.slice(0, 500),
       at: this.nowIso(),
-    });
+    };
+    this.notices.push(notice);
+    // The durable half: the same notice, in the tenant's append-only audit chain, so a restart
+    // does not erase the reason a plugin is disabled. `noticesFor` merges the two and dedupes.
+    this.persistNotice(db, tenant ?? '', notice);
     this.options.log?.(`plugin failed plugin=${pluginId} code=${failureCode} ${message.slice(0, 200)}`);
     this.options.audit?.('plugin.failed', pluginId, { code: failureCode, message: message.slice(0, 300) });
   }
@@ -673,10 +783,58 @@ export class PluginRuntime {
     return this.registry.endpoint(tenant, pluginId, name, method);
   }
 
-  /** Uninstall's first act: drain, then the caller does the archive-and-drop (§13.3.8). */
-  async uninstallBegin(tenant: string, pluginId: string): Promise<void> {
-    await this.drain(tenant);
+  /**
+   * Uninstall's first act: drain, then disable (§13.3.8). `uninstall()` below is the caller the
+   * operator path uses; this stays public because a caller that wants the drain without the
+   * archive-and-drop (a future exporter, a repair tool) is a caller this must not force into
+   * re-implementing the wait.
+   *
+   * **D3:** the drain names the *plugin*, not just the tenant. §13.3.8's sentence is that
+   * uninstall "refuses `SKW_E_PL_BUSY` rather than drop a table under a live request", and an
+   * operator who ran `uninstall notes` has to read `notes` in the refusal to know what did not
+   * happen. `drain()`'s own message is tenant-shaped because its other callers do not know a
+   * plugin; the translation belongs here.
+   */
+  async uninstallBegin(tenant: string, pluginId: string, timeoutMs = DRAIN_TIMEOUT_MS): Promise<void> {
+    try {
+      await this.drain(tenant, timeoutMs);
+    } catch (err) {
+      if (err instanceof AppError && err.code === 'SKW_E_PL_BUSY') {
+        const inFlight = this.inFlightCount(tenant);
+        throw new AppError(
+          'SKW_E_PL_BUSY',
+          `${pluginId} was not uninstalled: tenant ${tenant} still has ${inFlight} request(s) in flight after ${timeoutMs} ms, and nothing was removed`,
+          { tenant, plugin: pluginId, in_flight: inFlight, waited_ms: timeoutMs },
+        );
+      }
+      throw err;
+    }
     await this.disable(tenant, pluginId, { audit: false });
+  }
+
+  /**
+   * **Uninstall, in this process** — the operator path §13.3.8 describes and the product did not
+   * have (D3).
+   *
+   * The order is the specification's and each step protects the next:
+   *
+   *   1. `uninstallBegin` — wait for the tenant's in-flight count to reach 0, bounded at 5 s, and
+   *      refuse `SKW_E_PL_BUSY` naming the plugin rather than drop a table under a live request;
+   *   2. `disable` — the hooks are removed from the registry before any row or table moves, so a
+   *      request that starts between the drain and the drop cannot dispatch into a package whose
+   *      tables are about to go;
+   *   3. `discardSyncHandle` — the runtime's cached readonly handle for this tenant is dropped,
+   *      because `uninstallPlugin` ends with `wal_checkpoint(TRUNCATE)` and an open reader of our
+   *      own is exactly the thing that makes a TRUNCATE checkpoint return `busy`;
+   *   4. `uninstallPlugin` — archive first, then drop, in one transaction.
+   *
+   * A refusal at step 1 leaves the package installed, enabled and running: nothing was removed.
+   * A failure at step 4 leaves it installed and disabled, which is recoverable with `enable`.
+   */
+  async uninstall(tenant: string, pluginId: string, opts: { timeoutMs?: number } = {}): Promise<UninstallResult> {
+    await this.uninstallBegin(tenant, pluginId, opts.timeoutMs ?? DRAIN_TIMEOUT_MS);
+    this.discardSyncHandle(tenant);
+    return uninstallPlugin({ siteDb: this.sitePath(tenant), pluginsRoot: this.pluginsRoot(), pluginId });
   }
 
   /** A digest of the package on disk, for a report that wants to name the bytes it loaded. */

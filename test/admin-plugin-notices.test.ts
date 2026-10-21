@@ -12,8 +12,11 @@
  *   N3  the re-enable path works: un-revoke, submit the form, the row enables, the package
  *       runs (its hook fires on a page), and the screen says so
  *   N4  the tenant home counts the notices, so a disabled plugin is visible from the menu
+ *   N5  **the reason and the instant survive a restart**: one OS process fails the package,
+ *       a second OS process opens the screen and reads what the first one wrote
  */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -197,4 +200,59 @@ test('N3b. the CSRF field is not a bypass: no token, no enable', async () => {
   });
   assert.equal(res.status, 403, res.body);
   assert.match(res.body, /SKW_E_SEC_CSRF/);
+});
+
+/**
+ * N5 — the restart. Before this case the reason lived in `PluginRuntime.notices`, a plain array:
+ * the screen promised an operator a reason and a restart erased it, which is exactly when the
+ * operator is looking (the site is up, the plugin is off, and nothing says why).
+ *
+ * The proof is two processes, not two instances in one process: the failing enable happens in a
+ * child that exits, and the screen is fetched by a second child that has never seen the failure.
+ */
+function noticeChild(mode: 'fail' | 'read'): { pid: number; status: number; out: string; body: string; at: string; code: string; stderr: string } {
+  const child = join(REPO, 'test', 'helpers', 'notice-child.ts');
+  const run = spawnSync(process.execPath, [child, mode, TENANT, 'badshape', 'restart-reader@acme.test'], {
+    cwd: REPO,
+    env: { ...fixture.env },
+    encoding: 'utf8',
+    timeout: 90_000,
+  });
+  const line = (run.stdout ?? '')
+    .trim()
+    .split('\n')
+    .filter((l) => l.startsWith('{'))
+    .pop();
+  assert.ok(line !== undefined, `the ${mode} child printed no JSON (status ${String(run.status)}):\n${run.stdout}\n${run.stderr}`);
+  const parsed = JSON.parse(line) as { pid: number; status?: number; body?: string; at?: string; notice_code?: string; mode: string };
+  return {
+    pid: parsed.pid,
+    status: parsed.status ?? run.status ?? -1,
+    out: run.stdout ?? '',
+    body: parsed.body ?? '',
+    at: parsed.at ?? '',
+    code: parsed.notice_code ?? '',
+    stderr: run.stderr ?? '',
+  };
+}
+
+test('N5. the reason and the instant survive a real restart: two OS processes, one data directory', () => {
+  const failed = noticeChild('fail');
+  assert.equal(failed.status, 0, failed.stderr);
+  assert.equal(failed.code, 'SKW_E_PL_LOAD', `the failing child must record SKW_E_PL_LOAD: ${failed.out}`);
+  assert.match(failed.at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, `the notice must carry its instant: ${failed.out}`);
+
+  // A second process: new PID, new runtime, nothing in memory. It builds the app fresh and
+  // fetches the screen over HTTP as an operator would.
+  const read = noticeChild('read');
+  assert.equal(read.status, 200, read.stderr);
+  assert.notEqual(read.pid, failed.pid, 'the reader must be a different OS process');
+
+  assert.match(read.body, /data-notice="badshape"/, 'the restarted process must still show the notice');
+  assert.match(read.body, /SKW_E_PL_LOAD/, 'the code must survive the restart');
+  assert.match(read.body, /does not export activate/, 'the reason must survive the restart');
+  assert.ok(
+    read.body.includes(failed.at),
+    `the instant the failure happened (${failed.at}) is not on the screen after the restart:\n${read.body}`,
+  );
 });

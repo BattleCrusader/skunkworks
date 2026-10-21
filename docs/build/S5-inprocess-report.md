@@ -921,3 +921,280 @@ An earlier sequence is worth recording because it found two failures that were n
 | `ddl-runner` alone | same runner, that file | 18/18 in 9 025 ms after C6's date fix |
 | the whole gate | `make test` | three consecutive runs: §11.5 |
 
+---
+
+## 12. S4 round-3 fixes — D1 (the screen), D3 (the drain), and the notice a restart used to erase
+
+**Date:** 2026-10-21, 12:05–12:35 AEDT. **Tree:** `main` at `ae3c9bd` plus this pass' working tree; **nothing committed**.
+**Box:** `cyberdeth.za.net`, macOS 15.7.4 arm64, 8 cpus, 16 GiB, node v22.23.1, Docker 29.7.2 (4-cpu / 1.5 GiB VM).
+**Load (1 min) moved between 6.26 and 14.02 across the pass** — recorded beside every number below, as in
+`S4-qa3.md`. The round-3 verdict was GO on the in-process mechanism and NOT GO on the operator surface for
+one reason, D1; D3 and the in-memory notices were the two other real gaps.
+
+### 12.1 D1 — the install screen told the operator a false containment claim, and spoke of a runner that does not exist
+
+`skwctl plugin install` is the only surface on which the trust decision §8.5/§13.3.7 defines is made. It
+printed, for a zero-capability package (`S4-qa3.md` §7 D1; probe P3):
+
+```
+  capabilities     none — it can reach neither this site's data nor its mailer
+…
+plugin: the runner scans /var/folders/…/plugins at start; restart the runner service to load nothing
+```
+
+Both lines were false in-process. A package with no declared capability can `import('better-sqlite3')`, open
+`data/control.db` and read every tenant (§13.3.7, §13.4 item 5); and there is no runner service — D36 deleted
+it, and the sentence sent an operator looking for one. The one sentence E-33 item 6 requires was absent, and
+so was the gate that was supposed to hold it — `test/plugin-install.test.ts` did not exist.
+
+**Now printed** (`scratch/fix/install-screen-after.txt`, from a real `skwctl plugin install` of
+`test/fixtures/plugins/nothing` — capabilities `[]`):
+
+```
+install screen — nothing@1.0.0
+  publisher        unsigned
+  key fingerprint  (none — unsigned)
+  first-party      no — and unsigned
+  signature        none — no key vouches for these bytes
+  test report      2026-10-21T00:00:00.000Z  sha256:ed082f88384c08f4…  image sha256:report
+  capabilities     none declared — the package asks this CMS for no operations
+  what this means  Capabilities describe what this plugin asks the CMS for. They do not limit what its code can do: a plugin runs inside the site's process, with the site's own access to its files and databases.
+  tables           none
+…
+plugin: in-process; the site loads nothing on the first request after `skwctl plugin enable` — no restart, no service
+```
+
+and, at uninstall:
+
+```
+plugin: in-process; the running site drops the hooks on its next request — no restart, no service
+plugin: this command runs in its own process and cannot see the site's in-flight requests; on a live site uninstall from /admin/t/acme/plugins so the drain runs first and refuses SKW_E_PL_BUSY rather than dropping a table under a request
+```
+
+What changed, and where:
+
+| thing | before | after |
+|---|---|---|
+| the zero-capability line | `none — it can reach neither this site's data nor its mailer` | `none declared — the package asks this CMS for no operations` |
+| capability wording for a non-empty list | `N granted:` | `N declared:` |
+| the E-33 sentence | absent | `CAPABILITIES_ARE_DISCLOSURE` in `app/plugins/trust.ts`, printed under **every** capability list (both branches) |
+| install hand-off | `the runner scans … restart the runner service` | `in-process; the site loads <id> on the first request after \`skwctl plugin enable\` — no restart, no service` |
+| uninstall hand-off | `restart the runner service to release the code` | `in-process; the running site drops the hooks on its next request` + the honest statement that the CLI cannot drain |
+| `log.write` plain words | `write a line to the runner log` | `write a line to the site log` |
+| the test-report label on the screen | `runner <digest>` | `image <digest>` |
+| `install.ts` test-report refusals | `inside the runner image` / `by another runner image` | `inside the test image` / `with a different test image` |
+
+`runner_image_digest` and `--runner-digest` are **not** renamed: they are the report field the packager writes
+and `bundle_verify` reads, i.e. a wire format, not an operator string. `app/plugins/install.ts:52–66` says so,
+and that comment is the one named entry in the test's allowlist.
+
+Two gates had pinned the retired text and were therefore asserting the lie: `test/cli-plugin.test.ts` O1
+(`the runner scans … restart the runner service to load contact`) and O4 (`restart the runner service to
+release the code for guestbook`). Both now assert the true sentence **and** `doesNotMatch(/runner/i)` — a
+stronger assertion than the one they replaced, not a weaker one.
+
+### 12.2 The gate, and the grep proof
+
+`test/plugin-install.test.ts` — five cases, all driven through the real CLI process
+(`spawnSync(node, app/cli/skwctl.ts …)`), so the strings are the product's and not a copy:
+
+| case | what it asserts |
+|---|---|
+| P0 | install, enable and uninstall each exit 0 and the screen is printed at all |
+| P1 | the errata's E-33 item 6 sentence, **parsed out of `docs/sds/02-errata.md`** (not a literal that can drift), is present in the install output character for character; and the parsed sentence equals the constant this gate holds |
+| P2 | the zero-capability section contains no containment claim (`can reach neither`, `nor its mailer`, `cannot reach`, `cannot send mail`, `has no access to site data`) and does say `none declared` |
+| P3 | the combined output of install + enable + uninstall contains **no occurrence of `runner` at all** |
+| P4 | the source scan behind P3 can fail: a live service string is flagged, a comment is flagged unless the named allowlist holds it, an allowlisted comment is accepted, and `runner_image_digest` / `--runner-digest` are *not* flagged |
+
+The source scan covers `app/cli/skwctl.ts`, `app/plugins/install.ts` and `app/plugins/trust.ts` (where
+`CAPABILITY_TEXT` lives). One hit remains, and it is the allowlisted one:
+
+```
+$ grep -rnE "runner[[:space:]-]+(service|scans?|log|container|image|process|daemon|socket)|restart the runner|the runner (scans|holds|refuses|loads)" \
+    app/cli/skwctl.ts app/plugins/install.ts app/plugins/trust.ts
+app/plugins/install.ts:60:   * change, not a UI fix. What it does **not** name is a service — the runner service is gone
+```
+
+Everything else in those three files is either a `runner_image_digest` identifier or a comment explaining why
+the field keeps its name. The allowlist entry is
+`{file: app/plugins/install.ts, contains: 'the runner service is gone', why: 'names the deleted service only to explain why runner_image_digest keeps its name…'}`,
+and P4's self-check pushes a synthetic entry to prove the mechanism admits and refuses for the right reason.
+
+### 12.3 D3 — the uninstall drain now has a caller, on the surface that can see in-flight requests
+
+`runtime.uninstallBegin()` had no caller anywhere in `app/`, `test/` or `scripts/`, and `SKW_E_PL_BUSY` could
+not be raised from any operator path: §13.3.8's uninstall row was a sentence about behaviour no code
+performed. `skwctl plugin uninstall` runs in **another process** and cannot see the app's in-flight count, so
+the drain was wired where the count lives:
+
+- **`PluginRuntime.uninstall(tenant, pluginId, {timeoutMs})`** — drain → `disable` (hooks leave the registry
+  before any table moves) → `discardSyncHandle` (our own open reader would make `wal_checkpoint(TRUNCATE)`
+  return `busy`) → `uninstallPlugin` (archive, then drop, in one transaction).
+- **`uninstallBegin` names the plugin.** `drain()` writes a tenant-shaped refusal because its other callers do
+  not know a plugin; the translation to
+  `gatehook was not uninstalled: tenant acme still has 1 request(s) in flight after 5000 ms, and nothing was removed`
+  happens in one place, with `{tenant, plugin, in_flight, waited_ms}` in the detail.
+- **`POST /admin/t/<key>/plugins/uninstall`** — the in-process operator surface (session CSRF + origin, like
+  `enable`), with a per-row **Uninstall** form on the plugins screen. `SKW_E_PL_BUSY` is re-thrown so it is a
+  **409** with the code; every other failure is a 303 flash carrying the code in the text.
+- **`skwctl plugin uninstall` says what it cannot do** rather than implying a drain it does not run.
+
+`test/plugin-lifecycle.test.ts` — U1–U3, and the numbers are from a real run (`scratch/fix/probe-drain.txt`,
+taken at load 11.02):
+
+```
+in_flight_before_uninstall: 1
+uninstall_during_request: status=409 code=SKW_E_PL_BUSY waited_ms=5016
+message: gatehook was not uninstalled: tenant acme still has 1 request(s) in flight after 5000 ms, and nothing was removed
+held_request_after_release: status=200 body={"held":true,"plugin":"gatehook"}
+uninstall_when_idle: status=303 waited_ms=5 flash=… gatehook uninstalled (tables: none; archive …json)
+package_on_disk_after: false
+archive: gatehook-1.0.0-2026-10-21T01-34-06-000Z.json 1600 bytes
+```
+
+The in-flight request is a **real one**: `GET /_plugin/gatehook/hold` on the tenant's own host, held inside the
+package's endpoint handler until the gate writes a release file, and counted by the app's own
+`plugins.enter()`. (A hook could not hold it: hooks are bounded by `SKW_PLUGIN_HOOK_TIMEOUT_MS`, 2 s by
+default, so the dispatch timeout would release the request before the 5 s drain budget could be reached — the
+fixture's header says so.) U1 therefore asserts: 409 with `SKW_E_PL_BUSY`, the plugin named, `waitedMs >= 4 500`,
+the row, the package tree **and** the registry entry all still present, the held request completes 200 against
+the live package, and the retry removes it. U2 is the idle uninstall (303, archive written, table dropped, row
+gone, tree gone, `elapsed < 2 000 ms`). U3 is the second uninstall: `SKW_E_PL_UNAVAILABLE` from the runtime and
+in the flash.
+
+### 12.4 Notices survive a restart — stored in `cms_audit`, and why that table
+
+The reason a plugin was disabled lived in `PluginRuntime.notices`, a plain array. An operator who restarted
+lost the explanation — on the screen they open *because* the site is up, the plugin is off and nothing says
+why.
+
+**Store: the tenant's existing `cms_audit`, `action='plugin.failed'`, `actor_label='plugin-runtime'`, with
+`{code, message, at}` in `after_json`.** Not a new `cms_plugin_notice` table, for three reasons, the third
+decisive:
+
+1. **No schema bump.** `cms_audit` exists in every `site.db` version; a new table would need v5, and
+   `user_version = 4` is asserted by `verify-dist` D4, `plugin-activation-seq` A1/A4 and others.
+2. **Append-only by trigger** (`trg_cms_audit_append_only`, `trg_cms_audit_no_delete`) — the code that writes a
+   notice cannot edit or back-date it, and there is already an index on `(action, ts)`.
+3. **One record, not two.** A notice *is* the audit event the chain records, seen by the person who has to act
+   on it. Two stores would be two things that can disagree.
+
+`noticesFor()` merges the process's own notices with the latest persisted notice per plugin, deduped on
+`(plugin, code, at)`, sorted by instant; a failed read returns the in-memory list (a database problem must not
+hide a failure this process witnessed). The previously unused `allNotices()` accessor was deleted rather than
+left as a second, in-memory-only answer to the same question. **Cost, stated:** an immutable log means a notice
+for a package that was later uninstalled stays readable; the screen shows notices and installed packages side
+by side, which is the honest presentation of "this failed, at this time".
+
+**Proof across two OS processes** (`scratch/fix/probe-notice.txt`; N5 in `test/admin-plugin-notices.test.ts`):
+
+```
+process A pid=27778 notices=1 code=SKW_E_PL_LOAD at=2026-10-21T01:34:09.558Z
+process A message: badshape does not export activate(ctx); the manifest's main is not a plugin
+process B pid=27780 status=200
+process B notices table:
+<tr data-notice="badshape"><td>badshape</td><td><code>SKW_E_PL_LOAD</code></td><td>badshape does not export activate(ctx); the manifest&#39;s main is not a plugin</td><td>2026-10-21T01:34:09.558Z</td></tr>
+process B shows A's instant: true
+```
+
+Process B builds the app fresh, seeds its own operator, signs in over HTTP and fetches
+`/admin/t/acme/plugins`. It never witnessed the failure; the code, the reason and the instant are all there.
+
+### 12.5 Red before green — five mutations, each restored byte-identical
+
+Driver `scratch/fix/mutate.py` (one edit, the gate file through the shipped runner, then the original bytes
+back and a SHA-256 comparison). Records: `scratch/fix/mutations.json`.
+
+| id | mutation | file | sha256 before = after | red |
+|---|---|---|---|---|
+| MD1a | the E-33 sentence's `lines.push` deleted | `app/cli/skwctl.ts` | `99b34cec5ede…` | **P1** only |
+| MD1b | the false claim put back on the zero-capability line | `app/cli/skwctl.ts` | `99b34cec5ede…` | **P2** only |
+| MD3a | `uninstall()` skips `uninstallBegin` (the pre-fix behaviour) | `app/plugins/runtime.ts` | `7edad9d32e95…` | **U1** only |
+| MD3b | the busy refusal rethrown as `drain()` writes it (tenant, not plugin) | `app/plugins/runtime.ts` | `7edad9d32e95…` | **U1** (`the refusal must name the plugin, not only the tenant`) and, as a cascade, U2/U3/U0 — the failed assertion leaves the held request unreleased, so the later cases run against a tenant that never drains. Recorded rather than tidied. |
+| MN5a | `persistNotice` call removed (the pre-fix state: memory only) | `app/plugins/runtime.ts` | `7edad9d32e95…` | **N5** only (`the restarted process must still show the notice`) |
+
+The first, pre-fix red of the D1 gate is in the record too: before any fix,
+`node scripts/run-node-tests.mjs --timeout=126000 test/plugin-install.test.ts` was **1 pass / 4 fail** (P0 green,
+P1–P4 red), with P4 naming the two live `restart the runner service` lines, the two `runner image` refusals and
+`'log.write': 'write a line to the runner log'`.
+
+### 12.6 The gate, three times, with the load
+
+```
+$ bash scratch/fix/run3.sh
+=== RUN 1 exit=0 seconds=158 load_before={ 8.06 8.52 8.78 } load_after={ 6.17 7.50 8.32 }
+# tests 597 # pass 597 # fail 0 # cancelled 0 # skipped 0 # todo 0
+=== RUN 2 exit=0 seconds=160 load_before={ 6.17 7.50 8.32 } load_after={ 7.05 7.22 8.05 }
+# tests 597 # pass 597 # fail 0 # cancelled 0 # skipped 0 # todo 0
+=== RUN 3 exit=0 seconds=153 load_before={ 7.05 7.22 8.05 } load_after={ 6.98 7.06 7.84 }
+# tests 597 # pass 597 # fail 0 # cancelled 0 # skipped 0 # todo 0
+```
+
+| run | tests | pass | fail | skipped | exit | wall | load (1 min, start → end) |
+|---|---|---|---|---|---|---|---|
+| 1 | 597 | 597 | 0 | 0 | **0** | 158 s | 8.06 → 6.17 |
+| 2 | 597 | 597 | 0 | 0 | **0** | 160 s | 6.17 → 7.05 |
+| 3 | 597 | 597 | 0 | 0 | **0** | 153 s | 7.05 → 6.98 |
+
+This sequence is the one that matters: the last **code** edit before it was a comment in `runtime.ts`. The only
+change afterwards is markdown in this section, and `make verify` on the resulting tree is green —
+`27/27` claims, `pointers: 33/33`, `PASS the SDS quotes the register`, `verify-dist: 6/6` (D1 boot 415 ms,
+D2 render 1 154 ms, D3 download 1 144 ms, D4 `user_version 4`, D5 `skwctl` 76 ms, D6 228 lines byte-identical),
+`verify-no-leak: clean` with its negative control, and the S1 node phase at `0 skipped / 0 cancelled`
+(155.4 s, load 6.12 → 6.86). An earlier three-run sequence in the pass — 164 s / 157 s / 180 s at
+6.60 → 7.92, 7.92 → 7.94, 7.94 → 14.02 — is superseded by the numbers above and is not what the claim rests
+on. `SKW_ALLOW_SKIP` was never set in any run (`grep -rn SKW_ALLOW_SKIP scratch/fix/*.log` matches only the
+gate-runner's own test case, which asserts that the escape exists).
+
+`hermes verify --json` on the same tree is **`ok: true`**, every phase exit 0: bootstrap (`npm install`, 0
+vulnerabilities), `npm run build`, `npm run typecheck`, `npm run test` **597/597 in 137.0 s**, `make test`
+**597/597 in 150.4 s** (dist 6/6, no-leak clean), `make typecheck`, `make build`, and readiness **200** on
+`http://127.0.0.1:4321/` in 56 ms (`scratch/fix/hermes-verify-2.json`). Its first attempt came back 596/597 on
+**T5** with the same Pebble message (`400 JWS has an invalid anti-replay nonce`) — the flake named in §11.5,
+now seen twice in this pass, both times in that test and never in a plugin gate. That is the whole of the
+flake's history here: four `make test` runs and one `hermes verify` green on T5, one `hermes verify` red on it.
+
+597 is 587 + 10: P0–P4 (5), U0–U3 (4), N5 (1). Every non-node phase of every run is green as well —
+`verify-toolchain` (python 3.9.6, sqlite 3.43.2, argon2 ok), `27/27 passed, 0 skipped, 0 failed`,
+`pointers: 33/33`, `PASS the SDS quotes the register`, `verify-dist: 6/6`, `verify-no-leak: clean` with its
+negative control (`created skw-leak-probe-… and skipped its teardown — the audit names it (red, as required)`).
+
+Two things the earlier attempts in this pass found, recorded because they are not the budget:
+
+- **Two gates had pinned D1's lie** (O1/O4 in `test/cli-plugin.test.ts`); the first attempt in this pass came
+  back **594 pass / 3 fail** on exactly those two plus one `first-boot-tls` T5
+  (`400 JWS has an invalid anti-replay nonce`, the pre-existing Pebble flake §11.5 documents at 1-in-8). The
+  assertions were corrected to the true sentence plus a negative; T5 has been green in every run since.
+- **`test/perf-budgets.json` gained two rows** because the table is complete by construction:
+  `test/plugin-install.test.ts` 474 ms (load 5.66) and `test/plugin-lifecycle.test.ts` 5 758 ms (load 5.66),
+  both idle runs, written by `node scripts/measure/test-file-budgets.mjs --files …`. `test/timeout-budget.test.ts`
+  is 4/4 green and the constant did not move (the heaviest row is still 31 273 ms).
+
+### 12.7 What this section does **not** claim
+
+- §16 S4 row 12 (`install on a clean host ≤ 5 min with images present`), the synchronous-hang claim and
+  per-(tenant, plugin) module memory remain **NOT COVERED**, exactly as `S4-qa3.md` §8 says. Nothing here
+  fakes coverage for them.
+- D2 (the two retired SDS sentences), D4 (`status='failed'` is not a column), D5 (the capability refusal does
+  not name the table), D6 (auto-disable codes outside the taxonomy), D7 (`STATUS.md`'s stale open list),
+  D8 (`SKW_E_PL_CONTEXT_ENDED` as a plain `Error`) and D9 (79 % of the budget rows unhash-checked) are
+  **untouched**. D1, D3 and the in-memory notices were this pass' scope.
+- The CLI uninstall still archives and drops **without** a drain. That is now said on the screen and in the
+  command's own output, and the drain lives on the admin surface, which is the only surface in the process
+  that can see the count. A future `skwctl` that talks to the app over a socket would move it; nothing here
+  pretends it already does.
+
+### 12.8 Commands this section rests on
+
+| What | Command | Result |
+|---|---|---|
+| the operator text | `node scratch/fix/capture-screen.ts` | `scratch/fix/install-screen-after.txt` |
+| the D1 gate | `node scripts/run-node-tests.mjs --timeout=126000 test/plugin-install.test.ts` | 5/5 (1/4 red before the fix) |
+| the drain, as numbers | `node scratch/fix/probe-drain.ts` | 409 `SKW_E_PL_BUSY` after 5 016 ms; 303 in 5 ms when idle |
+| the drain gate | `… test/plugin-lifecycle.test.ts` | 4/4 (U1 5 134 ms) |
+| the restart | `node scratch/fix/probe-notice.ts` | pids 27778 → 27780; same instant on the screen |
+| the restart gate | `… test/admin-plugin-notices.test.ts` | 6/6 |
+| red before green | `python3 scratch/fix/mutate.py` | 5 mutations, 5 red for their own reason, 5 restored identical |
+| the budget rows | `node scripts/measure/test-file-budgets.mjs --files test/plugin-install.test.ts,test/plugin-lifecycle.test.ts` | two rows, loads 5.66 |
+| the whole gate | `bash scratch/fix/run3.sh` | three consecutive exit 0, 597/597: §12.6 |
+

@@ -1,0 +1,86 @@
+[
+  {
+    "id": "M4-failure-threshold",
+    "file": "app/plugins/runtime.ts",
+    "claim": "three failures in 60 s disable the plugin and prune its hooks",
+    "test": [
+      "test/plugin-load.test.ts"
+    ],
+    "before": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "after": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.4,
+    "red": [
+      "L7 \u2014 the third failure in 60 s disables the plugin and prunes its hooks"
+    ],
+    "counts": {
+      "tests": 10,
+      "pass": 9,
+      "fail": 1
+    },
+    "expected_red": "^L7 ",
+    "expected_red_matched": [
+      "L7 \u2014 the third failure in 60 s disables the plugin and prunes its hooks"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M4-failure-threshold.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M17-hook-plugin-enabled",
+    "file": "app/plugins/runtime.ts",
+    "claim": "plugin.enabled fires after the commit",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "after": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.9,
+    "red": [
+      "H11. plugin.enabled and plugin.disabled \u2014 both lifecycle actions fire at their call sites"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 11,
+      "fail": 1
+    },
+    "expected_red": "^H11\\.",
+    "expected_red_matched": [
+      "H11. plugin.enabled and plugin.disabled \u2014 both lifecycle actions fire at their call sites"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M17-hook-plugin-enabled.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "M18-hook-plugin-disabled",
+    "file": "app/plugins/runtime.ts",
+    "claim": "plugin.disabled fires on disable, before the prune",
+    "test": [
+      "test/plugin-hooks-wired.test.ts"
+    ],
+    "before": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "after": "419a4c8e4a63d5036ea1b077d2be494e25b5ab7bf93a8deff4c7bf953001bd95",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.6,
+    "red": [
+      "H11. plugin.enabled and plugin.disabled \u2014 both lifecycle actions fire at their call sites"
+    ],
+    "counts": {
+      "tests": 12,
+      "pass": 11,
+      "fail": 1
+    },
+    "expected_red": "^H11\\.",
+    "expected_red_matched": [
+      "H11. plugin.enabled and plugin.disabled \u2014 both lifecycle actions fire at their call sites"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-M18-hook-plugin-disabled.log",
+    "status": "RED-AS-EXPECTED"
+  }
+]

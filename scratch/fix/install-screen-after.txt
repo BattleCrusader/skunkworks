@@ -1,0 +1,28 @@
+$ skwctl plugin install /Volumes/Backup/Development/skunkworks/test/fixtures/plugins/nothing --tenant acme --allow-unsigned --test-report /var/folders/sc/90s9zqm54p5f2mj8tx1bzlx40000gn/T/skw-s1-NDUqe2/nothing-report.json --runner-digest sha256:report
+
+install screen — nothing@1.0.0
+  what it is       A package that asks this CMS for nothing: no capabilities, no tables, no settings, no hooks. It exists so the install screen's zero-capability line is asserted against a real install — and so the sentence E-33 item 6 requires is proved to be printed by the product, not by a comment.
+  publisher        unsigned
+  key fingerprint  (none — unsigned)
+  first-party      no — and unsigned
+  signature        none — no key vouches for these bytes
+  test report      2026-10-21T00:00:00.000Z  sha256:ed082f88384c08f4…  image sha256:report
+  capabilities     none declared — the package asks this CMS for no operations
+  what this means  Capabilities describe what this plugin asks the CMS for. They do not limit what its code can do: a plugin runs inside the site's process, with the site's own access to its files and databases.
+  tables           none
+
+  *** UNSIGNED — no key this install trusts vouches for this package.            ***
+  *** You passed --allow-unsigned. The install row is signature_state=unsigned    ***
+  *** and the audit chain records allow_unsigned=true.                           ***
+
+plugin: installed id=nothing version=1.0.0 root=de926cc0f1b467117af4659267955ed43ceb7a2ffef174147a44d404c8bcf7b8 enabled=no package=/var/folders/sc/90s9zqm54p5f2mj8tx1bzlx40000gn/T/skw-s1-NDUqe2/plugins/nothing
+plugin: *** UNSIGNED *** this package is not vouched for by any key; the audit row records allow_unsigned=true
+plugin: in-process; the site loads nothing on the first request after `skwctl plugin enable` — no restart, no service
+$ skwctl plugin enable nothing --tenant acme
+plugin: enabled id=nothing version=1.0.0 root=de926cc0f1b467117af4659267955ed43ceb7a2ffef174147a44d404c8bcf7b8
+$ skwctl plugin uninstall nothing --tenant acme
+plugin: uninstalled id=nothing version=1.0.0 root=de926cc0f1b467117af4659267955ed43ceb7a2ffef174147a44d404c8bcf7b8 tables=none settings=0
+plugin: archive /var/folders/sc/90s9zqm54p5f2mj8tx1bzlx40000gn/T/skw-s1-NDUqe2/plugin-archive/nothing-1.0.0-2026-10-21T01-24-41-062Z.json (0600; table-scoped, restore by hand)
+plugin: package removed; its endpoint is 404 from the next request
+plugin: in-process; the running site drops the hooks on its next request — no restart, no service
+plugin: this command runs in its own process and cannot see the site's in-flight requests; on a live site uninstall from /admin/t/acme/plugins so the drain runs first and refuses SKW_E_PL_BUSY rather than dropping a table under a request

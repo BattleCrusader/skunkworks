@@ -606,6 +606,12 @@ ${items}
       await this.#pluginEnable(req, reply, tenant);
       return;
     }
+    if (action === 'plugins/uninstall' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      await this.#pluginUninstall(req, reply, tenant, session);
+      return;
+    }
     if (action === 'session' && req.method === 'GET') {
       this.#sessionInfo(reply, session, tenant);
       return;
@@ -862,7 +868,15 @@ ${nav}
   <input type="hidden" name="csrf" value="${esc(csrf)}">
   <button type="submit">Retry and enable</button>
 </form>`;
-              return `<tr data-plugin="${esc(row.plugin_id)}"><td>${esc(row.plugin_id)}</td><td>${esc(row.version)}</td><td>${esc(state)}</td><td>${row.activation_seq}</td><td>${action}</td></tr>`;
+              // §13.3.8's uninstall, on the surface that can see this process's in-flight
+              // requests. The archive is written before anything is dropped
+              // (`uninstallPlugin`), so a mis-click is recoverable by hand.
+              const uninstall = `<form method="post" action="/admin/t/${esc(tenant.key)}/plugins/uninstall">
+  <input type="hidden" name="plugin" value="${esc(row.plugin_id)}">
+  <input type="hidden" name="csrf" value="${esc(csrf)}">
+  <button type="submit" title="archive this package's rows first, then drop its tables">Uninstall</button>
+</form>`;
+              return `<tr data-plugin="${esc(row.plugin_id)}"><td>${esc(row.plugin_id)}</td><td>${esc(row.version)}</td><td>${esc(state)}</td><td>${row.activation_seq}</td><td>${action}${uninstall}</td></tr>`;
             })
             .join('\n');
 
@@ -925,6 +939,53 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
       flash = `${id} enabled (activation ${result.activationSeq}, hooks: ${result.hooks.join(', ') || 'none'}).`;
     } catch (err) {
       flash = `${id} was not enabled: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    reply.code(303).header('location', `/admin/t/${encodeURIComponent(tenant.key)}/plugins?result=${encodeURIComponent(flash)}`);
+    reply.send();
+  }
+
+  /**
+   * `POST /admin/t/<key>/plugins/uninstall` — §13.3.8's uninstall, on the one surface that can
+   * see the site's in-flight requests.
+   *
+   * `skwctl plugin uninstall` runs in a **different process** and cannot: it archives and drops
+   * without a drain, and says so. This route calls `runtime.uninstall()`, which drains first
+   * (bounded at 5 s), disables, then archives and drops — the order §13.3.8 states — so a table
+   * is never dropped under a request that is mid-dispatch.
+   *
+   * The busy refusal is re-thrown, not flashed: it is `SKW_E_PL_BUSY` with the plugin's name,
+   * `sendError` maps it to 409, and a 303 with a sentence would let a scripted caller read
+   * "uninstalled" out of a status code. Every other failure is a flash, because the screen is
+   * where the operator is standing.
+   */
+  async #pluginUninstall(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
+    const runtime = this.#plugins;
+    if (runtime === null) throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'the plugin runtime is not attached to this process');
+    const id = fieldsOf(req.body).plugin;
+    if (id === undefined || !/^[a-z][a-z0-9]{1,19}$/.test(id)) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'name a plugin id');
+    }
+    let flash: string;
+    try {
+      const result = await runtime.uninstall(tenant.key, id);
+      const user = this.auth.userById(session.userId);
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: user?.email ?? `user:${String(session.userId)}`,
+        action: 'plugin.uninstall',
+        targetKind: 'cms_plugin_installed',
+        targetId: id,
+        after: { tables: result.tables.map((t) => t.name), archive: result.archive_path, settings: result.settings },
+        ip: req.socket.remoteAddress ?? '',
+      });
+      flash = `${id} uninstalled (tables: ${result.tables.map((t) => `${t.name}(${t.rows})`).join(',') || 'none'}; archive ${result.archive_path}).`;
+    } catch (err) {
+      if (err instanceof AppError && err.code === 'SKW_E_PL_BUSY') throw err;
+      // The code is part of the message: an operator who mistypes an id must read
+      // `SKW_E_PL_UNAVAILABLE`, not a sentence whose classification they have to guess.
+      const detail = err instanceof AppError ? `${err.code}: ${err.message}` : String(err);
+      flash = `${id} was not uninstalled: ${detail}`;
     }
     reply.code(303).header('location', `/admin/t/${encodeURIComponent(tenant.key)}/plugins?result=${encodeURIComponent(flash)}`);
     reply.send();

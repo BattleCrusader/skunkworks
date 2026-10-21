@@ -1,0 +1,84 @@
+[
+  {
+    "id": "MB1-makefile-below-floor",
+    "file": "Makefile",
+    "claim": "TEST_TIMEOUT_MS is exactly the derivation, not a knob",
+    "test": [
+      "test/timeout-budget.test.ts"
+    ],
+    "before": "0962c03322023129db17ac4eb917c8647e579be293ae55e1b6637cd2a00e6011",
+    "after": "0962c03322023129db17ac4eb917c8647e579be293ae55e1b6637cd2a00e6011",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.1,
+    "red": [
+      "B2 \u2014 the rows that can set a budget were measured on the bytes in the tree now",
+      "B3 \u2014 TEST_TIMEOUT_MS is exactly 4 \u00d7 the heaviest idle file, and the failure names it"
+    ],
+    "counts": {
+      "tests": 4,
+      "pass": 2,
+      "fail": 2
+    },
+    "expected_red": "^B[23] ",
+    "expected_red_matched": [
+      "B2 \u2014 the rows that can set a budget were measured on the bytes in the tree now",
+      "B3 \u2014 TEST_TIMEOUT_MS is exactly 4 \u00d7 the heaviest idle file, and the failure names it"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-MB1-makefile-below-floor.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "MB2-heavy-file-edited",
+    "file": "test/first-boot-tls.test.ts",
+    "claim": "a heavy file whose bytes changed is named as stale",
+    "test": [
+      "test/timeout-budget.test.ts"
+    ],
+    "before": "411cd0ca42d409da7b0a0518c4fa063f7d629ecf2fade4f4b5c9259519010988",
+    "after": "411cd0ca42d409da7b0a0518c4fa063f7d629ecf2fade4f4b5c9259519010988",
+    "restored_identical": true,
+    "exit": 1,
+    "elapsed_s": 0.1,
+    "red": [
+      "B2 \u2014 the rows that can set a budget were measured on the bytes in the tree now"
+    ],
+    "counts": {
+      "tests": 4,
+      "pass": 3,
+      "fail": 1
+    },
+    "expected_red": "^B2 ",
+    "expected_red_matched": [
+      "B2 \u2014 the rows that can set a budget were measured on the bytes in the tree now"
+    ],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-MB2-heavy-file-edited.log",
+    "status": "RED-AS-EXPECTED"
+  },
+  {
+    "id": "MB3-light-file-edited",
+    "file": "test/cli-bootstrap.test.ts",
+    "claim": "a row below staleCheckFloorMs is NOT hash-checked (the documented hole)",
+    "test": [
+      "test/timeout-budget.test.ts"
+    ],
+    "before": "c2bf2234bfc5ba2b33c5e4c9e3d5020f73b0f3a132d7fd3b57aed64e14f1d7b7",
+    "after": "c2bf2234bfc5ba2b33c5e4c9e3d5020f73b0f3a132d7fd3b57aed64e14f1d7b7",
+    "restored_identical": true,
+    "exit": 0,
+    "elapsed_s": 0.2,
+    "red": [],
+    "counts": {
+      "tests": 4,
+      "pass": 4,
+      "fail": 0
+    },
+    "expected_red": "$^",
+    "expected_red_matched": [],
+    "unexpectedly_red": [],
+    "log": "scratch/qa3/mut-MB3-light-file-edited.log",
+    "status": "GREEN-AS-EXPECTED"
+  }
+]

@@ -12,9 +12,9 @@ Multi-tenant Astro CMS. Spec-first: `IDEA.md` (30+ decisions) → `docs/sds/SDS.
 | **S1** hosting core | ✅ QA GO | tenancy sweep, real-nginx e2e, admin 404-on-tenant-host (110 combos, 0 oracle) |
 | **S2** admin + data plane | ✅ QA GO | CSRF 12/12, DDL rollback by schema digest (53 objects), plan-based publish refusal, segment audit seal |
 | **S3** assets + downloads | ✅ QA GO (2 rounds) | one use per token under 8 parallel ranges (3 ways), fail-closed watermarking under real faults, gated 404 byte-identical to missing |
-| **S4** editor + exporters + install | ⏳ **feature-complete, QA pending** | 534 tests, 10/10 components survive a real browser, 3 exporters byte-identical, install 21.2 s |
+| **S4** editor + exporters + install + plugins | ⏳ **feature-complete, final QA running** | 587 tests, 10/10 components survive a real browser, 3 exporters byte-identical, install 21.2 s, 12/12 hooks live, 2,908 lines of plugin containment deleted |
 
-**534 tests · 0 skipped · `hermes verify` ok=true · zero leaked containers.**
+**587 tests · 0 skipped · `hermes verify` ok=true · zero leaked containers · three consecutive green runs.**
 
 ---
 
@@ -63,6 +63,10 @@ mtimes pinned; at +1 h only `EXPORT-NOTES.md` + declared `export_now` differ.
 Not one was a missing test. Each was aimed wrong. **Assert on the wire, not on the source.**
 
 ---
+
+## The plugin model (corrected 2026-10-21)
+
+Plugins run **in-process inside the website container, WordPress-style** (D36) — the user overruled the contained sidecar. Deliberately accepted: a synchronous hang cannot be timed out; a signature buys author identity and tamper detection, **not containment**. Scoping is the per-request facade plus a prunable registry, not a sandbox.
 
 ## Open before S4 GO
 

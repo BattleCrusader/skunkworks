@@ -1,0 +1,10 @@
+{
+  "id": "nothing",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "hooks": [],
+  "description": "A package that asks this CMS for nothing: no capabilities, no tables, no settings, no hooks. It exists so the install screen's zero-capability line is asserted against a real install — and so the sentence E-33 item 6 requires is proved to be printed by the product, not by a comment.",
+  "capabilities": [],
+  "tables": [],
+  "settings": []
+}

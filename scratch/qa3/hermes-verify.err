@@ -1,0 +1,3 @@
+  Bitwarden Secrets Manager: secrets.bitwarden.project_id is empty.  Run `hermes secrets bitwarden setup`.
+  Bitwarden Secrets Manager: → Run `hermes secrets bitwarden setup` to finish configuration.
+exit=0 at 12:04:54
