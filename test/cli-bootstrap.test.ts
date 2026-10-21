@@ -157,6 +157,12 @@ test('1. a fresh seeded control.db and nothing else yields one operator, and a c
   first = enrolmentOf(firstFile);
   assert.match(first.uri, /^otpauth:\/\/totp\//);
 
+  // D37: the URL printed in the enrolment file is the host that actually serves
+  // /admin — the tenant's primary domain. It used to be SKW_ADMIN_ORIGIN, which the
+  // fixture sets to admin.skw.test, a host that no longer serves /admin at all. So
+  // this line fails against the old code, which is exactly the point of asserting it.
+  assert.equal(first.adminUrl, 'https://acme.test/admin/login');
+
   // Exactly one operator, and it is the seeded owner.
   const db = new Database(fixture.controlDb, { readonly: true });
   const users = db.prepare('SELECT email, role, must_change, totp_secret FROM user_account').all() as {

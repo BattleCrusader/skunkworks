@@ -81,6 +81,7 @@ type Reason =
   | 'SECRET_NOT_PRINTABLE'
   | 'PASSWORD_TOO_SHORT'
   | 'ADMIN_ORIGIN_UNSET'
+  | 'NO_TENANT_HOST'
   | 'ENROLMENT_EXISTS'
   | 'PLUGIN_REFUSED'
   | 'PLUGIN_UNKNOWN'
@@ -324,6 +325,30 @@ function adminUrl(ctx: CliContext): string {
   return `${ctx.env.adminOrigin.replace(/\/$/, '')}/admin/login`;
 }
 
+/**
+ * D37: the admin is a PATH on the tenant's own host, so the URL an enrolment file
+ * prints is derived from that tenant's primary domain. It is deliberately not
+ * `adminUrl()` — since D37 SKW_ADMIN_ORIGIN only derives the demos vhost, and
+ * printing it would send a new operator to a host that no longer serves /admin.
+ * A tenant with no domain yet has no /admin URL at all, and says so.
+ */
+function loginUrlFor(db: Database.Database, ctx: CliContext, tenantId: number | null): string {
+  if (tenantId === null) {
+    // A fleet operator has no tenant host; its console is /fleet.
+    return `${adminUrl(ctx).replace(/\/admin\/login$/, '')}/fleet`;
+  }
+  const row = db
+    .prepare('SELECT host FROM domain WHERE tenant_id = ? ORDER BY is_primary DESC, id LIMIT 1')
+    .get(tenantId) as { host: string } | undefined;
+  if (row === undefined) {
+    throw new Refusal(
+      'NO_TENANT_HOST',
+      `tenant ${tenantId} has no domain yet, so there is no /admin URL to print; add a domain, then re-run`,
+    );
+  }
+  return `https://${row.host}/admin/login`;
+}
+
 /** `skwctl admin bootstrap`. */
 export async function bootstrap(ctx: CliContext, flags: Args['flags']): Promise<number> {
   if (ctx.env.renderMode === 'snapshot') {
@@ -345,7 +370,6 @@ export async function bootstrap(ctx: CliContext, flags: Args['flags']): Promise<
     throw new Refusal('SECRET_NOT_PRINTABLE', 'pass --enrolment-out <path>; this command does not print secrets');
   }
 
-  const url = adminUrl(ctx);
   const { password, generated } = await readPassword(ctx, flags, 'bootstrap');
   const secret = newSecret();
   const passwordHash = await ctx.semaphore.run(() => hash(password, ARGON2_OPTIONS));
@@ -353,9 +377,11 @@ export async function bootstrap(ctx: CliContext, flags: Args['flags']): Promise<
   const db = openAdminWrite(ctx.controlPath, ctx.env.dbBusyTimeoutMs);
   let email = '';
   let userId = 0;
+  let url = '';
   try {
     requireSchemaVersion(db, ctx);
     const target = selectTarget(db, ctx, flags);
+    url = loginUrlFor(db, ctx, target.tenant_id);
     const now = new Date().toISOString();
     // The seed usually names the operator already. When it does not, the created
     // row needs an address that passes `user_account.email`'s CHECK and that an
@@ -428,11 +454,11 @@ export async function resetTotp(ctx: CliContext, flags: Args['flags']): Promise<
   const out = typeof flags.get('enrolment-out') === 'string' ? (flags.get('enrolment-out') as string) : undefined;
   if (email === undefined) throw new Refusal('USAGE', 'reset-totp requires --email <email>');
   if (out === undefined) throw new Refusal('SECRET_NOT_PRINTABLE', 'reset-totp requires --enrolment-out <path>');
-  const url = adminUrl(ctx);
 
   const secret = newSecret();
   const db = openAdminWrite(ctx.controlPath, ctx.env.dbBusyTimeoutMs);
   let userId: number;
+  let url = '';
   try {
     requireSchemaVersion(db, ctx);
     const row = db
@@ -443,6 +469,7 @@ export async function resetTotp(ctx: CliContext, flags: Args['flags']): Promise<
       throw new Refusal('FLEET_ADMIN_DISABLED', 'SKW_FLEET_MODE=0: this build has no fleet operators');
     }
     userId = row.id;
+    url = loginUrlFor(db, ctx, row.tenant_id);
     const now = new Date().toISOString();
     const tx = db.transaction(() => {
       db.prepare('UPDATE user_account SET totp_secret = ?, failed_logins = 0, locked_until = NULL WHERE id = ?').run(
@@ -484,6 +511,7 @@ export async function resetPassword(ctx: CliContext, flags: Args['flags']): Prom
   const passwordHash = await ctx.semaphore.run(() => hash(password, ARGON2_OPTIONS));
 
   const db = openAdminWrite(ctx.controlPath, ctx.env.dbBusyTimeoutMs);
+  let url = '';
   try {
     requireSchemaVersion(db, ctx);
     const row = db
@@ -493,6 +521,7 @@ export async function resetPassword(ctx: CliContext, flags: Args['flags']): Prom
     if (row.role === 'fleet_admin' && !ctx.env.fleetMode) {
       throw new Refusal('FLEET_ADMIN_DISABLED', 'SKW_FLEET_MODE=0: this build has no fleet operators');
     }
+    url = loginUrlFor(db, ctx, row.tenant_id);
     const now = new Date().toISOString();
     const tx = db.transaction(() => {
       db.prepare(
@@ -516,7 +545,7 @@ export async function resetPassword(ctx: CliContext, flags: Args['flags']): Prom
     writeEnrolmentFile(
       out,
       enrolmentLines({
-        adminUrl: adminUrl(ctx),
+        adminUrl: url,
         email,
         password,
         secret: '(unchanged — this command does not rotate the second factor)',
@@ -525,7 +554,7 @@ export async function resetPassword(ctx: CliContext, flags: Args['flags']): Prom
     );
     ctx.stdout(`enrolment written: ${out} (0600, mode O_EXCL)`);
   }
-  ctx.stdout(`login: ${adminUrl(ctx)}`);
+  ctx.stdout(`login: ${url}`);
   ctx.stdout(`email: ${email}`);
   ctx.stdout(`sessions revoked: yes (absolute cap ${SESSION_ABSOLUTE_MS / 3_600_000} h, E-18)`);
   return EXIT_OK;
