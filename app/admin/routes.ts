@@ -97,7 +97,9 @@ import {
 import { openAdminWrite, openRenderRead } from '../db/classes.ts';
 import { actionSite, filterSite, screenHref } from '../plugins/site.ts';
 import type { PluginRuntime } from '../plugins/runtime.ts';
-import { DEFAULT_CONTENT_ROOT } from '../assets/store.ts';
+import { ensureVariants } from '../assets/renditions.ts';
+import { storageQuotaFor, uploadAsset } from '../assets/library.ts';
+import { DEFAULT_CONTENT_ROOT, UPLOAD_MAX_BYTES } from '../assets/store.ts';
 import { handleCodes } from '../download/adminCodes.ts';
 import type { Env } from '../env.ts';
 import { AppError } from '../errors.ts';
@@ -263,6 +265,27 @@ function page(title: string, body: string, chrome?: PageChrome): string {
     active: chrome === undefined ? 'none' : chrome.active,
     ...(chrome === undefined || chrome.notices === undefined ? {} : { notices: chrome.notices }),
   });
+}
+
+/**
+ * A breadcrumb trail: `Pages / Tables / cms_page / 12`. The last crumb is the page you are on
+ * and is marked `aria-current="page"` — colour alone is not a position (S7's rule).
+ *
+ * Added in S8d because the table screens were the only admin pages with no chrome and no way
+ * back: the row form, the deepest screen in the admin, linked to nothing at all.
+ */
+function crumbs(items: readonly { label: string; href?: string }[]): string {
+  const parts = items.map((item, at) => {
+    const last = at === items.length - 1;
+    const body = last
+      ? `<span aria-current="page">${esc(item.label)}</span>`
+      : `<a href="${esc(item.href ?? '#')}">${esc(item.label)}</a>`;
+    return `<li>${body}</li>`;
+  });
+  return `    <nav class="crumbs" aria-label="Breadcrumb">
+      <ol>${parts.join('<li class="sep" aria-hidden="true">/</li>')}</ol>
+    </nav>
+`;
 }
 
 /** A query value, decoded; `undefined` when absent or empty. */
@@ -794,6 +817,14 @@ ${items}
       await this.#pluginEnable(req, reply, tenant);
       return;
     }
+    // S8e: the other half of the plugin switch. `enable` existed; `disable` did not, so a
+    // package could be switched on from the screen and only off from a shell.
+    if (action === 'plugins/disable' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      await this.#pluginDisable(req, reply, tenant, session);
+      return;
+    }
     if (action === 'plugins/uninstall' && req.method === 'POST') {
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
@@ -908,6 +939,14 @@ ${items}
       this.#mediaJson(req, reply, tenant);
       return;
     }
+    // S8c: the upload door. Origin first (a cross-site form post is the attack), then the
+    // multipart body — which is also where the CSRF field lives, so the token is checked after
+    // the parts are read and before a single byte reaches the disk.
+    if (action === 'media/upload' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      await this.#mediaUpload(req, reply, tenant, session);
+      return;
+    }
     // §7.6 (S3c): the access-code screen. A POST is origin- and CSRF-checked here, before
     // the module that mints a code sees a field.
     if (action === 'codes' || action.startsWith('codes/')) {
@@ -968,11 +1007,22 @@ ${items}
 
     // §9.3 — the CRUD write path, on `admin-write`.
     if (action === 'tables' && req.method === 'GET') {
-      this.#tablesIndex(reply, tenant);
+      this.#tablesIndex(reply, tenant, session);
       return;
     }
     if (action.startsWith('tables/')) {
       await this.#tableRoute(req, reply, session, tenant, action.slice('tables/'.length));
+      return;
+    }
+    // S8e: a screen a loaded plugin declared. Until this existed the registry held the screen,
+    // the menu listed it, and the URL answered "no such admin action" — a dead link the admin
+    // generated itself. The screen is DECLARATIVE over one owned table, so the host draws it
+    // with the same generated list/form the core tables use; the package supplies no markup
+    // and therefore cannot put a second SQL surface or its own HTML on the admin origin.
+    const screen = this.#pluginScreen(tenant, action);
+    if (screen !== undefined) {
+      const rest = action.slice(screen.path.replace(/^\/+/, '').length).replace(/^\/+/, '');
+      await this.#pluginScreenRoute(req, reply, session, tenant, screen, rest);
       return;
     }
     throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
@@ -1241,6 +1291,34 @@ ${items}
    * The re-enable form is a POST with the session's CSRF token, never a link: an action that
    * starts code running is not something a prefetcher gets to do.
    */
+  /**
+   * S8e: `disable` is the hot-unload half of §13.3.8, driven from the screen. The runtime drains
+   * in-flight requests, drops the module and unregisters the package's hooks, endpoints and
+   * screens; the row keeps `enabled = 0` so a restart does not bring it back.
+   */
+  async #pluginDisable(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
+    const fields = fieldsOf(req.body);
+    const plugin = (fields.plugin ?? '').trim();
+    if (!/^[a-z][a-z0-9]{1,19}$/.test(plugin)) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'a plugin id is required');
+    }
+    const runtime = this.#plugins;
+    if (runtime === null) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'plugins are not available in this build');
+    const disabled = await runtime.disable(tenant.key, plugin);
+    const user = this.auth.userById(session.userId);
+    this.#audit({
+      tenantId: tenant.id,
+      userId: user?.id ?? null,
+      label: user?.email ?? 'operator',
+      action: 'plugin.disable',
+      targetKind: 'cms_plugin_installed',
+      targetId: plugin,
+      after: { disabled },
+      ip: req.socket.remoteAddress ?? '',
+    });
+    this.#seeOther(reply, `/admin/t/${tenant.key}/plugins?result=${encodeURIComponent(`disabled ${plugin}`)}`);
+  }
+
   #pluginsScreen(reply: FastifyReply, tenant: Tenant, session: SessionRecord, flash?: string): void {
     const runtime = this.#plugins;
     const db = this.#siteDb(tenant.key);
@@ -1280,6 +1358,16 @@ ${items}
             .map((row) => {
               const isLoaded = loadedIds.has(row.plugin_id);
               const state = row.enabled === 1 && isLoaded ? 'enabled, loaded' : row.enabled === 1 ? 'enabled, NOT loaded — failed since boot' : 'disabled';
+              // S8e: enable had a button; disable had only `skwctl plugin disable` and a shell.
+              // A screen that can start code but cannot stop it is half a switch.
+              const off =
+                row.enabled === 1
+                  ? `<form method="post" action="/admin/t/${esc(tenant.key)}/plugins/disable">
+  <input type="hidden" name="plugin" value="${esc(row.plugin_id)}">
+  <input type="hidden" name="csrf" value="${esc(csrf)}">
+  <button type="submit" title="stop running this package now; its data is kept">Disable</button>
+</form>`
+                  : '';
               const action =
                 row.enabled === 1 && isLoaded
                   ? ''
@@ -1296,7 +1384,7 @@ ${items}
   <input type="hidden" name="csrf" value="${esc(csrf)}">
   <button type="submit" title="archive this package's rows first, then drop its tables">Uninstall</button>
 </form>`;
-              return `<tr data-plugin="${esc(row.plugin_id)}"><td>${esc(row.plugin_id)}</td><td>${esc(row.version)}</td><td>${esc(state)}</td><td>${row.activation_seq}</td><td>${action}${uninstall}</td></tr>`;
+              return `<tr data-plugin="${esc(row.plugin_id)}"><td>${esc(row.plugin_id)}</td><td>${esc(row.version)}</td><td>${esc(state)}</td><td>${row.activation_seq}</td><td>${action}${off}${uninstall}</td></tr>`;
             })
             .join('\n');
 
@@ -1485,12 +1573,15 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
     }
   }
 
-  #assertCsrf(req: FastifyRequest, session: SessionRecord): void {
+  #assertCsrf(req: FastifyRequest, session: SessionRecord, fromBody?: string | undefined): void {
     // The header is the mechanism (§9.1 names no header; `session.ts` fixes `X-CSRF-Token`).
     // A plain HTML form cannot set one, and the admin surface is JS-free by design, so the
     // same session-bound token is also accepted from the `csrf` body field. The token is
     // still an HMAC of this session id and the request still has to pass `#assertOrigin`.
-    const token = header(req, CSRF_HEADER) ?? fieldsOf(req.body).csrf;
+    //
+    // `fromBody` exists for the one body that is not a field map: a multipart request has no
+    // `req.body` to read, and its `csrf` part is only available once the parts are consumed.
+    const token = header(req, CSRF_HEADER) ?? fieldsOf(req.body).csrf ?? fromBody;
     if (!this.sessions.verifyCsrf(session, token ?? null)) {
       throw new AppError('SKW_E_SEC_CSRF', 'missing or invalid CSRF token');
     }
@@ -1645,6 +1736,105 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
    * parameter (`LIKE ? ESCAPE '\'` with the wildcards in the query escaped), so a search box
    * is not a second SQL surface.
    */
+  /**
+   * Upload one file: the form on the media screen posts here.
+   *
+   * Everything that decides whether the bytes are acceptable already lives in
+   * `app/assets/library.ts` — sniffing, the sha256 address, the quota, the immutable key. This
+   * handler's job is the HTTP half: read the parts under the parser's limits, check the CSRF
+   * token the form carried, name a bad key as a bad key, and answer with a redirect so a
+   * refresh does not repost a 4 MB photo.
+   */
+  async #mediaUpload(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
+    const fields: Record<string, string> = {};
+    let file: { filename: string; mime: string; bytes: Buffer } | null = null;
+    try {
+      for await (const part of req.parts()) {
+        if (part.type === 'file') {
+          const filename = part.filename ?? '';
+          const mime = part.mimetype ?? '';
+          const bytes = await part.toBuffer();
+          // The parser allows one file; a second would be a client bug, and taking the first
+          // is the only choice that cannot surprise the operator.
+          if (file === null) file = { filename, mime, bytes };
+        } else {
+          fields[part.fieldname] = String(part.value ?? '');
+        }
+      }
+    } catch (err) {
+      // `toBuffer()` throws when `fileSize` is exceeded; the answer names the limit rather
+      // than surfacing a framework error as a 500.
+      if (err instanceof Error && /file too large|exceeds the limit/i.test(err.message)) {
+        throw new AppError('SKW_E_PLT_BODY_TOO_LARGE', `the upload is larger than ${UPLOAD_MAX_BYTES} bytes`, {
+          limit: UPLOAD_MAX_BYTES,
+        });
+      }
+      throw err;
+    }
+
+    // D28: the header, or the form field the no-JS form carries. Same token, same session.
+    this.#assertCsrf(req, session, fields.csrf);
+
+    if (file === null) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'choose a file to upload');
+    const key = (fields.key ?? '').trim();
+    // One rule, and the schema's CHECK is the same shape: lowercase, no leading separator, no
+    // `..`. A key becomes a path segment in the public farm, so this is a path question.
+    if (!/^[a-z0-9][a-z0-9._/-]{0,120}$/.test(key) || key.includes('..') || key.includes('//')) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'the key must be lowercase letters, digits, dot, dash or slash', { key });
+    }
+    // The three classes the schema has: public, linked-private (reachable only through a page
+    // that links it) and gated (needs a download code). Anything else is public.
+    const access = fields.access === 'gated' ? 'gated' : fields.access === 'linked-private' ? 'linked-private' : 'public';
+
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const control = openAdminWrite(this.#controlPath, this.#env.dbBusyTimeoutMs);
+      let quotaLimitBytes = 0;
+      try {
+        quotaLimitBytes = storageQuotaFor(control, tenant.key);
+      } finally {
+        control.close();
+      }
+      const result = await uploadAsset({
+        db,
+        contentRoot: this.#contentRoot,
+        tenantKey: tenant.key,
+        key,
+        filename: file.filename,
+        bytes: file.bytes,
+        declaredMime: file.mime,
+        accessClass: access,
+        ...(fields.alt === undefined || fields.alt === '' ? {} : { altText: fields.alt }),
+        ...(fields.caption === undefined || fields.caption === '' ? {} : { caption: fields.caption }),
+        quotaLimitBytes,
+        maxBytes: UPLOAD_MAX_BYTES,
+        createdBy: session.userId,
+      });
+      // The thumbnail the library's grid draws. Best-effort by design: a file that sniffs as
+      // something sharp cannot decode (an odd PDF, an SVG) is still a valid asset.
+      try {
+        await ensureVariants({ db, contentRoot: this.#contentRoot, assetId: result.asset.id });
+      } catch {
+        /* no thumbnail; the tile falls back to its kind icon */
+      }
+      const user = this.auth.userById(session.userId);
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: user?.email ?? `user ${session.userId}`,
+        action: 'asset.upload',
+        targetKind: 'cms_asset',
+        targetId: String(result.asset.id),
+        after: { key, bytes: result.asset.bytes, mime: result.asset.mime, reused: result.reused },
+        ip: req.socket.remoteAddress ?? '',
+      });
+      reply.header('cache-control', 'no-store');
+      this.#seeOther(reply, `/admin/t/${tenant.key}/media?uploaded=${encodeURIComponent(key)}`);
+    } finally {
+      db.close();
+    }
+  }
+
   #mediaRows(db: Database.Database, q: string): MediaRow[] {
     const like = `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
     return db
@@ -1670,6 +1860,10 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
     const params = new URL(req.url, 'http://admin.invalid').searchParams;
     const q = (params.get('q') ?? '').slice(0, 100);
     const pick = params.get('pick') ?? '';
+    // S8c: the key the upload route just accepted, echoed once. It is a query parameter rather
+    // than a flash cookie because the answer to "did that upload work?" must survive a refresh.
+    const uploadedKey = params.get('uploaded');
+    const uploaded = uploadedKey === null ? undefined : uploadedKey.slice(0, 121);
     const picked = params.get('key') ?? '';
     const pickTarget = AdminSurface.PICK_TARGET.test(pick) ? pick : '';
     const db = this.#siteDb(tenant.key);
@@ -1735,6 +1929,7 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
         ...(field === undefined ? {} : { pick: field }),
         notices,
         csrf: this.sessions.csrfToken(session),
+        uploaded,
       }),
     );
   }
@@ -2160,7 +2355,7 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
     reply.send(draft ? { tenant: tenant.key, draft: report } : { tenant: tenant.key, published: report });
   }
 
-  #tablesIndex(reply: FastifyReply, tenant: Tenant): void {
+  #tablesIndex(reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
     const db = this.#siteDb(tenant.key);
     try {
       // `listTables` is a read, so it runs on the render-read class; every write
@@ -2172,17 +2367,85 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
       reply.type('text/html; charset=utf-8').send(
         page(
           `Skunkworks — ${tenant.key} — tables`,
-          `<h1>${esc(tenant.key)} — tables</h1>
+          `${crumbs([
+            { label: 'Pages', href: `/admin/t/${tenant.key}/` },
+            { label: 'Tables' },
+          ])}<h1>${esc(tenant.key)} — tables</h1>
 <p>§9.3: row data in <code>cms_*</code> is editable through generated forms; <code>cms_audit</code> is the record of those writes and is not one of them.</p>
 <ul data-role="tables">
 ${items}
-</ul>
-<p><a href="/admin/t/${esc(tenant.key)}/">Back</a></p>`,
+</ul>`,
+          this.#chrome(tenant, session),
         ),
       );
     } finally {
       db.close();
     }
+  }
+
+  /**
+   * The screen a loaded plugin declared for this path, if any. Looked up in the registry — the
+   * one source of truth `declaredScreenLinks()` also reads, so a screen in the menu and a screen
+   * that answers are the same object.
+   */
+  #pluginScreen(tenant: Tenant, action: string): { path: string; table: string; title: string } | undefined {
+    const runtime = this.#plugins;
+    if (runtime === null) return undefined;
+    for (const entry of runtime.registry.plugins(tenant.key)) {
+      for (const screen of entry.screens.values()) {
+        const path = screen.path.replace(/^\/+/, '');
+        if (action === path || action.startsWith(`${path}/`)) return screen;
+      }
+    }
+    return undefined;
+  }
+
+  async #pluginScreenRoute(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    session: SessionRecord,
+    tenant: Tenant,
+    screen: { path: string; table: string; title: string },
+    rest: string,
+  ): Promise<void> {
+    const parts = rest === '' ? [] : rest.split('/').filter((p) => p !== '');
+    // Writes go through the same guard as every other admin write: Origin, then CSRF.
+    if (req.method !== 'GET') this.#writeGuard(req, session);
+    if (parts.length === 0) {
+      if (req.method === 'POST') {
+        const created = this.#write(tenant, (db) => createRow(db, screen.table, fieldsOf(req.body), this.#actor(session)));
+        reply.code(303).header('location', `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}/${encodeURIComponent(created.id)}`).send('');
+        return;
+      }
+      this.#rowsPage(reply, tenant, screen.table, session, screen.title);
+      return;
+    }
+    if (parts.length === 1 && parts[0] === 'new') {
+      this.#requireMethod(req, 'GET');
+      this.#formPage(reply, tenant, screen.table, null, session, screen.title);
+      return;
+    }
+    if (parts.length === 1) {
+      const id = parts[0] as string;
+      if (req.method === 'POST') {
+        this.#write(tenant, (db) => updateRow(db, screen.table, id, fieldsOf(req.body), this.#actor(session)));
+        reply.code(303).header('location', `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}/${encodeURIComponent(id)}`).send('');
+        return;
+      }
+      this.#formPage(reply, tenant, screen.table, id, session, screen.title);
+      return;
+    }
+    throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
+  }
+
+  /** The shell's chrome, for the screens that pass it explicitly. */
+  #chrome(tenant: Tenant, session: SessionRecord): { tenant: Tenant; user: { email: string; role: string } | null; active: 'none'; notices: number } {
+    return {
+      tenant,
+      user: this.#actorOf(session),
+      active: 'none',
+      notices: this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length,
+    };
   }
 
   async #tableRoute(req: FastifyRequest, reply: FastifyReply, session: SessionRecord, tenant: Tenant, rest: string): Promise<void> {
@@ -2203,7 +2466,7 @@ ${items}
 
     if (parts.length === 1) {
       if (req.method === 'GET') {
-        this.#rowsPage(reply, tenant, table);
+        this.#rowsPage(reply, tenant, table, session);
         return;
       }
       if (req.method === 'POST') {
@@ -2271,7 +2534,7 @@ ${items}
     }
   }
 
-  #rowsPage(reply: FastifyReply, tenant: Tenant, table: string): void {
+  #rowsPage(reply: FastifyReply, tenant: Tenant, table: string, session: SessionRecord, label?: string): void {
     const db = this.#siteDb(tenant.key);
     try {
       const info = describeTable(db, table);
@@ -2287,11 +2550,16 @@ ${items}
       reply.type('text/html; charset=utf-8').send(
         page(
           `Skunkworks — ${tenant.key} — ${table}`,
-          `<h1>${esc(tenant.key)} — ${esc(table)}</h1>
-<p><a href="/admin/t/${esc(tenant.key)}/tables/${esc(table)}/new">New row</a> · <a href="/admin/t/${esc(tenant.key)}/tables">Tables</a></p>
+          `${crumbs([
+            { label: 'Pages', href: `/admin/t/${tenant.key}/` },
+            { label: 'Tables', href: `/admin/t/${tenant.key}/tables` },
+            { label: label ?? table },
+          ])}<h1>${esc(label ?? `${tenant.key} — ${table}`)}</h1>
+<p><a class="btn btn--sm" href="/admin/t/${esc(tenant.key)}/tables/${esc(table)}/new">New row</a></p>
 <table data-role="rows"><thead><tr>${head}<th></th></tr></thead><tbody>
 ${body}
 </tbody></table>`,
+          this.#chrome(tenant, session),
         ),
       );
     } finally {
@@ -2299,7 +2567,7 @@ ${body}
     }
   }
 
-  #formPage(reply: FastifyReply, tenant: Tenant, table: string, id: string | null, session: SessionRecord): void {
+  #formPage(reply: FastifyReply, tenant: Tenant, table: string, id: string | null, session: SessionRecord, label?: string): void {
     const db = this.#siteDb(tenant.key);
     try {
       const info = describeTable(db, table);
@@ -2308,7 +2576,13 @@ ${body}
       reply.type('text/html; charset=utf-8').send(
         page(
           `Skunkworks — ${tenant.key} — ${table}${id === null ? ' — new' : ` — ${id}`}`,
-          this.#formHtml(tenant, info, row ?? null, id, session),
+          `${crumbs([
+            { label: 'Pages', href: `/admin/t/${tenant.key}/` },
+            { label: 'Tables', href: `/admin/t/${tenant.key}/tables` },
+            { label: label ?? info.name, href: `/admin/t/${tenant.key}/tables/${encodeURIComponent(info.name)}` },
+            { label: id === null ? 'New row' : `Row ${id}` },
+          ])}${this.#formHtml(tenant, info, row ?? null, id, session)}`,
+          this.#chrome(tenant, session),
         ),
       );
     } finally {
@@ -2317,6 +2591,7 @@ ${body}
   }
 
   #formHtml(tenant: Tenant, info: TableInfo, row: Record<string, unknown> | null, id: string | null, session: SessionRecord): string {
+    const back = `<p class="formback"><a class="btn btn--sm" href="/admin/t/${esc(tenant.key)}/tables/${esc(info.name)}">← Back to ${esc(info.name)}</a></p>`;
     const action = id === null
       ? `/admin/t/${esc(tenant.key)}/tables/${esc(info.name)}`
       : `/admin/t/${esc(tenant.key)}/tables/${esc(info.name)}/${encodeURIComponent(id)}`;
@@ -2343,7 +2618,7 @@ ${body}
       ? ''
       : `<form method="post" action="${action}/delete" data-csrf-token="${esc(csrf)}"><button type="submit">Delete</button></form>`;
 
-    return `<h1>${esc(tenant.key)} — ${esc(info.name)}${id === null ? ' — new' : ` — ${esc(id)}`}</h1>
+    return `${back}<h1>${esc(tenant.key)} — ${esc(info.name)}${id === null ? ' — new' : ` — ${esc(id)}`}</h1>
 <form method="post" action="${action}" data-csrf-token="${esc(csrf)}">
 ${controls}
 <button type="submit">Save</button>

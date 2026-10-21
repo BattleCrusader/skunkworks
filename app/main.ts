@@ -21,6 +21,8 @@ import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } fr
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import multipart from '@fastify/multipart';
+
 import { BootRefusal, adminHostOf, loadEnv, type Env } from './env.ts';
 import { AppError, errorBody, frameworkCode, HTTP } from './errors.ts';
 import { RenderPool, openAdminWrite } from './db/classes.ts';
@@ -44,7 +46,7 @@ import { startSealScheduler, sealSummary, type SealSchedulerHandle, type SealSum
 import { TenantMap } from './tenancy/cache.ts';
 import { normaliseHost } from './tenancy/normalise-host.ts';
 import { resolveTenant, TENANT_HEADER, type Tenant } from './tenancy/resolve.ts';
-import { DEFAULT_CONTENT_ROOT } from './assets/store.ts';
+import { DEFAULT_CONTENT_ROOT, UPLOAD_MAX_BYTES } from './assets/store.ts';
 import { Semaphore } from './admin/auth.ts';
 import { seedSettings } from './download/code.ts';
 import { DownloadPlane, RETRY_ATTEMPTS } from './download/plane.ts';
@@ -331,6 +333,14 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) =>
     done(null, body),
   );
+
+  // S8c: file upload. A no-JS form must be `multipart/form-data`, and hand-rolling that parser
+  // is how upload bugs become security bugs — boundaries, nested parts and a 25 MB body are not
+  // a place to be clever. The limits are the app's, not the caller's: one file per request and
+  // 25 MiB, which `uploadAsset` then enforces again on its own.
+  await app.register(multipart, {
+    limits: { fileSize: UPLOAD_MAX_BYTES, files: 1, fields: 8, parts: 12 },
+  });
 
   const started = Date.now();
 

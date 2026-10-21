@@ -20,6 +20,10 @@
  */
 import { ICON, layout } from './layout.ts';
 import { bytes, esc, plural } from './html.ts';
+import { UPLOAD_MAX_BYTES } from '../../assets/store.ts';
+
+/** "25 MB" — the number the form promises and the parser enforces, from one constant. */
+export const UPLOAD_LIMIT_LABEL = `${Math.round(UPLOAD_MAX_BYTES / (1024 * 1024))} MB`;
 
 export interface MediaAsset {
   id: number;
@@ -64,6 +68,8 @@ export interface MediaLibraryInput {
   notices?: number;
   /** The CSRF token a delete form posts in its `csrf` field. */
   csrf: string;
+  /** The key of a file the upload route just accepted, for the confirmation line. */
+  uploaded?: string | undefined;
 }
 
 function kindWord(asset: MediaAsset): string {
@@ -240,10 +246,40 @@ export function mediaLibraryScreen(input: MediaLibraryInput): string {
       </div>
     </div>
 
-    <div class="notepanel">
-      <span class="notepanel__icon" aria-hidden="true">${ICON.doc}</span>
-      <div><b>This is the library, not an uploader</b><p>Adding files is not available on this screen yet. Everything already here is listed below, with what each file is used on.</p></div>
-    </div>
+    <section class="card upload" aria-labelledby="upload-heading">
+      <h2 id="upload-heading">Add a photo or file</h2>
+      <p class="upload__lede">Pick a file, give it a name you will recognise later, and choose who may see it.</p>
+      <form method="post" action="${esc(`${base}/media/upload`)}" enctype="multipart/form-data">
+        <input type="hidden" name="csrf" value="${esc(input.csrf)}">
+        <div class="sf">
+          <label for="upload-file">The file</label>
+          <input id="upload-file" type="file" name="file" required aria-describedby="upload-file-help">
+          <p class="help" id="upload-file-help">Photos, PDFs, audio and video. Up to ${UPLOAD_LIMIT_LABEL}.</p>
+        </div>
+        <div class="sf">
+          <label for="upload-key">A name for it</label>
+          <input id="upload-key" type="text" name="key" required pattern="[a-z0-9][a-z0-9._/-]*" placeholder="hero/sunrise" aria-describedby="upload-key-help">
+          <p class="help" id="upload-key-help">Lowercase letters, digits, dot, dash or slash. Pages point at this name, so pick one you will not want to change.</p>
+        </div>
+        <div class="sf">
+          <label for="upload-alt">Describe it</label>
+          <input id="upload-alt" type="text" name="alt" aria-describedby="upload-alt-help">
+          <p class="help" id="upload-alt-help">Read out to people using a screen reader, and shown if the file cannot load.</p>
+        </div>
+        <div class="sf">
+          <label for="upload-access">Who can see it</label>
+          <select id="upload-access" name="access" aria-describedby="upload-access-help">
+            <option value="public">Anyone — it has a public address</option>
+            <option value="linked-private">Only where a page links it</option>
+            <option value="gated">Only with an access code</option>
+          </select>
+          <p class="help" id="upload-access-help">A private file has no public address; it is shared with a download code instead.</p>
+        </div>
+        <button class="btn btn--primary" type="submit">Upload</button>
+      </form>
+    </section>
+
+    ${input.uploaded === undefined ? '' : `<div class="acct__flash acct__flash--ok" role="status">${ICON.check}<span>Added <b>${esc(input.uploaded)}</b> to your library.</span></div>`}
 
     <div class="toolbar">
       <nav class="chips" aria-label="Filter files">

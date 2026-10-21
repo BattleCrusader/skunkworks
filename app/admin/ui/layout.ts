@@ -235,6 +235,16 @@ code{font-family:var(--mono)}
 .sf input{width:100%;min-height:42px;border:1px solid var(--line-2);border-radius:var(--r-in);padding:0 12px;font:14px/1.4 var(--sans);color:var(--ink);background:#fff;outline:0}
 .sf input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
 .sf input[name="totp"]{letter-spacing:.36em;font-family:var(--mono);font-size:16px}
+.sf select{width:100%;min-height:42px;border:1px solid var(--line-2);border-radius:var(--r-in);padding:0 10px;font:14px/1.4 var(--sans);color:var(--ink);background:#fff}
+.sf select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.12);outline:0}
+.sf input[type="file"]{padding:9px 12px;min-height:42px;background:var(--card-2);cursor:pointer}
+/* the upload card: a form, not a note that apologises for not being one */
+.upload{padding:20px 20px 16px;margin:0 0 18px}
+.upload h2{margin:0 0 4px;font-size:16px;font-weight:650;letter-spacing:-.01em}
+.upload__lede{margin:0 0 14px;font-size:13px;color:var(--muted);max-width:62ch}
+.upload form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px;align-items:start}
+.upload form .sf:nth-child(2){grid-column:1}
+.upload form button{grid-column:1/-1;justify-self:start;margin-top:4px}
 .sf .help{font-size:11.5px;color:var(--muted);margin:5px 0 0;line-height:1.45}
 .signin__card .submit{width:100%;min-height:44px;border-radius:var(--r-in);background:var(--blue);color:#fff;font-size:14px;font-weight:650;margin-top:4px;box-shadow:0 6px 16px rgba(37,99,235,.24);border:0}
 .signin__card .submit:hover{background:var(--blue-2)}
@@ -243,6 +253,15 @@ code{font-family:var(--mono)}
 
 /* a page that has not been restyled keeps the old body markup; give it room */
 .legacy{font-size:14px}
+/* S8d: the trail out of the table screens. Ordered-list semantics, the separators hidden from
+   assistive tech, and the current page marked by aria-current rather than by colour. */
+.crumbs{margin:0 0 14px}
+.crumbs ol{list-style:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0;padding:0;font-size:13px}
+.crumbs li{display:flex;align-items:center;gap:6px}
+.crumbs li.sep{color:var(--faint)}
+.crumbs a{color:var(--blue-2)}
+.crumbs [aria-current="page"]{color:var(--ink-2);font-weight:600}
+.formback{margin:0 0 12px}
 .legacy table{border-collapse:collapse;width:100%;margin:12px 0}
 .legacy th,.legacy td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;font-size:13px;vertical-align:top}
 .legacy th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}

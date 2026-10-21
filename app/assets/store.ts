@@ -33,6 +33,14 @@ export const DEFAULT_CONTENT_ROOT = '/srv/content';
 /** `content/media/` — the prefix the DDL's generated `storage_path` column starts with. */
 export const MEDIA_REL_PREFIX = 'content/media/';
 
+/**
+ * S8c's upload ceiling: 25 MiB, one file per request. A tenant's photo library is not a video
+ * host, and the number is enforced three times — the multipart parser's `fileSize`, the
+ * sniffer's `maxBytes`, and the tenant quota — because each is the only one that holds when
+ * the other two are bypassed.
+ */
+export const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+
 /** Exactly the tokens in `cms_asset.storage_path`'s `CASE mime WHEN …`. */
 export const EXTS = new Set(['webp', 'jpg', 'png', 'avif', 'pdf', 'mp4', 'mp3', 'zip', 'bin']);
 

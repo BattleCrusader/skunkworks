@@ -763,6 +763,25 @@
       ]
     },
     {
+      "file": "test/media-upload.test.ts",
+      "worstIdleMs": 822,
+      "measuredOn": "2026-10-21",
+      "load1m": 5.82,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "88bb4382d6cc441cecaf148bff171b5c23c07cb10b8a4aaa51b2075f6d0ed904",
+      "runs": [
+        {
+          "ms": 822,
+          "at": "2026-10-21T12:46:02.627Z",
+          "load1mBefore": 5.82,
+          "load1mAfter": 5.82,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 7
+        }
+      ]
+    },
+    {
       "file": "test/csp.test.ts",
       "worstIdleMs": 810,
       "measuredOn": "2026-10-21",
@@ -934,6 +953,25 @@
       ]
     },
     {
+      "file": "test/admin-plugin-screens.test.ts",
+      "worstIdleMs": 685,
+      "measuredOn": "2026-10-21",
+      "load1m": 5.82,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "b4a9b20c34f426a39f054b998e366c41022eb2af9c1299608e7f96f487127c96",
+      "runs": [
+        {
+          "ms": 685,
+          "at": "2026-10-21T12:46:04.283Z",
+          "load1mBefore": 5.82,
+          "load1mAfter": 5.82,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 4
+        }
+      ]
+    },
+    {
       "file": "test/tenancy/cache.test.ts",
       "worstIdleMs": 665,
       "measuredOn": "2026-10-21",
@@ -949,6 +987,25 @@
           "idle": true,
           "exitCode": 0,
           "tests": 9
+        }
+      ]
+    },
+    {
+      "file": "test/admin-tables-nav.test.ts",
+      "worstIdleMs": 660,
+      "measuredOn": "2026-10-21",
+      "load1m": 5.82,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "a4838c20f26c66d517dc460422867d35cb168210d54a0a3e993c7fbd4245644b",
+      "runs": [
+        {
+          "ms": 660,
+          "at": "2026-10-21T12:46:03.442Z",
+          "load1mBefore": 5.82,
+          "load1mAfter": 5.82,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 4
         }
       ]
     },
@@ -1600,5 +1657,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-21T12:28:01.820Z"
+  "updatedAt": "2026-10-21T12:46:04.593Z"
 }

@@ -18,7 +18,12 @@ export interface CallOptions {
   method?: string;
   host?: string;
   headers?: Record<string, string>;
-  body?: string;
+  /**
+   * A `Buffer` is passed through untouched. A string is written as UTF-8, which is fine for
+   * every JSON and form body in this suite but corrupts binary payloads — a multipart upload
+   * has to send its bytes, not its characters.
+   */
+  body?: string | Buffer;
 }
 
 export function call(opts: CallOptions): Promise<Res> {
@@ -44,7 +49,7 @@ export function call(opts: CallOptions): Promise<Res> {
       },
     );
     req.on('error', reject);
-    if (opts.body !== undefined) req.write(opts.body);
+    if (opts.body !== undefined) req.write(opts.body as string | Buffer);
     req.end();
   });
 }

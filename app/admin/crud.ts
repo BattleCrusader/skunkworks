@@ -108,8 +108,19 @@ export const NOT_EDITABLE: Record<string, Record<string, string>> = {
  */
 const RESERVED = new Set(['cms_audit']);
 
+/**
+ * S8e: a plugin's own tables are editable through the screen the package declared for them.
+ *
+ * `p_<plugin>_<name>` is the namespace the DDL runner owns (§8.2), and a plugin screen is a
+ * *declarative list/form over one table the package owns* — the registry refuses a screen on any
+ * other table, so by the time a name reaches here it has already been authorised against the
+ * package that registered it. It is not added to `listTables()`: the Tables screen lists the
+ * CMS's own tables, and a package's data belongs on the package's screen.
+ */
+const PLUGIN_TABLE = /^p_[a-z][a-z0-9]{1,19}_[a-z][a-z0-9_]{0,40}$/;
+
 export function isEditableTable(name: string): boolean {
-  return TABLE.test(name) && !RESERVED.has(name);
+  return (TABLE.test(name) || PLUGIN_TABLE.test(name)) && !RESERVED.has(name);
 }
 
 export function listTables(db: Database.Database): string[] {
