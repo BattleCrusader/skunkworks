@@ -65,6 +65,9 @@ usage: ./install.sh [options]
   --no-compose        stop after bootstrap; do not run `docker compose up -d`
   --verify-login      after install, log in and fetch GET /admin and the tenant's page
   --force             re-run the DDL/seed steps on an existing data directory
+  --nginx-conf FILE   where to write the generated edge config (default $ROOT/nginx/conf.d/10-app.conf).
+                      A TEST that installs from the source tree must pass this, or it overwrites the
+                      tracked fixture and the fixture-identity gate fails.
 EOF
 }
 
@@ -81,6 +84,7 @@ while [ $# -gt 0 ]; do
     --verify-login) VERIFY_LOGIN=1; shift ;;
     --skip-dns) SKIP_DNS=1; shift ;;
     --force) FORCE=1; shift ;;
+    --nginx-conf) NGINX_CONF_OUT="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "install.sh: unknown argument $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -97,7 +101,23 @@ cd "$ROOT"
 # A bundle carries its seed beside the database it describes (`data/control.seed.json`,
 # §11.6 / E-19); a source tree carries the frozen one under `schema/`.
 if [ -z "$SEED" ]; then
-  if [ -f "data/control.seed.json" ]; then SEED="data/control.seed.json"; else SEED="schema/control.seed.json"; fi
+  # Relative to the BUNDLE, never to the cwd. Measured 2026-10-21: this read
+  # `./data/control.seed.json` from the working tree, so an install of a temp bundle picked up
+  # whatever seed happened to be in the repo root — a live three-tenant seed leaked into the
+  # install tests and they failed on AMBIGUOUS_TARGET. A bundle's seed sits beside the database
+  # it describes.
+  # A BUNDLE is a directory with BUNDLE.json: it carries the seed for the database it describes.
+  # A SOURCE TREE is not a deployment, so it uses the frozen seed under schema/ — it must never
+  # pick up whatever `data/control.seed.json` happens to be sitting there, because that is a live
+  # deployment's seed (measured: a three-tenant live seed leaked into the install tests and the
+  # gate failed on AMBIGUOUS_TARGET). Deploying from a source tree requires an explicit --seed.
+  if [ -f "$BUNDLE/BUNDLE.json" ] && [ -f "$BUNDLE/data/control.seed.json" ]; then
+    SEED="$BUNDLE/data/control.seed.json"
+  elif [ -f "$ROOT/schema/control.seed.json" ]; then
+    SEED="$ROOT/schema/control.seed.json"
+  else
+    SEED="schema/control.seed.json"
+  fi
 fi
 DATA_DIR="$(mkdir -p "$TARGET" && cd "$TARGET" && pwd)"
 CONTROL_DB="$DATA_DIR/control.db"
@@ -313,6 +333,31 @@ node --no-warnings tools/install_certs.mjs --data "$DATA_DIR" --certs "$CERTS_DI
   exit 17
 }
 say "certs: $CERTS_DIR (per-host self-signed; ACME replaces a pair and reloads nginx)"
+
+# --- 7b. nginx config from the INSTALLED control.db ------------------------
+# The tracked `nginx/conf.d/10-app.conf` is a TEST FIXTURE (acme.test, beta.test,
+# broken.test, acme-demo.test, demos.skw.test) because `tools/regen_conf.ts` rewrites it
+# from the gate's fixtures. Shipping it to a real install is a dead site: nginx loads it,
+# asks for `/etc/nginx/certs/acme.test.crt`, and crash-loops — measured on a seed with
+# abc123.com / demo.abc123.com / 123abc.com, every gate green because every gate used the
+# fixture hosts. The config is therefore generated here, from the control.db this install
+# actually seeded, before anything starts nginx.
+mkdir -p "$DATA_DIR/nginx"
+NGINX_CONF="${NGINX_CONF_OUT:-$DATA_DIR/nginx/10-app.conf}"
+if [ -f "$RUNTIME/dist/tools/nginx_gen.js" ]; then
+  node --no-warnings "$RUNTIME/dist/tools/nginx_gen.js" --data-dir "$DATA_DIR" --out "$NGINX_CONF" || {
+    fail "could not generate $NGINX_CONF from $DATA_DIR/control.db (exit 17)"
+    exit 17
+  }
+else
+  docker compose run --rm --no-deps -T --entrypoint node \
+    -v "$ROOT/nginx/conf.d:/srv/conf" \
+    app dist/tools/nginx_gen.js --data-dir /srv/data --out /srv/conf/10-app.conf || {
+    fail "could not generate the nginx config inside the app image (exit 17)"
+    exit 17
+  }
+fi
+say "nginx: $NGINX_CONF generated from the installed control.db ($(grep -c 'server_name' "$NGINX_CONF" 2>/dev/null || echo 0) server blocks)"
 
 # --- 8. compose up (exit 17) ------------------------------------------------
 if [ "$COMPOSE" -eq 1 ]; then

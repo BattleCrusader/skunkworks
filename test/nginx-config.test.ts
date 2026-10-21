@@ -4,7 +4,8 @@
  * (count(location-with-proxy_pass) == count(skunk-proxy include)) and the fact
  * that the generated file is the file in the repo.
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -279,4 +280,70 @@ test('E-17: the generator refuses a malformed allowlist from the same parser, wi
     (err: unknown) => (err as Error).message === parserMessage,
     'the edge and the app must give one answer to "is this value usable"',
   );
+});
+
+/**
+ * NG-8 (measured on a real install, 2026-10-21). The tracked `nginx/conf.d/10-app.conf`
+ * is a TEST FIXTURE — `tools/regen_conf.ts` rewrites it from the gate's fixtures, so it
+ * names acme.test, beta.test, broken.test, acme-demo.test and demos.skw.test. Shipping
+ * that file to a real install is a dead site: nginx asks for
+ * `/etc/nginx/certs/acme.test.crt` and crash-loops. Found by installing a seed with
+ * abc123.com / demo.abc123.com / 123abc.com — every gate was green because every gate
+ * used the fixture hosts.
+ *
+ * Two assertions, and the second is the one that matters: the generator follows whatever
+ * is in control.db, and install.sh actually CALLS it. A fixed generator nobody invokes
+ * is exactly the state that produced the dead site.
+ */
+test('NG-8: the config follows the installed hosts, and install.sh generates it before nginx starts', () => {
+  const sh = readFileSync(join(REPO, 'install.sh'), 'utf8');
+  assert.match(
+    sh,
+    /nginx_gen\.js/,
+    'install.sh must generate nginx/conf.d/10-app.conf from the installed control.db — the tracked file is a test fixture',
+  );
+
+  const dir = mkdtempSync(join(tmpdir(), 'skw-ng8-'));
+  try {
+    const dbPath = join(dir, 'control.db');
+    copyFileSync(fixture.controlDb, dbPath);
+    // Rename EVERY domain the generator reads, so the assertion below cannot pass on a
+    // leftover fixture host: the point is that no old name survives, not that one new
+    // name appears beside the fixture's.
+    const before = readHosts(dbPath).map((r) => r.host);
+    assert.ok(before.length > 0, 'the fixture must have at least one host the generator emits');
+    const db = new DatabaseSync(dbPath);
+    try {
+      const rename = db.prepare('UPDATE domain SET host = ? WHERE host = ?');
+      before.forEach((host, i) => rename.run(`site${i}.example.org`, host));
+    } finally {
+      db.close();
+    }
+
+    const text = generateAppConf(readHosts(dbPath), {
+      adminHost: 'admin.example.org',
+      demosHost: 'demos.example.org',
+      boxRps: 192,
+    });
+
+    // A tenant with several hosts gets ONE server block naming them all
+    // (`server_name a b;`), so the assertion must not demand a semicolon right after the name.
+    assert.match(
+      text,
+      /server_name[^;]*site0\.example\.org/,
+      'the generated config must name the installed host',
+    );
+    for (const oldHost of before) {
+      assert.ok(
+        !text.includes(oldHost),
+        `a host from before the install (${oldHost}) survived into the generated config — this is the dead-site bug`,
+      );
+    }
+    assert.ok(
+      text.includes('/etc/nginx/certs/site0.example.org.crt'),
+      'the certificate path must be derived from the same host',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

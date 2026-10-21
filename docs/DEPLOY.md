@@ -50,7 +50,9 @@ Useful flags:
 | `--verify-login` | boot the app in-process and log in end to end |
 | `--skip-dns` | skip the DNS check even with `--domain` |
 
-The installer runs **9 gates**, migrates `control.db` to schema **v4**, seeds the tenant and installs its `site.db`, writes the enrolment file `0600` with `O_EXCL`, and mints a **per-host self-signed certificate** into `data/certs/`. `cert_state` is written as `none` or `pending` until a certificate actually exists — the installer will not claim `issued` for a certificate it did not obtain.
+The installer runs **9 gates**, migrates `control.db` to schema **v4**, seeds the tenant and installs its `site.db`, writes the enrolment file `0600` with `O_EXCL`, mints a **per-host self-signed certificate** into `data/certs/`, and **generates `nginx/conf.d/10-app.conf` from the control.db it just seeded**.
+
+That last step matters more than it looks. The file tracked in git is a **test fixture** (it names `acme.test`, `beta.test`, `broken.test`, `acme-demo.test`, `demos.skw.test`), because `tools/regen_conf.ts` rewrites it from the gate's fixtures. Shipping it to a real install is a dead site: nginx loads it, asks for `/etc/nginx/certs/acme.test.crt`, and crash-loops — measured on a seed with `abc123.com` / `demo.abc123.com` / `123abc.com`, with every gate green because every gate used the fixture hosts. `install.sh` now generates it, and `test/nginx-config.test.ts` NG-8 fails if that call is removed. `cert_state` is written as `none` or `pending` until a certificate actually exists — the installer will not claim `issued` for a certificate it did not obtain.
 
 **Measured:** 1.2 s machine + ~20 s human (one TOTP scan) = **21.2 s of the documented 300 s promise**, clean directory to `GET /` 200. Second run is idempotent (0.17 s).
 
@@ -150,6 +152,7 @@ node dist/app/cli/skwctl.js audit verify --chain --tenant client1
 | **A synchronous plugin hang cannot be timed out** | Accepted cost of the WordPress model. The site stalls until the request finishes |
 | **§16 row 12 unmeasured** | "Clean host install ≤ 5 min with images present" has never been run under that condition |
 | **Pebble `badNonce` flake** | Seen once in several test runs; the ACME simulator's problem, not ours |
+| **`nginx/conf.d/10-app.conf` is tracked** | A live install overwrites it, so `git status` shows it modified on a deployed box. **Never commit that file from a running install** — it carries your client's hostnames |
 
 ---
 

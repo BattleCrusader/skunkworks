@@ -107,7 +107,7 @@ typecheck:
 #
 # Both budgets matter: node applies --test-timeout to each test *and* to the file-level
 # subtest, so a file whose total exceeds it fails even when every test inside it fits.
-TEST_TIMEOUT_MS ?= 126000
+TEST_TIMEOUT_MS ?= 125000
 PERF_TIMEOUT_MS ?= 180000
 
 TEST_FILES := $(shell find test -name '*.test.ts' -not -path 'test/perf/*' | sort)

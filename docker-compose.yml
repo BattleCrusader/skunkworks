@@ -43,6 +43,11 @@ services:
       - "443:443"
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      # The tracked `nginx/conf.d/10-app.conf` is a TEST FIXTURE. A deployment's edge config is
+      # derived from its own control.db and written by install.sh into the data dir; this file
+      # mount overrides the fixture for exactly that path, so a live box never runs (or dirties)
+      # the fixture and `make test` on a deployed tree stays green.
+      - ./data/nginx/10-app.conf:/etc/nginx/conf.d/10-app.conf:ro
       - ./snippets:/etc/nginx/snippets:ro
       - ./content:/srv/content:ro
       # S4e: the pairs install.sh mints and the acme service replaces live with the install's

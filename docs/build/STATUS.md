@@ -64,6 +64,8 @@ Not one was a missing test. Each was aimed wrong. **Assert on the wire, not on t
 
 **And a fifth, found in the last hour: a gate can be perfectly pointed and still tell a lie.** `skwctl plugin install` printed *"capabilities none — it can reach neither this site's data nor its mailer"* for a zero-capability package, while in-process a plugin can `import better-sqlite3` and read `data/control.db`. Nothing failed, because nothing asserted that the operator-facing text matched the architecture. The fix is a gate that **parses the required sentence out of the errata file and asserts it character for character** — doc and CLI can no longer drift apart. **Assert on the reassurance, not only on the mechanism.**
 
+**And a sixth, found only by a real deployment: the gate used the fixture, production used the seed.** `install.sh` never generated `nginx/conf.d/10-app.conf` — it shipped the tracked file, which `tools/regen_conf.ts` keeps in sync with the *gate fixtures* (`acme.test`, `beta.test`, …). A real seed with `abc123.com` / `demo.abc123.com` / `123abc.com` therefore started nginx against a config naming certificates that do not exist, and nginx crash-looped: **a dead site with every gate green**, because every gate installs the fixture hosts. Now `install.sh` generates the config from the installed `control.db`, and NG-8 asserts both that the generator follows the database and that `install.sh` calls it. **Every gate that tests a fixture host is testing a deployment you will never run.**
+
 ---
 
 ## The plugin model (corrected 2026-10-21)

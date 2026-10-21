@@ -61,7 +61,9 @@ test('install.sh installs a fresh bundle and logs in end to end; a second run ch
   const data = join(dir, 'data');
   const envFile = join(dir, '.env');
   try {
-    const first = install(data, envFile, ['--verify-login']);
+    // `--nginx-conf` keeps this install out of the repo's tracked fixture: a source-tree install
+    // otherwise rewrites nginx/conf.d/10-app.conf, and the fixture-identity gate then fails.
+    const first = install(data, envFile, ['--verify-login', '--nginx-conf', join(dir, '10-app.conf')]);
     assert.equal(first.status, 0, `${first.stderr}\n${first.stdout}`);
     assert.match(first.stdout, /bootstrap: enrolment written/);
     assert.match(first.stdout, /install_check: signed in as owner@acme\.test, GET \/admin 200/, 'the installer proves the box is usable');
