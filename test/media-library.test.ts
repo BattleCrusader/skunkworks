@@ -127,8 +127,12 @@ test('M1 — the grid renders a thumbnail per image, linked to the farm URL the 
   const res = await get('/admin/t/acme/media');
   assert.equal(res.status, 200, res.body);
   assert.match(String(header(res, 'content-type')), /text\/html/);
-  // The grid is the farm's names, not a second naming scheme.
-  assert.match(res.body, /<figure class="asset" data-asset-key="brand\/logo" data-kind="image" data-access="public">/);
+  // S7 NOTE — RE-POINTED, not deleted. Direction 03 (Guided Cards) replaced the grid's
+  // markup: a tile now also carries `data-search` (the string the filter-as-you-type
+  // matches) and the caption is a `figcaption.asset__body`. The contract this test exists
+  // for is unchanged — the farm's key and kind, per figure, as data attributes — so the
+  // assertion now pins that prefix and the attribute values rather than the old literal.
+  assert.match(res.body, /<figure class="asset" data-asset-key="brand\/logo" data-kind="image" data-access="public"/);
   assert.match(res.body, /<img loading="lazy" src="\/media\/brand\/logo@thumb\.webp\?v=[0-9a-f]{8}"/);
   assert.match(res.body, /alt="the acme logo"/);
   // A document has no rendition, and the page says so instead of rendering a broken image.
@@ -138,7 +142,13 @@ test('M1 — the grid renders a thumbnail per image, linked to the farm URL the 
 test('M2 — a gated asset is listed but offers no public URL, and the picker refuses it', async () => {
   const res = await get('/admin/t/acme/media');
   assert.match(res.body, /data-asset-key="vault\/paid" data-kind="image" data-access="gated"/);
-  assert.match(res.body, /gated — no public URL/);
+  // S7 NOTE — RE-POINTED, not deleted. The design replaced the machine phrase
+  // "gated — no public URL" with the Guided Cards lock panel, which states the same fact
+  // in the words a site owner reads: "No preview" and "Needs a code". The property under
+  // test — the page says why there is no image, instead of rendering a broken one — is the
+  // one being asserted; the string it is said with is the thing the design changed.
+  assert.match(res.body, /No preview/);
+  assert.match(res.body, /Needs a code/);
   assert.doesNotMatch(res.body, /src="\/media\/vault\/paid/, 'the grid published a gated asset URL');
 
   // Picking it writes nothing: a key that renders a 404 is not a pick.

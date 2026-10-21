@@ -306,7 +306,30 @@ test('8. the login route requires an exact Origin, even though no session exists
   assert.equal(codeOf(evil), 'SKW_E_SEC_CSRF');
 });
 
-test('9. PASSWORD is the fixture password, so a positive login is not accidentally a 401', async () => {
+test('9. a login that arrives over plain http is refused by name, not as an origin mismatch', async () => {
+  // The live defect this pins: http://<tenant>/admin/login served the form (the tenant
+  // block used to listen on 80 and 443 in one block) and the browser then posted with an
+  // http Origin, which surfaced as 'origin does not match the host this request was sent
+  // to' — a CSRF message for what was really a cleartext page. The edge now 301s, and the
+  // app says what it means if a request still arrives unencrypted.
+  const res = await call({
+    port,
+    path: '/admin/login',
+    method: 'POST',
+    host: ADMIN_HOST,
+    headers: {
+      origin: `http://${ADMIN_HOST}`,
+      'x-forwarded-proto': 'http',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ email: OWNER, password: PASSWORD, totp: currentTotp() }),
+  });
+  assert.equal(res.status, 403);
+  assert.equal(codeOf(res), 'SKW_E_SEC_CSRF');
+  assert.match(String(JSON.parse(res.body).error.message), /requires https/);
+});
+
+test('10. PASSWORD is the fixture password, so a positive login is not accidentally a 401', async () => {
   // A guard against the whole file passing because every login failed.
   const ok = await login({ port, key: 'acme', email: OWNER, password: PASSWORD, totp: currentTotp() });
   assert.equal(ok.status, 200);

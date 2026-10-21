@@ -113,6 +113,10 @@ import {
 } from '../tenancy/resolve.ts';
 import { Auth, Semaphore, verifyTotp, type LoginFailureReason } from './auth.ts';
 import { groupOf, newSecret, otpauthUri } from './totp.ts';
+import { layout, type NavKey, type NavItem } from './ui/layout.ts';
+import { pageListScreen, type PageRow } from './ui/pageList.ts';
+import { mediaLibraryScreen, type MediaAsset } from './ui/mediaLibrary.ts';
+import { signInScreen } from './ui/signIn.ts';
 import {
   ADMIN_COOKIE_PATH,
   CSRF_HEADER,
@@ -224,10 +228,30 @@ function esc(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function page(title: string, body: string): string {
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>${esc(title)}</title></head>
-<body><main>${body}</main></body></html>`;
+/**
+ * The document for every screen that has not been rebuilt yet (plugins, tables, sources,
+ * the builder, the fleet console). Since S7 it renders the Guided Cards *shell* — head,
+ * inline style, skip link, app bar — while the body stays the markup those screens
+ * already had, wrapped in `.legacy` so a bare `<table>` is still readable inside a card
+ * layout. Phase 2 gives them their own bodies; nothing here is thrown away.
+ */
+interface PageChrome {
+  tenant: Tenant;
+  user: { email: string; role: string } | null;
+  active: NavKey;
+  notices?: number;
+}
+
+function page(title: string, body: string, chrome?: PageChrome): string {
+  return layout({
+    title,
+    body: `<div class="legacy">\n${body}\n</div>`,
+    chrome: 'app',
+    tenant: chrome === undefined ? null : { key: chrome.tenant.key, label: chrome.tenant.key },
+    user: chrome === undefined ? null : chrome.user,
+    active: chrome === undefined ? 'none' : chrome.active,
+    ...(chrome === undefined || chrome.notices === undefined ? {} : { notices: chrome.notices }),
+  });
 }
 
 /** A query value, decoded; `undefined` when absent or empty. */
@@ -548,19 +572,9 @@ ${items}
 
   async #loginRoute(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): Promise<void> {
     if (req.method === 'GET') {
-      reply.type('text/html; charset=utf-8').send(
-        page(
-          'Skunkworks — sign in',
-          `<h1>Sign in</h1>
-<p>${esc(tenant.key)}</p>
-<form method="post" action="/admin/login" enctype="application/x-www-form-urlencoded">
-  <label>Email <input type="email" name="email" autocomplete="username" required></label>
-  <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
-  <label>TOTP <input type="text" name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}"></label>
-  <button type="submit">Sign in</button>
-</form>`,
-        ),
-      );
+      // S7: the Guided Cards sign-in. The form is the same contract as before — POST
+      // `/admin/login`, urlencoded, no CSRF field (there is no session to bind one to).
+      reply.type('text/html; charset=utf-8').send(signInScreen({ tenant: { key: tenant.key, label: tenant.key } }));
       return;
     }
     if (req.method !== 'POST') throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'login is a GET or a POST');
@@ -835,7 +849,7 @@ ${items}
     // writes a key into a field. A picker writes a **key**, never a URL: content that stored
     // a URL would have to be rewritten by every rename (§7.3).
     if (action === 'media' && req.method === 'GET') {
-      this.#mediaLibrary(req, reply, tenant);
+      this.#mediaLibrary(req, reply, tenant, session);
       return;
     }
     if (action === 'media.json' && req.method === 'GET') {
@@ -913,8 +927,7 @@ ${items}
   }
 
   async #tenantHome(reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
-    const user = this.auth.userById(session.userId);
-    const who = user === null ? `user ${session.userId}` : `${esc(user.email)} (${esc(user.role)})`;
+    const actor = this.#actorOf(session);
     // §13.3.4, `admin.menu`: `{tenant, items} → items`. Core's menu is built first and the
     // filter may **add** an entry; an entry pointing anywhere but a screen a loaded plugin
     // actually registered is dropped by the dispatch (the bus's `declaredScreens` rule), so
@@ -936,23 +949,74 @@ ${items}
     // Notices are a core entry, always, and not a plugin's: an operator who cannot see that a
     // plugin was disabled is the defect this screen exists for (§13.3.6).
     const notices = this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length;
-    const nav = [
-      ...items,
-      { href: `/admin/t/${tenant.key}/plugins`, label: `Plugins${notices === 0 ? '' : ` (${notices})`}` },
-    ]
+    // The app bar carries the three screens a site owner uses; everything else — Tables,
+    // Data sources, Session, the builder and any plugin screen — is listed under the page
+    // list, so the menu filter's additions still reach the page they point at.
+    // `/pages` is the JSON read (S3's contract); the human screen is this one, so it is not
+    // offered as a link beside it.
+    const primary = new Set([
+      `/admin/t/${tenant.key}/`,
+      `/admin/t/${tenant.key}/pages`,
+      `/admin/t/${tenant.key}/media`,
+      `/admin/t/${tenant.key}/plugins`,
+    ]);
+    const more: NavItem[] = items
       .filter((item) => typeof item.href === 'string' && typeof item.label === 'string')
-      .map((item) => `  <a href="${esc(item.href)}">${esc(item.label)}</a>`)
-      .join('\n');
+      .filter((item) => !primary.has(item.href))
+      .map((item) => ({ href: item.href, label: item.label }));
+
+    const rows = this.#pageRows(tenant.key);
     reply.type('text/html; charset=utf-8').send(
-      page(
-        `Skunkworks — ${tenant.key}`,
-        `<h1>${esc(tenant.key)}</h1>
-<p>${who}</p>
-<nav>
-${nav}
-</nav>`,
-      ),
+      pageListScreen({
+        tenant: { key: tenant.key, label: tenant.key },
+        user: actor,
+        pages: rows ?? [],
+        nowMs: Date.now(),
+        notices,
+        more,
+        ...(rows === null ? { unavailable: true } : {}),
+      }),
     );
+  }
+
+  /**
+   * The page list's rows: `cms_page` plus its revision count, which is the "versions
+   * kept safely" number and the row's "12 versions" line.
+   *
+   * `null` means the site database could not be opened or read. The caller turns that
+   * into a sentence on the screen rather than a 500 — the operator can do nothing about
+   * a broken file, and a blank error page invites them to try a write instead.
+   */
+  #pageRows(key: string): PageRow[] | null {
+    let db: Database.Database;
+    try {
+      db = this.#siteDb(key);
+    } catch {
+      return null;
+    }
+    try {
+      const rows = db
+        .prepare(
+          `SELECT p.id, p.path, p.title, p.status, p.updated_at,
+                  (SELECT COUNT(*) FROM cms_page_revision r WHERE r.page_id = p.id) AS versions
+             FROM cms_page p
+            ORDER BY p.path
+            LIMIT 200`,
+        )
+        .all() as { id: number; path: string; title: string; status: string; updated_at: string; versions: number }[];
+      return rows.map((row) => ({
+        id: Number(row.id),
+        path: String(row.path),
+        title: String(row.title),
+        status: String(row.status),
+        versions: Number(row.versions),
+        updatedAt: String(row.updated_at),
+      }));
+    } catch {
+      return null;
+    } finally {
+      db.close();
+    }
   }
 
   /**
@@ -1070,8 +1134,15 @@ ${installedRows}
 <h2>Plugin screens</h2>
 ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pluginHrefs}</ul>`}
 <p><a href="/admin/t/${esc(tenant.key)}/">Back</a></p>`,
+        { tenant, user: this.#actorOf(session), active: 'plugins', notices: notices.length },
       ),
     );
+  }
+
+  /** The signed-in operator, for the app bar's name — `null` when the row is gone. */
+  #actorOf(session: SessionRecord): { email: string; role: string } | null {
+    const user = this.auth.userById(session.userId);
+    return user === null ? null : { email: user.email, role: user.role };
   }
 
   /** `POST /admin/t/<key>/plugins/enable` — the operator's ack, then a normal activation. */
@@ -1192,6 +1263,15 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
    * accepted a missing Origin and does not start now.
    */
   #assertOrigin(req: FastifyRequest): void {
+    // Cleartext is refused by name. The edge 301s http to https for everything except the
+    // http-01 challenge, but a request that reaches the app over http anyway — a direct
+    // proxy, a hand-written config — must be told what is actually wrong. It used to be
+    // reported as 'origin does not match the host', which sent an operator hunting a CSRF
+    // bug when the real answer was 'this page was served over http'.
+    const proto = header(req, 'x-forwarded-proto');
+    if (proto !== undefined && proto.toLowerCase() !== 'https') {
+      throw new AppError('SKW_E_SEC_CSRF', `admin requires https: this request arrived over ${proto}`);
+    }
     const origin = header(req, 'origin');
     const host = normaliseHost(req.headers.host ?? null);
     const expected = host === null ? null : `https://${host}`;
@@ -1381,15 +1461,52 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
   /** The picker's targets: a column name, and nothing else. */
   static readonly PICK_TARGET = /^[a-z][a-z0-9_]{0,39}$/;
 
-  #mediaLibrary(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): void {
+  #mediaLibrary(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
     const params = new URL(req.url, 'http://admin.invalid').searchParams;
     const q = (params.get('q') ?? '').slice(0, 100);
     const pick = params.get('pick') ?? '';
     const picked = params.get('key') ?? '';
+    const pickTarget = AdminSurface.PICK_TARGET.test(pick) ? pick : '';
     const db = this.#siteDb(tenant.key);
     let rows: MediaRow[];
+    let assets: MediaAsset[];
+    let counts: { total: number; public: number; gated: number; unused: number; totalBytes: number };
     try {
       rows = this.#mediaRows(db, q);
+      const ids = rows.map((row) => Number(row.id));
+      const usage = this.#assetUsage(db, ids);
+      const blocked = this.#assetBlockers(db, ids);
+      assets = rows.map((row) => {
+        const usedOn = usage.get(Number(row.id)) ?? [];
+        const blocker = blocked.get(Number(row.id)) ?? null;
+        // The delete trigger's own condition: a page link, a bundle item or a code.
+        const deletable = usedOn.length === 0 && blocker === null;
+        const thumb =
+          row.thumb_sha === null || row.access_class === 'gated'
+            ? null
+            : `/media/${row.key}@thumb.webp?v=${String(row.thumb_sha).slice(0, 8)}`;
+        return {
+          id: Number(row.id),
+          key: String(row.key),
+          filename: String(row.filename),
+          alt: row.alt_text === null ? null : String(row.alt_text),
+          kind: String(row.kind),
+          mime: String(row.mime),
+          width: row.width === null ? null : Number(row.width),
+          height: row.height === null ? null : Number(row.height),
+          bytes: Number(row.bytes),
+          access: String(row.access_class),
+          thumb:
+            row.thumb_sha === null
+              ? null
+              : { width: Number(row.thumb_width ?? 0), height: Number(row.thumb_height ?? 0) },
+          thumbUrl: thumb,
+          usedOn,
+          deletable,
+          blockedBy: usedOn.length > 0 ? 'pages' : blocker,
+        };
+      });
+      counts = this.#assetCounts(db);
     } finally {
       db.close();
     }
@@ -1397,47 +1514,87 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
     // The picker writes the key into a field. A gated asset is refused here for the same
     // reason `site.asset()` returns no URL for one: a key that renders a 404 is not a pick.
     const pickedRow = picked === '' ? undefined : rows.find((r) => r.key === picked);
-    const pickTarget = AdminSurface.PICK_TARGET.test(pick) ? pick : '';
     const field =
       pickTarget !== '' && pickedRow !== undefined && pickedRow.access_class !== 'gated'
-        ? `<p class="picked"><label for="picked_value">${esc(pickTarget)}</label>` +
-          `<input id="picked_value" type="text" name="${esc(pickTarget)}" value="${esc(pickedRow.key)}" readonly></p>`
-        : '';
-
-    const grid = rows
-      .map((row) => {
-        // §7.1: a gated asset has no farm link, so the grid must not imply one. It is listed
-        // (the library is the admin's inventory) and it is visibly not publishable.
-        const thumb =
-          row.access_class === 'gated'
-            ? '<span class="gated">gated — no public URL</span>'
-            : row.thumb_sha === null
-              ? '<span class="no-thumb">no rendition</span>'
-              : `<img loading="lazy" src="/media/${esc(`${row.key}@thumb.webp`)}?v=${esc(String(row.thumb_sha).slice(0, 8))}"` +
-                ` alt="${esc(row.alt_text ?? '')}" width="${Number(row.thumb_width)}" height="${Number(row.thumb_height)}">`;
-        const use =
-          pickTarget === '' || row.access_class === 'gated'
-            ? ''
-            : `<a class="pick" href="/admin/t/${esc(tenant.key)}/media?pick=${esc(pickTarget)}&amp;key=${esc(row.key)}">Use</a>`;
-        return (
-          `<figure class="asset" data-asset-key="${esc(row.key)}" data-kind="${esc(row.kind)}"` +
-          ` data-access="${esc(row.access_class)}">${thumb}` +
-          `<figcaption><code>${esc(row.key)}</code> <small>${esc(row.kind)} · ${esc(row.filename)}</small></figcaption>${use}</figure>`
-        );
-      })
-      .join('\n');
-
-    const body =
-      `<h1>Media</h1>` +
-      `<form method="get" action="/admin/t/${esc(tenant.key)}/media">` +
-      `<input type="search" name="q" value="${esc(q)}" placeholder="key, filename, alt or kind">` +
-      (pickTarget === '' ? '' : `<input type="hidden" name="pick" value="${esc(pickTarget)}">`) +
-      `<button type="submit">Search</button></form>` +
-      `<p class="count">${rows.length} asset(s)</p>` +
-      field +
-      `<div class="grid">\n${grid}\n</div>`;
+        ? { column: pickTarget, key: String(pickedRow.key) }
+        : undefined;
+    const notices = this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length;
     reply.header('cache-control', 'no-store');
-    reply.type('text/html; charset=utf-8').send(page('Media', body));
+    reply.type('text/html; charset=utf-8').send(
+      mediaLibraryScreen({
+        tenant: { key: tenant.key, label: tenant.key },
+        user: this.#actorOf(session),
+        assets,
+        counts,
+        q,
+        ...(field === undefined ? {} : { pick: field }),
+        notices,
+        csrf: this.sessions.csrfToken(session),
+      }),
+    );
+  }
+
+  /**
+   * Which pages use each asset, from `cms_asset_link` — the usage graph, not a scan of
+   * `body_html` at render time, so the tile and the delete guard cannot disagree.
+   */
+  #assetUsage(db: Database.Database, ids: readonly number[]): Map<number, { id: number; title: string }[]> {
+    const out = new Map<number, { id: number; title: string }[]>();
+    if (ids.length === 0) return out;
+    const holes = ids.map(() => '?').join(',');
+    const rows = db
+      .prepare(
+        `SELECT l.asset_id, p.id AS page_id, p.title
+           FROM cms_asset_link l
+           JOIN cms_page p ON p.id = l.owner_id
+          WHERE l.owner_kind = 'page' AND l.asset_id IN (${holes})
+          ORDER BY p.path`,
+      )
+      .all(...ids) as { asset_id: number; page_id: number; title: string }[];
+    for (const row of rows) {
+      const list = out.get(Number(row.asset_id)) ?? [];
+      list.push({ id: Number(row.page_id), title: String(row.title) });
+      out.set(Number(row.asset_id), list);
+    }
+    return out;
+  }
+
+  /** The other two arms of `trg_cms_asset_delete_guard`: a bundle item, or a code. */
+  #assetBlockers(db: Database.Database, ids: readonly number[]): Map<number, 'bundle' | 'codes'> {
+    const out = new Map<number, 'bundle' | 'codes'>();
+    if (ids.length === 0) return out;
+    const holes = ids.map(() => '?').join(',');
+    const bundles = db
+      .prepare(`SELECT DISTINCT asset_id FROM cms_asset_bundle_item WHERE asset_id IN (${holes})`)
+      .all(...ids) as { asset_id: number }[];
+    for (const row of bundles) out.set(Number(row.asset_id), 'bundle');
+    const codes = db
+      .prepare(`SELECT DISTINCT asset_id FROM cms_download_code WHERE asset_id IN (${holes})`)
+      .all(...ids) as { asset_id: number }[];
+    for (const row of codes) if (!out.has(Number(row.asset_id))) out.set(Number(row.asset_id), 'codes');
+    return out;
+  }
+
+  /** The header's counts, over every asset rather than the current search. */
+  #assetCounts(db: Database.Database): { total: number; public: number; gated: number; unused: number; totalBytes: number } {
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN access_class = 'public' THEN 1 ELSE 0 END), 0) AS public,
+                COALESCE(SUM(CASE WHEN access_class = 'gated' THEN 1 ELSE 0 END), 0) AS gated,
+                COALESCE(SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM cms_asset_link l WHERE l.asset_id = a.id)
+                                  THEN 1 ELSE 0 END), 0) AS unused,
+                COALESCE(SUM(bytes), 0) AS totalBytes
+           FROM cms_asset a`,
+      )
+      .get() as { total: number; public: number; gated: number; unused: number; totalBytes: number };
+    return {
+      total: Number(row.total),
+      public: Number(row.public),
+      gated: Number(row.gated),
+      unused: Number(row.unused),
+      totalBytes: Number(row.totalBytes),
+    };
   }
 
   // --- §10.1–§10.3 (S4a): the editor ----------------------------------------

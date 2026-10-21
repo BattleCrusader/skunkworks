@@ -108,9 +108,25 @@ test('C1 — the live site sends the policy on a page, byte-identically', async 
 
 test('C2 — every HTML surface carries it, and a JSON error carries none', async () => {
   // The admin login is a second HTML surface (D29: a plain form, no JavaScript).
+  //
+  // S7 NOTE — RE-POINTED, not deleted. The admin's own documents now render the Guided
+  // Cards chrome, which is one inline `<style>` (and, on the media library, one inline
+  // `<script>`). `style-src 'self'` — the frozen policy — blocks that, so the admin
+  // document carries the same policy **plus a per-response nonce** in `script-src` and
+  // `style-src`. The property this test exists for is "there is one policy, and every HTML
+  // surface obeys it"; that is now asserted as: strip the nonce sources and the bytes are
+  // the frozen policy exactly, the nonce appears nowhere else, and the document's own
+  // `<style>` carries the nonce the header allows. `cspPolicyWithNonce` lives in
+  // `app/render/csp.ts`; the three exported trees and `snippets/skunk-csp.conf` are
+  // untouched and still compared by hash in C3/C4/C6.
   const login = await call({ port, path: '/admin/login', host: ADMIN_HOST });
   assert.equal(login.status, 200);
-  assert.equal(login.headers[CSP_HEADER], POLICY, 'the admin form carries the policy too');
+  const adminPolicy = String(login.headers[CSP_HEADER]);
+  const nonce = /'nonce-([A-Za-z0-9+/=]+)'/.exec(adminPolicy)?.[1];
+  assert.ok(nonce !== undefined, `the admin document has no nonce source: ${adminPolicy}`);
+  assert.equal(adminPolicy.split(` 'nonce-${nonce}'`).length, 3, 'the nonce belongs to script-src and style-src only');
+  assert.equal(adminPolicy.replaceAll(` 'nonce-${nonce}'`, ''), POLICY, 'the admin policy is the frozen policy plus the nonce');
+  assert.match(login.body, new RegExp(`<style nonce="${nonce.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}">`), 'the style element carries the nonce');
 
   // And the negative half of the rule: a 404 from the public listener is the §4.3 JSON
   // error body, not a document, so a CSP on it would be a header with nothing to constrain.

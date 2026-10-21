@@ -68,6 +68,49 @@ export interface EdgeConf {
   sslDirectives: number;
   /** `proxy_pass http://app:3000;` lines rewritten to the host app. */
   upstreams: number;
+  /** Port-80 blocks removed because their only job is to 301 to a TLS listener this harness does not have. */
+  cleartextRedirects: number;
+}
+
+/**
+ * Remove whole `server { … }` blocks whose body is a cleartext redirect.
+ *
+ * The generator emits, per host, a port-80 block that serves the http-01 challenge and
+ * `return 301 https://$host$request_uri` for everything else — so that a login form is
+ * never served unencrypted. In this harness there is no TLS to redirect to (the `listen
+ * 443` lines are stripped below), so a surviving redirect block is the only listener on
+ * port 80 and answers every request with 301. That is not a product defect and it is not
+ * what any edge gate is testing, so the block goes, and the count is returned so a caller
+ * can assert the strip actually found one.
+ */
+export function removeCleartextRedirects(text: string): { text: string; removed: number } {
+  const lines = text.split('\n');
+  const keep: string[] = [];
+  let removed = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    if ((lines[i] ?? '').trim() !== 'server {') {
+      keep.push(lines[i] as string);
+      continue;
+    }
+    let depth = 0;
+    let end = i;
+    for (; end < lines.length; end += 1) {
+      const line = lines[end] as string;
+      for (const ch of line) {
+        if (ch === '{') depth += 1;
+        else if (ch === '}') depth -= 1;
+      }
+      if (depth === 0) break;
+    }
+    const body = lines.slice(i, end + 1).join('\n');
+    if (body.includes('return 301 https://$host$request_uri')) {
+      removed += 1;
+    } else {
+      keep.push(body);
+    }
+    i = end;
+  }
+  return { text: keep.join('\n'), removed };
 }
 
 /**
@@ -91,6 +134,12 @@ export function prepareAppConf(generated: string, opts: { gateway: string; appPo
     .replace(/(?:^|[ \t])ssl_[\w]+[^;\n]*;/gm, '')
     .replace(/proxy_pass http:\/\/app:3000;/g, `proxy_pass http://${opts.gateway}:${opts.appPort};`);
 
+  // Third adaptation: drop the cleartext 301 blocks (they target a TLS listener that has
+  // just been stripped). Counted, and asserted below to have found at least one when the
+  // generator emitted any.
+  const stripped = removeCleartextRedirects(text);
+  text = stripped.text;
+
   // The invariants, not the intent: nothing TLS-ish may survive, and every upstream must
   // have been rewritten. `nginx` refuses the whole config on either mistake, and the
   // failure would otherwise surface as "23 e2e tests could not reach the edge".
@@ -107,7 +156,13 @@ export function prepareAppConf(generated: string, opts: { gateway: string; appPo
     `expected ${upstreams} proxy_pass line(s) after rewriting`,
   );
 
-  return { text, tlsListens, sslDirectives, upstreams };
+  assert.doesNotMatch(
+    text,
+    /return 301 https:\/\/\$host\$request_uri/,
+    'a cleartext redirect block survived; it would answer every request with 301',
+  );
+
+  return { text, tlsListens, sslDirectives, upstreams, cleartextRedirects: stripped.removed };
 }
 
 /** The `nginx.conf` every edge harness mounts at `/etc/nginx/nginx.conf`. */

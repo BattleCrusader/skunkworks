@@ -26,7 +26,7 @@
  */
 
 /** The frozen directive order. A reordering is a byte change and therefore a gate failure. */
-export function cspPolicy(frameSrc: readonly string[] = []): string {
+export function cspDirectives(frameSrc: readonly string[] = []): string[] {
   const frames = frameSrc.length === 0 ? "'none'" : [...frameSrc].sort().join(' ');
   return [
     "default-src 'self'",
@@ -38,7 +38,40 @@ export function cspPolicy(frameSrc: readonly string[] = []): string {
     "frame-ancestors 'none'",
     "base-uri 'none'",
     "object-src 'none'",
-  ].join('; ');
+  ];
+}
+
+export function cspPolicy(frameSrc: readonly string[] = []): string {
+  return cspDirectives(frameSrc).join('; ');
+}
+
+/**
+ * S7 — the **admin** document's policy: the same frozen policy, with one nonce added to
+ * `script-src` and `style-src`.
+ *
+ * The admin's chrome is app-generated and ships one inline `<style>` (the Guided Cards
+ * tokens) and, on the media library only, one small inline `<script>`. `style-src 'self'`
+ * would block the first and the surface would render as bare markup — which is exactly
+ * what it did before S7. A nonce is the narrowest mechanism that allows those two
+ * elements and nothing else: an injected `<script>` in a page title or a tenant field is
+ * escaped before it reaches the document, so it can never carry this request's nonce.
+ *
+ * This is not a change to C-12. C-12's "no nonce" is about *tenant page bodies*: there
+ * the renderer emits islands as files, so a nonce would be machinery with nothing to
+ * carry. Here there is exactly one inline element of each kind, in one generated
+ * document, and the alternative (a stylesheet route) is a second request per screen.
+ * The public site, the three exported trees and `snippets/skunk-csp.conf` keep
+ * `cspPolicy()` byte for byte; only `text/html` under `/admin` and `/fleet` is scoped.
+ */
+export function cspPolicyWithNonce(nonce: string, frameSrc: readonly string[] = []): string {
+  if (!/^[A-Za-z0-9+/=_-]{16,}$/.test(nonce)) throw new Error('cspPolicyWithNonce: not a nonce');
+  return cspDirectives(frameSrc)
+    .map((directive) =>
+      directive === "script-src 'self'" || directive === "style-src 'self'"
+        ? `${directive} 'nonce-${nonce}'`
+        : directive,
+    )
+    .join('; ');
 }
 
 /** The header name, lowercase as HTTP/1.1 sends it. */

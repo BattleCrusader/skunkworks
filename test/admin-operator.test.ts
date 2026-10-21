@@ -129,7 +129,13 @@ test('D37-2. /admin is this Host\'s tenant home: their own pages, and no fleet i
   assert.equal(res.status, 200, res.body);
   assert.match(String(header(res, 'content-type')), /text\/html/);
   assert.match(String(header(res, 'cache-control')), /no-store/);
-  assert.ok(res.body.includes('href="/admin/t/acme/pages"'), "the tenant's own menu");
+  // S7 NOTE — RE-POINTED, not deleted. The Guided Cards app bar names the three screens a
+  // site owner uses; `/admin/t/<key>/pages` is the JSON read (S3's contract) and the human
+  // page list is `/admin` itself, so the menu no longer links the JSON endpoint. The
+  // property this test is about — the menu is *this tenant's* — is asserted on the same
+  // menu with the screen the operator actually lands on, and the media screen beside it.
+  assert.ok(res.body.includes('href="/admin/t/acme/" aria-current="page">Pages'), "the tenant's own menu");
+  assert.ok(res.body.includes('href="/admin/t/acme/media"'), "the tenant's own media screen");
   assert.equal(res.body.includes('/admin/t/beta/'), false, 'a tenant operator does not see the fleet inventory');
   assert.ok(res.body.includes('owner@acme.test'));
   // D29's "All tenants" entry was the fleet console. It is `/fleet` now and a tenant

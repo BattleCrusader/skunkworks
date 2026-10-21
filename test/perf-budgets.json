@@ -6,17 +6,26 @@
   "measurements": [
     {
       "file": "test/first-boot-tls.test.ts",
-      "worstIdleMs": 31149,
+      "worstIdleMs": 31664,
       "measuredOn": "2026-10-21",
-      "load1m": 7.22,
+      "load1m": 7.86,
       "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
-      "sha256": "411cd0ca42d409da7b0a0518c4fa063f7d629ecf2fade4f4b5c9259519010988",
+      "sha256": "acf4c064e241babd1e394063f128ed482bdadab5217a546dad5cd8ca2bd99a98",
       "runs": [
         {
-          "ms": 31149,
-          "at": "2026-10-21T05:37:13.686Z",
-          "load1mBefore": 7.22,
-          "load1mAfter": 8.88,
+          "ms": 29445,
+          "at": "2026-10-21T08:49:11.175Z",
+          "load1mBefore": 7.95,
+          "load1mAfter": 7.86,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 5
+        },
+        {
+          "ms": 31664,
+          "at": "2026-10-21T08:49:46.785Z",
+          "load1mBefore": 7.86,
+          "load1mAfter": 7.93,
           "idle": true,
           "exitCode": 0,
           "tests": 5
@@ -655,6 +664,25 @@
           "idle": true,
           "exitCode": 0,
           "tests": 5
+        }
+      ]
+    },
+    {
+      "file": "test/admin-ui.test.ts",
+      "worstIdleMs": 899,
+      "measuredOn": "2026-10-21",
+      "load1m": 7.31,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "512eb30e0af44bf323f744717d150c39d1514a869c0c76db805c0b1b675ae83c",
+      "runs": [
+        {
+          "ms": 899,
+          "at": "2026-10-21T08:16:49.572Z",
+          "load1mBefore": 7.31,
+          "load1mAfter": 7.13,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 8
         }
       ]
     },
@@ -1515,5 +1543,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-21T07:05:52.139Z"
+  "updatedAt": "2026-10-21T08:49:47.661Z"
 }

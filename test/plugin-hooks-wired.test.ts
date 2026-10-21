@@ -278,7 +278,12 @@ test('H6. admin.menu — a declared screen is added and an undeclared href is dr
   assert.equal(res.status, 200, res.body);
   assert.match(res.body, new RegExp(`href="/admin/t/${TENANT}/hooks-screen">Hook messages`));
   assert.doesNotMatch(res.body, /not-a-screen/, 'an entry outside a declared screen must be dropped');
-  assert.match(res.body, new RegExp(`href="/admin/t/${TENANT}/pages">Pages`), 'core entries survive the filter');
+  // S7 NOTE — RE-POINTED, not deleted. Core's `/pages` entry is the JSON read; since S7 the
+  // app bar links the human screens (`/` is the page list, `/media` is the library) and
+  // `/pages` is not offered as a link beside them. The filter still *receives* it — the
+  // dispatch trace two assertions below proves that on the hook's own input — so "core
+  // entries survive the filter" is pinned on the entries the document draws.
+  assert.match(res.body, new RegExp(`href="/admin/t/${TENANT}/media">Photos &amp; files`), 'core entries survive the filter');
   const [line] = traces('admin.menu');
   assert.ok(line !== undefined, 'admin.menu was never dispatched');
   assert.equal(line.call.tenant, TENANT);

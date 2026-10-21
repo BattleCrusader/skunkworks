@@ -329,7 +329,10 @@ test('T1 — the bundle claims no certificate: the seed says `none` and no priva
   }
   // The generated config still names a certificate per host — the file install.sh now mints.
   const conf = readFileSync(join(installDir, 'nginx', 'conf.d', '10-app.conf'), 'utf8');
-  assert.match(conf, /listen 80; listen 443 ssl;/);
+  // Superseded (cleartext fix): 443 and 80 are separate blocks now — the port-80 one serves
+  // only the http-01 challenge and a 301, so a login form is never served unencrypted.
+  assert.match(conf, /listen 443 ssl;/);
+  assert.match(conf, /location \/ \{ return 301 https:\/\/\$host\$request_uri; \}/);
   assert.match(conf, /ssl_certificate     \/etc\/nginx\/certs\/acme\.test\.crt;/);
   assert.match(conf, /location \^~ \/\.well-known\/acme-challenge\/ \{/);
 });

@@ -16,7 +16,7 @@
  */
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type Database from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,7 +36,7 @@ import {
 import { normalisePagePath, pageMiss } from './render/page.ts';
 import { renderStoredBody } from './render/body.ts';
 import { loadNav } from './render/nav.ts';
-import { CSP_HEADER, cspPolicy } from './render/csp.ts';
+import { CSP_HEADER, cspPolicy, cspPolicyWithNonce } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
 import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
 import { SourceCache } from './sources/cache.ts';
@@ -149,6 +149,36 @@ interface RequestContext {
   via: 'header' | 'host' | 'session';
   prefix: string;
   pathname: string;
+}
+
+/**
+ * Is this URL one of the documents this process generates (rather than a tenant page)?
+ *
+ * `/admin` and `/fleet` are the two surfaces whose HTML is built by `app/admin/ui`, and
+ * they are the only ones that carry an inline `<style>`. A tenant page is rendered from
+ * a stored body that may not contain `<style>` at all (C-12's CHECK), so it keeps the
+ * frozen policy untouched.
+ */
+export function isAdminDocument(url: string): boolean {
+  const q = url.indexOf('?');
+  const pathname = q === -1 ? url : url.slice(0, q);
+  return pathname === '/admin' || pathname.startsWith('/admin/') || pathname === '/fleet' || pathname.startsWith('/fleet/');
+}
+
+/**
+ * Put this response's nonce on the two **bare** inline elements the header allows it for.
+ *
+ * Only a bare `<style>` / `<script>` is stamped: the editor's `<script type="application/json"
+ * id="skw-editor-boot">` is a data block (not executed, so CSP does not apply to it) and its
+ * exact tag is part of that screen's contract, and `<script src=…>` is already allowed by
+ * `'self'`. The document is app-generated: every tenant value in it was escaped by `esc()`
+ * before it was interpolated, so the only bare `<style>` and `<script>` are the ones this
+ * codebase wrote.
+ */
+export function withNonce(html: string, nonce: string): string {
+  return html
+    .replace(/<style(?=>)/gi, `<style nonce="${nonce}"`)
+    .replace(/<script(?=>)/gi, `<script nonce="${nonce}"`);
 }
 
 export function schemaDirFrom(metaUrl: string): string {
@@ -275,9 +305,20 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   // a 404, a 500 and a 200 all carry the same policy — which is the point: the error page is
   // the page a reflected payload would use. `text/html` only: a JSON body has no scripts to
   // constrain and a CSP on it is noise in a support bundle.
-  app.addHook('onSend', async (_req, reply, payload) => {
+  //
+  // S7: the admin's own documents carry one inline `<style>` (the Guided Cards tokens) and
+  // the media library one small inline `<script>`. The frozen policy has no inline
+  // allowance, so those documents get the same policy plus a per-response nonce — minted
+  // here, written into the header and into the two elements — and nothing else changes.
+  // The public site, the error pages and the exported trees still get `cspPolicy()`.
+  app.addHook('onSend', async (req, reply, payload) => {
     const type = reply.getHeader('content-type');
     if (typeof type === 'string' && type.startsWith('text/html')) {
+      if (typeof payload === 'string' && isAdminDocument(req.url)) {
+        const nonce = randomBytes(16).toString('base64');
+        reply.header(CSP_HEADER, cspPolicyWithNonce(nonce));
+        return withNonce(payload, nonce);
+      }
       reply.header(CSP_HEADER, cspPolicy());
     }
     return payload;

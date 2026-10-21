@@ -131,8 +131,24 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
     // operator looks for it. A block that is `pending` serves the self-signed pair until ACME
     // replaces the file and HUP-reloads nginx.
     out.push(`# certificate: ${issued.has(key) ? 'issued' : 'pending (self-signed until ACME)'}`);
+    // Plain http exists for exactly two reasons: the http-01 challenge, and a 301 to https.
+    // It is a SEPARATE block with no proxy_pass, because the previous shape (`listen 80;
+    // listen 443 ssl;` on one block) served the whole site — including /admin/login and its
+    // password field — over cleartext. The admin's own origin check then refused the
+    // http-origin POST with SKW_E_SEC_CSRF, so the symptom looked like a CSRF bug while the
+    // real defect was a credential form on an unencrypted connection.
     out.push('server {');
-    out.push('    listen 80; listen 443 ssl;');
+    out.push('    listen 80;');
+    out.push(`    server_name ${hosts.join(' ')};`);
+    out.push('    location ^~ /.well-known/acme-challenge/ {');
+    out.push('        root /srv/acme;');
+    out.push('        try_files $uri =404;');
+    out.push('    }');
+    out.push('    location / { return 301 https://$host$request_uri; }');
+    out.push('}');
+    out.push('');
+    out.push('server {');
+    out.push('    listen 443 ssl;');
     out.push(`    server_name ${hosts.join(' ')};`);
     // S4d: the block that listens on 443 must name a certificate. ACME writes
     // `/etc/nginx/certs/<host>.crt|key` per tenant (one certificate covering every host of the
@@ -222,7 +238,17 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
 
   out.push('# demos: the only host that serves /demo/ (C-25). No per-demo server block.');
   out.push('server {');
-  out.push('    listen 80; listen 443 ssl;');
+  out.push('    listen 80;');
+  out.push(`    server_name ${opts.demosHost};`);
+  out.push('    location ^~ /.well-known/acme-challenge/ {');
+  out.push('        root /srv/acme;');
+  out.push('        try_files $uri =404;');
+  out.push('    }');
+  out.push('    location / { return 301 https://$host$request_uri; }');
+  out.push('}');
+  out.push('');
+  out.push('server {');
+  out.push('    listen 443 ssl;');
   out.push(`    server_name ${opts.demosHost};`);
   // S4d: same as the admin block — the listener needs a certificate to start.
   out.push('    ssl_certificate     /etc/nginx/certs/default.crt;');

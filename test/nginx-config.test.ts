@@ -118,21 +118,43 @@ test('E-5 — every location regex is quoted, so no unquoted `{` can be read as 
  * www.acme.test;`), so the match is by line and token rather than by exact text —
  * which is what made this helper return '' for every tenant with an alias.
  */
-function serverBlock(text: string, host: string): string {
+/**
+ * Every server block naming `host`.
+ *
+ * Superseded (cleartext fix): there used to be exactly one block per host, listening on
+ * both 80 and 443. It served the admin login form over plain http, so the password field
+ * was reachable unencrypted and the browser's http Origin then failed the admin's own
+ * CSRF check. There are two blocks now — a port-80 block that serves only the ACME
+ * challenge and 301s everything else, and the https block — so a helper that returns the
+ * first match would silently start asserting against the redirect block.
+ */
+function blocksFor(text: string, host: string): string[] {
   const lines = text.split('\n');
-  const at = lines.findIndex((line) => {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('server_name ')) return false;
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const trimmed = (lines[i] ?? '').trim();
+    if (!trimmed.startsWith('server_name ')) continue;
     const names = trimmed.slice('server_name '.length).replace(/;\s*$/, '').split(/\s+/);
-    return names.includes(host);
-  });
-  if (at === -1) return '';
-  let start = at;
-  while (start >= 0 && lines[start] !== 'server {') start -= 1;
-  if (start < 0) return '';
-  let end = at;
-  while (end < lines.length && lines[end] !== '}') end += 1;
-  return lines.slice(start, end + 1).join('\n');
+    if (!names.includes(host)) continue;
+    let start = i;
+    while (start >= 0 && lines[start] !== 'server {') start -= 1;
+    if (start < 0) continue;
+    let end = i;
+    while (end < lines.length && lines[end] !== '}') end += 1;
+    out.push(lines.slice(start, end + 1).join('\n'));
+  }
+  return out;
+}
+
+/** The https block — the one that actually proxies. */
+function serverBlock(text: string, host: string): string {
+  const blocks = blocksFor(text, host);
+  return blocks.find((b) => b.includes('listen 443 ssl;')) ?? blocks[0] ?? '';
+}
+
+/** The port-80 block, which must never contain a `proxy_pass`. */
+function cleartextBlock(text: string, host: string): string {
+  return blocksFor(text, host).find((b) => b.includes('listen 80;') && !b.includes('443')) ?? '';
 }
 
 test('S4e / §12.5 — every tenant block listens on 443 and names its own certificate; the state is a comment', () => {
@@ -149,16 +171,42 @@ test('S4e / §12.5 — every tenant block listens on 443 and names its own certi
   // reader needs, and it is a comment beside the block.
   const pendingBlock = serverBlock(withPending, 'pending.test');
   assert.notEqual(pendingBlock, '');
-  assert.match(pendingBlock, /listen 80; listen 443 ssl;/);
+  // Superseded (cleartext fix): one block listening on both ports became two. The https
+  // block listens on 443 only; the port-80 block is asserted separately below.
+  assert.match(pendingBlock, /listen 443 ssl;/);
+  assert.doesNotMatch(pendingBlock, /listen 80;/);
   assert.match(pendingBlock, /ssl_certificate     \/etc\/nginx\/certs\/pending\.test\.crt;/);
   assert.match(pendingBlock, /ssl_certificate_key \/etc\/nginx\/certs\/pending\.test\.key;/);
   assert.match(withPending, /# tenant pending\n# certificate: pending \(self-signed until ACME\)/);
   const issuedBlock = serverBlock(withPending, 'issued.test');
-  assert.match(issuedBlock, /listen 80; listen 443 ssl;/);
+  assert.match(issuedBlock, /listen 443 ssl;/);
   assert.match(withPending, /# tenant issued\n# certificate: issued/);
   // The http-01 webroot is in every tenant block, and it cannot be shadowed by a regex.
   assert.match(pendingBlock, /location \^~ \/\.well-known\/acme-challenge\/ \{/);
   assert.match(pendingBlock, /root \/srv\/acme;/);
+});
+
+test('plain http serves the ACME challenge and a 301 — never a form, never a proxy', () => {
+  const conf = generateAppConf(
+    [
+      { host: 'one.test', key: 'one', cert_state: 'issued' },
+      { host: 'two.test', key: 'two', cert_state: 'none' },
+    ],
+    { demosHost: 'demos.skw.test', boxRps: 192 },
+  );
+  for (const host of ['one.test', 'two.test', 'demos.skw.test']) {
+    const clear = cleartextBlock(conf, host);
+    assert.notEqual(clear, '', `${host} has no port-80 block`);
+    // The whole point: the cleartext block holds the challenge and a redirect, and nothing
+    // that can carry credentials. `proxy_pass` here would put /admin/login back on http,
+    // which is the defect this test exists to keep shut.
+    assert.doesNotMatch(clear, /proxy_pass/, `${host} proxies over plain http`);
+    assert.doesNotMatch(clear, /location ~ "\^\/admin/, `${host} routes /admin over plain http`);
+    assert.match(clear, /location \^~ \/\.well-known\/acme-challenge\/ \{/, `${host} lost the http-01 path`);
+    assert.match(clear, /location \/ \{ return 301 https:\/\/\$host\$request_uri; \}/);
+    // And the https block still does the proxying, so the redirect is not a dead end.
+    assert.match(serverBlock(conf, host), /proxy_pass http:\/\/app:3000;/);
+  }
 });
 
 test('the map carries every host of every tenant, and no default tenant', () => {
@@ -236,7 +284,10 @@ test('the generator refuses the demos name — and admin.<domain> is an ordinary
     boxRps: 192,
   });
   assert.match(withAdminName, /server_name admin\.skw\.test;/m, 'the name is a tenant host now');
-  assert.equal((withAdminName.match(/\nserver \{/g) ?? []).length, 2, 'one tenant block plus the demos block');
+  // Superseded (cleartext fix): one block per host became two — a port-80 block that only
+  // serves the ACME challenge and 301s, and the https block that proxies. One tenant plus
+  // the demos host is therefore four blocks, and none of them is an admin vhost.
+  assert.equal((withAdminName.match(/\nserver \{/g) ?? []).length, 4, 'two blocks per host: http + https');
   assert.doesNotMatch(withAdminName, /admin: the only host that serves/, 'the admin vhost comment is gone');
 });
 
