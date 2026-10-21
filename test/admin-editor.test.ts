@@ -111,6 +111,49 @@ test('E1 — the editor page carries the generated palette, in registry order, a
   assert.ok(!/<script>(?!<\/script>)/.test(res.body.replace(/<script type="application\/json"[\s\S]*?<\/script>/g, '')), 'no inline script');
 });
 
+test('E1b — the editor has a toolbar of its own, and no button is a missing Font Awesome glyph', async () => {
+  // The operator's report: "on the wysiwyg editor page, the buttons are not visible". They
+  // were GrapesJS's DEFAULT panel buttons, which draw `fa fa-eye`, `fa fa-code`,
+  // `fa fa-arrows-alt` … and this repo loads no Font Awesome, so each one painted as an
+  // empty 30×30 box. The fix is not a font: the default panels are switched off in the boot
+  // script and the four controls the screen needs are drawn as inline SVG here.
+  const res = await admin('/admin/t/acme/editor');
+  assert.equal(res.status, 200, res.body);
+
+  // Icon-only buttons need an aria-label; text buttons take their name from the label. Both
+  // are asserted, because "it has a title attribute" is not an accessible name.
+  for (const [id, name] of [
+    ['skw-undo', 'Undo'],
+    ['skw-redo', 'Redo'],
+  ]) {
+    assert.match(res.body, new RegExp(`<button[^>]*id="${id}"[^>]*aria-label="${name}"`), `${id} has no aria-label`);
+  }
+  for (const [id, name] of [
+    ['skw-preview', 'Preview'],
+    ['skw-save', 'Save'],
+  ]) {
+    const button = new RegExp(`<button[^>]*id="${id}"[^>]*>([\\s\\S]*?)</button>`).exec(res.body);
+    assert.ok(button !== null, `${id} is missing`);
+    // The label sits beside the icon, inside the button: `…</svg>Preview</button>`.
+    assert.match(button[1] as string, new RegExp(`\\b${name}\\b`), `${id} has no visible ${name} label`);
+  }
+  // Every control carries a drawn icon, not a class that assumes a font.
+  assert.equal((res.body.match(/<svg viewBox="0 0 24 24"/g) ?? []).length >= 6, true, 'the icons are inline SVG');
+  assert.doesNotMatch(res.body, /class="fa fa-/, 'no Font Awesome class in the toolbar');
+  assert.doesNotMatch(res.body, /gjs-pn-btn/, 'GrapesJS panel buttons cannot reappear in the static markup');
+
+  // The default panels are off in the boot script, which is what stops them being created
+  // at runtime — a static-markup assertion alone would pass while the empty boxes came back.
+  const boot = await admin('/admin/t/acme/editor/editor.js');
+  assert.match(boot.body, /panels:\s*\{\s*defaults:\s*\[\s*\]\s*\}/, 'GrapesJS default panels must be disabled');
+
+  // The save button is wired to the same POST the boot script already exposed, and Ctrl+S
+  // does not open the browser's save dialog.
+  assert.match(boot.body, /window\.skwSave\(\)/);
+  assert.match(boot.body, /addEventListener\('keydown'/);
+  assert.match(boot.body, /toLowerCase\(\) === 's'/);
+});
+
 test('E2 — the bundle is served from this origin, and it is GrapesJS', async () => {
   const js = await admin('/admin/t/acme/editor/grapesjs.js');
   assert.equal(js.status, 200);

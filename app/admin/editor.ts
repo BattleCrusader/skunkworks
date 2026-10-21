@@ -109,8 +109,43 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 #skw-notice{margin:0;padding:.6rem .8rem;background:#fdecec;border-bottom:1px solid #d9a3a3;color:#8a1c1c;font-weight:600}
 #skw-notice[hidden]{display:none}
 [data-skw-readonly="1"] #skw-canvas{opacity:.7}
+/* The editor's own toolbar. GrapesJS ships default panel buttons whose icons are Font
+   Awesome class names ('fa fa-eye', 'fa fa-code', 'fa fa-arrows-alt' …), and this repo
+   never loads Font Awesome — so every one of them rendered as an empty 30×30 box. Rather
+   than add a 900 kB icon font to draw four glyphs, the buttons are drawn as inline SVG
+   here and GrapesJS's panels are switched off in the boot script. */
+#skw-bar{display:flex;align-items:center;gap:.5rem;height:56px;padding:0 1rem;background:#fff;border-bottom:1px solid #e3e3e8;font:14px/1.4 system-ui,sans-serif}
+#skw-bar .skw-back{display:inline-flex;align-items:center;gap:.35rem;color:#4a4a55;text-decoration:none;padding:.35rem .5rem;border-radius:8px}
+#skw-bar .skw-back:hover{background:#f2f2f5}
+#skw-bar h1{font-size:1rem;font-weight:600;margin:0;color:#16161a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38vw}
+#skw-bar .skw-pill{display:inline-flex;align-items:center;gap:.35rem;font-size:.75rem;font-weight:600;padding:.2rem .55rem;border-radius:999px;background:#e7f6ec;color:#14532d}
+#skw-bar .skw-pill[data-state="draft"]{background:#fff4e0;color:#7a4a00}
+#skw-bar .skw-pill[data-state="hidden"]{background:#f2f2f5;color:#4a4a55}
+#skw-bar .skw-spacer{flex:1}
+#skw-bar .skw-btn{display:inline-flex;align-items:center;gap:.4rem;height:34px;padding:0 .7rem;border:1px solid #d8d8de;background:#fff;color:#24242b;border-radius:9px;font:inherit;cursor:pointer}
+#skw-bar .skw-btn:hover{background:#f6f6f8}
+#skw-bar .skw-btn:focus-visible{outline:3px solid #2563eb;outline-offset:2px}
+#skw-bar .skw-btn[disabled]{opacity:.45;cursor:default}
+#skw-bar .skw-btn--icon{padding:0;width:34px;justify-content:center}
+#skw-bar .skw-btn--primary{background:#2563eb;border-color:#2563eb;color:#fff;font-weight:600}
+#skw-bar .skw-btn--primary:hover{background:#1d4ed8}
+#skw-bar .skw-btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+#skw-bar .skw-save-state{font-size:.8rem;color:#6b6b76;min-width:9rem;text-align:right}
+#skw-bar .skw-save-state[data-dirty="1"]{color:#7a4a00;font-weight:600}
+#skw-layout{height:calc(100vh - 56px)}
 </style></head>
 <body data-skw-readonly="${readonly ? '1' : '0'}">
+<header id="skw-bar">
+  <a class="skw-back" href="/admin/t/${encodeURIComponent(input.tenant)}/" aria-label="Back to your pages"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>Pages</a>
+  <h1>${escapeHtml(title)}</h1>
+  <span class="skw-pill" data-state="${escapeHtml(payload.page.status)}"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6"/></svg>${escapeHtml(statusWord(payload.page.status))}</span>
+  <span class="skw-spacer"></span>
+  <span class="skw-save-state" id="skw-save-state" role="status" aria-live="polite">${readonly ? 'Hand-written page — read only' : 'No changes yet'}</span>
+  <button type="button" class="skw-btn skw-btn--icon" id="skw-undo" title="Undo" aria-label="Undo" aria-keyshortcuts="Control+z"${readonly ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
+  <button type="button" class="skw-btn skw-btn--icon" id="skw-redo" title="Redo" aria-label="Redo" aria-keyshortcuts="Control+Shift+z"${readonly ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
+  <button type="button" class="skw-btn" id="skw-preview" title="Preview the page without editing controls"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>Preview</button>
+  <button type="button" class="skw-btn skw-btn--primary" id="skw-save" title="Save — a page that visitors can see updates the moment you save"${readonly ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>Save</button>
+</header>
 <p id="skw-notice" role="alert" hidden></p>
 <div id="skw-layout">
   <aside id="skw-blocks" aria-label="Blocks"></aside>
@@ -121,6 +156,13 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 <script src="${base}/grapesjs.js"></script>
 <script src="${base}/editor.js"></script>
 </body></html>`;
+}
+
+/** The three words the page list uses, so the editor and the list never disagree. */
+function statusWord(status: string): string {
+  if (status === 'published') return 'Live';
+  if (status === 'hidden') return 'Hidden';
+  return 'Draft';
 }
 
 function escapeHtml(value: string): string {
@@ -151,7 +193,59 @@ const BOOT_SCRIPT = String.raw`
     // a component cannot escape into a frame the server did not configure.
     canvas: { scripts: [], styles: [] },
     deviceManager: { devices: [{ name: 'Desktop', width: '' }] },
+    // GrapesJS's default panels are switched OFF. Every button in them draws a Font
+    // Awesome glyph ('fa fa-eye', 'fa fa-code', 'fa fa-arrows-alt' …) and this repo ships no
+    // Font Awesome, so all of them rendered as empty 30×30 boxes — the defect the operator
+    // reported as "the buttons are not visible". The toolbar in the page above is ours and
+    // draws its icons as inline SVG.
+    panels: { defaults: [] },
   });
+
+  // The toolbar. Four controls, wired to the editor's own commands, plus a dirty marker so
+  // "did that save?" is answered on screen instead of guessed.
+  function el(id) { return document.getElementById(id); }
+  function on(id, fn) {
+    var node = el(id);
+    if (node) node.addEventListener('click', function (event) { event.preventDefault(); fn(); });
+  }
+  var saveState = el('skw-save-state');
+
+  function setState(text, isDirty) {
+    if (!saveState) return;
+    saveState.textContent = text;
+    saveState.setAttribute('data-dirty', isDirty ? '1' : '0');
+  }
+
+  editor.on('update', function () { setState('Unsaved changes', true); });
+
+  function saveNow() {
+    var button = el('skw-save');
+    if (button) button.disabled = true;
+    setState('Saving…', true);
+    return window.skwSave()
+      .then(function (res) {
+        var ok = res && res.ok !== false && !(res.error);
+        setState(ok ? 'Saved' : (res && res.error && res.error.message) || 'Could not save', !ok);
+        return ok;
+      })
+      .catch(function () { setState('Could not save', true); return false; })
+      .then(function (ok) { if (button) button.disabled = false; return ok; });
+  }
+
+  on('skw-undo', function () { editor.UndoManager.undo(); });
+  on('skw-redo', function () { editor.UndoManager.redo(); });
+  on('skw-preview', function () { editor.runCommand('core:preview'); });
+  on('skw-save', function () { saveNow(); });
+
+  document.addEventListener('keydown', function (event) {
+    if ((event.metaKey || event.ctrlKey) && String(event.key).toLowerCase() === 's') {
+      event.preventDefault();
+      saveNow();
+    }
+  });
+  if (readonly) {
+    ['skw-undo', 'skw-redo', 'skw-save'].forEach(function (id) { var n = el(id); if (n) n.disabled = true; });
+  }
 
   // 1. The types, then the lock. Both come from the registry: a type the image does not
   //    ship is not registered here, and the server refused the document before this ran.
