@@ -102,6 +102,13 @@ code{font-family:var(--mono)}
 .who{font-size:12px;line-height:1.35;color:var(--muted)}
 .who b{display:block;color:var(--ink);font-weight:600;font-size:12.5px}
 
+/* A cell that holds two POST forms (a plugin's Disable and Uninstall) lays them side by side
+   rather than stacking two wide buttons down a table column. */
+td form{display:inline-block;margin:0 6px 4px 0}
+td form button{min-height:32px;padding:0 12px;border-radius:var(--r-sm);border:1px solid var(--line-2);background:#fff;color:var(--ink-2);font:600 12.5px/1 var(--sans);cursor:pointer}
+td form button:hover{border-color:var(--blue);color:var(--blue-2)}
+td form[action$="/disable"] button,td form[action$="/uninstall"] button{border-color:var(--red-line);color:#a02a2a;background:var(--red-soft)}
+
 /* page frame */
 .page{max-width:1060px;margin:0 auto;padding:34px 28px 80px}
 .pagehead{display:flex;align-items:flex-start;gap:20px;margin-bottom:22px;flex-wrap:wrap}
