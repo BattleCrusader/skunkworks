@@ -35,16 +35,58 @@ import { DATA_GJS_TYPE_PATTERN } from '../editor/paste.ts';
  * package's data. That is what makes it look native and what keeps a package from shipping markup:
  * the canvas and the renderer both see a component the host already owns.
  */
-function listComponentFor(registry: Registry, source: string, limit: number): string {
+export interface BlockForPalette {
+  /** `<plugin>/<name>`, the marker's `data-source`. */
+  id: string;
+  label: string;
+  limit: number;
+  /** The column whose value is the link's text. */
+  labelColumn?: string;
+  /** A href template: `/blog/{slug}` (a path) or `{href}` (the cell *is* the URL). */
+  href?: string;
+  layout?: 'list' | 'cards';
+}
+
+/**
+ * The markup a plugin block inserts, built from **the block's own declaration**.
+ *
+ * S8h reused the registry's shipped `list` component verbatim and only swapped `data-source`,
+ * which quietly assumed every plugin table has columns called `title` and `slug` — the blog's
+ * shape. A menu's table does not, so its block rendered "Post title" and a link to
+ * `/blog/post` on a page that had neither. The shipped component is still the *component*
+ * (the renderer is the same `data-bind-*` contract); what changes is that the bindings now
+ * name the block's columns instead of the blog's.
+ *
+ * `data-bind-href-*` sits on the same element as the text binding on purpose: `bindRow` sets
+ * the element's text from one column and its `href` from another, and a row whose href is
+ * refused (`javascript:`) keeps its label and loses only the link.
+ */
+function listComponentFor(registry: Registry, block: BlockForPalette): string {
   const entry = registry.entries.find((item) => item.type === 'list' && item.html !== null);
-  if (entry === undefined || entry.html === null) {
+  const labelColumn = block.labelColumn ?? (block.href === undefined ? undefined : 'title');
+  if (entry === undefined || labelColumn === undefined) {
     // The registry is a shipped file, not a runtime input; a missing `list` is a broken build,
     // and a marker that renders nothing is a better failure than a page with placeholder copy.
-    return `<div data-unresolved-source="${source}"></div>`;
+    return `<div data-unresolved-source="${block.id}"></div>`;
   }
-  return entry.html
-    .replace(/data-source="[^"]*"/, `data-source="${source}"`)
-    .replace(/data-limit="[^"]*"/, `data-limit="${limit}"`);
+  // `{href}` (the cell is the URL) or `/blog/{slug}` (a path template) — either way the
+  // binding needs *a* column to pass `bindRow`'s "does this row have it" check; the template
+  // itself is what `hrefFor` fills.
+  const hrefColumn =
+    block.href === undefined
+      ? undefined
+      : (/^\{([a-z][a-z0-9_]*)\}$/.exec(block.href)?.[1] ?? /\{([a-z][a-z0-9_]*)\}/.exec(block.href)?.[1]);
+  const repeat =
+    block.layout === 'cards'
+      ? `<article class="card" data-repeat><h3 class="card__title" data-bind-label="${labelColumn}">Item</h3>${
+          hrefColumn === undefined ? '' : `<a class="card__link" data-bind-href-link="${hrefColumn}" href="#">Open</a>`
+        }</article>`
+      : `<li data-repeat><a data-bind-label="${labelColumn}"${
+          hrefColumn === undefined ? '' : ` data-bind-href-link="${hrefColumn}"`
+        } href="#">Item</a></li>`;
+  const wrapper = block.layout === 'cards' ? '' : '<ul class="list__items">';
+  const close = block.layout === 'cards' ? '' : '</ul>';
+  return `<div class="list" data-gjs-type="list" data-source="${block.id}" data-limit="${block.limit}">${wrapper}${repeat}${close}<p class="list__empty" data-empty>Nothing here yet.</p></div>`;
 }
 
 export interface EditorPageInput {
@@ -71,7 +113,7 @@ export interface EditorPageInput {
    * that inserts a marker; the host draws the view at render time. A disabled package's blocks
    * are absent from this list, which is how the palette and the renderer stay in step.
    */
-  blocks?: { id: string; label: string; plugin: string; limit: number }[];
+  blocks?: (BlockForPalette & { plugin: string })[];
   /** S8k: the forms this tenant's enabled packages declared. Each inserts a marker the host fills. */
   forms?: { id: string; label: string }[];
 }
@@ -100,7 +142,7 @@ export function editorBootPayload(input: EditorPageInput): {
       category: 'Plugins',
       type: 'block',
       kind: 'block' as const,
-      content: listComponentFor(input.registry, block.id, block.limit),
+      content: listComponentFor(input.registry, block),
       // No settings panel: the block's view is the package's declaration, not a page decision.
       editable: [],
     })),
@@ -111,7 +153,16 @@ export function editorBootPayload(input: EditorPageInput): {
       category: 'Plugins',
       type: 'form',
       kind: 'block' as const,
-      content: `<div data-skw-form="${form.id}"></div>`,
+      // Visible in the canvas: the marker itself draws nothing (the host replaces this whole
+      // element at render time), and a zero-height div reads as "the drop did nothing" —
+      // which is exactly how it was reported. The preview is inert: no typing, no dragging,
+      // and the host throws it away when it draws the real fields.
+      content:
+        `<div data-skw-form="${form.id}" class="skw-form-marker" data-gjs-editable="false" data-gjs-draggable="false" ` +
+        `style="border:1px dashed #8a97a8;border-radius:6px;padding:12px;margin:8px 0;background:#f7f9fc">` +
+        `<div style="font-weight:600;font-size:13px;color:#33415c">${form.label}</div>` +
+        `<div style="font-size:12px;color:#5b6b83;margin-top:4px">Drawn by the site when the page is served — fields, labels and the thanks line come from the package.</div>` +
+        `</div>`,
       editable: [],
     })),
   ];

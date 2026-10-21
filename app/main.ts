@@ -40,6 +40,7 @@ import { renderStoredBody } from './render/body.ts';
 import { resolveSourceBlocks } from './render/blocks.ts';
 import { loadPluginPage, matchPluginPage, pluginPageBody, resolveFormMarkers } from './render/plugin-pages.ts';
 import { loadNav } from './render/nav.ts';
+import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings } from './render/chrome.ts';
 import { CSP_HEADER, cspPolicy, cspPolicyWithNonce } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
 import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
@@ -254,6 +255,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       const db = openAdminWrite(file, env.dbBusyTimeoutMs);
       try {
         seedSettings(db);
+        // S8l: the chrome keys, so the Site screen has rows to update instead of
+        // inserting into an EAV table from a form handler. A tenant seeded by an older
+        // image simply has none, and `loadChrome` falls back to its defaults.
+        seedChromeSettings(db);
       } finally {
         db.close();
       }
@@ -746,6 +751,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     // exist is a dead link the CMS created itself, and the refusal names the row. It
     // runs before the body render so no response carries an unresolvable menu.
     const nav = loadNav(db);
+    // S8l: the identity bar and footer, from `cms_settings`. `null` when the tenant has set
+    // none of it, so a site that has never opened the Site screen renders exactly the bytes
+    // it rendered before this feature existed (and the exported tree stays byte-identical).
+    const siteChrome = loadChrome(db);
+    const chrome = hasChrome(siteChrome, nav) ? { ...siteChrome, logoUrl: chromeLogoUrl(db, siteChrome) } : null;
     // §10.3/§11.2: the stored bytes are a fragment that names **keys**; `renderStoredBody`
     // unwraps a legacy row and derives every asset URL. It is the same function the three
     // exporters call, so a page cannot render one way here and another way in a bundle —
@@ -838,7 +848,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     // raw response before the hijack — the `onSend` hook above never sees this reply.
     reply.raw.setHeader(CSP_HEADER, cspPolicy());
     reply.hijack();
-    await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page, preview: loaded.preview, data, head, nav });
+    await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page, preview: loaded.preview, data, head, nav, chrome });
     // `page.rendered` is an **action**: the return value is discarded and the payload is
     // observation only — `{tenant, path, status, ms}`. A throw here is caught by the dispatch
     // and counted; the response has already been written either way.

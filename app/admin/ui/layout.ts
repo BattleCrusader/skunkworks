@@ -16,7 +16,7 @@
  */
 import { esc } from './html.ts';
 
-export type NavKey = 'pages' | 'media' | 'plugins' | 'none';
+export type NavKey = 'pages' | 'site' | 'media' | 'plugins' | 'none';
 
 export interface NavItem {
   href: string;
@@ -349,6 +349,8 @@ function navOf(input: LayoutInput): string {
   const tenant = input.tenant.key;
   const items: { key: NavKey; href: string; label: string }[] = [
     { key: 'pages', href: `/admin/t/${encodeURIComponent(tenant)}/`, label: 'Pages' },
+    // S8l: the bar and footer every page wears. It sat behind `sqlite3` until this screen.
+    { key: 'site', href: `/admin/t/${encodeURIComponent(tenant)}/site`, label: 'Site' },
     { key: 'media', href: `/admin/t/${encodeURIComponent(tenant)}/media`, label: 'Photos &amp; files' },
     {
       key: 'plugins',

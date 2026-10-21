@@ -94,6 +94,8 @@ export interface DeclarativeBlock {
   orderBy?: string;
   /** One equality filter, so a block can show published rows only. */
   filter?: { column: string; equals: string };
+  /** S8m: up to three equality conditions, ANDed. A menu needs `visible` *and* `menu`. */
+  filters?: { column: string; equals: string }[];
   /**
    * `list` (default) is a `<ul>` of titles; `cards` is a wrapper of `<article>`s.
    * Both are drawn by the host, from the same rows.
@@ -545,18 +547,45 @@ export class ActivationRecorder {
     if (b.labelColumn !== undefined && (typeof b.labelColumn !== 'string' || !columnsOf.has(b.labelColumn))) {
       throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} labels rows with ${JSON.stringify(b.labelColumn)}, which ${table} does not declare`);
     }
+    // S8m: `filters` is the same idea as `filter`, one to three of them. A menu needs two
+    // conditions that both have to hold — `visible = 1` **and** `menu = 'main'` — and a single
+    // `filter` could only say one, so a hidden row or another menu's rows would leak into the
+    // block. `filter` stays as the singular alias every existing package uses.
+    const declaredFilters: { column: string; equals: string }[] = [];
     if (b.filter !== undefined) {
       const filter = b.filter as Record<string, unknown>;
       if (typeof filter !== 'object' || filter === null || typeof filter.column !== 'string' || !columnsOf.has(filter.column) || typeof filter.equals !== 'string') {
         throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} has a filter that is not {column, equals} over its own columns`);
+      }
+      declaredFilters.push({ column: filter.column, equals: filter.equals });
+    }
+    if (b.filters !== undefined) {
+      if (!Array.isArray(b.filters) || b.filters.length === 0 || b.filters.length > 3) {
+        throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} declared filters that are not an array of 1–3 conditions`);
+      }
+      for (const raw of b.filters) {
+        const filter = raw as Record<string, unknown>;
+        if (typeof filter !== 'object' || filter === null || typeof filter.column !== 'string' || !columnsOf.has(filter.column) || typeof filter.equals !== 'string') {
+          throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} has a filter in filters that is not {column, equals} over its own columns`);
+        }
+        declaredFilters.push({ column: filter.column, equals: filter.equals });
       }
     }
     if (b.layout !== undefined && b.layout !== 'list' && b.layout !== 'cards') {
       throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} has layout ${JSON.stringify(b.layout)}; list or cards`);
     }
     if (b.href !== undefined) {
-      if (typeof b.href !== 'string' || b.href.length > 200 || !b.href.startsWith('/') || b.href.includes('//')) {
-        throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} href ${JSON.stringify(b.href)} is not a path on this site`);
+      // S8m: two legitimate shapes. A **path template** (`/blog/{slug}`) is a path on this site
+      // with columns interpolated as path segments. A **whole-cell template** (`{href}`) is a
+      // URL the row itself carries — the menu case, where the cell holds `/about` or an
+      // `https://` address and `app/render/blocks.ts`'s `safeHref` is what refuses the rest.
+      const wholeCell = typeof b.href === 'string' && /^\{[a-z][a-z0-9_]*\}$/.test(b.href);
+      if (
+        typeof b.href !== 'string' ||
+        b.href.length > 200 ||
+        (!wholeCell && (!b.href.startsWith('/') || b.href.includes('//')))
+      ) {
+        throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} href ${JSON.stringify(b.href)} is neither a path on this site nor a single {column} holding a URL`);
       }
       for (const token of b.href.matchAll(/\{([a-z][a-z0-9_]*)\}/g)) {
         if (!columnsOf.has(token[1] as string)) {
@@ -572,7 +601,7 @@ export class ActivationRecorder {
       limit,
       ...(b.order === 'asc' ? { order: 'asc' as const } : {}),
       ...(typeof b.orderBy === 'string' ? { orderBy: b.orderBy } : {}),
-      ...(b.filter === undefined ? {} : { filter: b.filter as { column: string; equals: string } }),
+      ...(declaredFilters.length === 0 ? {} : { filters: declaredFilters }),
       ...(b.layout === 'cards' ? { layout: 'cards' as const } : {}),
       ...(typeof b.href === 'string' ? { href: b.href } : {}),
       ...(typeof b.labelColumn === 'string' ? { labelColumn: b.labelColumn } : {}),

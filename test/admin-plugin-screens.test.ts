@@ -291,7 +291,11 @@ test('S8h-1. a plugin block is in the palette, and the page the visitor gets is 
   assert.match(entry.content, /data-source="blog\/recent-posts"/);
   assert.match(entry.content, /data-limit="5"/);
   assert.match(entry.content, /data-repeat/);
-  assert.match(entry.content, /data-bind-title="title"/);
+  // S8m: the bindings name the *block's* columns, not the blog's. S8h reused the shipped list
+  // markup verbatim, which meant every plugin block bound `title`/`slug` — a menu's table has
+  // neither, so its block drew "Post title" and linked to a page that did not exist.
+  assert.match(entry.content, /data-bind-label="title"/);
+  assert.match(entry.content, /data-bind-href-link="slug"/);
 
   // Two posts: one published with markup in its title, one draft.
   const db = new Database(fixture.sitePath('acme'));

@@ -7,8 +7,22 @@
  * bundle has no SQLite). The same is true of `nav`: `loadNav()` in
  * `app/render/nav.ts` reads `cms_nav`, resolves every href and refuses a row it
  * cannot resolve; this component only writes the markup.
+ *
+ * ## Site chrome (S8l)
+ *
+ * `chrome` is the identity bar and the footer, from `cms_settings` (`app/render/chrome.ts`):
+ * the site's name, an optional logo, whether the header or the footer pins to the viewport,
+ * and one footer sentence. The app passes `null` when a tenant has set none of it, and the
+ * document is then **byte-for-byte** what this shell emitted before the feature existed —
+ * which is what keeps the exported static tree (`app/export/document.ts`, which never
+ * receives chrome) identical for a site that has not opened the Site screen.
+ *
+ * The chrome expressions sit on the same line as `<body …>` and as `<main …>` for that
+ * reason: an expression that renders `null` contributes no whitespace, so adding this
+ * feature cannot move a single byte of an untouched site.
  */
 import NavList from './nav-list.astro';
+import { chromeCss, type SiteChrome } from '../../chrome.ts';
 
 interface PageLike {
   title: string;
@@ -38,20 +52,33 @@ interface Props {
    * would stop being byte-identical to it.
    */
   nav?: { header: NavItem[]; footer: NavItem[] };
+  /** `null` when the tenant has no chrome; see the note above about bytes. */
+  chrome?: (SiteChrome & { logoUrl: string | null }) | null;
 }
-const { page, tenantKey, head, nav } = Astro.props as Props;
+const { page, tenantKey, head, nav, chrome } = Astro.props as Props;
 const header = nav !== undefined && nav.header.length > 0 ? nav.header : null;
 const footer = nav !== undefined && nav.footer.length > 0 ? nav.footer : null;
+const bar = chrome === undefined || chrome === null ? null : chrome;
+const identity = bar !== null && (bar.title !== '' || bar.logoUrl !== null);
+// A bar with nothing in it is not a bar: a `<header>` with no identity and no menu would
+// be an empty box with a border. `hasChrome` already refuses to pass such a record, and
+// these guards keep the template honest if it ever does.
+const headerBar = bar !== null && (identity || header !== null) ? bar : null;
+const footerBar = bar !== null && (footer !== null || bar.footerText !== '') ? bar : null;
+const showStyle = headerBar !== null || footerBar !== null;
+const style = showStyle ? chromeCss(bar) : '';
+const headerClass = headerBar === null ? '' : headerBar.headerSticky ? 'site-header site-header--sticky' : 'site-header';
+const footerClass = footerBar === null ? '' : footerBar.footerSticky ? 'site-footer site-footer--sticky' : 'site-footer';
 ---
 <!doctype html>
 <html lang="en" data-tenant={tenantKey}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{page.title}</title>{head ? <Fragment set:html={head} /> : null}
+    <title>{page.title}</title>{head ? <Fragment set:html={head} /> : null}{showStyle ? <style set:html={style} /> : null}
     {page.bodyCss ? <style set:html={page.bodyCss} /> : null}
   </head>
-  <body data-page-path={page.path}>{header !== null ? <header><nav aria-label="Main"><NavList items={header} /></nav></header> : null}
-    <main set:html={page.bodyHtml} />{footer !== null ? <footer><nav aria-label="Footer"><NavList items={footer} /></nav></footer> : null}
+  <body data-page-path={page.path}>{headerBar !== null ? <header class={headerClass}>{identity ? <a class="site-id" href="/">{headerBar.logoUrl !== null ? <img src={headerBar.logoUrl} alt="" /> : null}<span>{headerBar.title}</span></a> : null}{header !== null ? <nav aria-label="Main"><NavList items={header} /></nav> : null}</header> : header !== null ? <header><nav aria-label="Main"><NavList items={header} /></nav></header> : null}
+    <main set:html={page.bodyHtml} />{footerBar !== null ? <footer class={footerClass}>{footer !== null ? <nav aria-label="Footer"><NavList items={footer} /></nav> : null}{footerBar.footerText !== '' ? <p class="site-footer__text">{footerBar.footerText}</p> : null}</footer> : footer !== null ? <footer><nav aria-label="Footer"><NavList items={footer} /></nav></footer> : null}
   </body>
 </html>

@@ -3,6 +3,7 @@ export const prerender = false;
 import PageShell from '../components/shells/page.astro';
 
 import type { NavTree } from '../nav.ts';
+import type { SiteChrome } from '../chrome.ts';
 
 interface Locals {
   tenantKey: string;
@@ -12,7 +13,9 @@ interface Locals {
   head?: string;
   /** `cms_nav`, already loaded, resolved and ordered by the app (`app/render/nav.ts`). */
   nav: NavTree;
+  /** S8l: `null` when the tenant has no site chrome; see `app/render/chrome.ts`. */
+  chrome: (SiteChrome & { logoUrl: string | null }) | null;
 }
-const { tenantKey, page, head, nav } = Astro.locals as unknown as Locals;
+const { tenantKey, page, head, nav, chrome } = Astro.locals as unknown as Locals;
 ---
-<PageShell page={page} tenantKey={tenantKey} head={head} nav={nav} />
+<PageShell page={page} tenantKey={tenantKey} head={head} nav={nav} chrome={chrome} />

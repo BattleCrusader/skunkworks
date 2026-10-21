@@ -44,8 +44,36 @@ function columnsOf(db: Database.Database, table: string): Set<string> {
   return new Set(rows.map((row) => row.name));
 }
 
-/** `{column}` in the block's href template, per row. */
-function hrefFor(template: string, row: Record<string, unknown>): string {
+/**
+ * A template that is **exactly one placeholder** (`"{href}"`) means "this cell is the URL".
+ *
+ * That is the menu case: the row holds `/about` or `https://example.com/x`, and the segment
+ * rule below would turn `/about` into `%2Fabout` — a link to nothing. A blog's `/blog/{slug}`
+ * keeps the segment rule, because a slug is one path segment and must be encoded as one.
+ *
+ * A raw href would be an `href` a database row chooses, so `safeHref` accepts only a site
+ * path (`/…`, no `//`, no `..`) or an `http(s)` URL. `javascript:`, `data:` and a bare word
+ * are refused, and the caller drops the attribute rather than writing a dead link.
+ */
+const WHOLE_PLACEHOLDER = /^\{([a-z][a-z0-9_]*)\}$/;
+
+function safeHref(value: string): string | null {
+  if (value.startsWith('/')) {
+    if (value.startsWith('//') || value.includes('..')) return null;
+    return value;
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `{column}` in the block's href template, per row. `null` = no usable href for this row. */
+function hrefFor(template: string, row: Record<string, unknown>): string | null {
+  const whole = WHOLE_PLACEHOLDER.exec(template);
+  if (whole !== null) return safeHref(String(row[whole[1] ?? ''] ?? ''));
   return template.replace(/\{([a-z][a-z0-9_]*)\}/g, (_whole, name: string) => encodeURIComponent(String(row[name] ?? '')));
 }
 
@@ -59,9 +87,10 @@ export function blockRows(db: Database.Database, block: DeclarativeBlock): Recor
   if (wanted.length === 0) return [];
   const orderBy = block.orderBy !== undefined && actual.has(block.orderBy) ? block.orderBy : 'id';
   const direction = block.order === 'asc' ? 'ASC' : 'DESC';
-  const filterColumn = block.filter !== undefined && actual.has(block.filter.column) ? block.filter.column : undefined;
-  const where = filterColumn === undefined ? '' : ` WHERE "${filterColumn}" = ?`;
-  const params = filterColumn === undefined ? [] : [block.filter?.equals ?? ''];
+  // S8m: every condition that names a real column, ANDed, up to the registry's cap of three.
+  const conditions = (block.filters ?? (block.filter === undefined ? [] : [block.filter])).filter((filter) => actual.has(filter.column));
+  const where = conditions.length === 0 ? '' : ` WHERE ${conditions.map((filter) => `\"${filter.column}\" = ?`).join(' AND ')}`;
+  const params: string[] = conditions.map((filter) => filter.equals);
   const limit = Math.max(1, Math.min(20, block.limit));
   const sql = `SELECT ${wanted.map((c) => `"${c}"`).join(', ')} FROM "${block.table}"${where} ORDER BY "${orderBy}" ${direction} LIMIT ${limit}`;
   return db.prepare(sql).all(...params) as Record<string, unknown>[];
@@ -106,7 +135,10 @@ function bindRow(node: HtmlNode, block: DeclarativeBlock, row: Record<string, un
     if (binding.startsWith('href-')) {
       if (block.href === undefined) continue;
       if (!Object.prototype.hasOwnProperty.call(row, value)) continue;
-      out = withAttr(out, 'href', hrefFor(block.href, row));
+      const href = hrefFor(block.href, row);
+      // A refused href leaves the element with no `href` at all: an `<a>` with no target is
+      // inert text, which is honest, and a dead or `javascript:` href is not.
+      out = href === null ? element(out.tag, out.attrs.filter(([key]) => key !== 'href'), out.children) : withAttr(out, 'href', href);
       continue;
     }
     if (binding.startsWith('asset-')) continue; // no asset binding today: a plugin table holds no assets
@@ -122,10 +154,42 @@ function bindRow(node: HtmlNode, block: DeclarativeBlock, row: Record<string, un
  *
  * Returns the body unchanged when no marker is present, so a page with no plugin data costs one
  * `includes` call.
+ *
+ * ## Where the repeat child may sit (S8m)
+ *
+ * `[data-repeat]` must be reachable from the `data-source` element by descending through
+ * **single-element wrappers** — `children.length` of elements == 1 at each step, at most three
+ * steps. That is what lets a menu be a `<ul>` of `<li>`s:
+ *
+ *     <div data-source="menu/menu-main"><ul><li data-repeat>…</li></ul><p data-empty>…</p></div>
+ *
+ * The first version only looked at direct children, so a block whose markup used a list
+ * wrapper resolved to nothing at all — the page kept the raw marker and the editor saw a
+ * block that "did nothing". The `<ul>` is not decoration: a menu without it is a run of
+ * links with no list semantics for a screen reader.
  */
 export function resolveSourceBlocks(db: Database.Database, tenant: string, html: string, lookup: BlockLookup): string {
   if (!html.includes(SOURCE_ATTR)) return html;
   let changed = false;
+
+  /** The chain of single-element wrappers from `node` down to the element holding the repeat. */
+  function findHolder(node: ElementNode): { chain: { node: ElementNode; index: number }[]; holder: ElementNode } | null {
+    let holder = node;
+    const chain: { node: ElementNode; index: number }[] = [];
+    for (;;) {
+      if (holder.children.some(isRepeat)) return { chain, holder };
+      // The `data-empty` child is not content: it is the no-rows fallback that sits beside the
+      // wrapper, so counting it as a candidate would stop the descent at a div with one
+      // wrapper and one empty-paragraph.
+      const elements = holder.children
+        .map((child, index) => ({ child, index }))
+        .filter(({ child }) => child.type === 'element' && !isEmpty(child));
+      if (elements.length !== 1 || chain.length >= 3) return null;
+      const only = elements[0] as { child: ElementNode; index: number };
+      chain.push({ node: holder, index: only.index });
+      holder = only.child;
+    }
+  }
 
   const walk = (nodes: HtmlNode[]): HtmlNode[] =>
     nodes.map((node) => {
@@ -136,28 +200,47 @@ export function resolveSourceBlocks(db: Database.Database, tenant: string, html:
       const block = lookup(tenant, source);
       if (block === undefined) return element(node.tag, node.attrs, walk(node.children));
 
+      const found = findHolder(node);
+      const repeatIndex = found === null ? -1 : found.holder.children.findIndex(isRepeat);
+      if (found === null || repeatIndex === -1) return node;
+
       changed = true;
       const rows = blockRows(db, block);
-      const repeatIndex = node.children.findIndex(isRepeat);
       const emptyIndex = node.children.findIndex(isEmpty);
-      if (repeatIndex === -1) return node;
 
-      const template = node.children[repeatIndex] as ElementNode;
       // A clamped limit is stated in the markup, as the registry entry promises.
       const clamped = block.limit > 20 ? 20 : block.limit;
-      const base = withAttr(node, LIMIT_ATTR, String(clamped));
-      const truncated = block.limit > clamped ? withAttr(base, 'data-truncated', '1') : base;
+      const truncated = block.limit > clamped ? withAttr(node, 'data-truncated', '1') : node;
+      const base = withAttr(truncated, LIMIT_ATTR, String(clamped));
 
-      if (rows.length === 0) {
-        const kept = truncated.children.filter((child, index) => index === emptyIndex || !isRepeat(child));
-        return element(truncated.tag, truncated.attrs, kept.length === 0
-          ? [element('p', [['class', 'list__empty']], [text('Nothing to show yet.')])]
-          : kept);
+      const template = found.holder.children[repeatIndex] as ElementNode;
+      const itemChildren: HtmlNode[] =
+        rows.length === 0
+          ? found.holder.children.filter((child, index) => index !== repeatIndex)
+          : [...rows.map((row) => bindRow(template, block, row)), ...found.holder.children.filter((_child, index) => index !== repeatIndex)];
+
+      // Rebuild the wrapper chain bottom-up, then drop the `data-empty` child when rows exist.
+      let built: ElementNode = element(found.holder.tag, found.holder.attrs, itemChildren);
+      for (let i = found.chain.length - 1; i >= 0; i -= 1) {
+        const link = found.chain[i] as { node: ElementNode; index: number };
+        built = element(
+          link.node.tag,
+          link.node.attrs,
+          link.node.children.map((child, index) => (index === link.index ? built : child)),
+        );
       }
 
-      const items: HtmlNode[] = rows.map((row) => bindRow(template, block, row));
-      const rest = truncated.children.filter((child, index) => index !== repeatIndex && index !== emptyIndex);
-      return element(base.tag, base.attrs, [...items, ...rest]);
+      if (rows.length === 0 && emptyIndex === -1) {
+        return element(built.tag, built.attrs, [
+          ...built.children,
+          element('p', [['class', 'list__empty']], [text('Nothing to show yet.')]),
+        ]);
+      }
+      if (rows.length === 0) return element(built.tag, built.attrs, built.children);
+      // Drop the `data-empty` child by what it IS, not by where it was: N clones were inserted
+      // in front of it, so its old index now points at a row. (That bug shipped once: a block
+      // with rows dropped its first row instead of its empty paragraph.)
+      return element(built.tag, built.attrs, built.children.filter((child) => !isEmpty(child)));
     });
 
   const resolved = walk(parseHtml(html));

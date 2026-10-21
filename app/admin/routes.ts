@@ -120,6 +120,8 @@ import type { DeclarativeScreen } from '../plugins/registry.ts';
 import type { FieldSpec } from '../plugins/manifest.ts';
 import { groupOf, newSecret, otpauthUri } from './totp.ts';
 import { accountScreen } from './ui/account.ts';
+import { siteScreen, type SiteNavRow } from './ui/site.ts';
+import { CHROME_KEYS, CHROME_TYPES, loadChrome, logoUrl as chromeLogoUrl } from '../render/chrome.ts';
 import { layout, type NavKey, type NavItem } from './ui/layout.ts';
 import { pageListScreen, type PageRow } from './ui/pageList.ts';
 import { mediaLibraryScreen, type MediaAsset } from './ui/mediaLibrary.ts';
@@ -920,6 +922,41 @@ ${items}
       reply.send({ ok: true });
       return;
     }
+    // S8l: the site's own bar and footer. Before this, `cms_nav` had a reader and no author.
+    if (action === 'site' && req.method === 'GET') {
+      this.#siteScreen(reply, req, tenant, session);
+      return;
+    }
+    if (action === 'site/save' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#siteSave(req, reply, tenant, session);
+      return;
+    }
+    if (action === 'site/nav/add' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#siteNavAdd(req, reply, tenant);
+      return;
+    }
+    if (action === 'site/nav/delete' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#siteNavDelete(req, reply, tenant);
+      return;
+    }
+    if (action === 'site/nav/move' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#siteNavMove(req, reply, tenant);
+      return;
+    }
+    if (action === 'site/nav/visible' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#siteNavVisible(req, reply, tenant);
+      return;
+    }
     if (action === 'account' && req.method === 'GET') {
       this.#account(reply, req, tenant, session);
       return;
@@ -1180,6 +1217,246 @@ ${items}
         minPasswordLength: PASSWORD_MIN_LENGTH,
       }),
     );
+  }
+
+
+  // --- S8l: the site's bar and footer (`cms_settings` + `cms_nav`) ----------
+
+  /**
+   * The Site screen. Reads on the render-read class and writes through `#siteWrite`.
+   *
+   * The logo key is resolved here rather than in the screen module so the screen stays a
+   * string builder: whether a key names a real, non-gated asset is a database question, and
+   * `app/render/chrome.ts` is the one implementation of it (the same call the shell makes).
+   */
+  #siteScreen(reply: FastifyReply, req: FastifyRequest, tenant: Tenant, session: SessionRecord): void {
+    const db = this.#siteDb(tenant.key);
+    try {
+      const chrome = loadChrome(db);
+      const rows = db
+        .prepare(
+          `SELECT id, location, label, href_kind, href_target, position, visible
+             FROM cms_nav ORDER BY location, ifnull(parent_id, 0), position, id`,
+        )
+        .all() as { id: number; location: string; label: string; href_kind: string; href_target: string; position: number; visible: number }[];
+      const mapped: SiteNavRow[] = rows.map((row) => ({
+        id: row.id,
+        location: row.location,
+        label: row.label,
+        hrefKind: row.href_kind,
+        hrefTarget: row.href_target,
+        position: row.position,
+        visible: row.visible,
+      }));
+      const resolved = chromeLogoUrl(db, chrome);
+      const user = this.auth.userById(session.userId);
+      reply.header('cache-control', 'no-store').type('text/html; charset=utf-8').send(
+        siteScreen({
+          tenant: { key: tenant.key, label: tenant.key },
+          user: { email: user?.email ?? '', role: user?.role ?? 'owner' },
+          csrf: this.sessions.csrfToken(session),
+          notices: this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length,
+          chrome,
+          header: mapped.filter((row) => row.location === 'header'),
+          footer: mapped.filter((row) => row.location === 'footer'),
+          logoResolved: resolved,
+          ...(queryValue(req.url, 'flash') === undefined ? {} : { flash: queryValue(req.url, 'flash') }),
+        }),
+      );
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Save the identity. Five values, one statement each, in one transaction — the screen
+   * shows all five at once, so a half-saved identity is a bar that disagrees with the form
+   * that wrote it.
+   */
+  #siteSave(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const base = `/admin/t/${tenant.key}/site`;
+    const fields = fieldsOf(req.body);
+    const title = (fields.title ?? '').trim();
+    const logoKey = (fields.logo_key ?? '').trim().toLowerCase();
+    const footerText = (fields.footer_text ?? '').trim();
+    if (title.length > 120) {
+      this.#seeOther(reply, `${base}?flash=title`);
+      return;
+    }
+    if (logoKey !== '' && !/^[a-z0-9][a-z0-9._/-]*$/.test(logoKey)) {
+      this.#seeOther(reply, `${base}?flash=logo-missing`);
+      return;
+    }
+    const db = this.#siteWrite(tenant.key);
+    try {
+      if (logoKey !== '') {
+        const asset = db.prepare(`SELECT access_class FROM cms_asset WHERE key = ?`).get(logoKey) as
+          | { access_class: string }
+          | undefined;
+        if (asset === undefined || asset.access_class === 'gated') {
+          this.#seeOther(reply, `${base}?flash=logo-missing`);
+          return;
+        }
+      }
+      const upsert = db.prepare(
+        `INSERT INTO cms_settings (key, value_json, type, updated_by) VALUES (?, ?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, type = excluded.type,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = excluded.updated_by`,
+      );
+      const write = db.transaction(() => {
+        upsert.run(CHROME_KEYS.title, JSON.stringify(title), CHROME_TYPES[CHROME_KEYS.title], session.userId);
+        upsert.run(CHROME_KEYS.logo, JSON.stringify(logoKey), CHROME_TYPES[CHROME_KEYS.logo], session.userId);
+        upsert.run(CHROME_KEYS.footerText, JSON.stringify(footerText), CHROME_TYPES[CHROME_KEYS.footerText], session.userId);
+        upsert.run(CHROME_KEYS.headerSticky, JSON.stringify(fields.header_sticky === '1'), CHROME_TYPES[CHROME_KEYS.headerSticky], session.userId);
+        upsert.run(CHROME_KEYS.footerSticky, JSON.stringify(fields.footer_sticky === '1'), CHROME_TYPES[CHROME_KEYS.footerSticky], session.userId);
+      });
+      write();
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.auth.userById(session.userId)?.email ?? 'unknown',
+        action: 'admin.site.save',
+        targetKind: 'cms_settings',
+        targetId: 'site',
+        ip: req.socket.remoteAddress ?? '',
+      });
+    } finally {
+      db.close();
+    }
+    this.#seeOther(reply, `${base}?flash=saved`);
+  }
+
+  /**
+   * Add a menu row at the end of its location.
+   *
+   * `position` is `max + 1` inside the same `(location, parent)` group. Two operators adding
+   * at once cannot collide on `ux_nav_pos` because the INSERT and the SELECT run in one
+   * transaction, and `ux_nav_pos` is the backstop that would refuse it if they did.
+   */
+  #siteNavAdd(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): void {
+    const base = `/admin/t/${tenant.key}/site`;
+    const fields = fieldsOf(req.body);
+    const location = fields.location === 'footer' ? 'footer' : 'header';
+    const label = (fields.label ?? '').trim();
+    const hrefKind = fields.href_kind ?? 'page';
+    const hrefTarget = (fields.href_target ?? '').trim();
+    if (label.length === 0 || label.length > 80) {
+      this.#seeOther(reply, `${base}?flash=label`);
+      return;
+    }
+    if (hrefKind !== 'page' && hrefKind !== 'url' && hrefKind !== 'asset') {
+      this.#seeOther(reply, `${base}?flash=href-kind`);
+      return;
+    }
+    if (hrefTarget.length === 0 || hrefTarget.length > 400) {
+      this.#seeOther(reply, `${base}?flash=href-target`);
+      return;
+    }
+    const db = this.#siteWrite(tenant.key);
+    try {
+      db.transaction(() => {
+        const next = db
+          .prepare(
+            `SELECT ifnull(max(position), -1) + 1 AS next FROM cms_nav WHERE location = ? AND parent_id IS NULL`,
+          )
+          .get(location) as { next: number };
+        db.prepare(
+          `INSERT INTO cms_nav (location, parent_id, label, href_kind, href_target, position, visible)
+           VALUES (?, NULL, ?, ?, ?, ?, 1)`,
+        ).run(location, label, hrefKind, hrefTarget, next.next);
+      })();
+    } finally {
+      db.close();
+    }
+    this.#seeOther(reply, `${base}?flash=added`);
+  }
+
+  #siteNavDelete(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): void {
+    const base = `/admin/t/${tenant.key}/site`;
+    const id = Number(fieldsOf(req.body).id);
+    if (!Number.isInteger(id)) {
+      this.#seeOther(reply, `${base}?flash=not-found`);
+      return;
+    }
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const result = db.prepare(`DELETE FROM cms_nav WHERE id = ?`).run(id);
+      if (result.changes === 0) {
+        this.#seeOther(reply, `${base}?flash=not-found`);
+        return;
+      }
+    } finally {
+      db.close();
+    }
+    this.#seeOther(reply, `${base}?flash=removed`);
+  }
+
+  /**
+   * Move a row one place within its own group.
+   *
+   * `ux_nav_pos` is UNIQUE on `(location, ifnull(parent_id, 0), position)`, so a swap cannot
+   * be two UPDATEs: the first one lands on a position the neighbour still holds. The row is
+   * parked on a free position (-1, which the CHECK allows and no neighbour can hold), the
+   * neighbour is moved into the vacated slot, and the parked row takes the neighbour's old
+   * place — one transaction, and a rollback leaves the menu exactly as it was.
+   */
+  #siteNavMove(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): void {
+    const base = `/admin/t/${tenant.key}/site`;
+    const fields = fieldsOf(req.body);
+    const id = Number(fields.id);
+    const direction = fields.direction === 'up' ? 'up' : 'down';
+    if (!Number.isInteger(id)) {
+      this.#seeOther(reply, `${base}?flash=not-found`);
+      return;
+    }
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const moved = db.transaction(() => {
+        const row = db
+          .prepare(`SELECT id, location, parent_id, position FROM cms_nav WHERE id = ?`)
+          .get(id) as { id: number; location: string; parent_id: number | null; position: number } | undefined;
+        if (row === undefined) return false;
+        const neighbour = db
+          .prepare(
+            `SELECT id, position FROM cms_nav
+              WHERE location = ? AND ifnull(parent_id, 0) = ifnull(?, 0) AND id <> ?
+                AND position ${direction === 'up' ? '<' : '>'} ?
+              ORDER BY position ${direction === 'up' ? 'DESC' : 'ASC'} LIMIT 1`,
+          )
+          .get(row.location, row.parent_id, row.id, row.position) as { id: number; position: number } | undefined;
+        if (neighbour === undefined) return false;
+        db.prepare(`UPDATE cms_nav SET position = -1 WHERE id = ?`).run(row.id);
+        db.prepare(`UPDATE cms_nav SET position = ? WHERE id = ?`).run(row.position, neighbour.id);
+        db.prepare(`UPDATE cms_nav SET position = ? WHERE id = ?`).run(neighbour.position, row.id);
+        return true;
+      });
+      const ok = moved();
+      this.#seeOther(reply, `${base}?flash=${ok ? 'moved' : 'not-found'}`);
+    } finally {
+      db.close();
+    }
+  }
+
+  #siteNavVisible(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): void {
+    const base = `/admin/t/${tenant.key}/site`;
+    const fields = fieldsOf(req.body);
+    const id = Number(fields.id);
+    const visible = fields.visible === '1' ? 1 : 0;
+    if (!Number.isInteger(id)) {
+      this.#seeOther(reply, `${base}?flash=not-found`);
+      return;
+    }
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const result = db.prepare(`UPDATE cms_nav SET visible = ? WHERE id = ?`).run(visible, id);
+      if (result.changes === 0) {
+        this.#seeOther(reply, `${base}?flash=not-found`);
+        return;
+      }
+    } finally {
+      db.close();
+    }
+    this.#seeOther(reply, `${base}?flash=hidden:${visible}`);
   }
 
   /**
@@ -2165,7 +2442,15 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
         // S8h: every block the tenant's *loaded* packages registered. Loaded is the whole rule:
         // a disabled package has no entry, so its blocks leave the palette without a restart.
         blocks: (this.#plugins?.registry.plugins(tenant.key) ?? []).flatMap((entry) =>
-          [...entry.blocks.values()].map((block) => ({ id: block.id, label: block.label, plugin: entry.pluginId, limit: block.limit })),
+          [...entry.blocks.values()].map((block) => ({
+            id: block.id,
+            label: block.label,
+            plugin: entry.pluginId,
+            limit: block.limit,
+            ...(block.labelColumn === undefined ? {} : { labelColumn: block.labelColumn }),
+            ...(block.href === undefined ? {} : { href: block.href }),
+            ...(block.layout === undefined ? {} : { layout: block.layout }),
+          })),
         ),
         forms: (this.#plugins?.registry.plugins(tenant.key) ?? []).flatMap((entry) =>
           [...entry.forms.values()].map((form) => ({ id: form.id, label: form.label })),

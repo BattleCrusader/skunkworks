@@ -1,0 +1,71 @@
+{
+  "id": "menu",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "hooks": [],
+  "description": "Menus you can drop on a page. One owned table of items grouped by menu name, a declarative admin screen, a public JSON feed of visible items, and a block the page builder's palette draws as a real <ul> of links — ordered by position, hiding rows with visible = 0.",
+  "capabilities": ["store.query"],
+  "tables": [
+    {
+      "name": "p_menu_item",
+      "export": "rows",
+      "columns": [
+        { "name": "menu", "type": "TEXT", "notNull": true, "default": "main", "indexed": true },
+        { "name": "label", "type": "TEXT", "notNull": true },
+        { "name": "href", "type": "TEXT", "notNull": true },
+        { "name": "position", "type": "INTEGER", "notNull": true, "default": 0, "indexed": true },
+        { "name": "visible", "type": "INTEGER", "notNull": true, "default": 1, "indexed": true },
+        { "name": "created_at", "type": "TEXT", "notNull": true, "indexed": true }
+      ],
+      "fields": [
+        {
+          "name": "menu",
+          "label": "Which menu",
+          "widget": "text",
+          "required": true,
+          "placeholder": "main",
+          "help": "A name you choose. A block shows one menu, so `main` on /pricing and `footer` on /contact are two different menus."
+        },
+        {
+          "name": "label",
+          "label": "Text",
+          "widget": "text",
+          "required": true,
+          "placeholder": "About us",
+          "help": "What the link says."
+        },
+        {
+          "name": "href",
+          "label": "Goes to",
+          "widget": "text",
+          "required": true,
+          "placeholder": "/about",
+          "help": "A path on this site (/about) or a full https:// address. Anything else renders as plain text, not a link."
+        },
+        {
+          "name": "position",
+          "label": "Order",
+          "widget": "number",
+          "required": true,
+          "help": "Lowest first. Rows with the same number fall back to the order they were added."
+        },
+        {
+          "name": "visible",
+          "label": "Shown",
+          "widget": "select",
+          "options": ["1", "0"],
+          "required": true,
+          "help": "0 keeps the row but hides it — a menu block never reads a hidden row."
+        },
+        {
+          "name": "created_at",
+          "widget": "auto",
+          "default": "now"
+        }
+      ],
+      "list": ["menu", "label", "href", "position", "visible"]
+    }
+  ],
+  "endpoints": [{ "name": "items", "method": "GET" }],
+  "settings": []
+}
