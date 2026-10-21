@@ -1,9 +1,9 @@
 {
   "id": "contact",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "main": "index.mjs",
   "hooks": [],
-  "description": "A contact-capture package: one owned table, a declarative Messages screen, and a public POST /_plugin/contact/submit that validates its body and inserts a row. It answers {ok:true} and never echoes the submitted message back.",
+  "description": "A contact-capture package: one owned table, a declarative Messages screen, and a public POST /_plugin/contact/submit that validates its body and inserts a row. The screen is drawn from the fields declared here, so a message reads as a message and not as six columns. It answers {ok:true} and never echoes the submitted message back.",
   "capabilities": ["store.insert"],
   "tables": [
     {
@@ -21,7 +21,30 @@
         },
         { "name": "created_at", "type": "TEXT", "notNull": true, "indexed": true },
         { "name": "ip_hash", "type": "TEXT" }
-      ]
+      ],
+      "fields": [
+        { "name": "name", "label": "From", "widget": "text", "required": true },
+        { "name": "email", "label": "Reply to", "widget": "text", "required": true },
+        {
+          "name": "message",
+          "label": "Message",
+          "widget": "textarea",
+          "rows": 10,
+          "required": true,
+          "help": "What the visitor sent. It is their text — edit it only to redact."
+        },
+        {
+          "name": "status",
+          "label": "Handling",
+          "widget": "select",
+          "options": ["new", "read", "replied", "archived"],
+          "required": true,
+          "help": "Where this message is in your own workflow. Nothing else reads it."
+        },
+        { "name": "created_at", "widget": "auto", "default": "now" },
+        { "name": "ip_hash", "label": "Sender fingerprint", "widget": "hidden" }
+      ],
+      "list": ["name", "email", "status", "created_at"]
     }
   ],
   "settings": [],

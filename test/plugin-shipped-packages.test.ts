@@ -208,7 +208,22 @@ test('S3. blog activates: /blog and GET posts register, and the feed answers its
 
   const entry = runtime.registry.get(TENANT, 'blog');
   assert.ok(entry !== undefined, 'the runtime has no entry for blog');
-  assert.deepEqual(entry.screens.get('/blog'), { path: '/blog', table: 'p_blog_post', title: 'Blog posts' });
+  // S8g: the screen carries the fields the package declared for its table — the form is drawn
+  // from them, so a screen without them is a screen that falls back to raw columns.
+  const screen = entry.screens.get('/blog');
+  assert.ok(screen !== undefined, 'blog registered no /blog screen');
+  assert.deepEqual(
+    { path: screen.path, table: screen.table, title: screen.title },
+    { path: '/blog', table: 'p_blog_post', title: 'Blog posts' },
+  );
+  assert.deepEqual(
+    screen.fields?.map((f) => f.name),
+    ['title', 'slug', 'body', 'status', 'published_at', 'created_at'],
+    'the blog form is drawn from these fields, in this order',
+  );
+  assert.deepEqual(screen.fields?.find((f) => f.name === 'status')?.options, ['draft', 'published']);
+  assert.deepEqual(screen.fields?.find((f) => f.name === 'slug')?.from, 'title');
+  assert.deepEqual(screen.list, ['title', 'status', 'published_at']);
 
   const endpoint = runtime.endpoint(TENANT, 'blog', 'GET', 'posts');
   assert.ok(endpoint !== undefined, 'GET posts is declared but was not registered');
@@ -272,11 +287,19 @@ test('S4. contact activates: POST submit validates, writes one row, and never ec
 
   const entry = runtime.registry.get(TENANT, 'contact');
   assert.ok(entry !== undefined, 'the runtime has no entry for contact');
-  assert.deepEqual(entry.screens.get('/messages'), {
-    path: '/messages',
-    table: 'p_contact_message',
-    title: 'Messages',
-  });
+  const screen = entry.screens.get('/messages');
+  assert.ok(screen !== undefined, 'contact registered no /messages screen');
+  assert.deepEqual(
+    { path: screen.path, table: screen.table, title: screen.title },
+    { path: '/messages', table: 'p_contact_message', title: 'Messages' },
+  );
+  assert.deepEqual(
+    screen.fields?.map((f) => f.name),
+    ['name', 'email', 'message', 'status', 'created_at', 'ip_hash'],
+  );
+  assert.deepEqual(screen.fields?.find((f) => f.name === 'status')?.options, ['new', 'read', 'replied', 'archived']);
+  assert.equal(screen.fields?.find((f) => f.name === 'ip_hash')?.widget, 'hidden');
+  assert.deepEqual(screen.list, ['name', 'email', 'status', 'created_at']);
   assert.ok(runtime.endpoint(TENANT, 'contact', 'POST', 'submit') !== undefined, 'POST submit was not registered');
 
   const empty = asRecord(await invoke('contact', 'submit', 'POST', '/_plugin/contact/submit', ''));

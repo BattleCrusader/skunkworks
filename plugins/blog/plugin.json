@@ -1,9 +1,9 @@
 {
   "id": "blog",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "main": "index.mjs",
   "hooks": [],
-  "description": "A blog with one owned table, a declarative admin screen and a public JSON feed of published posts. It declares no hooks: the screen is where posts are listed and edited, and the only public URL it answers is GET /_plugin/blog/posts.",
+  "description": "A blog with one owned table, a declarative admin screen and a public JSON feed of published posts. The screen is drawn from the fields declared here: a title, a slug derived from it, a prose box, a draft/published switch and a date. It declares no hooks, and its only public URL is GET /_plugin/blog/posts.",
   "capabilities": ["store.query", "settings.get"],
   "tables": [
     {
@@ -22,7 +22,54 @@
         },
         { "name": "published_at", "type": "TEXT", "indexed": true },
         { "name": "created_at", "type": "TEXT", "notNull": true, "indexed": true }
-      ]
+      ],
+      "fields": [
+        {
+          "name": "title",
+          "label": "Title",
+          "widget": "text",
+          "required": true,
+          "placeholder": "What this post is about",
+          "help": "The headline a reader sees."
+        },
+        {
+          "name": "slug",
+          "label": "Web address",
+          "widget": "slug",
+          "from": "title",
+          "required": true,
+          "help": "Filled from the title. Short, lower-case, hyphenated — it is the post's URL."
+        },
+        {
+          "name": "body",
+          "label": "Post",
+          "widget": "markdown",
+          "rows": 18,
+          "required": true,
+          "placeholder": "Write the post…",
+          "help": "The text of the post, as Markdown."
+        },
+        {
+          "name": "status",
+          "label": "Visibility",
+          "widget": "select",
+          "options": ["draft", "published"],
+          "required": true,
+          "help": "Only a published post appears in the public feed."
+        },
+        {
+          "name": "published_at",
+          "label": "Publish date",
+          "widget": "date",
+          "help": "Leave empty until you know the date; the feed sorts by it, newest first."
+        },
+        {
+          "name": "created_at",
+          "widget": "auto",
+          "default": "now"
+        }
+      ],
+      "list": ["title", "status", "published_at"]
     }
   ],
   "settings": [{ "key": "page_size", "type": "int" }],

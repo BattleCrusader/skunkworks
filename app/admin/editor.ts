@@ -25,6 +25,7 @@ import { join } from 'node:path';
 
 import type { PaletteItem, Registry } from '../editor/registry.ts';
 import { palette, paletteCategories, typeDefinitions } from '../editor/registry.ts';
+import { blockMarker } from '../render/blocks.ts';
 import { DATA_GJS_TYPE_PATTERN } from '../editor/paste.ts';
 
 export interface EditorPageInput {
@@ -46,6 +47,12 @@ export interface EditorPageInput {
   csrf: string;
   /** The page's own stylesheet, so the canvas is not unstyled. */
   bodyCss: string;
+  /**
+   * S8h: the blocks this tenant's **enabled** packages contribute. Each becomes a palette entry
+   * that inserts a marker; the host draws the view at render time. A disabled package's blocks
+   * are absent from this list, which is how the palette and the renderer stay in step.
+   */
+  blocks?: { id: string; label: string; plugin: string }[];
 }
 
 /** `JSON.stringify` inside a `<script type="application/json">`: `<` must not close it. */
@@ -62,7 +69,21 @@ export function editorBootPayload(input: EditorPageInput): {
   tenant: string;
   csrf: string;
 } {
-  const items = palette(input.registry);
+  // The host's components first, then one group for the packages: a package cannot add a
+  // component (that would be plugin markup in the canvas), only a marker the host resolves.
+  const items: PaletteItem[] = [
+    ...palette(input.registry),
+    ...(input.blocks ?? []).map((block) => ({
+      id: `block-${block.id.replace(/\//g, '-')}`,
+      label: block.label,
+      category: 'Plugins',
+      type: 'block',
+      kind: 'block' as const,
+      content: blockMarker(block.id),
+      // No settings panel: the block's view is the package's declaration, not a page decision.
+      editable: [],
+    })),
+  ];
   const defs = typeDefinitions(input.registry);
   return {
     palette: items,

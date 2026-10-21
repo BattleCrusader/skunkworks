@@ -91,6 +91,7 @@ import {
   selectRow,
   taxonomy,
   updateRow,
+  type ColumnInfo,
   type Actor,
   type TableInfo,
 } from './crud.ts';
@@ -115,6 +116,8 @@ import {
   type Tenant,
 } from '../tenancy/resolve.ts';
 import { Auth, Semaphore, verifyTotp, type LoginFailureReason } from './auth.ts';
+import type { DeclarativeScreen } from '../plugins/registry.ts';
+import type { FieldSpec } from '../plugins/manifest.ts';
 import { groupOf, newSecret, otpauthUri } from './totp.ts';
 import { accountScreen } from './ui/account.ts';
 import { layout, type NavKey, type NavItem } from './ui/layout.ts';
@@ -2126,6 +2129,11 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
         registry,
         csrf: this.sessions.csrfToken(session),
         bodyCss: pageRow?.css ?? registryCss(registry),
+        // S8h: every block the tenant's *loaded* packages registered. Loaded is the whole rule:
+        // a disabled package has no entry, so its blocks leave the palette without a restart.
+        blocks: (this.#plugins?.registry.plugins(tenant.key) ?? []).flatMap((entry) =>
+          [...entry.blocks.values()].map((block) => ({ id: block.id, label: block.label, plugin: entry.pluginId })),
+        ),
       });
       reply.header('cache-control', 'no-store');
       reply.type('text/html; charset=utf-8').send(body);
@@ -2450,7 +2458,41 @@ ${items}
    * one source of truth `declaredScreenLinks()` also reads, so a screen in the menu and a screen
    * that answers are the same object.
    */
-  #pluginScreen(tenant: Tenant, action: string): { path: string; table: string; title: string } | undefined {
+  /**
+   * S8g: what a declared field adds to a write that a browser cannot be trusted to do.
+   *
+   * Two rules, both written in `plugin.json`:
+   *   - a field with `default: 'now'` is stamped on insert when it arrives empty;
+   *   - a `slug` field left empty is derived from the column it names in `from`.
+   *
+   * Both run here, on the server, so a browser with JavaScript off — or a client posting the
+   * form by hand — produces the same row as one that ran the derivation script.
+   */
+  #applyFieldRules(
+    screen: DeclarativeScreen | undefined,
+    input: Record<string, string | undefined>,
+    mode: 'insert' | 'update',
+  ): Record<string, string | undefined> {
+    if (screen?.fields === undefined) return input;
+    const out = { ...input };
+    for (const field of screen.fields) {
+      if (field.default === 'now' && mode === 'insert' && (out[field.name] ?? '') === '') {
+        out[field.name] = new Date().toISOString();
+      }
+      if (field.widget === 'slug' && field.from !== undefined && (out[field.name] ?? '') === '') {
+        const derived = (out[field.from] ?? '')
+          .toLowerCase()
+          .trim()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 80);
+        if (derived !== '') out[field.name] = derived;
+      }
+    }
+    return out;
+  }
+
+  #pluginScreen(tenant: Tenant, action: string): DeclarativeScreen | undefined {
     const runtime = this.#plugins;
     if (runtime === null) return undefined;
     for (const entry of runtime.registry.plugins(tenant.key)) {
@@ -2467,7 +2509,7 @@ ${items}
     reply: FastifyReply,
     session: SessionRecord,
     tenant: Tenant,
-    screen: { path: string; table: string; title: string },
+    screen: DeclarativeScreen,
     rest: string,
   ): Promise<void> {
     const parts = rest === '' ? [] : rest.split('/').filter((p) => p !== '');
@@ -2475,26 +2517,36 @@ ${items}
     if (req.method !== 'GET') this.#writeGuard(req, session);
     if (parts.length === 0) {
       if (req.method === 'POST') {
-        const created = this.#write(tenant, (db) => createRow(db, screen.table, fieldsOf(req.body), this.#actor(session)));
+        const input = this.#applyFieldRules(screen, fieldsOf(req.body), 'insert');
+        const created = this.#write(tenant, (db) => createRow(db, screen.table, input, this.#actor(session)));
         reply.code(303).header('location', `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}/${encodeURIComponent(created.id)}`).send('');
         return;
       }
-      this.#rowsPage(reply, tenant, screen.table, session, screen.title, `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}`);
+      this.#rowsPage(
+        reply,
+        tenant,
+        screen.table,
+        session,
+        screen.title,
+        `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}`,
+        screen,
+      );
       return;
     }
     if (parts.length === 1 && parts[0] === 'new') {
       this.#requireMethod(req, 'GET');
-      this.#formPage(reply, tenant, screen.table, null, session, screen.title);
+      this.#formPage(reply, tenant, screen.table, null, session, screen.title, screen);
       return;
     }
     if (parts.length === 1) {
       const id = parts[0] as string;
       if (req.method === 'POST') {
-        this.#write(tenant, (db) => updateRow(db, screen.table, id, fieldsOf(req.body), this.#actor(session)));
+        const input = this.#applyFieldRules(screen, fieldsOf(req.body), 'update');
+        this.#write(tenant, (db) => updateRow(db, screen.table, id, input, this.#actor(session)));
         reply.code(303).header('location', `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}/${encodeURIComponent(id)}`).send('');
         return;
       }
-      this.#formPage(reply, tenant, screen.table, id, session, screen.title);
+      this.#formPage(reply, tenant, screen.table, id, session, screen.title, screen);
       return;
     }
     throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
@@ -2596,7 +2648,7 @@ ${items}
     }
   }
 
-  #rowsPage(reply: FastifyReply, tenant: Tenant, table: string, session: SessionRecord, label?: string, pathBase?: string): void {
+  #rowsPage(reply: FastifyReply, tenant: Tenant, table: string, session: SessionRecord, label?: string, pathBase?: string, screen?: DeclarativeScreen): void {
     const db = this.#siteDb(tenant.key);
     try {
       const info = describeTable(db, table);
@@ -2605,8 +2657,15 @@ ${items}
       // its own path, and linking a plugin's rows back into the Tables section would move the
       // operator into a section that does not list them.
       const base = pathBase ?? `/admin/t/${tenant.key}/tables/${table}`;
-      const shown = info.columns.filter((c) => c.editable).slice(0, 6).map((c) => c.name);
-      const head = [info.pk, ...shown.filter((c) => c !== info.pk)].map((c) => `<th>${esc(c)}</th>`).join('');
+      // S8g: a package that declared its list columns gets exactly those, in its order, under
+      // the labels it gave them. Everything else keeps the six-editable-columns guess.
+      const declared = screen?.list;
+      const shown = declared === undefined
+        ? info.columns.filter((c) => c.editable).slice(0, 6).map((c) => c.name)
+        : declared.filter((name) => info.columns.some((c) => c.name === name));
+      const heading = (name: string): string =>
+        screen?.fields?.find((f) => f.name === name)?.label ?? name;
+      const head = [info.pk, ...shown.filter((c) => c !== info.pk)].map((c) => `<th>${esc(heading(c))}</th>`).join('');
       const body = rows
         .map((row) => {
           const cells = [String(row[info.pk]), ...shown.filter((c) => c !== info.pk)].map((c) => `<td>${esc(String(row[c] ?? ''))}</td>`).join('');
@@ -2636,7 +2695,7 @@ ${body}
     }
   }
 
-  #formPage(reply: FastifyReply, tenant: Tenant, table: string, id: string | null, session: SessionRecord, label?: string): void {
+  #formPage(reply: FastifyReply, tenant: Tenant, table: string, id: string | null, session: SessionRecord, label?: string, screen?: DeclarativeScreen): void {
     const db = this.#siteDb(tenant.key);
     try {
       const info = describeTable(db, table);
@@ -2652,7 +2711,7 @@ ${body}
               : []),
             { label: label ?? info.name, href: `/admin/t/${tenant.key}/tables/${encodeURIComponent(info.name)}` },
             { label: id === null ? 'New row' : `Row ${id}` },
-          ])}${this.#formHtml(tenant, info, row ?? null, id, session)}`,
+          ])}${this.#formHtml(tenant, info, row ?? null, id, session, screen, label)}`,
           this.#chrome(tenant, session),
         ),
       );
@@ -2661,21 +2720,81 @@ ${body}
     }
   }
 
-  #formHtml(tenant: Tenant, info: TableInfo, row: Record<string, unknown> | null, id: string | null, session: SessionRecord): string {
-    const back = `<p class="formback"><a class="btn btn--sm" href="/admin/t/${esc(tenant.key)}/tables/${esc(info.name)}">← Back to ${esc(info.name)}</a></p>`;
-    const action = id === null
+  #formHtml(
+    tenant: Tenant,
+    info: TableInfo,
+    row: Record<string, unknown> | null,
+    id: string | null,
+    session: SessionRecord,
+    screen?: DeclarativeScreen,
+    title?: string,
+  ): string {
+    // S8g: where this table is edited. A plugin's screen lives at its own path and its own route
+    // handles the POST, so the form must post and go back there — not into the Tables section,
+    // which does not list the package's table.
+    const base = screen === undefined
       ? `/admin/t/${esc(tenant.key)}/tables/${esc(info.name)}`
-      : `/admin/t/${esc(tenant.key)}/tables/${esc(info.name)}/${encodeURIComponent(id)}`;
-    const controls = info.columns
-      .filter((c) => c.editable)
-      .map((c) => {
-        const value = row === null ? '' : row[c.name] === null || row[c.name] === undefined ? '' : String(row[c.name]);
-        const required = c.notNull && !c.hasDefault ? ' required' : '';
-        const label = `<label for="f_${esc(c.name)}">${esc(c.name)} <small>${esc(c.type)}${c.notNull ? ' NOT NULL' : ''}</small></label>`;
-        if (c.input === 'textarea') {
-          return `${label}<textarea id="f_${esc(c.name)}" name="${esc(c.name)}" rows="6"${required}>${esc(value)}</textarea>`;
+      : `/admin/t/${esc(tenant.key)}/${esc(screen.path.replace(/^\/+/, ''))}`;
+    const heading = title ?? info.name;
+    const back = `<p class="formback"><a class="btn btn--sm" href="${base}">← Back to ${esc(heading)}</a></p>`;
+    const action = id === null ? base : `${base}/${encodeURIComponent(id)}`;
+
+    // A column is not a field. When the package declared one, the form is drawn from the
+    // declaration: its order, its labels, its widgets. Otherwise the type's own guess stands.
+    const editable = info.columns.filter((c) => c.editable);
+    const byName = new Map(editable.map((c) => [c.name, c]));
+    const declared = (screen?.fields ?? []).filter((f) => byName.has(f.name));
+    const plans: { column: ColumnInfo; field?: FieldSpec }[] =
+      declared.length > 0
+        ? declared.map((field) => ({ column: byName.get(field.name) as ColumnInfo, field }))
+        : editable.map((column) => ({ column }));
+
+    const controls = plans
+      .map(({ column: c, field }) => {
+        const value = row === null || row[c.name] === null || row[c.name] === undefined ? '' : String(row[c.name]);
+        const widget = field?.widget ?? (c.input === 'textarea' ? 'textarea' : c.input === 'number' ? 'number' : 'text');
+        const required = (field?.required ?? (c.notNull && !c.hasDefault)) ? ' required' : '';
+        const hint = field?.help === undefined ? '' : `<p class="help" id="h_${esc(c.name)}">${esc(field.help)}</p>`;
+        const described = field?.help === undefined ? '' : ` aria-describedby="h_${esc(c.name)}"`;
+        const placeholder = field?.placeholder === undefined ? '' : ` placeholder="${esc(field.placeholder)}"`;
+        // The label is what a person reads. The column's SQL type is developer detail, so it is
+        // only shown when the package did not name the field.
+        const text = field?.label ?? c.name;
+        const typeNote = field === undefined ? `<small>${esc(c.type)}${c.notNull ? ' NOT NULL' : ''}</small>` : '';
+        const label = `<label for="f_${esc(c.name)}">${esc(text)} ${typeNote}</label>`;
+
+        if (widget === 'auto' || widget === 'hidden') {
+          // A value nobody types, so no label and no asterisk. On insert an empty one is stamped
+          // by the route (`default: now`); on update the current value rides along so it survives
+          // the write — `collected()` skips a column the form never posted.
+          return `<input type="hidden" id="f_${esc(c.name)}" name="${esc(c.name)}" value="${esc(value)}">`;
         }
-        return `${label}<input id="f_${esc(c.name)}" name="${esc(c.name)}" type="${c.input === 'number' ? 'number' : 'text'}" value="${esc(value)}"${required}>`;
+        if (widget === 'select') {
+          const options = (field?.options ?? []).map((option) => {
+            const selected = option === value ? ' selected' : '';
+            return `<option value="${esc(option)}"${selected}>${esc(option)}</option>`;
+          });
+          if (!required) options.unshift(`<option value=""${value === '' ? ' selected' : ''}>—</option>`);
+          return `${label}<select id="f_${esc(c.name)}" name="${esc(c.name)}"${required}${described}>${options.join('')}</select>${hint}`;
+        }
+        if (widget === 'textarea' || widget === 'markdown') {
+          const rows = field?.rows ?? (widget === 'markdown' ? 16 : 6);
+          const cls = widget === 'markdown' ? ' class="prose"' : '';
+          return `${label}<textarea id="f_${esc(c.name)}" name="${esc(c.name)}" rows="${rows}"${cls}${required}${placeholder}${described}>${esc(value)}</textarea>${hint}`;
+        }
+        if (widget === 'date') {
+          return `${label}<input id="f_${esc(c.name)}" name="${esc(c.name)}" type="date" value="${esc(value.slice(0, 10))}"${required}${described}>${hint}`;
+        }
+        if (widget === 'slug') {
+          // Filled from another field while the operator types, and derived on the server when it
+          // arrives empty — so a browser without JavaScript still produces a slug.
+          const from = field?.from === undefined ? '' : ` data-slug-from="f_${esc(field.from)}"`;
+          return `${label}<input id="f_${esc(c.name)}" name="${esc(c.name)}" type="text" value="${esc(value)}"${placeholder}${required}${described}${from}>${hint}`;
+        }
+        if (widget === 'number') {
+          return `${label}<input id="f_${esc(c.name)}" name="${esc(c.name)}" type="number" step="any" value="${esc(value)}"${required}${described}>${hint}`;
+        }
+        return `${label}<input id="f_${esc(c.name)}" name="${esc(c.name)}" type="text" value="${esc(value)}"${placeholder}${required}${described}>${hint}`;
       })
       .join('\n');
 
@@ -2689,7 +2808,7 @@ ${body}
       ? ''
       : `<form method="post" action="${action}/delete" data-csrf-token="${esc(csrf)}"><button type="submit">Delete</button></form>`;
 
-    return `${back}<h1>${esc(tenant.key)} — ${esc(info.name)}${id === null ? ' — new' : ` — ${esc(id)}`}</h1>
+    return `${back}<h1>${esc(heading)}${id === null ? ' — new' : ` — ${esc(id)}`}</h1>
 <form method="post" action="${action}" data-csrf-token="${esc(csrf)}">
 ${controls}
 <button type="submit">Save</button>
@@ -2711,6 +2830,20 @@ for (const form of document.querySelectorAll('form[data-csrf-token]')) {
       body: new URLSearchParams(new FormData(form)),
       redirect: 'follow',
     }).then((res) => { window.location.href = res.url; });
+  });
+}
+// S8g: a slug follows the field it was declared to come from until the operator edits it
+// themselves. The server derives it too when it arrives empty, so this is convenience only —
+// a browser with JavaScript off still gets a slug.
+for (const slug of document.querySelectorAll('input[data-slug-from]')) {
+  const source = document.getElementById(slug.dataset.slugFrom);
+  if (!source) continue;
+  let touched = slug.value !== '';
+  slug.addEventListener('input', () => { touched = true; });
+  source.addEventListener('input', () => {
+    if (touched) return;
+    slug.value = source.value.toLowerCase().trim()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
   });
 }
 </script>`;

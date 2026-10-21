@@ -37,6 +37,7 @@ import {
 } from './db/migrate.ts';
 import { normalisePagePath, pageMiss } from './render/page.ts';
 import { renderStoredBody } from './render/body.ts';
+import { resolveBlocks } from './render/blocks.ts';
 import { loadNav } from './render/nav.ts';
 import { CSP_HEADER, cspPolicy, cspPolicyWithNonce } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
@@ -686,9 +687,21 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
         const hooked = await filterSite<string>('asset.url', ctx.tenant.key, { tenant: ctx.tenant.key, key: asset.key, url: asset.url }, asset.url);
         if (hooked !== asset.url) assetUrls.set(asset.key, hooked);
       }
+      // S8h: a page may carry `data-skw-block` markers, which name a *view* a package declared
+      // over its own table. They are resolved here — after the stored body is unwrapped and
+      // before any filter sees it — because the host draws those views (§10.5: no plugin markup
+      // on a tenant's origin). A marker whose package is disabled renders nothing.
+      const withBlocks = resolveBlocks(db, ctx.tenant.key, stored.bodyHtml, (tenant, id) => {
+        for (const entry of plugins.registry.plugins(tenant)) {
+          const block = entry.blocks.get(id);
+          if (block !== undefined) return block;
+        }
+        return undefined;
+      });
+
       page = {
         ...stored,
-        bodyHtml: renderStoredBody(db, stored.bodyHtml, {
+        bodyHtml: renderStoredBody(db, withBlocks, {
           urlFor: (key) => assetUrls.get(key) ?? null,
           // §8.6 O-30: a core form rendered for a browser gets its `_pt` minted here, at the one
           // instant the page is produced. The tenant is the Host's (§5.3), never the body's.

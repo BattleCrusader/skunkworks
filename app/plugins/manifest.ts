@@ -106,11 +106,55 @@ export interface ColumnSpec {
   indexed?: boolean;
 }
 
+/**
+ * What a package says about **editing** its own data — not what it stores (S8g).
+ *
+ * A column is not a form field. `p_blog_post.created_at` is `TEXT NOT NULL`; the person writing
+ * a post has no business typing an ISO timestamp into it, and a 4,000-word body deserves a
+ * textarea, not a one-line input. Before this block existed the admin could only guess from the
+ * column's SQL type and its name, so every plugin's screen was a property sheet of raw columns.
+ *
+ * Declarative, as §13.3.1 requires: a field names a **widget** the host already knows how to
+ * draw, never markup. The host renders it; the package supplies no HTML.
+ */
+export const WIDGETS = ['text', 'textarea', 'markdown', 'select', 'number', 'date', 'slug', 'hidden', 'auto'] as const;
+export type Widget = (typeof WIDGETS)[number];
+
+export interface FieldSpec {
+  /** A column this table declares. A field for an undeclared column is refused. */
+  name: string;
+  /** What a person reads. Defaults to the column name. */
+  label?: string;
+  /** How the host draws it. Defaults to the type's own guess (`text`, `number`, `textarea`). */
+  widget?: Widget;
+  /** One line under the input. */
+  help?: string;
+  placeholder?: string;
+  /** Overrides the column's NOT NULL rule for the purposes of the asterisk. */
+  required?: boolean;
+  /** `select` only: the values the operator may choose. */
+  options?: string[];
+  /** `slug` only: the column to derive from when this one is left empty. */
+  from?: string;
+  /** `textarea`/`markdown`: how many rows to draw. */
+  rows?: number;
+  /**
+   * `date`/`hidden`/`auto`: `now` is the only accepted value, and it means the host stamps an
+   * ISO timestamp when the row is written. It is the one default a package cannot express as a
+   * SQL `DEFAULT` (§11.6 keeps `DEFAULT` a primitive), and every table needs it.
+   */
+  default?: 'now';
+}
+
 export interface TableSpec {
   name: string;
   /** §11.2's export class. A table with no class cannot be sold and is refused. */
   export: 'rows' | 'empty' | 'filtered' | 'secret';
   columns?: ColumnSpec[];
+  /** S8g: the edit form, in the order it should be drawn. */
+  fields?: FieldSpec[];
+  /** S8g: the columns the list screen shows, in order. Defaults to the first six editable ones. */
+  list?: string[];
 }
 
 export interface SettingSpec {
@@ -229,7 +273,98 @@ export function parseManifest(raw: unknown): Manifest {
       columns.push(spec);
     }
     if (new Set(columns.map((c) => c.name)).size !== columns.length) bad(id, `table ${name}: a column is declared twice`);
-    tables.push({ name, export: t.export as TableSpec['export'], columns });
+
+    // S8g: the edit form. Validated here, at install time, so a field naming a column the table
+    // does not have is a refused package rather than a control that silently does nothing.
+    const columnNames = new Set(columns.map((c) => c.name));
+    const fieldsRaw = Array.isArray(t.fields) ? t.fields : [];
+    const fields: FieldSpec[] = [];
+    for (const entry of fieldsRaw) {
+      if (typeof entry !== 'object' || entry === null) bad(id, `table ${name}: a field is not an object`);
+      const f = entry as Record<string, unknown>;
+      const fieldName = typeof f.name === 'string' ? f.name : '';
+      if (!columnNames.has(fieldName)) {
+        bad(id, `table ${name}: field ${JSON.stringify(fieldName)} is not a declared column (${[...columnNames].join(', ')})`);
+      }
+      const spec: FieldSpec = { name: fieldName };
+      if (f.label !== undefined) {
+        if (typeof f.label !== 'string' || f.label === '' || f.label.length > 80) bad(id, `table ${name}.${fieldName}: label is not a string ≤ 80`);
+        spec.label = f.label;
+      }
+      if (f.widget !== undefined) {
+        const widget = String(f.widget);
+        if (!(WIDGETS as readonly string[]).includes(widget)) {
+          bad(id, `table ${name}.${fieldName}: widget ${JSON.stringify(f.widget)} is not one of ${WIDGETS.join(', ')}`);
+        }
+        spec.widget = widget as Widget;
+      }
+      if (f.help !== undefined) {
+        if (typeof f.help !== 'string' || f.help.length > 200) bad(id, `table ${name}.${fieldName}: help is not a string ≤ 200`);
+        spec.help = f.help;
+      }
+      if (f.placeholder !== undefined) {
+        if (typeof f.placeholder !== 'string' || f.placeholder.length > 120) bad(id, `table ${name}.${fieldName}: placeholder is not a string ≤ 120`);
+        spec.placeholder = f.placeholder;
+      }
+      if (f.required !== undefined) {
+        if (typeof f.required !== 'boolean') bad(id, `table ${name}.${fieldName}: required is not a boolean`);
+        spec.required = f.required;
+      }
+      if (f.options !== undefined) {
+        if (spec.widget !== 'select') bad(id, `table ${name}.${fieldName}: options belong to a select widget`);
+        if (!Array.isArray(f.options) || f.options.length === 0 || f.options.length > 40) {
+          bad(id, `table ${name}.${fieldName}: options is not a non-empty array ≤ 40`);
+        }
+        const options: string[] = [];
+        for (const option of f.options) {
+          if (typeof option !== 'string' || option === '' || option.length > 80) {
+            bad(id, `table ${name}.${fieldName}: an option is not a non-empty string ≤ 80`);
+          }
+          options.push(option);
+        }
+        if (new Set(options).size !== options.length) bad(id, `table ${name}.${fieldName}: an option is listed twice`);
+        spec.options = options;
+      }
+      if (f.from !== undefined) {
+        if (spec.widget !== 'slug') bad(id, `table ${name}.${fieldName}: from belongs to a slug widget`);
+        if (typeof f.from !== 'string' || !columnNames.has(f.from)) {
+          bad(id, `table ${name}.${fieldName}: from ${JSON.stringify(f.from)} is not a declared column`);
+        }
+        spec.from = f.from;
+      }
+      if (f.rows !== undefined) {
+        if (!Number.isInteger(f.rows) || (f.rows as number) < 2 || (f.rows as number) > 40) {
+          bad(id, `table ${name}.${fieldName}: rows is not an integer in 2..40`);
+        }
+        spec.rows = f.rows as number;
+      }
+      if (f.default !== undefined) {
+        if (f.default !== 'now') bad(id, `table ${name}.${fieldName}: default is only 'now'`);
+        spec.default = 'now';
+      }
+      fields.push(spec);
+    }
+    if (new Set(fields.map((f) => f.name)).size !== fields.length) bad(id, `table ${name}: a field is declared twice`);
+
+    const listRaw = t.list === undefined ? undefined : t.list;
+    const list: string[] = [];
+    if (listRaw !== undefined) {
+      if (!Array.isArray(listRaw) || listRaw.length === 0 || listRaw.length > 8) bad(id, `table ${name}: list is not an array of 1..8 columns`);
+      for (const column of listRaw) {
+        if (typeof column !== 'string' || !columnNames.has(column)) {
+          bad(id, `table ${name}: list names ${JSON.stringify(column)}, which is not a declared column`);
+        }
+        list.push(column);
+      }
+    }
+
+    tables.push({
+      name,
+      export: t.export as TableSpec['export'],
+      columns,
+      ...(fields.length > 0 ? { fields } : {}),
+      ...(list.length > 0 ? { list } : {}),
+    });
   }
   if (new Set(tables.map((t) => t.name)).size !== tables.length) bad(id, 'a table is declared twice');
 

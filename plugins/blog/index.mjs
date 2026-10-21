@@ -32,6 +32,22 @@ const EXCERPT_CHARS = 240;
 export function activate(ctx) {
   ctx.screen({ path: '/blog', table: 'p_blog_post', title: 'Blog posts' });
 
+  // S8h: the page builder's palette, as a view over this package's own table. The host draws it,
+  // so nothing here is markup — only which rows, in which order, with which link.
+  ctx.block({
+    name: 'recent-posts',
+    label: 'Blog: recent posts',
+    table: 'p_blog_post',
+    columns: ['title', 'published_at', 'slug'],
+    labelColumn: 'title',
+    limit: 5,
+    orderBy: 'published_at',
+    filter: { column: 'status', equals: 'published' },
+    layout: 'list',
+    // A post page is an ordinary page at this path; the block links to it when one exists.
+    href: '/blog/{slug}',
+  });
+
   ctx.endpoint('GET', 'posts', async (args) => {
     const query = args.query ?? {};
     const limit = await pageSize(args.facade, query.limit);

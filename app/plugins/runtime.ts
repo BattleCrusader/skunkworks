@@ -444,7 +444,7 @@ export class PluginRuntime {
       const recorder = new ActivationRecorder(
         pluginId,
         manifest.hooks,
-        manifest.tables.map((t) => t.name),
+        manifest.tables,
       );
       if (!manifest.hooks.every((hook) => HOOK_NAMES.includes(hook))) {
         throw new AppError('SKW_E_PL_REJECTED', `${pluginId} declares a hook that is not one of the twelve`, { plugin: pluginId });
@@ -466,6 +466,7 @@ export class PluginRuntime {
         on: (hook: string, fn: unknown) => recorder.on(hook, fn),
         endpoint: (method: string, name: string, handler: unknown) => recorder.endpoint(method, name, handler),
         screen: (screen: unknown) => recorder.screen(screen),
+        block: (spec: unknown) => recorder.block(spec),
         log: (line: unknown) => ctx.facade['log.write'](line),
       });
 

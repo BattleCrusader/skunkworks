@@ -26,7 +26,7 @@
  * Nothing here imports a package or touches a database. `runtime.ts` decides *when* an entry
  * exists; this file only holds what exists now.
  */
-import { HOOK_NAMES, hookKind, type HookName } from './manifest.ts';
+import { HOOK_NAMES, hookKind, type FieldSpec, type HookName, type TableSpec } from './manifest.ts';
 
 /** The context a plugin's hook callback is called with; `ctx` in §13.3.4's signatures. */
 export interface HookCall {
@@ -56,12 +56,60 @@ export interface DeclarativeScreen {
   path: string;
   table: string;
   title: string;
+  /**
+   * S8g: the edit form the package declared for this table, and the columns its list shows.
+   * Both are copied from the manifest's `tables` entry, so a screen cannot claim a field the
+   * package did not declare — the manifest validator already refused that at install time.
+   */
+  fields?: FieldSpec[];
+  list?: string[];
+}
+
+/**
+ * S8h: a **block** a package contributes to the page builder.
+ *
+ * The builder's palette has always been the host's component registry — shipped HTML the host
+ * owns (§10.1). A package cannot add markup to it: §10.5 keeps plugin HTML off the tenant's
+ * origin, which is why an endpoint answers JSON. What a package *can* do is own data, so a block
+ * is a **view over its own declared table** and the host draws it: the package names the table,
+ * the columns, the order, the filter and the link shape, and supplies no HTML at all.
+ *
+ * The editor inserts a marker (`<div data-skw-block="blog/recent-posts">`); the render call
+ * replaces that marker with host-generated markup before any plugin filter sees the body.
+ */
+export interface DeclarativeBlock {
+  /** `<plugin>/<name>`, the value in the marker's `data-skw-block` attribute. */
+  id: string;
+  /** What the palette button says. */
+  label: string;
+  /** A table the package owns, checked at activation. */
+  table: string;
+  /** Columns to read, in order. Each must be a column the package declared. */
+  columns: string[];
+  /** How many rows: 1–20. */
+  limit: number;
+  /** `desc` (default) or `asc`, on `orderBy`. */
+  order?: 'asc' | 'desc';
+  /** The column to order by; defaults to the table's primary key. */
+  orderBy?: string;
+  /** One equality filter, so a block can show published rows only. */
+  filter?: { column: string; equals: string };
+  /**
+   * `list` (default) is a `<ul>` of titles; `cards` is a wrapper of `<article>`s.
+   * Both are drawn by the host, from the same rows.
+   */
+  layout?: 'list' | 'cards';
+  /** A link template, e.g. `/blog/{slug}`. `{column}` is replaced per row, escaped. */
+  href?: string;
+  /** The column whose value is the link's visible text. Defaults to the first column. */
+  labelColumn?: string;
 }
 
 export interface RegistrationSet {
   hooks: Map<string, HookFn[]>;
   endpoints: Map<string, RegisteredEndpoint>;
   screens: Map<string, DeclarativeScreen>;
+  blocks: Map<string, DeclarativeBlock>;
 }
 
 export interface RegistryEntry extends RegistrationSet {
@@ -77,7 +125,7 @@ export interface RegistryEntry extends RegistrationSet {
 export type TenantSnapshot = ReadonlyMap<string, readonly { pluginId: string; fn: HookFn }[]>;
 
 export function emptyRegistrations(): RegistrationSet {
-  return { hooks: new Map(), endpoints: new Map(), screens: new Map() };
+  return { hooks: new Map(), endpoints: new Map(), screens: new Map(), blocks: new Map() };
 }
 
 /**
@@ -228,13 +276,15 @@ export class ActivationRecorder {
   readonly registrations: RegistrationSet = emptyRegistrations();
   private open = true;
   private readonly declared: Set<string>;
-  private readonly declaredTables: Set<string>;
+  private readonly declaredTables: Map<string, TableSpec>;
   private readonly pluginId: string;
 
-  constructor(pluginId: string, declared: readonly string[], declaredTables: readonly string[]) {
+  constructor(pluginId: string, declared: readonly string[], declaredTables: readonly TableSpec[]) {
     this.pluginId = pluginId;
     this.declared = new Set(declared);
-    this.declaredTables = new Set(declaredTables);
+    // S8g: the table spec, not just its name — a screen needs the fields the package declared
+    // for that table, and the manifest is where they live.
+    this.declaredTables = new Map(declaredTables.map((table) => [table.name, table]));
   }
 
   get isOpen(): boolean {
@@ -300,7 +350,94 @@ export class ActivationRecorder {
     if (!/^\/[a-z0-9][a-z0-9/-]{0,80}$/.test(path)) {
       throw new Error(`SKW_E_PL_REJECTED: screen path ${JSON.stringify(path)} is not /[a-z0-9-/]`);
     }
-    this.registrations.screens.set(path, { path, table, title: typeof s.title === 'string' ? s.title : this.pluginId });
+    const spec = this.declaredTables.get(table) as TableSpec;
+    this.registrations.screens.set(path, {
+      path,
+      table,
+      title: typeof s.title === 'string' ? s.title : this.pluginId,
+      ...(spec.fields === undefined ? {} : { fields: spec.fields }),
+      ...(spec.list === undefined ? {} : { list: spec.list }),
+    });
+  }
+
+  /**
+   * S8h: register a builder block. The rules are the screen rules plus one: every column a block
+   * names must be a column the package declared for that table, so a block cannot read a `cms_*`
+   * column by guessing its name.
+   */
+  block(spec: unknown): void {
+    if (!this.open) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} registered a block after activation closed`);
+    }
+    if (typeof spec !== 'object' || spec === null) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} registered a block that is not an object`);
+    }
+    const b = spec as Record<string, unknown>;
+    const table = typeof b.table === 'string' ? b.table : '';
+    const declaredTable = this.declaredTables.get(table);
+    if (declaredTable === undefined) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} declared a block on ${JSON.stringify(table)}, which it does not own`);
+    }
+    const columnsOf = new Set((declaredTable.columns ?? []).map((c) => c.name));
+    const name = typeof b.name === 'string' ? b.name : '';
+    if (!/^[a-z][a-z0-9-]{0,39}$/.test(name)) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} named a block ${JSON.stringify(name)}, which is not [a-z][a-z0-9-]{0,39}`);
+    }
+    const id = `${this.pluginId}/${name}`;
+    if (this.registrations.blocks.has(id)) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} registered block ${name} twice`);
+    }
+    const columns = Array.isArray(b.columns) ? b.columns : [];
+    if (columns.length === 0 || columns.length > 6) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} names ${columns.length} columns; 1–6 are allowed`);
+    }
+    for (const column of columns) {
+      if (typeof column !== 'string' || !columnsOf.has(column)) {
+        throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} names column ${JSON.stringify(column)}, which ${table} does not declare`);
+      }
+    }
+    const limit = typeof b.limit === 'number' ? b.limit : 5;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} asks for ${String(b.limit)} rows; 1–20 is allowed`);
+    }
+    if (b.orderBy !== undefined && (typeof b.orderBy !== 'string' || !columnsOf.has(b.orderBy))) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} orders by ${JSON.stringify(b.orderBy)}, which ${table} does not declare`);
+    }
+    if (b.labelColumn !== undefined && (typeof b.labelColumn !== 'string' || !columnsOf.has(b.labelColumn))) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} labels rows with ${JSON.stringify(b.labelColumn)}, which ${table} does not declare`);
+    }
+    if (b.filter !== undefined) {
+      const filter = b.filter as Record<string, unknown>;
+      if (typeof filter !== 'object' || filter === null || typeof filter.column !== 'string' || !columnsOf.has(filter.column) || typeof filter.equals !== 'string') {
+        throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} has a filter that is not {column, equals} over its own columns`);
+      }
+    }
+    if (b.layout !== undefined && b.layout !== 'list' && b.layout !== 'cards') {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} has layout ${JSON.stringify(b.layout)}; list or cards`);
+    }
+    if (b.href !== undefined) {
+      if (typeof b.href !== 'string' || b.href.length > 200 || !b.href.startsWith('/') || b.href.includes('//')) {
+        throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} href ${JSON.stringify(b.href)} is not a path on this site`);
+      }
+      for (const token of b.href.matchAll(/\{([a-z][a-z0-9_]*)\}/g)) {
+        if (!columnsOf.has(token[1] as string)) {
+          throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} block ${name} href names {${token[1]}} , which ${table} does not declare`);
+        }
+      }
+    }
+    this.registrations.blocks.set(id, {
+      id,
+      label: typeof b.label === 'string' && b.label !== '' ? b.label : name,
+      table,
+      columns: columns as string[],
+      limit,
+      ...(b.order === 'asc' ? { order: 'asc' as const } : {}),
+      ...(typeof b.orderBy === 'string' ? { orderBy: b.orderBy } : {}),
+      ...(b.filter === undefined ? {} : { filter: b.filter as { column: string; equals: string } }),
+      ...(b.layout === 'cards' ? { layout: 'cards' as const } : {}),
+      ...(typeof b.href === 'string' ? { href: b.href } : {}),
+      ...(typeof b.labelColumn === 'string' ? { labelColumn: b.labelColumn } : {}),
+    });
   }
 }
 
