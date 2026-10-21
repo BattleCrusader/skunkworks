@@ -39,8 +39,8 @@ import { normalisePagePath, pageMiss } from './render/page.ts';
 import { renderStoredBody } from './render/body.ts';
 import { resolveSourceBlocks } from './render/blocks.ts';
 import { loadPluginPage, matchPluginPage, pluginPageBody, resolveFormMarkers } from './render/plugin-pages.ts';
-import { loadNav } from './render/nav.ts';
-import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings } from './render/chrome.ts';
+import { loadNav, type NavTree } from './render/nav.ts';
+import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings, type SiteChrome } from './render/chrome.ts';
 import { CSP_HEADER, cspPolicy, cspPolicyWithNonce } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
 import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
@@ -745,17 +745,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       }
     }
     if (stored === null) throw pageMiss();
-    // §3/§4.4: the header and footer menus are `cms_nav` rows, read here because the
-    // Astro layer never opens a database (§2.2). `loadNav()` resolves every href and
-    // refuses a row it cannot resolve — a menu entry pointing at a page that does not
-    // exist is a dead link the CMS created itself, and the refusal names the row. It
-    // runs before the body render so no response carries an unresolvable menu.
-    const nav = loadNav(db);
-    // S8l: the identity bar and footer, from `cms_settings`. `null` when the tenant has set
-    // none of it, so a site that has never opened the Site screen renders exactly the bytes
-    // it rendered before this feature existed (and the exported tree stays byte-identical).
-    const siteChrome = loadChrome(db);
-    const chrome = hasChrome(siteChrome, nav) ? { ...siteChrome, logoUrl: chromeLogoUrl(db, siteChrome) } : null;
+    // S8l: the menus are read **after** `plugins.sync` below, because a menu entry may point at a
+    // path a package serves (`/blog/<slug>`) and only a synced registry knows those. The
+    // variables are declared here so the render call after the `finally` still sees them.
+    let nav: NavTree = { header: [], footer: [] };
+    let chrome: (SiteChrome & { logoUrl: string | null }) | null = null;
     // §10.3/§11.2: the stored bytes are a fragment that names **keys**; `renderStoredBody`
     // unwraps a legacy row and derives every asset URL. It is the same function the three
     // exporters call, so a page cannot render one way here and another way in a bundle —
@@ -776,6 +770,22 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     const assetUrls = new Map<string, string>();
     try {
       await plugins.sync(ctx.tenant.key);
+      // §3/§4.4: `loadNav()` resolves every href and refuses a row it cannot resolve — a menu
+      // entry pointing at a page that does not exist is a dead link the CMS created itself. A
+      // path a loaded package serves counts as a page: `/blog/<slug>` is a row in the package's
+      // table, and a header link to it is not a dead link.
+      const pageExists = (candidate: string): boolean => {
+        for (const entry of plugins.registry.plugins(ctx.tenant.key)) {
+          if (matchPluginPage([...entry.pages.values()], candidate) !== undefined) return true;
+        }
+        return false;
+      };
+      nav = loadNav(db, { pageExists });
+      // S8l: the identity bar and footer, from `cms_settings`. `null` when the tenant has set
+      // none of it, so a site that has never opened the Site screen renders exactly the bytes
+      // it rendered before this feature existed (and the exported tree stays byte-identical).
+      const siteChrome = loadChrome(db);
+      chrome = hasChrome(siteChrome, nav) ? { ...siteChrome, logoUrl: chromeLogoUrl(db, siteChrome) } : null;
       // §13.3.4, `asset.url`: one dispatch per asset this page names, **before** the render,
       // because the filter is async and the render is not. `assetUrlsIn` is the export
       // pre-flight's own view of the body, so the set of keys the hook sees is the set of

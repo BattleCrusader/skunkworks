@@ -191,9 +191,33 @@ test('S8l-5. a blog post — a row in a package table, not a cms_page — wears 
   assert.match(post1.body, /<span>Acme Widgets<\/span>/);
 });
 
+test('S8l-5b. a menu entry may point at a path a package serves', async () => {
+  // `/blog/<slug>` is a row in `p_blog_post`, not a `cms_page`. Before S8l's nav fix, adding it
+  // as a header link was refused as a dead link by a renderer that had never been told a package
+  // can serve a path — which is exactly what an operator would try to do first.
+  const added = await post('/admin/t/acme/site/nav/add', {
+    location: 'header',
+    label: 'Blog',
+    href_kind: 'page',
+    href_target: '/blog/chrome-check',
+  });
+  assert.equal(added.status, 303, added.body);
+  const home = await site('/pricing');
+  assert.equal(home.status, 200, home.body);
+  assert.match(home.body, /<a href="\/blog\/chrome-check">Blog<\/a>/, 'a package page is a real target');
+
+  // Clean up by the row that carries the label, not by "the first one".
+  const page = await get('/admin/t/acme/site');
+  const blogId = /data-nav-id="(\d+)"><td>Blog</.exec(page.body)?.[1];
+  assert.ok(blogId !== undefined, 'the Blog row must be on the screen');
+  const removed = await post('/admin/t/acme/site/nav/delete', { id: blogId });
+  assert.equal(removed.status, 303, removed.body);
+  assert.doesNotMatch((await site('/pricing')).body, />Blog</, 'and gone from the page');
+});
+
 test('S8l-6. hiding a row removes it from the page; deleting removes the row', async () => {
   const page = await get('/admin/t/acme/site');
-  const id = /data-nav-id="(\d+)"/.exec(page.body)?.[1];
+  const id = /data-nav-id="(\d+)"><td>Pricing</.exec(page.body)?.[1];
   assert.ok(id !== undefined, 'the screen must list the row it just added');
 
   const hidden = await post('/admin/t/acme/site/nav/visible', { id, visible: '0' });

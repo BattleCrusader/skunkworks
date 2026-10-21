@@ -88,7 +88,18 @@ function refuse(row: NavRow, code: 'SKW_E_RT_NAV_TARGET_MISSING' | 'SKW_E_RT_NAV
   );
 }
 
-function hrefFor(db: Database.Database, row: NavRow): string {
+/**
+ * S8l: what "a published page" means for a menu entry.
+ *
+ * A `cms_page` row was the only answer until S8k gave packages the ability to serve a path
+ * themselves (`/blog/<slug>` is a row in `p_blog_post`, not a page). A header link to the blog
+ * would then have been refused as a dead link by a renderer that had simply never been told
+ * about the new source. `pageExists` is how the caller says "and these too", and a tenant with
+ * no packages loaded passes nothing — the old refusal stands unchanged.
+ */
+export type PageExists = (path: string) => boolean;
+
+function hrefFor(db: Database.Database, row: NavRow, pageExists?: PageExists): string {
   switch (row.href_kind) {
     case 'page': {
       if (!isInternalPath(row.href_target)) {
@@ -99,7 +110,8 @@ function hrefFor(db: Database.Database, row: NavRow): string {
       const page = db.prepare('SELECT status FROM cms_page WHERE path = ?').get(row.href_target) as
         | { status: string }
         | undefined;
-      if (page === undefined || page.status !== 'published') {
+      const declaredByPackage = pageExists !== undefined && pageExists(row.href_target);
+      if (!declaredByPackage && (page === undefined || page.status !== 'published')) {
         refuse(row, 'SKW_E_RT_NAV_TARGET_MISSING', 'points at a path with no published page');
       }
       return row.href_target;
@@ -143,7 +155,7 @@ function hrefFor(db: Database.Database, row: NavRow): string {
  * (all nodes, then links) because a grandchild's parent can be a child that was created
  * later — the node map makes attachment independent of row order.
  */
-function loadLocation(db: Database.Database, location: NavLocation): NavItem[] {
+function loadLocation(db: Database.Database, location: NavLocation, pageExists?: PageExists): NavItem[] {
   const rows = db
     .prepare(
       `SELECT id, parent_id, label, href_kind, href_target, position
@@ -155,7 +167,7 @@ function loadLocation(db: Database.Database, location: NavLocation): NavItem[] {
 
   const nodes = new Map<number, NavItem>();
   for (const row of rows) {
-    nodes.set(row.id, { label: row.label, href: hrefFor(db, row), children: [] });
+    nodes.set(row.id, { label: row.label, href: hrefFor(db, row, pageExists), children: [] });
   }
 
   // A cycle is only reachable through an UPDATE (the FK refuses a non-existent parent,
@@ -190,10 +202,10 @@ function loadLocation(db: Database.Database, location: NavLocation): NavItem[] {
 }
 
 /** The two menus the shell renders, both read from `cms_nav`. */
-export function loadNav(db: Database.Database): NavTree {
+export function loadNav(db: Database.Database, opts: { pageExists?: PageExists } = {}): NavTree {
   return {
-    header: loadLocation(db, 'header'),
-    footer: loadLocation(db, 'footer'),
+    header: loadLocation(db, 'header', opts.pageExists),
+    footer: loadLocation(db, 'footer', opts.pageExists),
   };
 }
 
