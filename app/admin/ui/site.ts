@@ -45,6 +45,8 @@ export interface SiteScreenInput {
     footerSticky: boolean;
     footerText: string;
     themeCss: string;
+    /** S8r: the one sentence for `<meta name="description">`. `''` emits no tag. */
+    description: string;
   };
   header: SiteNavRow[];
   footer: SiteNavRow[];
@@ -69,6 +71,7 @@ const FLASH: Record<string, string> = {
   label: 'A menu item needs a label (1–80 characters).',
   'not-found': 'That menu item is no longer there.',
   theme: 'The stylesheet was not saved: CSS may not contain a "<" (that is the only way it could end the style element it is emitted into).',
+  description: 'The search description was not saved: keep it under 300 characters.',
 };
 
 function flashBlock(flash: string | undefined): string {
@@ -161,6 +164,8 @@ export function siteScreen(input: SiteScreenInput): string {
         <label>Site name <input name="title" value="${esc(chrome.title)}" maxlength="120" placeholder="Acme Widgets"></label>
         <label>Logo asset key <input name="logo_key" value="${esc(chrome.logoKey)}" maxlength="96" placeholder="brand/logo"></label>
         <label>Footer sentence <input name="footer_text" value="${esc(chrome.footerText)}" maxlength="200" placeholder="© 2026 Acme Widgets"></label>
+        <label for="description">Search description <small>One sentence for <code>&lt;meta name="description"&gt;</code> — what a search result says under the title. About 155 characters is what survives the cut.</small></label>
+        <input id="description" name="description" value="${esc(chrome.description)}" maxlength="300" placeholder="A six-person studio building small, well-made software.">
         <label>Header pins to the top <input type="checkbox" name="header_sticky" value="1"${chrome.headerSticky ? ' checked' : ''}></label>
         <label>Footer pins to the bottom <input type="checkbox" name="footer_sticky" value="1"${chrome.footerSticky ? ' checked' : ''}></label>
         <label for="theme_css">Site stylesheet <small>CSS for every page: the bar, the footer, and whatever a page&#39;s own markup names.</small></label>

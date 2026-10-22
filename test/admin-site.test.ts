@@ -277,7 +277,9 @@ test('S8o-7. the site stylesheet is a linked response, because inline <style> is
 
   const home = await site('/pricing');
   assert.equal(home.status, 200, home.body);
-  assert.match(home.body, /<link rel="stylesheet" href="\/theme\.css">/, 'the page links the sheet');
+  // S8r: the link names the sheet's own bytes (`?v=<hash>`), which is what lets the response be
+  // cached for a year instead of revalidated before every first paint.
+  assert.match(home.body, /<link rel="stylesheet" href="\/theme\.css\?v=[0-9a-f]{12}">/, 'the page links the sheet, versioned');
   // The page has no `body_css` of its own, so there is no inline `<style>` at all: the policy
   // would block one, and the shell only writes it when a page carries CSS.
   assert.doesNotMatch(home.body, /<style[ >]/, 'no inline style element for a page with no CSS');

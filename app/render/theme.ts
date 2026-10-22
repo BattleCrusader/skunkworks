@@ -63,6 +63,21 @@ export function siteSheet(input: SheetInput): string {
   return parts.join('\n');
 }
 
+/**
+ * The stylesheet's version token, for the URL: the first twelve hex characters of the same
+ * sha256 the `ETag` carries.
+ *
+ * Why the URL and not just the `ETag`: a `max-age=0, must-revalidate` sheet makes every
+ * navigation a conditional request, and the browser cannot paint until the answer arrives —
+ * the stylesheet is render-blocking, so one revalidation is one round trip in front of the
+ * first pixel of every click. Naming the bytes in the URL lets the same file be cached for a
+ * year, and changes the URL when the bytes change, which is the only thing that makes a long
+ * cache safe on a file an operator edits.
+ */
+export function sheetVersion(sheet: string): string {
+  return createHash('sha256').update(sheet, 'utf8').digest('hex').slice(0, 12);
+}
+
 /** A strong ETag for a sheet: the sha256 of exactly the bytes that will be sent. */
 export function sheetEtag(sheet: string): string {
   return `"${createHash('sha256').update(sheet, 'utf8').digest('hex').slice(0, 32)}"`;

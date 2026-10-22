@@ -20,6 +20,7 @@
  *   site.footer_sticky  bool       footer pins to the bottom of the viewport
  *   site.footer_text    string     one sentence, under the footer menu
  *   site.theme_css      string     the site's own stylesheet, emitted on every page
+ *   site.description    string     one sentence for `<meta name="description">` and the sitemap
  *
  * `theme_css` is the sixth key and the reason a site can look like a site: without it every
  * page is unstyled HTML unless the editor pastes the same `<style>` into each one. It is
@@ -52,6 +53,7 @@ export const CHROME_KEYS = {
   footerSticky: 'site.footer_sticky',
   footerText: 'site.footer_text',
   theme: 'site.theme_css',
+  description: 'site.description',
 } as const;
 
 export type ChromeKey = (typeof CHROME_KEYS)[keyof typeof CHROME_KEYS];
@@ -65,6 +67,12 @@ export interface SiteChrome {
   footerText: string;
   /** The site's own CSS, emitted inside `<style>` on every page. `''` = none. */
   themeCss: string;
+  /**
+   * One sentence about the site, for `<meta name="description">`, `robots.txt`'s neighbour
+   * (`/sitemap.xml` does not read it) and nothing else. `''` = no tag, which is what a tenant
+   * that never opened the Site screen emits — and what keeps the exported shell identical.
+   */
+  description: string;
 }
 
 /** What a tenant that has never opened the Site screen renders. */
@@ -75,6 +83,7 @@ export const CHROME_DEFAULTS: SiteChrome = {
   footerSticky: false,
   footerText: '',
   themeCss: '',
+  description: '',
 };
 
 /**
@@ -89,6 +98,7 @@ export const CHROME_TYPES: Record<ChromeKey, 'string' | 'bool' | 'asset_key'> = 
   [CHROME_KEYS.footerSticky]: 'bool',
   [CHROME_KEYS.footerText]: 'string',
   [CHROME_KEYS.theme]: 'string',
+  [CHROME_KEYS.description]: 'string',
 };
 
 export function seedChromeSettings(db: Database.Database): string[] {
@@ -122,6 +132,8 @@ export function fieldOf(key: ChromeKey): keyof SiteChrome {
       return 'footerText';
     case CHROME_KEYS.theme:
       return 'themeCss';
+    case CHROME_KEYS.description:
+      return 'description';
   }
 }
 
@@ -172,6 +184,7 @@ export function loadChrome(db: Database.Database): SiteChrome {
     footerSticky: read(CHROME_KEYS.footerSticky, 'bool') as boolean,
     footerText: read(CHROME_KEYS.footerText, 'string') as string,
     themeCss: read(CHROME_KEYS.theme, 'string') as string,
+    description: read(CHROME_KEYS.description, 'string') as string,
   };
 }
 
@@ -196,6 +209,7 @@ export function hasChrome(chrome: SiteChrome, nav: { header: unknown[]; footer: 
     chrome.logoKey !== '' ||
     chrome.footerText !== '' ||
     chrome.themeCss !== '' ||
+    chrome.description !== '' ||
     nav.header.length > 0 ||
     nav.footer.length > 0
   );
@@ -224,6 +238,20 @@ export function themeCss(chrome: SiteChrome): string {
   return chrome.themeCss.replace(/</g, '');
 }
 
+/**
+ * The description as it may be interpolated into `<meta content="…">`.
+ *
+ * Astro escapes `&` and `"` in an attribute, which is what actually keeps the value inside it —
+ * but it leaves `<` alone, so a description typed as `Widgets <script>` reaches the head with a
+ * `<script>` in it. Inside a quoted attribute that is inert text and not an element, and yet a
+ * sentence does not need a `<` at all. Stripping it is the same lock `themeCss` applies, for the
+ * same reason: the value is data, and it should not look like markup even in a place where it
+ * cannot run.
+ */
+export function descriptionText(chrome: SiteChrome): string {
+  return chrome.description.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
+}
+
 export function chromeCss(chrome: SiteChrome): string {
   return [
     '.site-header{display:flex;align-items:center;gap:1rem;padding:.75rem 1rem;border-bottom:1px solid rgba(0,0,0,.12);background:Canvas}',
@@ -234,7 +262,11 @@ export function chromeCss(chrome: SiteChrome): string {
     '.site-menu a{color:inherit}',
     '.site-footer{padding:1rem;border-top:1px solid rgba(0,0,0,.12);background:Canvas}',
     '.site-footer--sticky{position:sticky;bottom:0;z-index:20}',
-    '.site-footer__text{margin:.5rem 0 0;opacity:.75}',
+    // No `opacity` here. It was `.75`, and Lighthouse's only accessibility finding on the live
+    // site was the footer sentence failing colour contrast: a translucent grey over paper is a
+    // lighter grey, and 4.97:1 became 3.6:1. A default that fails AA in the theme nobody edited
+    // is a defect in the default.
+    '.site-footer__text{margin:.5rem 0 0}',
     chrome.headerSticky || chrome.footerSticky ? '' : '',
   ]
     .filter((line) => line !== '')

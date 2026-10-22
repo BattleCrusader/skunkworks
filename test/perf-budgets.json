@@ -573,6 +573,52 @@
       ]
     },
     {
+      "file": "test/site-delivery.test.ts",
+      "worstIdleMs": 1119,
+      "measuredOn": "2026-10-22",
+      "load1m": 5.83,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "9f5291be753bbb161d5bc92359fa0723040d616d4ed19dbade5ab6e0bf176c92",
+      "runs": [
+        {
+          "ms": 845,
+          "at": "2026-10-22T09:32:22.240Z",
+          "load1mBefore": 5.99,
+          "load1mAfter": 5.83,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 7
+        },
+        {
+          "ms": 1119,
+          "at": "2026-10-22T09:32:23.360Z",
+          "load1mBefore": 5.83,
+          "load1mAfter": 5.83,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 7
+        },
+        {
+          "ms": 911,
+          "at": "2026-10-22T09:32:27.208Z",
+          "load1mBefore": 5.83,
+          "load1mAfter": 6.01,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 7
+        },
+        {
+          "ms": 731,
+          "at": "2026-10-22T09:32:27.940Z",
+          "load1mBefore": 6.01,
+          "load1mAfter": 6.01,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 7
+        }
+      ]
+    },
+    {
       "file": "test/admin-account.test.ts",
       "worstIdleMs": 1017,
       "measuredOn": "2026-10-21",
@@ -1741,5 +1787,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-22T06:27:23.132Z"
+  "updatedAt": "2026-10-22T09:32:28.200Z"
 }

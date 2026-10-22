@@ -7,6 +7,7 @@
 # certificate fails `nginx -t` (E-5).
 server {
     listen 80;{{TLS_LISTEN}}
+    http2 on;
     server_name {{SERVER_NAMES}};
 
     location / {

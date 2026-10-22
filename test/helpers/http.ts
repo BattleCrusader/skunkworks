@@ -8,7 +8,14 @@ import { connect } from 'node:net';
 export interface Res {
   status: number;
   headers: Record<string, string | string[] | undefined>;
+  /** The body decoded as UTF-8 — what every JSON and HTML assertion reads. */
   body: string;
+  /**
+   * The same bytes, undecoded. A binary answer (the favicon PNG) cannot be asserted through
+   * `body`: UTF-8 decoding rewrites every invalid sequence, so a PNG signature arrives as
+   * replacement characters and a signature check would be checking the decoder.
+   */
+  bytes?: Buffer;
   json: unknown;
 }
 
@@ -37,14 +44,15 @@ export function call(opts: CallOptions): Promise<Res> {
         const chunks: Buffer[] = [];
         res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () => {
-          const body = Buffer.concat(chunks).toString('utf8');
+          const bytes = Buffer.concat(chunks);
+          const body = bytes.toString('utf8');
           let json: unknown = undefined;
           try {
             json = JSON.parse(body);
           } catch {
             json = undefined;
           }
-          resolve({ status: res.statusCode ?? 0, headers: res.headers, body, json });
+          resolve({ status: res.statusCode ?? 0, headers: res.headers, body, bytes, json });
         });
       },
     );

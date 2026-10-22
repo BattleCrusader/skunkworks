@@ -22,7 +22,7 @@
  * feature cannot move a single byte of an untouched site.
  */
 import NavList from './nav-list.astro';
-import type { SiteChrome } from '../../chrome.ts';
+import { descriptionText, type SiteChrome } from '../../chrome.ts';
 
 interface PageLike {
   title: string;
@@ -52,8 +52,15 @@ interface Props {
    * would stop being byte-identical to it.
    */
   nav?: { header: NavItem[]; footer: NavItem[] };
-  /** `null` when the tenant has no chrome; see the note above about bytes. */
-  chrome?: (SiteChrome & { logoUrl: string | null }) | null;
+  /**
+   * `null` when the tenant has no chrome; see the note above about bytes.
+   *
+   * `sheetVersion` is the stylesheet's own hash, put in the URL so the file can be cached
+   * hard; `description` is the site's one sentence for `<meta name="description">`. Both are
+   * supplied by the app (`app/main.ts`), because both are derived from the sheet and the
+   * settings the app already has open.
+   */
+  chrome?: (SiteChrome & { logoUrl: string | null; sheetVersion?: string }) | null;
 }
 const { page, tenantKey, head, nav, chrome } = Astro.props as Props;
 const header = nav !== undefined && nav.header.length > 0 ? nav.header : null;
@@ -83,7 +90,15 @@ const theme = bar === null ? '' : bar.themeCss;
 // writes it inline too, and the two trees are compared byte-for-byte (`test/export-targets`).
 // That means a page's own CSS is still subject to `style-src 'self'`; moving it out needs a
 // per-page URL in the export as well, and that is a separate piece of work, stated in the errata.
-const sheetHref = showStyle || theme !== '' ? '/theme.css' : null;
+// `?v=` is the sheet's hash. With it the response is cacheable for a year and a navigation
+// paints from cache; without it (an older cached document) the same URL still answers and
+// revalidates, so the two forms never disagree about the bytes.
+const sheetVersion = bar !== null && bar.sheetVersion !== undefined ? bar.sheetVersion : null;
+const sheetHref =
+  showStyle || theme !== '' ? (sheetVersion === null ? '/theme.css' : `/theme.css?v=${sheetVersion}`) : null;
+// The site's one sentence. `''` emits nothing at all — the exported shell (`app/export/document.ts`)
+// has no description either, and `test/export-targets.test.ts` compares the two byte for byte.
+const description = bar === null ? null : descriptionText(bar) || null;
 const headerClass = headerBar === null ? '' : headerBar.headerSticky ? 'site-header site-header--sticky' : 'site-header';
 const footerClass = footerBar === null ? '' : footerBar.footerSticky ? 'site-footer site-footer--sticky' : 'site-footer';
 ---
@@ -92,7 +107,7 @@ const footerClass = footerBar === null ? '' : footerBar.footerSticky ? 'site-foo
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{page.title}</title>{head ? <Fragment set:html={head} /> : null}{sheetHref !== null ? <link rel="stylesheet" href={sheetHref} /> : null}
+    <title>{page.title}</title>{description !== null ? <meta name="description" content={description} /> : null}{head ? <Fragment set:html={head} /> : null}{sheetHref !== null ? <link rel="stylesheet" href={sheetHref} /> : null}
     {page.bodyCss ? <style set:html={page.bodyCss} /> : null}
   </head>
   <body data-page-path={page.path}>{headerBar !== null ? <header class={headerClass}>{identity ? <a class="site-id" href="/">{headerBar.logoUrl !== null ? <img src={headerBar.logoUrl} alt="" /> : null}<span>{headerBar.title}</span></a> : null}{header !== null ? <nav aria-label="Main"><NavList items={header} className="site-menu" /></nav> : null}</header> : header !== null ? <header><nav aria-label="Main"><NavList items={header} className="site-menu" /></nav></header> : null}

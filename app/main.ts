@@ -38,10 +38,13 @@ import {
 import { loadPage, normalisePagePath, pageMiss } from './render/page.ts';
 import { renderStoredBody } from './render/body.ts';
 import { resolveSourceBlocks } from './render/blocks.ts';
+import sharp from 'sharp';
+
 import { loadPluginPage, matchPluginPage, pluginPageBody, resolveFormMarkers } from './render/plugin-pages.ts';
 import { loadNav, type NavTree } from './render/nav.ts';
 import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings, type SiteChrome } from './render/chrome.ts';
-import { matchesEtag, sheetEtag, siteSheet } from './render/theme.ts';
+import { matchesEtag, sheetEtag, sheetVersion, siteSheet } from './render/theme.ts';
+import { faviconSvg, robotsTxt, sitemapXml, type SitemapEntry } from './render/delivery.ts';
 import { CSP_HEADER, cspPolicy, cspPolicyWithNonce } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
 import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
@@ -510,12 +513,137 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     }
     const etag = sheetEtag(sheet);
     const ifNoneMatch = req.headers['if-none-match'];
-    reply.header('etag', etag).header('cache-control', 'public, max-age=0, must-revalidate').type('text/css; charset=utf-8');
+    // S8r: a versioned URL names the bytes it wants, so the answer can be cached hard. An
+    // unversioned request (an older document, a hand-written link) keeps revalidating — and
+    // both forms serve the same file, so a stale URL cannot pin stale CSS: a theme edit
+    // changes the version the documents emit.
+    const asked = typeof req.query === 'object' && req.query !== null ? (req.query as { v?: string }).v : undefined;
+    const versioned = typeof asked === 'string' && asked === sheetVersion(sheet);
+    reply
+      .header('etag', etag)
+      .header('cache-control', versioned ? 'public, max-age=31536000, immutable' : 'public, max-age=0, must-revalidate')
+      .type('text/css; charset=utf-8');
     if (matchesEtag(typeof ifNoneMatch === 'string' ? ifNoneMatch : undefined, etag)) {
       reply.code(304).send('');
       return;
     }
     reply.send(sheet);
+  });
+
+  /**
+   * S8r: the files a browser and a crawler ask for first.
+   *
+   * All five are derived from the same rows the pages are: the tenant comes from `Host` like
+   * every other site request, the sitemap is `cms_page` plus whatever a loaded package declares
+   * as a detail page, and the icon is the site's own initial. A missing one used to be a 404
+   * with a JSON body — `/favicon.ico` on every single page load.
+   */
+  const iconCache = new Map<string, Buffer>();
+
+  /**
+   * The glyph in the site's icon: the first character of its title, else of its key.
+   *
+   * Read per request from `cms_settings` rather than cached in the process, because the title is
+   * something an operator changes and an icon that keeps the old letter until a restart is a
+   * small lie. One indexed row; the browser then caches the answer for a day.
+   */
+  function faviconLetter(tenantKey: string): string {
+    const db = openRenderRead(sitePath(tenantKey), env.dbBusyTimeoutMs);
+    try {
+      const row = db.prepare(`SELECT value_json FROM cms_settings WHERE key = ?`).get('site.title') as
+        | { value_json: string }
+        | undefined;
+      if (row !== undefined) {
+        try {
+          const title = JSON.parse(row.value_json) as unknown;
+          if (typeof title === 'string' && title.trim() !== '') return title.trim();
+        } catch {
+          /* a damaged row is not a reason to fail a favicon */
+        }
+      }
+    } finally {
+      db.close();
+    }
+    return tenantKey;
+  }
+
+  app.get('/robots.txt', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const host = normaliseHost(req.headers.host ?? null) ?? ctx.tenant.key;
+    const origin = `https://${host}`;
+    reply
+      .type('text/plain; charset=utf-8')
+      .header('cache-control', 'public, max-age=3600')
+      .send(robotsTxt(origin));
+  });
+
+  app.get('/sitemap.xml', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const host = normaliseHost(req.headers.host ?? null) ?? ctx.tenant.key;
+    const origin = `https://${host}`;
+    const entries: SitemapEntry[] = [];
+    const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+    try {
+      const pages = db
+        .prepare(`SELECT path, updated_at FROM cms_page WHERE status = 'published' ORDER BY path`)
+        .all() as { path: string; updated_at: string }[];
+      for (const page of pages) entries.push({ loc: `${origin}${page.path}`, lastmod: page.updated_at });
+      // A package's detail pages are rows, not `cms_page` rows, so they are enumerated through
+      // the package's own declaration: a new package joins the sitemap by declaring a page.
+      plugins.enter(ctx.tenant.key);
+      try {
+        await plugins.sync(ctx.tenant.key);
+        for (const entry of plugins.registry.plugins(ctx.tenant.key)) {
+          for (const declared of entry.pages.values()) {
+            // Only a page whose pattern can be satisfied by a single column is enumerable, and
+            // every declared page is exactly that by construction (`/blog/{slug}`).
+            const where = declared.filter === undefined ? '' : ` WHERE ${declared.filter.column} = ?`;
+            const rows = db
+              .prepare(
+                `SELECT ${declared.slugColumn} AS slug FROM ${declared.table}${where} ORDER BY ${declared.slugColumn} LIMIT 500`,
+              )
+              .all(...(declared.filter === undefined ? [] : [declared.filter.equals])) as { slug: string }[];
+            for (const row of rows) {
+              const path = declared.pattern.replace(/\{[a-z][a-z0-9_]*\}/, encodeURIComponent(row.slug));
+              entries.push({ loc: `${origin}${path}` });
+            }
+          }
+        }
+      } finally {
+        plugins.leave(ctx.tenant.key);
+      }
+    } finally {
+      db.close();
+    }
+    reply
+      .type('application/xml; charset=utf-8')
+      .header('cache-control', 'public, max-age=600')
+      .send(sitemapXml(entries));
+  });
+
+  app.get('/favicon.svg', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const letter = faviconLetter(ctx.tenant.key);
+    reply
+      .type('image/svg+xml; charset=utf-8')
+      .header('cache-control', 'public, max-age=86400')
+      .send(faviconSvg(letter));
+  });
+
+  app.get('/favicon.ico', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const letter = faviconLetter(ctx.tenant.key);
+    const cacheKey = `${ctx.tenant.key}:${letter}`;
+    const cached = iconCache.get(cacheKey);
+    if (cached !== undefined) {
+      reply.type('image/png').header('cache-control', 'public, max-age=86400').send(cached);
+      return;
+    }
+    // Chrome decodes the bytes and does not trust the extension, so a real PNG at the `.ico`
+    // URL is what ends the 404 every page load was making.
+    const png = await sharp(Buffer.from(faviconSvg(letter))).resize(32, 32).png().toBuffer();
+    iconCache.set(cacheKey, png);
+    reply.type('image/png').header('cache-control', 'public, max-age=86400').send(png);
   });
 
   app.get('/d/:key', async (req: FastifyRequest, reply: FastifyReply) => {
@@ -791,7 +919,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     // path a package serves (`/blog/<slug>`) and only a synced registry knows those. The
     // variables are declared here so the render call after the `finally` still sees them.
     let nav: NavTree = { header: [], footer: [] };
-    let chrome: (SiteChrome & { logoUrl: string | null }) | null = null;
+    let chrome: (SiteChrome & { logoUrl: string | null; sheetVersion?: string }) | null = null;
     // §10.3/§11.2: the stored bytes are a fragment that names **keys**; `renderStoredBody`
     // unwraps a legacy row and derives every asset URL. It is the same function the three
     // exporters call, so a page cannot render one way here and another way in a bundle —
@@ -827,7 +955,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       // none of it, so a site that has never opened the Site screen renders exactly the bytes
       // it rendered before this feature existed (and the exported tree stays byte-identical).
       const siteChrome = loadChrome(db);
-      chrome = hasChrome(siteChrome, nav) ? { ...siteChrome, logoUrl: chromeLogoUrl(db, siteChrome) } : null;
+      chrome = hasChrome(siteChrome, nav)
+        ? {
+            ...siteChrome,
+            logoUrl: chromeLogoUrl(db, siteChrome),
+            // S8r: the sheet's own hash, so the link can name its bytes and the browser can
+            // cache it for a year. Same bytes the `/theme.css` route hashes.
+            sheetVersion: sheetVersion(siteSheet({ chrome: siteChrome, showChrome: true })),
+          }
+        : null;
       // §13.3.4, `asset.url`: one dispatch per asset this page names, **before** the render,
       // because the filter is async and the render is not. `assetUrlsIn` is the export
       // pre-flight's own view of the body, so the set of keys the hook sees is the set of

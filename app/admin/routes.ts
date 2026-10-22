@@ -1302,6 +1302,13 @@ ${items}
       this.#seeOther(reply, `${base}?flash=title`);
       return;
     }
+    // S8r: the one sentence a search engine shows. Newlines would reach `<meta content>` as
+    // literal control characters, so they are folded to spaces rather than refused.
+    const description = (fields.description ?? '').replace(/\s+/g, ' ').trim();
+    if (description.length > 300) {
+      this.#seeOther(reply, `${base}?flash=description`);
+      return;
+    }
     if (logoKey !== '' && !/^[a-z0-9][a-z0-9._/-]*$/.test(logoKey)) {
       this.#seeOther(reply, `${base}?flash=logo-missing`);
       return;
@@ -1329,6 +1336,12 @@ ${items}
         upsert.run(CHROME_KEYS.headerSticky, JSON.stringify(fields.header_sticky === '1'), CHROME_TYPES[CHROME_KEYS.headerSticky], session.userId);
         upsert.run(CHROME_KEYS.footerSticky, JSON.stringify(fields.footer_sticky === '1'), CHROME_TYPES[CHROME_KEYS.footerSticky], session.userId);
         upsert.run(CHROME_KEYS.theme, JSON.stringify(theme), CHROME_TYPES[CHROME_KEYS.theme], session.userId);
+        upsert.run(
+          CHROME_KEYS.description,
+          JSON.stringify(description),
+          CHROME_TYPES[CHROME_KEYS.description],
+          session.userId,
+        );
       });
       write();
       this.#audit({

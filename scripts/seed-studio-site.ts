@@ -187,7 +187,7 @@ main .skw-form__error{border-left:2px solid var(--accent);padding:.2rem 0 .2rem 
    the right, both on the same baseline. The menu is quieter here than in the bar — it is a
    second way to the same pages, not a second navigation. */
 .site-footer{max-width:74rem;margin:0 auto;padding:2.2rem 2.5rem 3.2rem;border-top:1px solid var(--rule);background:transparent;display:flex;flex-wrap:wrap;align-items:baseline;gap:.9rem 2.4rem;font-size:.86rem;color:var(--muted)}
-.site-footer__text{margin:0;order:1;flex:1 1 16rem;color:var(--muted)}
+.site-footer__text{margin:0;order:1;flex:1 1 16rem;color:var(--muted);opacity:1}
 .site-footer nav{margin-left:auto;order:2}
 .site-footer .site-menu{gap:1.6rem;font-size:.86rem;font-weight:400}
 .site-footer .site-menu a{padding:0;color:var(--muted)}
@@ -547,6 +547,10 @@ const MENU_ITEMS = [
 
 const SITE_TITLE = 'ABC 123';
 const FOOTER_TEXT = '© 2026 ABC 123 — a studio for small, well-made software. Melbourne & Lisbon.';
+// S8r: the one sentence a search result shows under the title. Lighthouse's SEO category scored
+// the site 90 and the missing ten points were this one audit (`meta-description`).
+const DESCRIPTION =
+  'ABC 123 is a six-person studio in Melbourne and Lisbon. We design and build small, well-made software: invoice tools, booking screens, quiet dashboards.';
 
 /* ------------------------------------------------------------------ writing it */
 
@@ -582,6 +586,7 @@ function setting(key: string, value: string | boolean, type: 'string' | 'bool'):
 const write = db.transaction(() => {
   setting('site.title', SITE_TITLE, 'string');
   setting('site.footer_text', FOOTER_TEXT, 'string');
+  setting('site.description', DESCRIPTION, 'string');
   setting('site.theme_css', THEME_CSS, 'string');
   setting('site.header_sticky', true, 'bool');
   setting('site.footer_sticky', false, 'bool');

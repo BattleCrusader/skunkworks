@@ -3839,3 +3839,85 @@ row → 302 and `Max-Age=0` on `__Secure-sk-sess-<tenant>` at `Path=/admin`), **
 303 to `/admin/login`, and the write it asked for did not land), **D37-1f** (the sign-in form carries
 `next`, signing in returns there with 200), and **D37-1b** left exactly as it was: a JSON read with
 no session is still the row-7 404 with no `Location`.
+
+### E-48 — the site was fast; the delivery was not, and the paperwork was missing
+
+Prompted by "when I click menus it feels like there's a delay before the linked page opens", and by
+a wish to know whether Astro's speed survived the move into a CMS. Measured before touching
+anything, on `https://abc123.com/`:
+
+| instrument | reading |
+|---|---|
+| warm navigation, one keep-alive connection, 12 samples | TTFB **median 6 ms**, p90 10 ms, max 27 ms |
+| cold connection (DNS + TCP + TLS + first byte) | 137 ms first run, 37–41 ms after |
+| Lighthouse desktop | **performance 100**, FCP 0.3 s, LCP 0.4 s, TBT **0 ms**, CLS 0 |
+| Lighthouse mobile (real GPU) | **performance 100**, FCP 1.0 s, LCP 1.3 s, TBT **0 ms** |
+| Lighthouse mobile (`--disable-gpu`) | performance **70**, TBT 940 ms, Style & Layout 3452 ms |
+| Lighthouse SEO / accessibility / best practices | **90** / 95 / 96 |
+
+The 70 is an artefact of **the probe**, not the product: headless software rasterisation under a 4×
+CPU throttle turns a sticky header with `backdrop-filter: blur(8px)` into seconds of paint inside
+"Style & Layout". With the GPU available the same page scores 100 with TBT 0. Recorded because it
+is exactly the kind of number that gets quoted as a finding.
+
+**So the rendering did not get slower.** The delivery did, in four measurable ways, all of which a
+static Astro build gets for free and a CMS has to be taught:
+
+1. **No compression.** The edge runs the stock `nginx:1.31-alpine` image, whose own `nginx.conf`
+   ships `#gzip on;` — commented out. `curl -H 'accept-encoding: gzip, br'` answered `identity`
+   with the full body: 6,467 B of HTML and 12,862 B of CSS per visit. Fixed by
+   `nginx/conf.d/00-tuning.conf` (gzip, `gzip_vary`, `gzip_proxied any`, level 6, `gzip_types`
+   including CSS/JS/JSON/SVG). Measured after: **HTML 6,467 → 2,338 B, CSS 12,862 → 3,450 B.**
+2. **HTTP/1.1 only.** `curl -w '%{http_version}'` said `1.1` on every block. Fixed by `http2 on;`
+   in each 443 server block (`tools/nginx_gen.ts`, `nginx/templates/server.tmpl`, regenerated
+   fixture and live config). Measured after: `http_version = 2`.
+3. **A render-blocking stylesheet that revalidated on every navigation.** `/theme.css` was sent
+   `public, max-age=0, must-revalidate`, so each click cost a conditional request *before* the
+   first paint — the one hop that makes a page feel slow even when the server answers in 6 ms. The
+   link now carries the sheet's own hash (`/theme.css?v=<sha256[0..12]>`) and a matching version is
+   served `public, max-age=31536000, immutable`; an unversioned request keeps revalidating, so a
+   document cached before this change cannot pin old CSS.
+4. **A 404 on every page load.** `/favicon.ico` answered `404` with a JSON error body. Now
+   `/favicon.svg` and `/favicon.ico` (a real 32 px PNG — Chrome decodes the bytes) are the site's
+   own initial, cached for a day.
+
+**And the paperwork.** Lighthouse's SEO category scored 90 and the missing ten points were one
+audit, `meta-description`; `/robots.txt` and `/sitemap.xml` were 404s, which no Lighthouse category
+covers but a crawler notices immediately. Added: `site.description` (a seventh chrome setting, with
+a field on the Site screen) for `<meta name="description">`; `/robots.txt` (allow all, point at the
+sitemap); `/sitemap.xml` (published `cms_page` rows plus every detail page a loaded package
+declares — `/blog/<slug>` joins by declaration, not by an edit here); and the favicon pair.
+
+**A prefetch script was built, measured, and removed.** `/skw-nav.js` put a `rel=prefetch` on an
+internal link at `mouseover`/`touchstart`/`mousedown`, which is the textbook answer to "a click costs
+a document round trip". Chrome over CDP said it did not work:
+
+```
+hover  -> one request for /pricing, type Other          (the prefetch fired)
+click  -> Document, fromPrefetchCache: false,
+          transferSize: 1991, ttfb: 11 ms               (a full request all the same)
+```
+
+Site documents are `cache-control: no-store`, and a prefetched response that may not be stored is
+discarded — so the script was decoration. `no-store` stays, because a CMS that publishes must show
+the publish; the script went, and **D4** now asserts that the shell loads no `<script>` and that
+`/skw-nav.js` is a 404, so neither half of the decision can return alone. Making prefetch real needs
+an `ETag` over the rendered document plus `no-cache`, or a short `max-age` traded against publish
+latency. Both are open, neither is done.
+
+Two smaller corrections from the same evidence:
+
+- `chromeCss` drew the footer sentence at `opacity:.75`, which is how a 4.97:1 grey became ~3.6:1 —
+  Lighthouse's only accessibility finding. The default no longer uses opacity, and the seeded theme
+  pins `opacity:1`.
+- Astro escapes `&` and `"` in an attribute but leaves `<` alone, so a description typed as
+  `Widgets <script>` reached `<head>` with a `<script>` in it. Inert inside a quoted attribute (and
+  `"` is escaped, so the attribute cannot be broken out of) — and stripped anyway, by
+  `descriptionText`, for the same reason `themeCss` strips it: a sentence is data and should not
+  look like markup.
+
+Guards: `test/site-delivery.test.ts` **D1–D7** — robots names the sitemap, the sitemap lists a
+published page and never a draft, `/favicon.ico` answers 200 with a real PNG signature, the shell
+loads no script and `/skw-nav.js` is a 404, a site with no description emits no tag (the exported
+document stays byte-identical), a versioned sheet is `immutable` while a bogus or absent version
+revalidates, and a description is escaped and stripped rather than trusted.

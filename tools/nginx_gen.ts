@@ -149,6 +149,12 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
     out.push('');
     out.push('server {');
     out.push('    listen 443 ssl;');
+    // S8r: HTTP/2. Without it every page load opens up to six TLS connections (one per file a
+    // browser wants at once) and each one is a handshake; with it the stylesheet and the
+    // document share a connection. Measured on the live box: HTTP/1.1 only, `curl -w
+    // %{http_version}` said `1.1`. `http2 on;` is the 1.25.1+ spelling and the edge image is
+    // nginx 1.31.
+    out.push('    http2 on;');
     out.push(`    server_name ${hosts.join(' ')};`);
     // S4d: the block that listens on 443 must name a certificate. ACME writes
     // `/etc/nginx/certs/<host>.crt|key` per tenant (one certificate covering every host of the
@@ -249,6 +255,7 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
   out.push('');
   out.push('server {');
   out.push('    listen 443 ssl;');
+  out.push('    http2 on;');
   out.push(`    server_name ${opts.demosHost};`);
   // S4d: same as the admin block — the listener needs a certificate to start.
   out.push('    ssl_certificate     /etc/nginx/certs/default.crt;');
