@@ -370,8 +370,9 @@ export function renderEditorPage(input: EditorPageInput): string {
 <link rel="stylesheet" href="${base}/grapesjs.css">
 <style>
 body{margin:0;font:14px/1.4 system-ui,sans-serif}
-#skw-layout{display:grid;grid-template-columns:240px 1fr 300px;height:100vh}
-#skw-blocks,#skw-settings{overflow:auto;border-right:1px solid #ddd;padding:.5rem}
+#skw-layout{display:grid;grid-template-columns:240px minmax(0,1fr) 344px;height:100vh}
+#skw-blocks{overflow:auto;border-right:1px solid #ddd;padding:.5rem}
+#skw-settings{overflow:auto;border-left:1px solid #e3e3e8;background:#f7f7f9;padding:.6rem;display:flex;flex-direction:column;gap:.6rem}
 #skw-canvas{overflow:auto;background:#f3f3f6}
 /* GrapesJS ships a DARK theme (:root{--gjs-primary-color:#444 …}). Half a dark editor inside a
    white admin reads as unfinished, so the palette is re-pointed at the admin's own colours
@@ -432,17 +433,66 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 #skw-bar .skw-btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
 #skw-bar .skw-save-state{font-size:.8rem;color:#6b6b76;min-width:9rem;text-align:right}
 #skw-bar .skw-save-state[data-dirty="1"]{color:#7a4a00;font-weight:600}
-#skw-layout{height:calc(100vh - 56px);display:grid;grid-template-columns:240px 1fr 300px;grid-template-rows:1fr auto}
-/* S8s: the page's own stylesheet, editable where the page is edited. Collapsed it is one line
-   with the count of rules; expanded it is a code pane that takes the bottom third. */
-#skw-css{grid-column:1 / -1;border-top:1px solid #e3e3e8;background:#fff;display:flex;flex-direction:column;max-height:34vh}
-#skw-css-head{display:flex;align-items:center;gap:.6rem;padding:.4rem .75rem;min-height:40px}
-#skw-css-head h2{font-size:.8rem;font-weight:650;margin:0;color:#24242b;white-space:nowrap}
-#skw-css-hint{font-size:.75rem;color:#6b6b76;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#skw-css-text{display:none;margin:0;border:0;border-top:1px solid #eee;padding:.6rem .75rem;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;tab-size:2;resize:vertical;min-height:120px;color:#1f2430;background:#fbfbfd;outline:none}
-#skw-css[data-open="1"] #skw-css-text{display:block}
-#skw-css[data-open="1"]{max-height:52vh}
-#skw-css-text:focus-visible{box-shadow:inset 0 0 0 2px #2563eb}
+#skw-layout{height:calc(100vh - 56px);display:grid;grid-template-columns:240px minmax(0,1fr) 344px;grid-template-rows:1fr}
+/* ---- the inspector: three cards in the right rail ----
+   Selection (what the element is, and the attributes it carries), CSS for that element
+   (the GrapesJS Style Manager), and the page's own stylesheet. Before this, the rail held the
+   Style Manager alone and the selection handler *emptied the rail* for any component that had
+   no registry entry — so selecting a heading left a blank white column. */
+/* flex:0 0 auto — a flex column squeezes its children, and an inspector card that is clipped
+   halfway through its rows looks like a bug in the values rather than a scrollbar away. */
+.skw-card{flex:0 0 auto;border:1px solid #e4e4e9;border-radius:10px;background:#fff;overflow:hidden}
+.skw-card__head{display:flex;align-items:center;gap:.45rem;padding:.5rem .6rem;border-bottom:1px solid #f0f0f3;background:#fff;position:sticky;top:0;z-index:2}
+.skw-card__head h2{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#6b6b76;margin:0;white-space:nowrap}
+.skw-chip{font:11.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#24242b;background:#f3f3f6;border:1px solid #e6e6ea;border-radius:999px;padding:.28rem .45rem;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.skw-chip[data-empty="1"]{color:#9a9aa4;background:#fafafc}
+.skw-body{padding:.55rem .6rem .65rem}
+.skw-hint{margin:.15rem .1rem .2rem;font-size:.76rem;line-height:1.45;color:#6b6b76}
+.skw-row{display:grid;grid-template-columns:58px minmax(0,1fr);align-items:center;gap:.45rem;margin:.35rem 0}
+.skw-row label,.skw-attrhead span{font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#6b6b76}
+.skw-in{width:100%;height:28px;padding:0 .45rem;border:1px solid #dcdce2;border-radius:6px;font:12.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#1f2430;background:#fff}
+.skw-in:focus{outline:2px solid #2563eb;outline-offset:1px;border-color:#2563eb}
+.skw-attrhead{display:flex;align-items:center;justify-content:space-between;margin:.6rem 0 .2rem}
+.skw-attrs{display:grid;gap:.28rem}
+.skw-attr{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1fr) 26px;gap:.28rem}
+.skw-attr .skw-in{height:26px;font-size:12px}
+.skw-attrs__none{margin:.1rem 0 .2rem;font-size:.75rem;color:#9a9aa4}
+.skw-railbtn{display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 .5rem;border:1px solid #dcdce2;border-radius:6px;background:#fff;color:#24242b;font:12px/1 system-ui,sans-serif;cursor:pointer}
+.skw-railbtn:hover{background:#f4f4f7;border-color:#c9c9d2}
+.skw-railbtn:focus-visible{outline:2px solid #2563eb;outline-offset:1px}
+.skw-railbtn[disabled]{opacity:.45;cursor:default}
+.skw-attr__drop{border:1px solid transparent;background:transparent;color:#9a9aa4;font:15px/1 system-ui,sans-serif;cursor:pointer;border-radius:6px}
+.skw-attr__drop:hover{background:#fdecec;color:#8a1c1c}
+/* The Style Manager, inside its card. GrapesJS's own chrome is dense; these are spacing and
+   rule-colour changes only — no property, sector or field is hidden. */
+#skw-styles{padding:.3rem .4rem .5rem;max-height:min(52vh,520px);overflow:auto}
+#skw-styles .gjs-sm-sector{border:0;border-top:1px solid #f0f0f3}
+#skw-styles .gjs-sm-sector:first-child{border-top:0}
+#skw-styles .gjs-sm-sector-title{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:.45rem .2rem;border-bottom:0}
+#skw-styles .gjs-sm-properties{padding:.1rem .2rem .5rem}
+#skw-styles .gjs-sm-property{margin:.25rem 0}
+#skw-styles .gjs-sm-label{font-size:.72rem;color:#6b6b76}
+#skw-styles .gjs-field{background:#fff;border:1px solid #dcdce2;border-radius:6px;color:#1f2430;font-size:12px}
+/* What the browser is painting, as opposed to what a rule says: the value column is
+   getComputedStyle, so an inherited serif and an inherited colour show up as themselves. */
+.skw-computed{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.2rem .7rem;margin:0}
+.skw-computed dt{font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#6b6b76;white-space:nowrap;padding-top:.15rem}
+.skw-computed dd{margin:0;font:11.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:#1f2430;overflow-wrap:anywhere}
+.skw-swatch{display:inline-block;width:11px;height:11px;border-radius:3px;border:1px solid rgba(0,0,0,.18);vertical-align:-1px;margin-right:.35rem}
+#skw-rules-details{border-top:1px solid #f0f0f3;padding:.35rem .6rem .5rem}
+#skw-rules-details summary{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b6b76;cursor:pointer;padding:.25rem 0}
+.skw-rules{margin:.2rem 0 0;padding:0 0 0 1.1rem;display:grid;gap:.3rem}
+.skw-rules li{font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#4a4a55;overflow-wrap:anywhere}
+.skw-rules code{color:#1f2430;background:#f3f3f6;border-radius:4px;padding:.05rem .3rem}
+.skw-rules .skw-media{color:#9a9aa4;font-size:11px}
+/* S8s: the page's own stylesheet, in the rail under the element's CSS. It is a file the server
+   serves (/_css/<sha>.css), linked after the theme; this box is what writes it. */
+#skw-css{flex:0 0 auto;display:flex;flex-direction:column}
+#skw-css-hint{margin:.45rem .6rem .2rem}
+#skw-css-actions{display:flex;align-items:center;gap:.4rem;padding:0 .6rem .45rem}
+#skw-css-text{margin:0;border:0;border-top:1px solid #f0f0f3;padding:.55rem .6rem;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;tab-size:2;resize:vertical;min-height:132px;color:#1f2430;background:#fbfbfd;outline:none;width:100%}
+#skw-css[data-open="0"] #skw-css-text{display:none}
+#skw-css-text:focus{box-shadow:inset 0 0 0 2px #2563eb}
 </style></head>
 <body data-skw-readonly="${readonly ? '1' : '0'}">
 <header id="skw-bar">
@@ -461,15 +511,45 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 <div id="skw-layout">
   <aside id="skw-blocks" aria-label="Blocks"></aside>
   <div id="skw-canvas"><div id="gjs"></div></div>
-  <aside id="skw-settings" aria-label="Settings"></aside>
-  <section id="skw-css" aria-label="This page's CSS">
-    <header id="skw-css-head">
-      <h2>This page's CSS</h2>
-      <span class="skw-css-hint">Served as its own file, on this page only, <em>after</em> the site's theme — so a rule here wins at equal specificity. Press Save to see it on the page; the canvas shows it when you reload.</span>
-      <button type="button" class="skw-btn" id="skw-css-toggle" aria-expanded="false" aria-controls="skw-css-text">Show CSS</button>
-    </header>
-    <textarea id="skw-css-text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder=".s-hero h1 { font-size: 4.5rem }"${readonly ? ' readonly' : ''}></textarea>
-  </section>
+  <aside id="skw-settings" aria-label="Inspector">
+    <section class="skw-card" id="skw-selection" aria-labelledby="skw-selection-head">
+      <header class="skw-card__head"><h2 id="skw-selection-head">Selection</h2><span class="skw-chip" id="skw-sel-where" data-empty="1">nothing selected</span></header>
+      <div class="skw-body">
+        <p class="skw-hint" id="skw-sel-empty">Click an element in the page — or drop one from the library — to see its tag, id, classes and every attribute it carries. All of them are editable here.</p>
+        <div id="skw-sel-body" hidden>
+          <div class="skw-row"><label for="skw-sel-id">id</label><input class="skw-in" id="skw-sel-id" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="(no id)"></div>
+          <div class="skw-row"><label for="skw-sel-classes">classes</label><input class="skw-in" id="skw-sel-classes" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="space separated"></div>
+          <div class="skw-attrhead"><span>Attributes</span><button type="button" class="skw-railbtn" id="skw-attr-add">+ add</button></div>
+          <div class="skw-attrs" id="skw-sel-attrs"></div>
+          <div id="skw-sel-fields"></div>
+        </div>
+      </div>
+    </section>
+    <section class="skw-card" id="skw-computed" aria-labelledby="skw-computed-head">
+      <header class="skw-card__head"><h2 id="skw-computed-head">Computed</h2><span class="skw-chip" id="skw-computed-chip" data-empty="1">—</span></header>
+      <div class="skw-body">
+        <p class="skw-hint" id="skw-computed-empty">Select an element to see the values the browser is actually painting — including everything it inherits.</p>
+        <dl class="skw-computed" id="skw-computed-list" hidden></dl>
+      </div>
+    </section>
+    <section class="skw-card" id="skw-styles-card" aria-labelledby="skw-styles-head">
+      <header class="skw-card__head"><h2 id="skw-styles-head">CSS · this element</h2><span class="skw-chip" id="skw-styles-target" data-empty="1">—</span></header>
+      <p class="skw-hint" id="skw-style-need" hidden>No class or id yet — a CSS rule needs a selector. Name one here and the properties appear.</p>
+      <div id="skw-style-give" hidden><input class="skw-in" id="skw-style-class" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="class name"><button type="button" class="skw-railbtn" id="skw-style-add">Style it</button></div>
+      <div id="skw-styles"></div>
+      <details id="skw-rules-details"><summary>Rules reaching this element</summary><ol class="skw-rules" id="skw-rules"></ol></details>
+    </section>
+    <section class="skw-card" id="skw-css" aria-label="This page's CSS" data-open="1">
+      <header class="skw-card__head">
+        <h2>Page CSS</h2>
+        <span class="skw-chip" id="skw-css-count">0 rules</span>
+        <button type="button" class="skw-railbtn" id="skw-css-toggle" aria-expanded="true" aria-controls="skw-css-text" style="margin-left:auto">Hide</button>
+      </header>
+      <p class="skw-hint" id="skw-css-hint">Its own file, this page only, loaded <em>after</em> the theme — a rule here wins at equal specificity. Press Save to put it on the page.</p>
+      <div id="skw-css-actions"><button type="button" class="skw-railbtn" id="skw-css-scaffold"${readonly ? ' disabled' : ''}>Add a rule for the selected element</button></div>
+      <textarea id="skw-css-text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder=".s-hero h1 { font-size: 4.5rem }"${readonly ? ' readonly' : ''}></textarea>
+    </section>
+  </aside>
 </div>
 <script type="application/json" id="skw-editor-boot">${jsonForScript(payload)}</script>
 <script src="${base}/grapesjs.js"></script>
@@ -503,6 +583,11 @@ const BOOT_SCRIPT = String.raw`
   'use strict';
   var boot = JSON.parse(document.getElementById('skw-editor-boot').textContent);
   var readonly = document.body.dataset.skwReadonly === '1';
+  // Declared at the top because rememberIds() runs before the inspector's own section further
+  // down: var hoists the name but not the value, and the first version of this threw
+  // "Cannot set properties of undefined" — an exception that aborted the rest of the boot
+  // script, so Save was never bound.
+  var authoredIds = Object.create(null);
   var editor = grapesjs.init({
     container: '#gjs',
     height: '100%',
@@ -519,10 +604,10 @@ const BOOT_SCRIPT = String.raw`
     // draws its icons as inline SVG.
     panels: { defaults: [] },
     // The Style Manager is the one part of GrapesJS's stock chrome this screen needs, and it
-    // used to arrive inside a default panel whose buttons are Font Awesome glyphs. Mounting
-    // it into our own right-hand column keeps the capability and drops the missing-icon
-    // chrome in one move.
-    styleManager: { appendTo: '#skw-settings' },
+    // used to arrive inside a default panel whose buttons are Font Awesome glyphs. It is mounted
+    // into the inspector's own card (#skw-styles) — a container this script never writes to, so
+    // selecting an element cannot wipe it.
+    styleManager: { appendTo: '#skw-styles' },
     // The palette is GrapesJS's own block manager, mounted in our column. Its views are what
     // implement a block drag: they set the transfer payload *and* the editor's dragSource, which
     // is what the canvas sorter reads on drop. Hand-rolled buttons in this column could show the
@@ -785,7 +870,7 @@ const BOOT_SCRIPT = String.raw`
     setTimeout(function () { frameScheduled = false; applySiteFrame(); }, 0);
   }
 
-  function insertFrameNode(doc, html, before) {
+  function insertFrameNode(doc, html, before, kind) {
     // The template is created in the *canvas* document: a node from the admin document inserted
     // into the frame is adopted by the browser, which is a silent cross-document step that has
     // bitten this codebase before (the export's DOM). One document, one node.
@@ -793,7 +878,10 @@ const BOOT_SCRIPT = String.raw`
     tpl.innerHTML = html;
     var node = tpl.content && tpl.content.firstElementChild;
     if (!node) return null;
-    node.setAttribute('data-skw-frame', '1');
+    // The marker carries the *kind*, because that is what the lookups above ask for
+    // ('[data-skw-frame="header"]'). Writing '1' here made those lookups never match, so every
+    // structural change inserted another header and another footer into the canvas.
+    node.setAttribute('data-skw-frame', kind);
     if (before === null) before.parentNode.appendChild(node);
     else before.parentNode.insertBefore(node, before);
     return node;
@@ -837,13 +925,13 @@ const BOOT_SCRIPT = String.raw`
 
     var header = doc.querySelector('[data-skw-frame="header"]');
     if (boot.frame.header) {
-      if (!header) header = insertFrameNode(doc, boot.frame.header, el);
+      if (!header) header = insertFrameNode(doc, boot.frame.header, el, 'header');
     } else if (header) {
       header.remove();
     }
     var footer = doc.querySelector('[data-skw-frame="footer"]');
     if (boot.frame.footer) {
-      if (!footer) insertFrameNode(doc, boot.frame.footer, el.nextSibling);
+      if (!footer) insertFrameNode(doc, boot.frame.footer, el.nextSibling, 'footer');
     } else if (footer) {
       footer.remove();
     }
@@ -879,50 +967,508 @@ const BOOT_SCRIPT = String.raw`
   // 3. The document. page.bodyHtml is what the server validated; a hand-managed page is
   //    read-only in the canvas (§10.6) because the next drag would re-serialise it.
   applyDocument(boot.page.bodyHtml || '');
+  // The ids in the stored document are content; every id seen later is the editor's own.
+  rememberIds();
   if (readonly) {
     editor.Canvas.getBody().setAttribute('contenteditable', 'false');
     editor.on('component:selected', function (c) { editor.selectRemove(c); });
   }
 
-  // 4. The settings panel: the fields the registry entry declares, and nothing else.
-  function settings(component) {
-    var panel = document.getElementById('skw-settings');
-    panel.innerHTML = '';
-    if (!component) return;
-    var type = component.get('type');
-    var item = boot.palette.filter(function (p) { return p.type === type; })[0];
-    if (!item) return;
-    var title = document.createElement('h3');
-    title.textContent = item.label;
-    panel.appendChild(title);
-    item.editable.forEach(function (field) {
-      var wrap = document.createElement('div');
-      wrap.className = 'field';
-      var label = document.createElement('label');
-      label.textContent = field.prop;
-      wrap.appendChild(label);
-      var inner = component.find('[data-prop="' + field.prop + '"]')[0] || component;
-      if (field.type === 'asset') {
-        var key = inner.getAttributes()['data-asset-key'] || '';
-        var button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = key || 'Choose an image';
-        button.addEventListener('click', function () { pick(component, field, button); });
-        wrap.appendChild(button);
+  // 4. THE INSPECTOR. Three things in the right rail, in this order:
+  //
+  //    a) what the element *is* — tag, id, classes, and every attribute it carries, each one
+  //       editable in place (this is the panel the operator asked for after finding the rail
+  //       blank: selecting a heading used to empty the whole rail and then return, because
+  //       the handler bailed on any component with no registry entry — which is every plain
+  //       element: div, section, h1, p, table …);
+  //    b) the Style Manager, mounted in its own card (#skw-styles) and never written to by
+  //       this script;
+  //    c) the page's stylesheet.
+  //
+  //    The three are separate containers so that (b) and (c) survive any selection change.
+  var selWhere = el('skw-sel-where');
+  var selEmpty = el('skw-sel-empty');
+  var selBody = el('skw-sel-body');
+  var selId = el('skw-sel-id');
+  var selClasses = el('skw-sel-classes');
+  var selAttrs = el('skw-sel-attrs');
+  var selFields = el('skw-sel-fields');
+  var stylesTarget = el('skw-styles-target');
+  var computedChip = el('skw-computed-chip');
+  var computedList = el('skw-computed-list');
+  var computedEmpty = el('skw-computed-empty');
+  var rulesList = el('skw-rules');
+  var stylesBox = el('skw-styles');
+  var styleNeed = el('skw-style-need');
+  var styleGive = el('skw-style-give');
+  var styleClass = el('skw-style-class');
+  var current = null;
+
+  /**
+   * WHICH IDS ARE CONTENT AND WHICH ARE THE EDITOR'S.
+   *
+   * GrapesJS assigns an id to a component the moment it is selected, because the Style Manager
+   * needs a selector name and a bare element has none (i465, ir4g, ijq4 — four random
+   * characters). That id is bookkeeping, not content: left alone it lands in cms_page.body_html
+   * on the next Save, and the operator's markup starts collecting random ids from clicks they
+   * only meant as "show me this element". So every id that exists at load is recorded here, and
+   * an id on a selected component that is not in this table was made by the editor — it is
+   * removed, together with the empty rule the Style Manager created for it.
+   *
+   * A bare element is not styled through a fake selector: the rail asks for a real class
+   * (#skw-style-class), which is what a stylesheet should be keyed on anyway.
+   */
+  function rememberIds() {
+    var walk = function (component) {
+      if (!component || component.cid === undefined) return;
+      var id = component.getAttributes().id;
+      if (id) authoredIds[component.cid] = id;
+      component.components().forEach(walk);
+    };
+    walk(editor.getWrapper());
+  }
+
+  function authoredId(component) {
+    return authoredIds[component.cid] || '';
+  }
+
+  function forgetRule(selector) {
+    try {
+      editor.CssComposer.getAll().forEach(function (rule) {
+        var names = (rule.selectors || []).map(function (s) { return s.getFullName(); });
+        var empty = Object.keys(rule.getStyle() || {}).length === 0;
+        if (names.indexOf(selector) !== -1 && empty) rule.remove();
+      });
+    } catch (e) { /* nothing to undo */ }
+  }
+
+  /** The selector a CSS rule would use for this component: id, else first class, else its tag. */
+  function selectorFor(component) {
+    var classes = component.getClasses();
+    if (classes.length > 0) return '.' + classes[0];
+    var id = authoredId(component) || component.getAttributes().id;
+    if (id) return '#' + id;
+    var tag = String(component.get('tagName') || 'div').toLowerCase();
+    return tag === '' ? 'div' : tag;
+  }
+
+  /**
+   * WHAT THE BROWSER IS PAINTING.
+   *
+   * The Style Manager answers "what does the rule say"; this answers "what do I see". They
+   * differ for exactly the elements that made the operator ask: an <em> inside the hero heading
+   * takes its serif from the h1 and its colour from .s-hero h1 em, so a panel that shows only
+   * a rule for the em looks like it has failed to load the styles. getComputedStyle is the
+   * measurement; the list of matching rules underneath says where each part came from.
+   */
+  var COMPUTED_PROPS = [
+    ['font-family', 'Font'],
+    ['font-size', 'Size'],
+    ['font-weight', 'Weight'],
+    ['font-style', 'Style'],
+    ['letter-spacing', 'Tracking'],
+    ['line-height', 'Leading'],
+    ['color', 'Colour'],
+    ['background-color', 'Fill'],
+  ];
+
+  function shortFamily(value) {
+    var first = String(value).split(',')[0].replace(/^"|"$/g, '').trim();
+    return first === '' ? String(value) : first;
+  }
+
+  function rgbHex(value) {
+    var m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(String(value));
+    if (m === null) return null;
+    var hex = '#' + [1, 2, 3].map(function (i) {
+      var part = Number(m[i]).toString(16);
+      return part.length === 1 ? '0' + part : part;
+    }).join('');
+    var alpha = m[4] === undefined ? 1 : Number(m[4]);
+    return { hex: hex, alpha: alpha };
+  }
+
+  function renderComputed(component) {
+    if (computedList === null) return;
+    computedList.innerHTML = '';
+    if (component === null) {
+      computedList.hidden = true;
+      if (computedEmpty !== null) computedEmpty.hidden = false;
+      chip(computedChip, '—', true);
+      return;
+    }
+    var node = component.getEl();
+    var view = null;
+    try { view = editor.Canvas.getDocument().defaultView; } catch (e) { view = null; }
+    if (!node || view === null) return;
+    var style = view.getComputedStyle(node);
+    COMPUTED_PROPS.forEach(function (pair) {
+      var value = style.getPropertyValue(pair[0]);
+      if (value === '') return;
+      var dt = document.createElement('dt');
+      dt.textContent = pair[1];
+      var dd = document.createElement('dd');
+      if (pair[0] === 'color' || pair[0] === 'background-color') {
+        var rgb = rgbHex(value);
+        if (rgb !== null && rgb.alpha === 0) {
+          dd.textContent = 'transparent';
+        } else if (rgb !== null) {
+          var dot = document.createElement('span');
+          dot.className = 'skw-swatch';
+          dot.style.background = rgb.hex;
+          dd.appendChild(dot);
+          dd.appendChild(document.createTextNode(rgb.hex + (rgb.alpha < 1 ? ' · ' + rgb.alpha : '')));
+        } else {
+          dd.textContent = value;
+        }
+      } else if (pair[0] === 'font-family') {
+        dd.textContent = shortFamily(value);
+        dd.title = value;
       } else {
-        var input = document.createElement('input');
-        input.type = 'text';
-        input.value = inner.getEl().textContent || '';
-        input.addEventListener('input', function () {
-          inner.components(input.value);
-          inner.set('content', input.value);
-        });
-        wrap.appendChild(input);
+        dd.textContent = value;
       }
-      panel.appendChild(wrap);
+      computedList.appendChild(dt);
+      computedList.appendChild(dd);
+    });
+    computedList.hidden = false;
+    if (computedEmpty !== null) computedEmpty.hidden = true;
+    chip(computedChip, '<' + String(component.get('tagName') || 'div').toLowerCase() + '>', false);
+  }
+
+  /** Every stylesheet rule whose selector matches this element, media queries included. */
+  function renderRules(component) {
+    if (rulesList === null) return;
+    rulesList.innerHTML = '';
+    if (component === null) return;
+    var node = component.getEl();
+    var doc = null;
+    try { doc = editor.Canvas.getDocument(); } catch (e) { doc = null; }
+    if (!node || doc === null) return;
+    var found = [];
+    var seen = Object.create(null);
+    var walkRules = function (list, media) {
+      for (var i = 0; i < list.length; i += 1) {
+        var rule = list[i];
+        // 1 = style rule, 4 = media, 12 = supports
+        if (rule.cssRules && (rule.type === 4 || rule.type === 12)) {
+          var condition = rule.conditionText || '';
+          if (rule.type === 4 && window.matchMedia && !window.matchMedia(condition).matches) continue;
+          walkRules(rule.cssRules, media === '' ? condition : media);
+          continue;
+        }
+        if (rule.type !== 1 || !rule.selectorText) continue;
+        // A universal reset matches every element and says nothing about this one: a rule whose
+        // selector starts with * and names no class, id or attribute is not about this element.
+        if (/^\s*\*/.test(rule.selectorText) && !/[.#\[]/.test(rule.selectorText)) continue;
+        var matches = false;
+        try { matches = node.matches(rule.selectorText); } catch (e) { matches = false; }
+        if (!matches) continue;
+        var key = rule.selectorText + '|' + (media || '');
+        if (seen[key]) continue;
+        seen[key] = true;
+        found.push({ selector: rule.selectorText, media: media || '', css: rule.style.cssText });
+      }
+    };
+    var sheets = doc.styleSheets;
+    for (var s = 0; s < sheets.length; s += 1) {
+      var rules = null;
+      try { rules = sheets[s].cssRules; } catch (e) { rules = null; }
+      if (rules === null) continue;
+      walkRules(rules, '');
+    }
+    found.slice(0, 12).forEach(function (entry) {
+      var li = document.createElement('li');
+      var code = document.createElement('code');
+      code.textContent = entry.selector;
+      li.appendChild(code);
+      if (entry.media !== '') {
+        var media = document.createElement('span');
+        media.className = 'skw-media';
+        media.textContent = '  @' + entry.media;
+        li.appendChild(media);
+      }
+      var body = document.createElement('div');
+      body.textContent = entry.css.length > 150 ? entry.css.slice(0, 150) + '…' : entry.css;
+      li.appendChild(body);
+      rulesList.appendChild(li);
+    });
+    if (found.length === 0) {
+      var none = document.createElement('li');
+      none.textContent = 'No stylesheet rule names this element; it inherits everything it shows.';
+      rulesList.appendChild(none);
+    }
+  }
+
+  function chip(node, text, empty) {
+    if (!node) return;
+    node.textContent = text;
+    node.setAttribute('data-empty', empty ? '1' : '0');
+  }
+
+  /** One editable attribute row. Renaming is remove-then-add, because a DOM attribute is a name. */
+  function attrRow(name, value) {
+    var row = document.createElement('div');
+    row.className = 'skw-attr';
+    var nameIn = document.createElement('input');
+    nameIn.className = 'skw-in';
+    nameIn.value = name;
+    nameIn.placeholder = 'name';
+    nameIn.spellcheck = false;
+    var valIn = document.createElement('input');
+    valIn.className = 'skw-in';
+    valIn.value = value;
+    valIn.placeholder = 'value';
+    valIn.spellcheck = false;
+    var drop = document.createElement('button');
+    drop.type = 'button';
+    drop.className = 'skw-attr__drop';
+    drop.textContent = '×';
+    drop.title = 'Remove this attribute';
+    drop.setAttribute('aria-label', 'Remove attribute ' + (name === '' ? '(new)' : name));
+    row.appendChild(nameIn);
+    row.appendChild(valIn);
+    row.appendChild(drop);
+    selAttrs.appendChild(row);
+
+    nameIn.addEventListener('change', function () {
+      if (current === null) return;
+      var next = nameIn.value.trim();
+      var previous = name;
+      if (next === previous) return;
+      if (previous !== '') current.removeAttributes(previous);
+      if (next !== '') {
+        var attrs = {};
+        attrs[next] = valIn.value;
+        current.addAttributes(attrs);
+      }
+      name = next;
+      setState('Unsaved changes', true);
+      chip(selWhere, '<' + String(current.get('tagName') || 'div').toLowerCase() + '>', false);
+    });
+    valIn.addEventListener('input', function () {
+      if (current === null || name === '') return;
+      var attrs = {};
+      attrs[name] = valIn.value;
+      current.addAttributes(attrs);
+      setState('Unsaved changes', true);
+    });
+    drop.addEventListener('click', function () {
+      if (current !== null && name !== '') current.removeAttributes(name);
+      row.remove();
+      setState('Unsaved changes', true);
+      if (selAttrs !== null && selAttrs.children.length === 0) attrNone();
+    });
+    return row;
+  }
+
+  function attrNone() {
+    if (selAttrs === null) return;
+    var none = document.createElement('p');
+    none.className = 'skw-attrs__none';
+    none.id = 'skw-sel-attrs-none';
+    none.textContent = 'No attributes beyond its class list.';
+    selAttrs.appendChild(none);
+  }
+
+  /**
+   * Everything the inspector shows for one component. It writes only into #skw-selection;
+   * #skw-styles and #skw-css belong to other owners and are left alone.
+   */
+  function inspector(component) {
+    current = component || null;
+    var has = current !== null;
+    if (selEmpty !== null) selEmpty.hidden = has;
+    if (selBody !== null) selBody.hidden = !has;
+    if (selAttrs !== null) selAttrs.innerHTML = '';
+    if (selFields !== null) selFields.innerHTML = '';
+    if (!has) {
+      chip(selWhere, 'nothing selected', true);
+      chip(stylesTarget, '—', true);
+      if (stylesBox !== null) stylesBox.hidden = true;
+      renderComputed(null);
+      renderRules(null);
+      updateScaffold();
+      return;
+    }
+    var tag = String(current.get('tagName') || 'div').toLowerCase();
+    var type = current.get('type');
+    var item = boot.palette.filter(function (p) { return p.type === type; })[0];
+    chip(selWhere, item ? '<' + tag + '> · ' + item.label : '<' + tag + '>', false);
+
+    // Drop an id the editor invented for this selection, and the empty rule that came with it.
+    var attrsNow = current.getAttributes();
+    if (attrsNow.id && authoredId(current) === '') {
+      forgetRule('#' + attrsNow.id);
+      current.removeAttributes('id');
+    }
+    var hook = current.getClasses().length > 0 || authoredId(current) !== '';
+    chip(stylesTarget, hook ? selectorFor(current) : 'no hook yet', !hook);
+    if (styleNeed !== null) styleNeed.hidden = hook;
+    if (styleGive !== null) styleGive.hidden = hook;
+    // With no hook there is no target, and the manager keeps drawing the last one's sectors.
+    if (stylesBox !== null) stylesBox.hidden = !hook;
+    if (styleClass !== null && hook === false && document.activeElement !== styleClass) {
+      styleClass.value = tag;
+    }
+
+    var attrs = current.getAttributes();
+    // id and class have their own fields; style belongs to the Style Manager below; the
+    // data-gjs-* names are the editor's own bookkeeping and are not the operator's to edit.
+    Object.keys(attrs).forEach(function (name) {
+      if (name === 'id' || name === 'class' || name === 'style') return;
+      if (name.indexOf('data-gjs-') === 0) return;
+      attrRow(name, String(attrs[name]));
+    });
+    if (selAttrs !== null && selAttrs.children.length === 0) attrNone();
+    if (selId !== null && document.activeElement !== selId) selId.value = attrs.id || '';
+    if (selClasses !== null && document.activeElement !== selClasses) {
+      selClasses.value = current.getClasses().join(' ');
+    }
+
+    if (item) {
+      item.editable.forEach(function (field) {
+        var wrap = document.createElement('div');
+        wrap.className = 'field';
+        var label = document.createElement('label');
+        label.textContent = field.prop;
+        wrap.appendChild(label);
+        var inner = current.find('[data-prop="' + field.prop + '"]')[0] || current;
+        if (field.type === 'asset') {
+          var key = inner.getAttributes()['data-asset-key'] || '';
+          var button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'skw-railbtn';
+          button.textContent = key || 'Choose an image';
+          button.addEventListener('click', function () { pick(current, field, button); });
+          wrap.appendChild(button);
+        } else {
+          var input = document.createElement('input');
+          input.type = 'text';
+          input.className = 'skw-in';
+          input.value = inner.getEl().textContent || '';
+          input.addEventListener('input', function () {
+            inner.components(input.value);
+            inner.set('content', input.value);
+          });
+          wrap.appendChild(input);
+        }
+        selFields.appendChild(wrap);
+      });
+    }
+    // The Style Manager is pointed at a component only when it has a real hook. Pointing it at a
+    // bare element is what makes GrapesJS invent the id we just removed, so a component with no
+    // class and no id gets the "name a class" control instead — and the canvas selection is left
+    // exactly as the click made it.
+    try {
+      // An empty array is "no target": the one-argument form with nothing in it is not the
+      // same call, and it leaves the manager pointing at the selector it invented a moment ago.
+      if (hook) editor.StyleManager.select(current);
+      else editor.StyleManager.select([]);
+    } catch (e) { /* no target */ }
+    renderComputed(current);
+    renderRules(current);
+    updateScaffold();
+  }
+
+  editor.on('component:selected', inspector);
+  editor.on('component:deselected', function () {
+    // A target change inside the Style Manager emits this too; the canvas selection is what the
+    // card describes, so it only clears when the canvas has really let go.
+    if (editor.getSelected()) return;
+    if (current !== null) inspector(null);
+  });
+  // The rail's own chip has to keep up with renames made in the canvas (a class added by the
+  // Style Manager's selector field, an id typed into the canvas). Rows are not rebuilt here:
+  // that would destroy the input the operator is typing into.
+  editor.on('component:update:attributes', function (c) {
+    if (c !== current || current === null) return;
+    chip(stylesTarget, selectorFor(current), false);
+  });
+  editor.on('component:update:classes', function (c) {
+    if (c !== current || current === null) return;
+    renderRules(current);
+    chip(stylesTarget, selectorFor(current), false);
+    if (selClasses !== null && document.activeElement !== selClasses) {
+      selClasses.value = current.getClasses().join(' ');
+    }
+  });
+
+  // A property typed into the Style Manager changes what is painted; the measurement follows it.
+  editor.on('component:update:style', function (c) {
+    if (c !== current || current === null) return;
+    renderComputed(current);
+  });
+  editor.on('component:styleUpdate', function (c) {
+    if (c !== current || current === null) return;
+    renderComputed(current);
+  });
+
+  if (selId !== null) {
+    selId.addEventListener('input', function () {
+      if (current === null) return;
+      var next = selId.value.trim();
+      if (next === '') {
+        delete authoredIds[current.cid];
+        current.removeAttributes('id');
+      } else {
+        // Typed by the operator: this one is content, and it survives the next selection.
+        authoredIds[current.cid] = next;
+        current.addAttributes({ id: next });
+      }
+      chip(stylesTarget, next === '' ? 'no hook yet' : selectorFor(current), next === '');
+      setState('Unsaved changes', true);
     });
   }
-  editor.on('component:selected', settings);
+  if (selClasses !== null) {
+    selClasses.addEventListener('input', function () {
+      if (current === null) return;
+      var list = selClasses.value.split(/\s+/).filter(function (s) { return s !== ''; });
+      current.setClass(list);
+      chip(stylesTarget, selectorFor(current), false);
+      setState('Unsaved changes', true);
+    });
+  }
+  var attrAdd = el('skw-attr-add');
+  if (attrAdd !== null) {
+    attrAdd.addEventListener('click', function () {
+      if (current === null) return;
+      var none = document.getElementById('skw-sel-attrs-none');
+      if (none) none.remove();
+      var row = attrRow('', '');
+      var first = row.querySelector('input');
+      if (first) first.focus();
+    });
+  }
+
+  // "Style it": a bare element becomes styleable by *having a class*, which is the selector a
+  // stylesheet wants anyway. The name is prefilled with the tag so the common case (style every
+  // paragraph, style this heading) is one keystroke away, and an existing class of that name is
+  // reused rather than duplicated.
+  var styleAdd = el('skw-style-add');
+  function applyStyleHook() {
+    if (current === null || styleClass === null) return;
+    var name = styleClass.value.trim().replace(/^\./, '').replace(/\s+/g, '-');
+    if (name === '') return;
+    if (current.getClasses().indexOf(name) === -1) current.addClass(name);
+    setState('Unsaved changes', true);
+    inspector(current);
+  }
+  if (styleAdd !== null) styleAdd.addEventListener('click', applyStyleHook);
+  if (styleClass !== null) {
+    styleClass.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); applyStyleHook(); }
+    });
+  }
+
+  // Every sector of the Style Manager is open from the start: a collapsed accordion of six
+  // headings is what the operator saw before this, and it reads as an empty panel.
+  function openSectors() {
+    try {
+      editor.StyleManager.getSectors().forEach(function (sector) { sector.set('open', true); });
+    } catch (e) { /* the manager is not ready yet */ }
+  }
+  editor.on('load', openSectors);
+  setTimeout(openSectors, 0);
 
   // 5. The media picker: post the document and the field, get the document back with
   //    data-asset-key set. The browser never composes a URL (D17).
@@ -995,24 +1541,102 @@ const BOOT_SCRIPT = String.raw`
     return (hand === '' ? '' : hand + '\n\n') + GEN_MARK + '\n' + gen;
   }
 
+  // The page-CSS card lives in the rail, open by default (it is one of the three things the
+  // rail is for), and the count next to its title is the number of opening braces at nesting depth 0 —
+  // a rule count that survives comments and media queries well enough to answer "is there
+  // anything in here?".
+  var cssCount = el('skw-css-count');
+
+  function ruleCount(css) {
+    var depth = 0;
+    var count = 0;
+    for (var i = 0; i < css.length; i += 1) {
+      var ch = css.charAt(i);
+      if (ch === '{') {
+        if (depth === 0) count += 1;
+        depth += 1;
+      } else if (ch === '}') {
+        depth = Math.max(0, depth - 1);
+      }
+    }
+    return count;
+  }
+
+  function refreshCssCount() {
+    if (cssCount === null || cssBox === null) return;
+    var n = ruleCount(stripGenerated(cssBox.value));
+    cssCount.textContent = n === 1 ? '1 rule' : n + ' rules';
+  }
+
+  function setCssOpen(next) {
+    if (cssPanel === null) return;
+    cssPanel.setAttribute('data-open', next ? '1' : '0');
+    if (cssToggle !== null) {
+      cssToggle.setAttribute('aria-expanded', next ? 'true' : 'false');
+      cssToggle.textContent = next ? 'Hide' : 'Show';
+    }
+    try { window.localStorage.setItem('skw-css-open', next ? '1' : '0'); } catch (e) { /* private mode */ }
+  }
+
   if (cssBox) {
     cssBox.value = stripGenerated(boot.css || '');
+    refreshCssCount();
     if (cssToggle) {
-      var open = false;
-      try { open = window.localStorage.getItem('skw-css-open') === '1'; } catch (e) { /* private mode */ }
-      var setOpen = function (next) {
-        open = next;
-        cssPanel.setAttribute('data-open', next ? '1' : '0');
-        cssToggle.setAttribute('aria-expanded', next ? 'true' : 'false');
-        cssToggle.textContent = next ? 'Hide CSS' : 'Show CSS';
-        try { window.localStorage.setItem('skw-css-open', next ? '1' : '0'); } catch (e) { /* private mode */ }
-      };
-      setOpen(open);
-      cssToggle.addEventListener('click', function () { setOpen(!open); });
+      var open = true;
+      try { open = window.localStorage.getItem('skw-css-open') !== '0'; } catch (e) { /* private mode */ }
+      setCssOpen(open);
+      cssToggle.addEventListener('click', function () {
+        setCssOpen(cssPanel.getAttribute('data-open') !== '1');
+      });
       // The panel is part of the document: an edit here is a change, exactly as a drag is.
-      cssBox.addEventListener('input', function () { setState('Unsaved changes', true); });
+      cssBox.addEventListener('input', function () {
+        setState('Unsaved changes', true);
+        refreshCssCount();
+        updateScaffold();
+      });
     }
   }
+
+  /**
+   * "Add a rule for the selected element": the bridge between the selection card and this one.
+   * It writes nothing to the server — it scaffolds a rule in the page's own stylesheet, puts
+   * the caret inside the declaration block, and marks the document dirty. If a rule for that
+   * selector already exists, the caret goes to it instead of appending a second one.
+   */
+  // Declared before its first *runtime* use below and after the input listeners that call it:
+  // the function declaration hoists to the top of the boot closure, the variable does not.
+  var scaffold = el('skw-css-scaffold');
+
+  function updateScaffold() {
+    if (scaffold === null) return;
+    scaffold.disabled = readonly || current === null;
+    scaffold.textContent = current === null
+      ? 'Select an element to add a rule for it'
+      : 'Add a rule for ' + selectorFor(current);
+  }
+
+  if (scaffold !== null) {
+    scaffold.addEventListener('click', function () {
+      if (current === null || cssBox === null) return;
+      var sel = selectorFor(current);
+      var text = cssBox.value;
+      var at = text.indexOf(sel + ' {');
+      if (at === -1) {
+        at = text.replace(/\s+$/, '');
+        cssBox.value = (at === '' ? '' : at + '\n\n') + sel + ' {\n  \n}';
+        at = cssBox.value.length - 2;
+      } else {
+        at = at + sel.length + 3;
+      }
+      setCssOpen(true);
+      cssBox.focus();
+      cssBox.setSelectionRange(at, at);
+      setState('Unsaved changes', true);
+      refreshCssCount();
+      updateScaffold();
+    });
+  }
+  updateScaffold();
 
   /**
    * Save. The CSS travels as composeCss(): the panel's hand-written rules, then the Style

@@ -4020,3 +4020,59 @@ check has nothing to disagree with.
 appended the named page's `body_css`; the implementation never read it. The docstring was three
 years of reassurance about a behaviour that did not exist. The parameter is now real — as
 `/_css/<sha>.css` — and the docstring describes that instead.
+
+
+## E-50 — the inspector was blank for every element, and selecting one wrote an id into the page
+
+**Symptom, as the operator reported it.** "When I select an item I should be able to see the item's
+attribute details and be able to edit the CSS directly on the right side of the page in the white
+area." The white area was the right rail, and it was white because it had been emptied.
+
+**Cause 1 — the handler cleared the panel it did not own.** The selection handler began
+`panel.innerHTML = ''` on `#skw-settings` and then `return`ed unless the component's `type` matched a
+palette entry. The Style Manager is mounted in that same element, so the first click on any element
+that is not a registry component — every `div`, `section`, `h1`, `p`, `table`, `em` — deleted the
+manager's DOM and returned, leaving an empty column. `getCss()` still worked, so nothing failed
+loudly: the styles could be written and simply not seen.
+
+**Cause 2 — selecting an element invented an id.** GrapesJS needs a selector name for the Style
+Manager's target, and a bare element has none, so `Selectors.addSelected` generates one (`i465`,
+`ir4g`, `ijq4`). Verified over CDP: `h1` attributes `{}` before a click, `{"id":"ijq4"}` after, with no
+rule typed. Those ids are serialised by `getHtml()` and land in `cms_page.body_html` on the next Save
+— content mutated by the act of looking at it.
+
+**Cause 3 — a hoisting bug that took the whole screen down.** The first version of the id guard
+called `rememberIds()` before `var authoredIds = Object.create(null)` had executed, so it threw
+`Cannot set properties of undefined`. The exception aborted the rest of the boot script, which meant
+Save was never bound: the rail was empty *and* the toolbar was dead. Found by capturing
+`Runtime.exceptionThrown` in the browser, not by reading the code — the stack pointed at a `walk`
+whose only sin was running early.
+
+**What the rail is now.** Four cards, separate containers, each owned by one thing:
+
+| card | shows | source |
+|---|---|---|
+| Selection | tag, id, classes, every attribute — all editable; registry fields when the component has them | `component.getAttributes()` |
+| Computed | font family/size/weight/style, tracking, leading, colour (with a swatch), fill | `getComputedStyle` on the canvas element |
+| CSS · this element | the Style Manager, sectors open; a "name a class" control when the element has no hook | GrapesJS `styleManager.appendTo: '#skw-styles'` |
+| Page CSS | the page's own stylesheet file, with a rule count and a scaffolder for the selected selector | the same `#skw-css-text` the save path writes |
+
+The Computed card exists because of the operator's second report: clicking the italic *made properly*
+in the hero heading "doesn't seem like the proper CSS for that text is loaded — the font-type and
+color doesn't match". It does not match a rule, because the `em` has no rule of its own: it inherits
+the serif from `h1` and takes `color: var(--accent)` from `main em`. Measured on the live page:
+`font-family: ui-serif, "Iowan Old Style", …`, `67.14px`, `italic`, `rgb(168, 69, 28)`. The rail now
+shows exactly those numbers, and under them the selectors that produced them.
+
+**Rule.** A panel that displays *declarations* is not a panel that displays *appearance*. Both are
+cheap to compute and only one of them answers "why does this look like that".
+
+**Also fixed here:** `insertFrameNode` wrote `data-skw-frame="1"` while the lookups asked for
+`"header"`/`"footer"`, so every structural change in the canvas inserted another copy of the site
+header and footer. The marker now carries its kind.
+
+**Theme.** `themes/midnight-kiln.css` — ink ground `#0c0d10`, ember accent `#ff7a4d`, paper text
+`#f1e9dc`, one body-level glow, hairline rules, cards instead of boxes. Contrast measured, not
+asserted: 16.13:1 body, 8.99:1 muted, 8.66:1 muted-on-card, 7.54:1 accent and primary-button label.
+Uploaded through the real Themes screen, previewed on the real page (desktop and 430 px), then
+deleted — the tenant's theme list is empty, as it was found.

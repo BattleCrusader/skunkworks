@@ -322,12 +322,61 @@ test('S8s-10. the palette carries the basic elements, and the page’s CSS is ed
 
   // The CSS panel: the box on the page and the boot field it is filled from.
   assert.match(editor.body, /<textarea id="skw-css-text"/);
-  assert.match(editor.body, /This page's CSS/);
+  assert.match(editor.body, /<h2>Page CSS<\/h2>/);
   assert.equal(payload.css, PAGE_CSS, 'the panel opens on the stylesheet the draft holds');
 
   const script = await get('/admin/t/acme/editor/editor.js');
   assert.match(script.body, /composeCss/);
   assert.match(script.body, /skw:style-manager/, 'the generated rules travel under a marker, once');
+});
+
+test('S8s-11. selecting anything opens the inspector: what it is, what it paints, and the rules that reach it', async () => {
+  const editor = await get(`/admin/t/acme/editor?page=${probePageId}`);
+  const rail = /<aside id="skw-settings"[\s\S]*?<\/aside>/.exec(editor.body);
+  assert.ok(rail !== null, 'the inspector is one rail');
+  const html = String(rail[0]);
+
+  // (a) the element's own details — tag/id/classes/attributes, editable in place
+  assert.match(html, /id="skw-selection"/);
+  assert.match(html, /id="skw-sel-where"/);
+  assert.match(html, /id="skw-sel-id"/);
+  assert.match(html, /id="skw-sel-classes"/);
+  assert.match(html, /id="skw-sel-attrs"/);
+  assert.match(html, /id="skw-attr-add"/);
+
+  // (b) what the browser is actually painting, inherited values included
+  assert.match(html, /id="skw-computed-list"/);
+  assert.match(html, /id="skw-computed-chip"/);
+
+  // (c) the Style Manager, in a container of its own, and the rules that reach the selection
+  assert.match(html, /id="skw-styles"/);
+  assert.match(html, /id="skw-rules"/);
+
+  // (d) the page's stylesheet, in the same rail
+  assert.match(html, /id="skw-css"/);
+  assert.match(html, /id="skw-css-text"/);
+
+  const script = await get('/admin/t/acme/editor/editor.js');
+  const js = script.body;
+  assert.match(js, /styleManager: \{ appendTo: '#skw-styles' \}/, 'the manager mounts in its own card');
+  // The defect this test exists for: the old selection handler emptied the whole rail, which is
+  // the Style Manager's container, and returned early for every element with no registry entry.
+  assert.doesNotMatch(js, /skw-settings/, 'the boot script never touches the rail itself');
+  {
+    // Every innerHTML write is confined to a generated list, never to a container that holds
+    // another owner's markup.
+    const writes = [...js.matchAll(/([A-Za-z_$][\w$]*)\.innerHTML\s*=\s*''/g)].map((m) => String(m[1]));
+    assert.deepEqual(
+      [...new Set(writes)].sort(),
+      ['computedList', 'rulesList', 'selAttrs', 'selFields'],
+      'only generated rows and lists are cleared',
+    );
+  }
+  assert.match(js, /component:selected', inspector\)/, 'the inspector is what a selection calls');
+  assert.match(js, /authoredIds/, 'ids the editor invents are told apart from ids in the content');
+  assert.match(js, /renderComputed/, 'the computed values are measured, not assumed');
+  assert.match(js, /renderRules/, 'the matching rules are listed');
+  assert.match(js, /getComputedStyle/, 'from the canvas itself');
 });
 
 test('S8s-9. the theme rows travel in an export, so a bundle arrives wearing its own look', () => {
