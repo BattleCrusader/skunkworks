@@ -630,6 +630,52 @@
       ]
     },
     {
+      "file": "test/plugin-upload.test.ts",
+      "worstIdleMs": 1000,
+      "measuredOn": "2026-10-22",
+      "load1m": 6.31,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "650335d442f0ccbf55be51b0c859c513b22c8cfd664315a3bb8cddc2d34597c0",
+      "runs": [
+        {
+          "ms": 1000,
+          "at": "2026-10-22T06:27:14.281Z",
+          "load1mBefore": 6.31,
+          "load1mAfter": 6.31,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 6
+        },
+        {
+          "ms": 575,
+          "at": "2026-10-22T06:27:14.857Z",
+          "load1mBefore": 6.31,
+          "load1mAfter": 6.31,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 6
+        },
+        {
+          "ms": 879,
+          "at": "2026-10-22T06:27:22.023Z",
+          "load1mBefore": 6.05,
+          "load1mAfter": 6.05,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 6
+        },
+        {
+          "ms": 723,
+          "at": "2026-10-22T06:27:22.747Z",
+          "load1mBefore": 6.05,
+          "load1mAfter": 5.64,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 6
+        }
+      ]
+    },
+    {
       "file": "test/admin-allowlist.test.ts",
       "worstIdleMs": 977,
       "measuredOn": "2026-10-21",
@@ -1695,5 +1741,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-21T22:41:19.808Z"
+  "updatedAt": "2026-10-22T06:27:23.132Z"
 }

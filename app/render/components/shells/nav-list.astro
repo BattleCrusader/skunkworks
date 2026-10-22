@@ -22,8 +22,15 @@ interface Item {
 }
 interface Props {
   items: Item[];
+  /**
+   * The `<ul>`'s class. The chrome's own stylesheet (`chromecCss` in `app/render/chrome.ts`) and
+   * every site theme select the menu by `.site-menu`, and until S8o this component emitted a bare
+   * `<ul>` — so those rules matched nothing and the header's menu was unstyled on every site. The
+   * prop is optional so the export path (which passes no nav at all) keeps its bytes.
+   */
+  className?: string;
 }
-const { items } = Astro.props as Props;
+const { items, className } = Astro.props as Props;
 ---
 
-<ul>{items.map((item) => (<li><a href={item.href}>{item.label}</a>{item.children.length > 0 ? <NavList items={item.children} /> : null}</li>))}</ul>
+<ul class={className}>{items.map((item) => (<li><a href={item.href}>{item.label}</a>{item.children.length > 0 ? <NavList items={item.children} className={className} /> : null}</li>))}</ul>

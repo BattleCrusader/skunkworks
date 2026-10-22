@@ -47,12 +47,13 @@
 import Database from 'better-sqlite3';
 import { hash } from '@node-rs/argon2';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ARGON2_OPTIONS, Semaphore } from '../admin/auth.ts';
 import { appendAudit, verifyChain, verifyAgainstSeal } from '../audit/chain.ts';
 import { AppError } from '../errors.ts';
+import { archiveSha256, packPackage } from '../plugins/archive.ts';
 import { assertNotRevoked, installPlugin, inspectPackage, installedPlugins, uninstallPlugin } from '../plugins/install.ts';
 import { revocationPath, revokeRoot } from '../plugins/revocation.ts';
 import { importPublisherKey, readTrustStore, trustDirFor, CAPABILITIES_ARE_DISCLOSURE, type InstallScreen } from '../plugins/trust.ts';
@@ -780,12 +781,34 @@ function screenLines(screen: InstallScreen): string[] {
  * an exporter that ships `data/plugins/<id>/`, but nothing a person with shell access can
  * run — so a plugin could not be installed on a running box at all.
  *
- * It is a CLI verb and **not** an HTTP route on purpose: the admin surface belongs to the
- * tenant's owner, and the package on disk is root-owned, read-only to the app. This command
- * runs as the account that can write `<data>/plugins`, and every write it makes is audited
- * with `actor_label = 'skwctl'` (there is no logged-in user in a shell).
+ * `install`, `enable`, `disable` and `uninstall` are CLI verbs because the box's operator is
+ * the one who decides which third-party code runs, and every write here is audited with
+ * `actor_label = 'skwctl'` (there is no logged-in user in a shell). `pack` is the fourth:
+ * it turns a package directory into the one file the admin's upload door accepts, so the two
+ * surfaces install the same bytes — see `pack` below and `app/plugins/archive.ts`.
+ *
+ * The admin screen can also install a package (S8o, `POST …/plugins/upload`), from an archive
+ * packed by this command. That does not weaken this path: the screen requires an `owner` or
+ * `fleet_admin` session, two acknowledgements, and an audit row naming the uploader, and the
+ * archive's test report is self-attested rather than run on this box. A refusal at that door
+ * names the same codes this one does, because `installPlugin()` makes the decision either way.
  */
 async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Promise<number> {
+  // `pack` is about a directory, not a tenant: a packager ships one file to an operator, and
+  // the operator is the one who names the tenant. Refusing it for a missing `--tenant` would
+  // be a usage error invented by this function's shape rather than by the command.
+  if (verb === 'pack') {
+    const sourceDir = args.command[2];
+    if (sourceDir === undefined) throw new Refusal('USAGE', 'plugin pack needs a package directory');
+    if (!existsSync(sourceDir)) throw new Refusal('USAGE', `no such directory: ${sourceDir}`);
+    const reportFlag = args.flags.get('report');
+    const archive = packPackage(sourceDir, typeof reportFlag === 'string' ? { reportPath: reportFlag } : {});
+    const outFlag = args.flags.get('out');
+    const out = typeof outFlag === 'string' ? outFlag : `${basename(sourceDir)}.tar.gz`;
+    writeFileSync(out, archive);
+    ctx.stdout(`pack: ${out} bytes=${archive.length} sha256=${archiveSha256(archive)}`);
+    return 0;
+  }
   const tenantFlag = args.flags.get('tenant');
   const tenant = typeof tenantFlag === 'string' ? tenantFlag : undefined;
   if (tenant === undefined) {

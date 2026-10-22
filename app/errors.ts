@@ -65,6 +65,12 @@ export const HTTP: Record<string, number> = {
   SKW_E_SEC_USES_EXHAUSTED: 410,
   SKW_E_SEC_RATE_LIMITED: 429,
   SKW_E_SEC_ROLE_DISABLED: 403,
+  /**
+   * The session is valid and its role does not include this action. Distinct from
+   * `SKW_E_SEC_ROLE_DISABLED` (that role cannot exist in this build) and from a CSRF refusal:
+   * an editor who may edit pages may not install code that runs in the app process.
+   */
+  SKW_E_SEC_FORBIDDEN: 403,
   // §7.5 (S3d): the stamp failed — renderer error, the 2 s budget, an unencodable
   // character that survived the cp1252 sanitiser, or an unwritable render tree. 503:
   // the buyer's entitlement is untouched (no use is spent) and no un-stamped byte is
@@ -145,6 +151,10 @@ export const HTTP: Record<string, number> = {
   // S4c: a `cms_plugin_installed` row whose package the bundle does not carry.
   SKW_E_PL_EXPORT_PACKAGE_MISSING: 409,
   SKW_E_PL_SIGNATURE: 409,
+  // S8o: an uploaded `.tar.gz` that is not a package this box will unpack (a name that leaves
+  // the directory, a symlink, no plugin.json, an oversized member). 409 like the other
+  // refusals about the package's own state — the operator has to produce a different file.
+  SKW_E_PL_ARCHIVE_FAILED: 409,
   SKW_E_PL_REVOKED: 409,
   SKW_E_PL_TESTS_STALE: 409,
   SKW_E_PL_NO_EXPORT_CLASS: 409,

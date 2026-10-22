@@ -19,6 +19,14 @@
  *   site.header_sticky  bool       header pins to the top of the viewport
  *   site.footer_sticky  bool       footer pins to the bottom of the viewport
  *   site.footer_text    string     one sentence, under the footer menu
+ *   site.theme_css      string     the site's own stylesheet, emitted on every page
+ *
+ * `theme_css` is the sixth key and the reason a site can look like a site: without it every
+ * page is unstyled HTML unless the editor pastes the same `<style>` into each one. It is
+ * emitted by the shell for every tenant page — including a page a package serves, which no
+ * per-page body could reach. Two rules keep it from becoming a way out of the document: the
+ * value may not contain `<` (so `</style>` cannot appear), and the render strips the closing
+ * tag again on the way out. CSS, not markup.
  *
  * `cms_settings.type` is the schema's own vocabulary (`string | asset_key | bool | int |
  * json`), so a key written with the wrong type is a bug this module refuses by name
@@ -43,6 +51,7 @@ export const CHROME_KEYS = {
   headerSticky: 'site.header_sticky',
   footerSticky: 'site.footer_sticky',
   footerText: 'site.footer_text',
+  theme: 'site.theme_css',
 } as const;
 
 export type ChromeKey = (typeof CHROME_KEYS)[keyof typeof CHROME_KEYS];
@@ -54,6 +63,8 @@ export interface SiteChrome {
   headerSticky: boolean;
   footerSticky: boolean;
   footerText: string;
+  /** The site's own CSS, emitted inside `<style>` on every page. `''` = none. */
+  themeCss: string;
 }
 
 /** What a tenant that has never opened the Site screen renders. */
@@ -63,6 +74,7 @@ export const CHROME_DEFAULTS: SiteChrome = {
   headerSticky: true,
   footerSticky: false,
   footerText: '',
+  themeCss: '',
 };
 
 /**
@@ -76,6 +88,7 @@ export const CHROME_TYPES: Record<ChromeKey, 'string' | 'bool' | 'asset_key'> = 
   [CHROME_KEYS.headerSticky]: 'bool',
   [CHROME_KEYS.footerSticky]: 'bool',
   [CHROME_KEYS.footerText]: 'string',
+  [CHROME_KEYS.theme]: 'string',
 };
 
 export function seedChromeSettings(db: Database.Database): string[] {
@@ -107,6 +120,8 @@ export function fieldOf(key: ChromeKey): keyof SiteChrome {
       return 'footerSticky';
     case CHROME_KEYS.footerText:
       return 'footerText';
+    case CHROME_KEYS.theme:
+      return 'themeCss';
   }
 }
 
@@ -156,6 +171,7 @@ export function loadChrome(db: Database.Database): SiteChrome {
     headerSticky: read(CHROME_KEYS.headerSticky, 'bool') as boolean,
     footerSticky: read(CHROME_KEYS.footerSticky, 'bool') as boolean,
     footerText: read(CHROME_KEYS.footerText, 'string') as string,
+    themeCss: read(CHROME_KEYS.theme, 'string') as string,
   };
 }
 
@@ -175,7 +191,14 @@ export function logoUrl(db: Database.Database, chrome: SiteChrome): string | nul
  * receives chrome) byte-identical for a site that has not used the screen yet.
  */
 export function hasChrome(chrome: SiteChrome, nav: { header: unknown[]; footer: unknown[] }): boolean {
-  return chrome.title !== '' || chrome.logoKey !== '' || chrome.footerText !== '' || nav.header.length > 0 || nav.footer.length > 0;
+  return (
+    chrome.title !== '' ||
+    chrome.logoKey !== '' ||
+    chrome.footerText !== '' ||
+    chrome.themeCss !== '' ||
+    nav.header.length > 0 ||
+    nav.footer.length > 0
+  );
 }
 
 /**
@@ -188,6 +211,19 @@ export function hasChrome(chrome: SiteChrome, nav: { header: unknown[]; footer: 
  * bar. Sticky keeps the element in flow and pins it only while its container scrolls.
  * The `z-index` is what stops a page's own positioned content from sliding over the bar.
  */
+/**
+ * The site's own stylesheet, safe to interpolate inside `<style>`.
+ *
+ * A `<` is stripped rather than escaped: CSS has no legitimate use for one, and the only
+ * sequence that could end the element early is `</style`. The save path refuses the value
+ * outright; this is the second lock, because a settings row can also be written by a
+ * migration or by hand.
+ */
+export function themeCss(chrome: SiteChrome): string {
+  if (chrome.themeCss === '') return '';
+  return chrome.themeCss.replace(/</g, '');
+}
+
 export function chromeCss(chrome: SiteChrome): string {
   return [
     '.site-header{display:flex;align-items:center;gap:1rem;padding:.75rem 1rem;border-bottom:1px solid rgba(0,0,0,.12);background:Canvas}',

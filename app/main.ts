@@ -25,7 +25,7 @@ import multipart from '@fastify/multipart';
 
 import { BootRefusal, adminHostOf, loadEnv, type Env } from './env.ts';
 import { AppError, errorBody, frameworkCode, HTTP } from './errors.ts';
-import { RenderPool, openAdminWrite } from './db/classes.ts';
+import { RenderPool, openAdminWrite, openRenderRead } from './db/classes.ts';
 import { AdminSurface } from './admin/routes.ts';
 import {
   EXIT_CONTROL_FAILED,
@@ -35,12 +35,13 @@ import {
   runMigrations,
   targetVersion,
 } from './db/migrate.ts';
-import { normalisePagePath, pageMiss } from './render/page.ts';
+import { loadPage, normalisePagePath, pageMiss } from './render/page.ts';
 import { renderStoredBody } from './render/body.ts';
 import { resolveSourceBlocks } from './render/blocks.ts';
 import { loadPluginPage, matchPluginPage, pluginPageBody, resolveFormMarkers } from './render/plugin-pages.ts';
 import { loadNav, type NavTree } from './render/nav.ts';
 import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings, type SiteChrome } from './render/chrome.ts';
+import { matchesEtag, sheetEtag, siteSheet } from './render/theme.ts';
 import { CSP_HEADER, cspPolicy, cspPolicyWithNonce } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
 import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
@@ -475,6 +476,47 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     if (key !== ctx.tenant.key) throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no tenant here');
     return key;
   }
+
+  /**
+   * S8o: the tenant's stylesheet.
+   *
+   * The chrome's rules, the site theme (`site.theme_css`) and the page's own `cms_page.body_css`
+   * used to be interpolated into the document as `<style>`, and the site's CSP — `style-src
+   * 'self'`, no inline allowance — made a browser block every one of them. In a browser the
+   * chrome had no layout and a page's CSS never applied; `curl` and the tests read the markup, so
+   * both looked fine. Serving the same bytes from this origin is allowed by the policy as it
+   * stands, needs no `'unsafe-inline'`, and gives the browser one cacheable file per page.
+   *
+   * `?path=` names the page whose `body_css` to append. An unknown or absent path is a sheet with
+   * no page CSS, not a 404: the stylesheet is a dependency, and failing it would 404 the look of
+   * an otherwise valid page.
+   */
+  app.get('/theme.css', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    let sheet = '';
+    const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+    try {
+      const nav = loadNav(db);
+      const chrome = loadChrome(db);
+      sheet = siteSheet({ chrome, showChrome: hasChrome(chrome, nav) });
+    } finally {
+      db.close();
+    }
+    if (sheet === '') {
+      // Nothing to send, and nothing that could ever become something at this URL: an empty
+      // stylesheet is the truthful answer, and it is cacheable for longer than a page.
+      reply.header('cache-control', 'public, max-age=0, must-revalidate').type('text/css; charset=utf-8').send('');
+      return;
+    }
+    const etag = sheetEtag(sheet);
+    const ifNoneMatch = req.headers['if-none-match'];
+    reply.header('etag', etag).header('cache-control', 'public, max-age=0, must-revalidate').type('text/css; charset=utf-8');
+    if (matchesEtag(typeof ifNoneMatch === 'string' ? ifNoneMatch : undefined, etag)) {
+      reply.code(304).send('');
+      return;
+    }
+    reply.send(sheet);
+  });
 
   app.get('/d/:key', async (req: FastifyRequest, reply: FastifyReply) => {
     plane.form(reply, downloadTenant(req));

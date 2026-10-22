@@ -44,6 +44,7 @@ export interface SiteScreenInput {
     headerSticky: boolean;
     footerSticky: boolean;
     footerText: string;
+    themeCss: string;
   };
   header: SiteNavRow[];
   footer: SiteNavRow[];
@@ -67,13 +68,21 @@ const FLASH: Record<string, string> = {
   'href-target': 'A link needs a target.',
   label: 'A menu item needs a label (1–80 characters).',
   'not-found': 'That menu item is no longer there.',
+  theme: 'The stylesheet was not saved: CSS may not contain a "<" (that is the only way it could end the style element it is emitted into).',
 };
 
 function flashBlock(flash: string | undefined): string {
   if (flash === undefined) return '';
   const message = FLASH[flash];
   if (message === undefined) return '';
-  const bad = flash === 'title' || flash === 'logo-missing' || flash === 'href-kind' || flash === 'href-target' || flash === 'label' || flash === 'not-found';
+  const bad =
+    flash === 'title' ||
+    flash === 'logo-missing' ||
+    flash === 'href-kind' ||
+    flash === 'href-target' ||
+    flash === 'label' ||
+    flash === 'not-found' ||
+    flash === 'theme';
   return `    <div class="notepanel" role="status" data-flash="${esc(flash)}">
       <div class="notepanel__icon" aria-hidden="true">${bad ? '!' : '✓'}</div>
       <div><b>${bad ? 'Not saved' : 'Done'}</b><p>${esc(message)}</p></div>
@@ -144,7 +153,7 @@ export function siteScreen(input: SiteScreenInput): string {
       </div>
     </div>
 
-    <div class="card legacy" data-screen="site-identity">
+    <div class="card legacy card--padded" data-screen="site-identity">
       <h2>Identity</h2>
       <p>The name is the link back to your home page. Leave it empty and the bar carries only your menu.</p>
       <form method="post" action="${esc(`${base}/site/save`)}">
@@ -154,20 +163,22 @@ export function siteScreen(input: SiteScreenInput): string {
         <label>Footer sentence <input name="footer_text" value="${esc(chrome.footerText)}" maxlength="200" placeholder="© 2026 Acme Widgets"></label>
         <label>Header pins to the top <input type="checkbox" name="header_sticky" value="1"${chrome.headerSticky ? ' checked' : ''}></label>
         <label>Footer pins to the bottom <input type="checkbox" name="footer_sticky" value="1"${chrome.footerSticky ? ' checked' : ''}></label>
+        <label for="theme_css">Site stylesheet <small>CSS for every page: the bar, the footer, and whatever a page&#39;s own markup names.</small></label>
+        <textarea id="theme_css" name="theme_css" rows="10" spellcheck="false" placeholder=":root{--ink:#14181d}&#10;body{font-family:ui-serif,Georgia,serif}">${esc(chrome.themeCss)}</textarea>
         <div class="formactions"><button class="btn btn--primary" type="submit">Save</button>
         <a class="btn" href="${esc(mediaHref)}">Media library<span class="sr-only"> — to copy a logo key</span></a></div>
       </form>
       <p class="hint">${chrome.logoKey === '' ? 'No logo set — the bar shows the name as text.' : input.logoResolved === null ? `The key <code>${esc(chrome.logoKey)}</code> names no media asset, so no logo renders.` : `Logo resolves to <code>${esc(input.logoResolved)}</code>.`}</p>
     </div>
 
-    <div class="card legacy" data-screen="site-header">
+    <div class="card legacy card--padded" data-screen="site-header">
       <h2>Header menu</h2>
       <p>Rendered inside the bar, after the site name.</p>
       ${rowsTable(input.header, 'header', base, input.csrf)}
 ${addForm('header', base, input.csrf)}
     </div>
 
-    <div class="card legacy" data-screen="site-footer">
+    <div class="card legacy card--padded" data-screen="site-footer">
       <h2>Footer menu</h2>
       <p>Rendered in the footer, above the footer sentence.</p>
       ${rowsTable(input.footer, 'footer', base, input.csrf)}

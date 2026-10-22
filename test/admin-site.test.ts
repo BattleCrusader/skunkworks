@@ -145,7 +145,11 @@ test('S8l-3. saving the identity puts a sticky bar and a footer sentence on ever
   assert.match(home.body, /<a class="site-id" href="\/"><span>Acme Widgets<\/span><\/a>/);
   assert.match(home.body, /<footer class="site-footer">/);
   assert.match(home.body, /<p class="site-footer__text">© 2026 Acme Widgets<\/p>/);
-  assert.match(home.body, /\.site-header--sticky\{position:sticky;top:0;z-index:20\}/, 'the sticky rule ships with the bar');
+  // S8o: the rules are a linked stylesheet, not an inline `<style>` — the site's CSP is
+  // `style-src 'self'`, so inline CSS never reached a browser. The rule still ships with the bar;
+  // it ships at /theme.css.
+  const barSheet = await site('/theme.css');
+  assert.match(barSheet.body, /\.site-header--sticky\{position:sticky;top:0;z-index:20\}/, 'the sticky rule ships with the bar');
 
   // Every page, not just the home page.
   const other = await site('/pricing');
@@ -170,8 +174,8 @@ test('S8l-4. a menu row renders as a link in the bar, in position order', async 
   assert.equal(second.status, 303, second.body);
 
   const home = await site('/pricing');
-  assert.match(home.body, /<nav aria-label="Main"><ul><li><a href="\/pricing">Pricing<\/a><\/li><\/ul><\/nav>/);
-  assert.match(home.body, /<nav aria-label="Footer"><ul><li><a href="\/pricing">Buy<\/a><\/li><\/ul><\/nav>/);
+  assert.match(home.body, /<nav aria-label="Main"><ul class="site-menu"><li><a href="\/pricing">Pricing<\/a><\/li><\/ul><\/nav>/);
+  assert.match(home.body, /<nav aria-label="Footer"><ul class="site-menu site-menu--footer"><li><a href="\/pricing">Buy<\/a><\/li><\/ul><\/nav>/);
 });
 
 test('S8l-5. a blog post — a row in a package table, not a cms_page — wears the same bar', async () => {
@@ -258,4 +262,55 @@ test('S8l-8. the footer pins only when asked', async () => {
   // The stylesheet always carries both rules; it is the element's class list that says which
   // switch is on. (Asserting on the raw substring would have matched the CSS.)
   assert.doesNotMatch(home.body, /class="site-header site-header--sticky"/, 'the header switch is independent');
+});
+
+test('S8o-7. the site stylesheet is a linked response, because inline <style> is blocked by the CSP', async () => {
+  // The defect: the shell used to write the chrome's rules and the page's CSS as inline <style>,
+  // and the site's policy is `style-src 'self'` with no inline allowance — so a browser blocked
+  // both and every page rendered unstyled while curl and the tests saw the CSS in the markup.
+  const save = await post('/admin/t/acme/site/save', {
+    title: 'Acme Widgets',
+    footer_text: '© 2026 Acme Widgets',
+    theme_css: ':root{--brand:#123456}body{font-family:Georgia,serif}',
+  });
+  assert.equal(save.status, 303, save.body);
+
+  const home = await site('/pricing');
+  assert.equal(home.status, 200, home.body);
+  assert.match(home.body, /<link rel="stylesheet" href="\/theme\.css">/, 'the page links the sheet');
+  // The page has no `body_css` of its own, so there is no inline `<style>` at all: the policy
+  // would block one, and the shell only writes it when a page carries CSS.
+  assert.doesNotMatch(home.body, /<style[ >]/, 'no inline style element for a page with no CSS');
+
+  const sheet = await site('/theme.css');
+  assert.equal(sheet.status, 200);
+  assert.match(String(sheet.headers['content-type']), /^text\/css/, 'a browser will not parse anything else as a stylesheet');
+  assert.match(sheet.body, /\.site-header\{/, 'the chrome rules travel with it');
+  assert.match(sheet.body, /--brand:#123456/, 'and so does the site theme');
+  assert.match(sheet.body, /\.site-menu\{/, 'the menu class the chrome stylesheet selects');
+
+  // One conditional request, no body: a returning visitor whose settings have not changed.
+  const etag = String(sheet.headers.etag);
+  assert.ok(etag.startsWith('"'), 'a strong ETag');
+  const again = await call({ port, path: '/theme.css', host: 'acme.test', headers: { 'if-none-match': etag } });
+  assert.equal(again.status, 304);
+  assert.equal(again.body, '');
+
+  // One sheet per site, whatever page asks for it: the theme is site-wide, and a page's own CSS
+  // is inline (see the note in the shell). The same bytes come back for another page's request.
+  const again2 = await site('/theme.css');
+  assert.equal(again2.body, sheet.body);
+});
+
+test('S8o-8. a theme stylesheet with a "<" is refused, and the site keeps the old one', async () => {
+  const before = await site('/theme.css');
+  const attempt = await post('/admin/t/acme/site/save', {
+    title: 'Acme Widgets',
+    theme_css: 'body{color:red}</style><script>alert(1)</script>',
+  });
+  assert.equal(attempt.status, 303, attempt.body);
+  assert.match(String(attempt.headers.location), /flash=theme/);
+  const after = await site('/theme.css');
+  assert.equal(after.body, before.body, 'a refused save writes nothing');
+  assert.doesNotMatch(after.body, /alert\(1\)/);
 });

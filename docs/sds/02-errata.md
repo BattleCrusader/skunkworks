@@ -3676,3 +3676,98 @@ fails it; what stopped happening is the gate reporting the machine's mood.
 |---|---|---|---|
 | **E-39** | §7.1's sign-in; §5.5's `no-store` reply; E-16's one-body rule on the HTML path | `app/admin/routes.ts` `#login`, `safeNext()`, `loginFailureMessage()`; `app/admin/ui/signIn.ts` `error`/`next`; `app/admin/ui/layout.ts` `.signin__error` | `test/admin-operator.test.ts` D29-6b/6c/6d; live `303 → /admin` on `abc123.com` |
 | **E-40** | §15.1's argon2 cost figures; the claim's own measurement note | `scripts/model/verify_claims.py` check 7 (min of 12) | `make verify-claims` 27/27 × 3 runs at load 88 |
+
+---
+
+## 17. Errata E-41..E-44 (post-S8m, from a browser and from the operator's three asks)
+
+Four defects and one new door. Three of the four were invisible to every test in the tree because
+the tests read markup, and the thing that was broken was what a **browser** does with that markup.
+
+### E-41 — the site's whole stylesheet was blocked by the site's own CSP
+
+`app/render/components/shells/page.astro` wrote the chrome's rules and `cms_page.body_css` as two
+inline `<style>` elements. The tenant policy is `style-src 'self'` with no inline allowance (C-12,
+frozen in four producers and compared by hash), so a browser **discarded both**. Consequences, all
+live on `abc123.com` before this pass:
+
+* `position: sticky` on the bar and the footer never applied — the "sticky" switch changed a class
+  list and nothing else;
+* the bar's layout rules never applied, so the identity, the menu and the footer sat in bare
+  block flow;
+* a page's own CSS from the editor's Style Manager never applied;
+* the theme layer (`site.theme_css`, new in this pass) could not have worked at all.
+
+`curl` showed the CSS in the document and every assertion in `test/admin-site.test.ts` read it
+there, so nothing was red. It was found by taking a screenshot of the site and looking at it.
+
+**Fix.** The same bytes are now a **response**: `GET /theme.css` (`app/render/theme.ts`
+`siteSheet` + `sheetEtag`) returns `chromeCss(chrome)` then `themeCss(chrome)` as `text/css`, with a
+strong `ETag` and `cache-control: public, max-age=0, must-revalidate`; `If-None-Match` answers
+`304`. The shell links it and writes no inline `<style>` for the site sheet. This needs no change to
+the policy — `style-src 'self'` already allows a same-origin stylesheet.
+
+**Not fixed, and named here rather than forgotten:** a page's own `body_css` is **still inline**,
+because the exported static tree (`app/export/document.ts`) writes it inline and
+`test/export-targets.test.ts` compares the served page to the export byte-for-byte. So the editor's
+per-page CSS is still blocked on the live site. Moving it out needs a per-page URL scheme in both
+producers; that is its own slice, not a line in this one.
+
+### E-42 — the menu's `<ul>` had no class, so every menu rule matched nothing
+
+`app/render/components/shells/nav-list.astro` emitted `<ul>` with no class. `chromeCss()` has
+selected `.site-menu` since S8l and every site theme would too, so the bar's menu was unstyled by
+construction — the reason the operator said "the menu is pretty crap" and was right. The component
+now takes a `className` prop; the shell passes `site-menu` (header) and `site-menu site-menu--footer`
+(footer). A site with no nav is unaffected, and the export path passes nothing, so its bytes do not
+move.
+
+### E-43 — a package could only be installed from a shell
+
+`skwctl plugin install <dir>` was the only door. The admin now has a second one: `POST
+/admin/t/<key>/plugins/upload`, a `.tar.gz` in a multipart form (`app/plugins/archive.ts` reads it,
+`app/plugins/upload.ts` orchestrates, `plugins/upload` in `app/admin/routes.ts` is the HTTP half).
+
+The rules, stated because each one is a decision and not a default:
+
+* **unpack is strict** — no absolute paths, no `..`, no symlinks or device nodes, no AppleDouble
+  entries, 8 MiB compressed / 32 MiB expanded / 8 MiB per file / 500 entries, and a header
+  checksum that must verify. Nothing is installed by unpacking; the scratch directory is removed in
+  a `finally`.
+* **the test report must sit beside the package, not inside it** — the root hash covers every file
+  under the root, so a report inside the root would be attesting a number its own presence changed.
+  `plugin pack` writes `contact/**` plus `test-report.json` at the archive root for exactly this
+  reason, and an archive that puts the report inside is refused by name.
+* **the report is self-attested.** The box did not run those tests; the packager did, and the
+  archive carries the claim. Both the flash message and the audit row say `self-attested`, and the
+  install row records the image the report named.
+* **a package with no publisher signature needs the operator's explicit `allow-unsigned`**, and the
+  screen says in plain words that a plugin is **not contained** (D36) and runs with this process's
+  access to every tenant's files. A second checkbox acknowledges that; the upload is refused
+  without it.
+* **role.** `editor` and `viewer` are refused `403 SKW_E_SEC_FORBIDDEN`: a valid session whose role
+  does not include installing code. `SKW_E_SEC_FORBIDDEN` is new to the taxonomy and
+  `SKW_E_PL_ARCHIVE_FAILED` is the frozen PL name for an unreadable archive (409).
+* **install is not enable.** The row lands `enabled = 0`; Enable is the next press, and it is what
+  makes the package's own screen answer.
+
+### E-44 — the Site screen's cards had no padding, and a table's action buttons stacked
+
+`.card` carries the surface and no padding, and the Site screen used `card legacy` with three
+sections of prose, a property-sheet form and two tables — so every heading and table cell sat flush
+against the card's border. A `card--padded` modifier now owns that padding and pulls the table's
+outer cells flush with the heading's left edge.
+
+Two further pieces of the same report: a checkbox inside `.legacy form` inherited `width:100%` from
+the text-input rule and rendered as a blue slab (now 18 px, `accent-color`), and `.legacy form`'s
+`display:grid` applied to the little POST forms inside a table cell, stacking ↑ ↓ Hide Delete down
+the ACTIONS column (now `display:inline-block` for `td form`).
+
+### Traceability — E-41..E-44
+
+| E | Closes | Source (verified in this pass) | Evidence |
+|---|---|---|---|
+| **E-41** | §3's page shell; C-12's `style-src 'self'`; the chrome's sticky switches | `app/render/theme.ts`; `app/render/components/shells/page.astro`; `GET /theme.css` in `app/main.ts`; `app/render/chrome.ts` `themeCss()` | `test/admin-site.test.ts` S8l-3, S8o-7, S8o-8; live screenshot of `abc123.com` (`/tmp/site-home.png`), body font resolving to the theme stack |
+| **E-42** | the menu's markup and every `.site-menu` rule | `app/render/components/shells/nav-list.astro`; `app/render/components/shells/page.astro` | `test/nav-render.test.ts`; `test/admin-site.test.ts` S8l-4; live header screenshot |
+| **E-43** | §8.2's install row, reachable from the console | `app/plugins/archive.ts`, `app/plugins/upload.ts`, `plugins/upload` in `app/admin/routes.ts`, `skwctl plugin pack`; `schema/error-codes.json` +`SKW_E_SEC_FORBIDDEN`, `SKW_E_PL_ARCHIVE_FAILED` | `test/plugin-upload.test.ts` S8o-1..S8o-6 (pack determinism, traversal refusal, ack refusal, signature refusal, install+enable, missing report) |
+| **E-44** | the Site screen's report | `app/admin/ui/layout.ts` `.card--padded`, `.legacy td form`, checkbox rule | live screenshot `/tmp/admin-site.png`; `cardPadding: 22px`, `checkbox: 18x18` |

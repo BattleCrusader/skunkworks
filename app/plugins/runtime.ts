@@ -259,6 +259,17 @@ export class PluginRuntime {
     return join(this.options.dataDir, 'tenants', tenant, 'site.db');
   }
 
+  /**
+   * `<data>/plugins` — where a package's bytes live.
+   *
+   * Public because the upload surface installs into it: `installFromArchive()` needs the same
+   * directory `load()` will read the package from, and a caller that re-derived the path from
+   * `dataDir` would be a second answer to "where do packages live".
+   */
+  pluginsDirectory(): string {
+    return this.pluginsRoot();
+  }
+
   private pluginsRoot(): string {
     return join(this.options.dataDir, 'plugins');
   }

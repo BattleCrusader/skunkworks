@@ -116,7 +116,9 @@ import {
   type Tenant,
 } from '../tenancy/resolve.ts';
 import { Auth, Semaphore, verifyTotp, type LoginFailureReason } from './auth.ts';
+import { MAX_ARCHIVE_BYTES } from '../plugins/archive.ts';
 import type { DeclarativeScreen } from '../plugins/registry.ts';
+import { installFromArchive } from '../plugins/upload.ts';
 import type { FieldSpec } from '../plugins/manifest.ts';
 import { groupOf, newSecret, otpauthUri } from './totp.ts';
 import { accountScreen } from './ui/account.ts';
@@ -892,6 +894,14 @@ ${items}
       await this.#pluginDisable(req, reply, tenant, session);
       return;
     }
+    // S8o: the upload door. A package arrives as one `.tar.gz` instead of a shell session.
+    // Origin first, then the parts (the CSRF field is one of them), then nothing is written
+    // outside a scratch directory until `installPlugin` runs.
+    if (action === 'plugins/upload' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      await this.#pluginUpload(req, reply, tenant, session);
+      return;
+    }
     if (action === 'plugins/uninstall' && req.method === 'POST') {
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
@@ -1279,6 +1289,13 @@ ${items}
     const title = (fields.title ?? '').trim();
     const logoKey = (fields.logo_key ?? '').trim().toLowerCase();
     const footerText = (fields.footer_text ?? '').trim();
+    // The site's stylesheet. `<` is refused rather than escaped: CSS has no use for it, and it is
+    // the only way the value could end the `<style>` element it is emitted into.
+    const theme = (fields.theme_css ?? '').trim();
+    if (theme.length > 100_000 || theme.includes('<')) {
+      this.#seeOther(reply, `${base}?flash=theme`);
+      return;
+    }
     if (title.length > 120) {
       this.#seeOther(reply, `${base}?flash=title`);
       return;
@@ -1309,6 +1326,7 @@ ${items}
         upsert.run(CHROME_KEYS.footerText, JSON.stringify(footerText), CHROME_TYPES[CHROME_KEYS.footerText], session.userId);
         upsert.run(CHROME_KEYS.headerSticky, JSON.stringify(fields.header_sticky === '1'), CHROME_TYPES[CHROME_KEYS.headerSticky], session.userId);
         upsert.run(CHROME_KEYS.footerSticky, JSON.stringify(fields.footer_sticky === '1'), CHROME_TYPES[CHROME_KEYS.footerSticky], session.userId);
+        upsert.run(CHROME_KEYS.theme, JSON.stringify(theme), CHROME_TYPES[CHROME_KEYS.theme], session.userId);
       });
       write();
       this.#audit({
@@ -1661,7 +1679,7 @@ ${items}
     this.#seeOther(reply, `/admin/t/${tenant.key}/plugins?result=${encodeURIComponent(`disabled ${plugin}`)}`);
   }
 
-  #pluginsScreen(reply: FastifyReply, tenant: Tenant, session: SessionRecord, flash?: string): void {
+  #pluginsScreen(reply: FastifyReply, tenant: Tenant, session: SessionRecord, flash?: string, error?: string): void {
     const runtime = this.#plugins;
     const db = this.#siteDb(tenant.key);
     let installed: { plugin_id: string; version: string; enabled: number; activation_seq: number }[] = [];
@@ -1780,6 +1798,19 @@ ${[...screensByPlugin]
         `Skunkworks — ${tenant.key} — plugins`,
         `<h1>Plugins — ${esc(tenant.key)}</h1>
 ${flash === undefined ? '' : `<p role="status">${esc(flash)}</p>`}
+${error === undefined ? '' : `<div class="notepanel" role="alert" data-upload-error="1"><div class="notepanel__icon" aria-hidden="true">!</div><div><b>Not installed</b><p>${esc(error)}</p></div></div>`}
+<h2>Upload a package</h2>
+<p>A <code>.tar.gz</code> built by <code>skwctl plugin pack &lt;dir&gt;</code>. The archive must carry a
+<code>test-report.json</code> bound to its own package root; the image it names is the packager's
+claim, not this box's. A plugin is <b>not contained</b> (D36): it runs in this process, with this
+process's access to every tenant's files. Install only packages you would deploy by hand.</p>
+<form method="post" action="/admin/t/${esc(tenant.key)}/plugins/upload" enctype="multipart/form-data" class="uploadcard">
+  <input type="hidden" name="csrf" value="${esc(csrf)}">
+  <label>Package archive <input type="file" name="package" accept=".tar.gz,.tgz,application/gzip" required></label>
+  <label class="ack"><input type="checkbox" name="allow_unsigned" value="1"> Install even with no publisher signature (<code>--allow-unsigned</code>)</label>
+  <label class="ack"><input type="checkbox" name="understand" value="1" required> I understand this package will run uncontained in the app process</label>
+  <button class="btn btn--primary" type="submit">Upload and install</button>
+</form>
 <h2>Plugin screens</h2>
 ${subnav}
 <h2>Notices</h2>
@@ -1811,6 +1842,96 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
   #actorOf(session: SessionRecord): { email: string; role: string } | null {
     const user = this.auth.userById(session.userId);
     return user === null ? null : { email: user.email, role: user.role };
+  }
+
+  /**
+   * `POST /admin/t/<key>/plugins/upload` — install a package from an uploaded `.tar.gz`.
+   *
+   * The HTTP half only, in the same shape as the media uploader: origin, parts, CSRF, then
+   * hand the bytes to `installFromArchive()`, which unpacks them into a scratch directory it
+   * owns and removes. Nothing here decides what a valid package is — `installPlugin()` does
+   * that, and duplicating any of it would be a second answer to the same question.
+   *
+   * A refusal comes back as the screen with the refusal's own code and sentence, not a 500:
+   * `SKW_E_PL_TESTS_STALE` names the file that was missing and `SKW_E_PL_SIGNATURE` names the
+   * publisher it could not verify, and both are things the operator is meant to read.
+   */
+  async #pluginUpload(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
+    const runtime = this.#plugins;
+    if (runtime === null) throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'the plugin runtime is not attached to this process');
+    const fields: Record<string, string> = {};
+    let file: { filename: string; bytes: Buffer } | null = null;
+    try {
+      for await (const part of req.parts()) {
+        if (part.type === 'file') {
+          const bytes = await part.toBuffer();
+          if (file === null) file = { filename: part.filename ?? 'package.tar.gz', bytes };
+        } else {
+          fields[part.fieldname] = String(part.value ?? '');
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && /file too large|exceeds the limit/i.test(err.message)) {
+        throw new AppError('SKW_E_PLT_BODY_TOO_LARGE', `the upload is larger than ${MAX_ARCHIVE_BYTES} bytes`, { limit: MAX_ARCHIVE_BYTES });
+      }
+      throw err;
+    }
+    // The token travels as a field of the same form, so it is checked after the parts are read.
+    this.#assertCsrf(req, session, fields.csrf);
+
+    if (file === null) {
+      this.#pluginsScreen(reply, tenant, session, undefined, 'Choose a .tar.gz package to upload.');
+      return;
+    }
+    const actor = this.#actorOf(session);
+    if (actor !== null && (actor.role === 'editor' || actor.role === 'viewer')) {
+      throw new AppError('SKW_E_SEC_FORBIDDEN', `the ${actor.role} role may not install packages: a plugin runs in this process`, {
+        role: actor.role,
+      });
+    }
+    if (fields.understand !== '1') {
+      this.#pluginsScreen(
+        reply,
+        tenant,
+        session,
+        undefined,
+        'Not installed: the acknowledgement box is not decoration. A plugin runs in this process and can read every tenant on this box (D36).',
+      );
+      return;
+    }
+    const siteDb = join(this.#env.dataDir, 'tenants', tenant.key, 'site.db');
+    try {
+      const result = installFromArchive({
+        archive: (file as { bytes: Buffer }).bytes,
+        filename: (file as { filename: string }).filename,
+        siteDb,
+        pluginsRoot: runtime.pluginsDirectory(),
+        allowUnsigned: fields.allow_unsigned === '1',
+        trustDir: join(this.#env.dataDir, 'trust'),
+      });
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.#actorOf(session)?.email ?? 'unknown',
+        action: 'admin.plugin.upload',
+        targetKind: 'cms_plugin_installed',
+        targetId: result.plugin,
+        ip: req.socket.remoteAddress ?? '',
+      });
+      const unsigned = result.signature_state === 'unsigned' ? ' — UNSIGNED: no publisher signature was verified' : ` — signed by ${result.publisher}`;
+      this.#seeOther(
+        reply,
+        `/admin/t/${encodeURIComponent(tenant.key)}/plugins?result=${encodeURIComponent(
+          `installed ${result.plugin}@${result.version} (root ${result.root_hash.slice(0, 12)}…, self-attested test report)${unsigned}. Press Enable to run it.`,
+        )}`,
+      );
+    } catch (err) {
+      if (err instanceof AppError) {
+        this.#pluginsScreen(reply, tenant, session, undefined, `${err.code}: ${err.message}`);
+        return;
+      }
+      throw err;
+    }
   }
 
   /** `POST /admin/t/<key>/plugins/enable` — the operator's ack, then a normal activation. */

@@ -133,8 +133,10 @@ test('the served page carries the two-level menu in position order', async () =>
   // S8l: a tenant with menus now gets the styled bar (`class="site-header"`), whether or not it
   // has also set a site name. The point of these two assertions is unchanged — the menu is the
   // shell's, and the body fragment is inserted inside `<main>` — so they accept the class.
-  assert.match(html, /<header class="site-header[^"]*"><nav aria-label="Main"><ul>/, 'the header menu is the shell\'s, not the body\'s');
-  assert.match(html, /<footer class="site-footer[^"]*"><nav aria-label="Footer"><ul>/, 'the footer menu renders');
+  // S8o: the menu's `<ul>` carries `site-menu`, the class the chrome's own stylesheet and every
+  // site theme select. It used to be a bare `<ul>`, so those rules matched nothing.
+  assert.match(html, /<header class="site-header[^"]*"><nav aria-label="Main"><ul class="site-menu">/, 'the header menu is the shell\'s, not the body\'s');
+  assert.match(html, /<footer class="site-footer[^"]*"><nav aria-label="Footer"><ul class="site-menu site-menu--footer">/, 'the footer menu renders');
   const order = ['Company', 'Story', 'Team', 'Careers', 'Contact'].map((label) => {
     const at = html.indexOf(`>${label}</a>`);
     assert.ok(at > 0, `${label} is missing from the rendered menu`);
@@ -145,7 +147,7 @@ test('the served page carries the two-level menu in position order', async () =>
     [...order].sort((a, b) => a - b),
     'parent, its children in their order, then the next top-level item',
   );
-  assert.match(html, /<li><a href="\/about">Company<\/a><ul><li><a href="\/about">Story<\/a><\/li>/, 'the child list is nested inside its parent');
+  assert.match(html, /<li><a href="\/about">Company<\/a><ul class="site-menu"><li><a href="\/about">Story<\/a><\/li>/, 'the child list is nested inside its parent');
   assert.doesNotMatch(html, />Hidden</, 'an invisible row must not reach the browser');
   assert.match(html, /<a href="https:\/\/acme\.example\/privacy">Privacy<\/a>/);
   // The body is still where it was: the menu is the shell, and the page fragment is

@@ -124,6 +124,16 @@ td form[action$="/disable"] button,td form[action$="/uninstall"] button{border-c
 .btn--danger:hover{border-color:#e4a9a9;color:#7d1f1f}
 .btn .ic{width:16px;height:16px;flex:none}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow-sm)}
+/* A card that carries prose and a table rather than one row per line of text: the padding is
+   the card's, not the content's, so a heading and a table share the same left edge. */
+.card--padded{padding:22px 22px 18px;margin:0 0 16px}
+.card--padded>h2{margin:0 0 4px;font-size:19px;font-weight:650;letter-spacing:-.014em;line-height:1.3}
+.card--padded>p{margin:0 0 16px;color:var(--muted);font-size:13.5px;max-width:72ch;line-height:1.55}
+.card--padded .hint{margin:12px 0 0;font-size:12.5px;color:var(--muted);line-height:1.5}
+.card--padded .hint code{font-size:11.5px}
+.card--padded table{margin:4px 0 12px}
+.card--padded th:first-child,.card--padded td:first-child{padding-left:0}
+.card--padded th:last-child,.card--padded td:last-child{padding-right:0}
 .sectionhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:26px 2px 10px;flex-wrap:wrap}
 .sectionhead h2{margin:0;font-size:13px;letter-spacing:.02em;text-transform:uppercase;color:var(--muted);font-weight:650}
 .sectionhead span{font-size:12px;color:var(--faint)}
@@ -293,10 +303,21 @@ td form[action$="/disable"] button,td form[action$="/uninstall"] button{border-c
 .legacy form label{margin:0;font-size:12.5px;font-weight:600;color:var(--ink-2)}
 .legacy form label small{display:block;font-weight:400;font-size:11px;color:var(--muted);letter-spacing:.02em}
 .legacy form input,.legacy form textarea{width:100%;min-height:38px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:7px 10px;font:13px/1.45 var(--sans);background:#fff;color:var(--ink)}
-.legacy form input:focus,.legacy form textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.12);outline:0}
+.legacy form select{width:100%;min-height:38px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:7px 10px;font:13px/1.45 var(--sans);background:#fff;color:var(--ink)}
+/* A checkbox is not a text field: the two-column sheet must not stretch it into a blue slab. */
+.legacy form input[type="checkbox"],.legacy form input[type="radio"]{width:18px;height:18px;min-height:0;justify-self:start;margin:0;accent-color:var(--blue)}
+.legacy form input:focus,.legacy form textarea:focus,.legacy form select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.12);outline:0}
+/* Save and whatever sits beside it are one row across the sheet, not a cell in the value column. */
+.legacy .formactions{grid-column:1/-1;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px}
+.legacy .formactions .btn{min-height:36px;padding:0 16px;font-size:13px}
 .legacy form textarea{min-height:88px;font-family:var(--mono);font-size:12px}
 .legacy form input[type="number"]{max-width:220px}
 .legacy form button{grid-column:2;justify-self:start;min-height:36px;padding:0 16px;border-radius:var(--r-sm);border:1px solid var(--blue);background:var(--blue);color:#fff;font:600 13px/1 var(--sans);cursor:pointer}
+/* A form inside a table cell is a row of small actions, not the two-column property sheet the
+   .legacy form rule above describes. That rule's display:grid is what made every row's arrows,
+   Hide and Delete stack down the ACTIONS column like a list of verbs. */
+.legacy td form{display:inline-block;grid-template-columns:none;gap:0;max-width:none;margin:0 6px 4px 0;align-items:center}
+.legacy td form button{grid-column:auto;justify-self:auto;margin:0}
 .legacy form[action$="/delete"] button{border-color:var(--red-line);background:var(--red-soft);color:#a02a2a}
 .legacy table{border-collapse:collapse;width:100%;margin:12px 0}
 .legacy th,.legacy td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;font-size:13px;vertical-align:top}
@@ -305,6 +326,18 @@ td form[action$="/disable"] button,td form[action$="/uninstall"] button{border-c
 .legacy ul[data-role="tables"] a{display:inline-block;padding:7px 12px;border:1px solid var(--line-2);border-radius:var(--r-sm);background:#fff;font-size:13px;color:var(--ink-2)}
 .legacy ul[data-role="tables"] a:hover{border-color:var(--blue);color:var(--blue-2);text-decoration:none}
 .colophon{margin:34px 0 0;font-size:11.5px;color:var(--faint)}
+
+/* The plugin upload form: a file, two acknowledgements, one button.
+   Scoped with .legacy because the screen's wrapper carries that class and the .legacy form rule
+   is the two-column property sheet — which otherwise wins on specificity and lays this form out
+   as label|control pairs, with the file field squeezed into a 230 px column. */
+.legacy .uploadcard{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;max-width:720px;margin:0 0 10px;padding:18px;border:1px solid var(--line);border-radius:var(--r);background:var(--card-2);align-items:start}
+.legacy .uploadcard>label,.legacy .uploadcard>button{grid-column:1}
+.legacy .uploadcard>label{font-size:12.5px;font-weight:600;color:var(--ink-2);margin:0}
+.legacy .uploadcard input[type="file"]{display:block;margin-top:6px;font:13px/1.4 var(--sans);color:var(--ink);max-width:100%;min-height:0;padding:9px 12px;background:#fff;border:1px solid var(--line-2);border-radius:var(--r-sm)}
+.legacy .uploadcard .ack{display:flex;gap:9px;align-items:flex-start;font-weight:400;font-size:12.5px;color:var(--ink-2);line-height:1.45}
+.legacy .uploadcard .ack input{width:16px;height:16px;min-height:0;margin:1px 0 0;accent-color:var(--blue);flex:none}
+.legacy .uploadcard>button{justify-self:start;grid-column:1}
 
 /* account: two narrow cards side by side, the sign-out card full width under them */
 .acct{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
