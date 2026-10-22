@@ -16,7 +16,7 @@
  */
 import { esc } from './html.ts';
 
-export type NavKey = 'pages' | 'site' | 'media' | 'plugins' | 'none';
+export type NavKey = 'pages' | 'site' | 'themes' | 'media' | 'plugins' | 'none';
 
 export interface NavItem {
   href: string;
@@ -134,6 +134,10 @@ td form[action$="/disable"] button,td form[action$="/uninstall"] button{border-c
 .card--padded table{margin:4px 0 12px}
 .card--padded th:first-child,.card--padded td:first-child{padding-left:0}
 .card--padded th:last-child,.card--padded td:last-child{padding-right:0}
+/* S8s: a row of actions in a table cell. The legacy form is a two-column property sheet, so a form
+   here has to be inline and the cell has to lay its buttons out itself. */
+.card--padded td.rowey{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+.card--padded td.rowey form{margin:0;display:inline-block}
 .sectionhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:26px 2px 10px;flex-wrap:wrap}
 .sectionhead h2{margin:0;font-size:13px;letter-spacing:.02em;text-transform:uppercase;color:var(--muted);font-weight:650}
 .sectionhead span{font-size:12px;color:var(--faint)}
@@ -384,6 +388,8 @@ function navOf(input: LayoutInput): string {
     { key: 'pages', href: `/admin/t/${encodeURIComponent(tenant)}/`, label: 'Pages' },
     // S8l: the bar and footer every page wears. It sat behind `sqlite3` until this screen.
     { key: 'site', href: `/admin/t/${encodeURIComponent(tenant)}/site`, label: 'Site' },
+    // S8s: the look, next to the other site-wide decisions and before the content ones.
+    { key: 'themes', href: `/admin/t/${encodeURIComponent(tenant)}/themes`, label: 'Themes' },
     { key: 'media', href: `/admin/t/${encodeURIComponent(tenant)}/media`, label: 'Photos &amp; files' },
     {
       key: 'plugins',

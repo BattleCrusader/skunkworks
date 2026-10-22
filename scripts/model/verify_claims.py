@@ -335,6 +335,7 @@ AMENDMENTS3 = os.path.join(ROOT, "schema/r3-amendments.sql")
 # check would compare a v3 chain against a v4 DDL and call the difference "convergence".
 AMENDMENTS4 = os.path.join(ROOT, "schema/r4-amendments.sql")
 AMENDMENTS5 = os.path.join(ROOT, "schema/r5-amendments.sql")
+AMENDMENTS6 = os.path.join(ROOT, "schema/r6-amendments.sql")
 CONTROL_R2 = os.path.join(ROOT, "schema/control-r2.sql")
 CONTROL_R3 = os.path.join(ROOT, "schema/control-r3.sql")
 CONTROL_R4 = os.path.join(ROOT, "schema/control-r4.sql")
@@ -917,12 +918,12 @@ def migration_chain_converges():
     generates, on both planes, compared by table text (CHECKs) and trigger body, not by name; a v2
     file with an access code refuses to migrate, and the refusal names its reason."""
     chain, _ = fresh("conv_chain.db")
-    for sc in (V1_SITE, AMENDMENTS, AMENDMENTS3, AMENDMENTS4, AMENDMENTS5):
+    for sc in (V1_SITE, AMENDMENTS, AMENDMENTS3, AMENDMENTS4, AMENDMENTS5, AMENDMENTS6):
         apply_chain(chain, sc)
     fresh_db, _ = fresh("conv_fresh.db")
     apply_chain(fresh_db, SITE_SQL)
-    assert chain.execute("PRAGMA user_version").fetchone()[0] == 5
-    assert fresh_db.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert chain.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert fresh_db.execute("PRAGMA user_version").fetchone()[0] == 6
     n_tables, n_triggers = compare_planes(chain, fresh_db, "site.db")
     assert chain.execute("PRAGMA foreign_key_check").fetchall() == []
 

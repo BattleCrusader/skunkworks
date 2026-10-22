@@ -42,6 +42,8 @@
  */
 import type Database from 'better-sqlite3';
 
+import type { NavItem } from './nav.ts';
+
 import { assetByKey } from '../assets/library.ts';
 import { assetUrl } from '../assets/url.ts';
 import { AppError } from '../errors.ts';
@@ -250,6 +252,54 @@ export function themeCss(chrome: SiteChrome): string {
  */
 export function descriptionText(chrome: SiteChrome): string {
   return chrome.description.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/** The five characters Astro escapes, as one function — the editor's chrome is compared with the shell's. */
+function esc(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * S8s: the header and footer as the shell writes them, for the editor's canvas.
+ *
+ * The canvas is an iframe holding the page body; without the bar above it and the sentence below
+ * it, an operator cannot see what the page will look like in place — they see a document floating
+ * in an editor. This is the same markup the shell emits, built from the same `SiteChrome` and the
+ * same `cms_nav` tree, and `test/admin-editor-frame.test.ts` compares the menu and identity it
+ * produces with the live page's, so the two cannot drift apart quietly.
+ *
+ * Returns `null` when the shell would draw neither bar (no identity, no menu, no footer text).
+ */
+export function chromeHtml(
+  chrome: SiteChrome,
+  nav: { header: NavItem[]; footer: NavItem[] },
+  logoUrl: string | null,
+  menu: (items: readonly NavItem[], className: string) => string,
+): { header: string; footer: string } | null {
+  const identity = chrome.title !== '' || logoUrl !== null;
+  const headerBar = identity || nav.header.length > 0;
+  const footerBar = nav.footer.length > 0 || chrome.footerText !== '';
+  if (!headerBar && !footerBar) return null;
+  const header = headerBar
+    ? `<header class="site-header${chrome.headerSticky ? ' site-header--sticky' : ''}">` +
+      (identity
+        ? `<a class="site-id" href="/">${logoUrl === null ? '' : `<img src="${esc(logoUrl)}" alt="">`}<span>${esc(chrome.title)}</span></a>`
+        : '') +
+      (nav.header.length > 0 ? `<nav aria-label="Main">${menu(nav.header, 'site-menu')}</nav>` : '') +
+      `</header>`
+    : '';
+  const footer = footerBar
+    ? `<footer class="site-footer${chrome.footerSticky ? ' site-footer--sticky' : ''}">` +
+      (nav.footer.length > 0 ? `<nav aria-label="Footer">${menu(nav.footer, 'site-menu site-menu--footer')}</nav>` : '') +
+      (chrome.footerText !== '' ? `<p class="site-footer__text">${esc(chrome.footerText)}</p>` : '') +
+      `</footer>`
+    : '';
+  return { header, footer };
 }
 
 export function chromeCss(chrome: SiteChrome): string {

@@ -34,6 +34,8 @@
     "cms_table_registry": {"mode": "rows", "why": "The u_* inventory. EXPORT-NOTES.md must state its row count and BUNDLE.json carries source_counts."},
     "cms_trigger_registry": {"mode": "rows", "why": "C-5: the DDL postcondition reads it ('every trigger is in this registry'), so a bundle without the rows fails verification on the client's box. It was the table the old static-file check could not see."},
     "cms_audit": {"mode": "empty", "why": "Our operators' actions and labels. The client starts with an empty audit log, which is honest: we did not do anything on their box yet. The chain's head is sealed in the source install's control.db, not shipped."},
+    "cms_css_blob": {"mode": "rows", "why": "The stylesheet a document names by hash. Drop it and every page in the bundle links a file that is not there — the site arrives unstyled, which is a worse handover than one that arrives slightly dated."},
+    "cms_theme": {"mode": "rows", "why": "The uploaded looks travel with the site, including the active one: a client who receives a site wearing a theme we uploaded must be able to see, keep and re-activate it."},
     "cms_redirect": {"mode": "rows", "why": "Redirects are content; dropping them 404s every slug we renamed during the build."},
     "cms_plugin_installed": {"mode": "rows", "why": "A bundle carries the plugin: code reference, signature state, root hash and above all the manifest, which is the only source of its p_* tables' export classes (C-5)."},
     "cms_plugin_migration": {"mode": "rows", "why": "The bundle's site.db already contains the plugin's tables; without the ledger the first enable would try to re-apply forward-only migrations."},

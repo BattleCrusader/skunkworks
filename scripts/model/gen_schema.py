@@ -32,7 +32,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # E-31 item 5: v4 adds `cms_plugin_installed.activation_seq`, the durable half of the ESM
 # cache-buster. The counter has to survive a restart or a new process re-imports the same URL
 # and gets the previous module namespace back — the exact failure the counter exists to prevent.
-SCHEMA_VERSION = 5
+# S8s: v6 adds `cms_css_blob` (every stylesheet the site serves, stored once, named by its own
+# sha) and `cms_theme` (an uploaded look, one of which may be active). The blob is why a page's
+# CSS can be a file with a name no one has to remember — and why an export can write exactly the
+# files its documents point at.
+SCHEMA_VERSION = 6
 # E-20 (02-errata §8): the control plane moves to v4 — `audit_seal` is a day segment, not a
 # cumulative snapshot — and `schema/control-r4.sql` is the v3 -> v4 delta.
 CONTROL_VERSION = 4
@@ -457,6 +461,21 @@ SITE = {
  ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
  ("hits","INTEGER","NOT NULL DEFAULT 0"),
 ], checks=[], indexes=[]),
+"cms_css_blob": dict(note="S8s: a stylesheet is a file the browser can cache forever, so it needs a name that is its own bytes. One row per distinct sheet; a row is immutable, because the sha IS the name.", cols=[
+ ("sha256","TEXT","PRIMARY KEY CHECK(length(sha256) = 64)"),
+ ("css","TEXT","NOT NULL CHECK(length(css) BETWEEN 1 AND 1048576)"),
+ ("bytes","INTEGER","NOT NULL CHECK(bytes > 0)"),
+ ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+], checks=[], indexes=[("ix_ccb_created","created_at",False)]),
+"cms_theme": dict(note="S8s: an uploaded look. The CSS lives in cms_css_blob so two identical uploads are one row; `site.theme_key` (cms_settings) names the active one, which is what makes 'only one active at a time' a property of the model rather than a rule someone has to remember.", cols=[
+ ("id","INTEGER","PRIMARY KEY AUTOINCREMENT"),
+ ("theme_key","TEXT","NOT NULL UNIQUE CHECK(theme_key GLOB '[a-z0-9][a-z0-9-]*' AND length(theme_key) BETWEEN 2 AND 64)"),
+ ("name","TEXT","NOT NULL CHECK(length(name) BETWEEN 1 AND 120)"),
+ ("css_sha256","TEXT","NOT NULL REFERENCES cms_css_blob(sha256)"),
+ ("source_name","TEXT",None),
+ ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+ ("created_by","INTEGER",None),
+], checks=[], indexes=[("ix_ct_created","created_at",False)]),
 "cms_plugin_installed": dict(note="C-5/C-9: the installed manifest is the ONLY source of a p_* table's export class and of the capability list shown at install. signature_state first_party = our key in the image; imported = the tenant owner imported a publisher key; no CA exists.", cols=[
  ("id","INTEGER","PRIMARY KEY AUTOINCREMENT"),
  ("plugin_id","TEXT","NOT NULL UNIQUE CHECK(plugin_id GLOB '[a-z][a-z0-9]*' AND length(plugin_id) BETWEEN 2 AND 20)"),

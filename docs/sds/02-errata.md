@@ -3939,3 +3939,84 @@ published page and never a draft, `/favicon.ico` answers 200 with a real PNG sig
 loads no script and `/skw-nav.js` is a 404, a site with no description emits no tag (the exported
 document stays byte-identical), a versioned sheet is `immutable` while a bogus or absent version
 revalidates, and a description is escaped and stripped rather than trusted.
+
+### E-49 — a page's CSS was dead in the browser, and the editor was not the site
+
+Two reports, one cause. The operator, looking at the canvas: *"the demo site looks amazing, but the
+editor makes it hard to visualise what the end design will look like."* And then: *"the custom CSS
+additions should be on the editor page."* Both were true, and the second one hid a data-loss bug.
+
+**What the canvas was.** An iframe holding the page body, with `canvas: { styles: [] }`. No
+stylesheet, so browser-default Times on a transparent background; no `<main>`, so a theme's
+`main{max-width:74rem;margin:0 auto;padding:0 2.5rem}` matched nothing; no header, no footer. The
+page was being edited in a document that existed nowhere on the site. Measured on `/pricing`
+against the live page:
+
+| | live | canvas before | canvas after |
+|---|---|---|---|
+| `main` max-width / padding | 1184 px / 40 px | — (no `main`) | **1184 px / 40 px** |
+| `main > section` padding-top | 88 px | — | **88 px** |
+| `main p` max-width | 447.469 px | 873 px (full bleed) | **447.469 px** |
+| body background | rgb(251,248,242) | transparent | **rgb(251,248,242)** |
+| h1 font | Iowan Old Style serif | Times | **Iowan Old Style serif** |
+| header / footer | present | absent | **present, 4 menu items** |
+
+The fix is not a copy of the theme. `applySiteFrame()` (in `app/admin/editor.ts`'s boot script) links
+the site's own `/theme.css` into the canvas — same origin, so `style-src 'self'` allows it — links
+the draft's own CSS after it, **renames the GrapesJS wrapper element to `<main>`** (the view is
+pointed at the new node; `main>section` is a child selector and nothing else makes it match), and
+inserts the header and footer as *siblings* of `<main>`. They are furniture, not components:
+`editor.getHtml()` serialises the wrapper, so the save payload is still exactly the page — measured
+at 3794 bytes before and after, and `getHtml().includes('site-header') === false`. GrapesJS rebuilds
+the canvas body on component add/remove, so the frame is re-applied on `canvas:frame:load`,
+`component:add` and `component:remove`.
+
+**What the editor had that the page did not.** A **page's CSS was never editable**. `body_css` lives
+in `cms_page`, the Site screen edits only the site-wide pasted CSS, and the editor's `save()` sent
+`css: editor.getCss()` — GrapesJS's *generated* rules from the Style Manager. A page whose
+stylesheet was written by hand (or seeded) therefore lost it on the first Save: the stored bytes were
+replaced by the generated set, which for a page nobody had styled was the empty string. The panel
+added here is a textarea under the canvas, opened on the draft's CSS, and `save()` now sends
+`composeCss()` — the panel's rules, then the Style Manager's under one `/* skw:style-manager */`
+marker so they survive a round trip without accumulating. Deleting the marker by hand is how you
+stop GrapesJS writing into the file.
+
+**Two stylesheets, both files, both cached by name.** E-41 recorded that a page's CSS was still
+inline and therefore still blocked. It is now a file:
+
+- the **site's** sheet at `/theme.css?v=<hash>` (chrome rules + active theme), unchanged in shape;
+- the **page's** own at `/_css/<sha256>.css`, content-addressed, `cache-control: public,
+  max-age=31536000, immutable`, linked *after* the site sheet so a page rule wins at equal
+  specificity.
+
+A content-addressed URL is what lets the export write exactly the files its documents name:
+`renderDocument()`/`pageSource()` emit the same `/_css/<sha>.css` link, and the static and Astro
+trees write the file at that path. `test/export-targets.test.ts` still compares each tree with the
+live response, byte for byte.
+
+**Themes became rows.** `cms_theme` + `cms_css_blob`, schema v6 (`r6-amendments.sql`), with the CSS
+stored once by its own sha. `cms_settings.site.theme_key` names the active one — a single value, so
+"only one theme is active" is a property of the model, not a rule to remember. The Themes screen
+uploads a `.css` (≤ 512 KiB, refused if it carries `</style` or `<script`), lists what is stored,
+activates, deactivates and deletes (the active one refused — deactivate first). Preview is the real
+site: `/preview-theme?t=<token>&path=/about` renders the page with a theme that is **not** active,
+using an HMAC over tenant + theme + expiry minted per screen render, 15 minutes, `no-store` and
+`x-robots-tag: noindex`. A signed link is used rather than the admin cookie because the session
+cookie is scoped to `Path=/admin` and would never reach a page URL.
+
+Verified end to end in a real browser against the live stack: upload → preview (dark paper, serif
+display, `&theme=midnight-probe` in the sheet link, forged token 404, expired token 404) → activate
+→ live page changed → deactivate → the site's own sheet back, unchanged to the byte.
+
+**The palette was only the registry.** A `div`, a `section`, a heading, a rule: every one is ordinary
+markup the renderer treats as ordinary markup, and the only way to get one was to hand-manage a page
+— which the editor refuses to open. The palette now leads with a **Basic** group (section, div,
+columns ×3, combo, h2/h3, paragraph, link, lists, quote, collapsible, table, divider, note),
+inserted as content so GrapesJS parses them into ordinary components: droppable, nestable,
+draggable, stylable by the same Style Manager. They carry no `data-gjs-type`, so the save path's lock
+check has nothing to disagree with.
+
+**One drift found on the way.** `/theme.css`'s docstring documented a `?path=` parameter that
+appended the named page's `body_css`; the implementation never read it. The docstring was three
+years of reassurance about a behaviour that did not exist. The parameter is now real — as
+`/_css/<sha>.css` — and the docstring describes that instead.

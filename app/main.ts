@@ -44,6 +44,16 @@ import { loadPluginPage, matchPluginPage, pluginPageBody, resolveFormMarkers } f
 import { loadNav, type NavTree } from './render/nav.ts';
 import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings, type SiteChrome } from './render/chrome.ts';
 import { matchesEtag, sheetEtag, sheetVersion, siteSheet } from './render/theme.ts';
+import {
+  THEME_KEY_SETTING,
+  activeTheme,
+  activeThemeKey,
+  cssBlob,
+  listThemes,
+  sha256 as cssSha256,
+  themeByKey,
+  verifyPreviewToken,
+} from './render/themes.ts';
 import { faviconSvg, robotsTxt, sitemapXml, type SitemapEntry } from './render/delivery.ts';
 import { CSP_HEADER, cspPolicy, cspPolicyWithNonce } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
@@ -472,6 +482,27 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     },
   });
 
+  /**
+   * S8s: the chrome record with the theme's CSS in it.
+   *
+   * The shell and `siteSheet()` already know how to emit a site's stylesheet — the theme is one of
+   * its two halves (`site.theme_css` is the other, the pasted fallback). Putting the active row's
+   * bytes into that field means the theme reaches every page through the path that already works,
+   * including the chrome's own default rules, its order in the cascade and its hash in the URL.
+   */
+  function withTheme(chrome: SiteChrome, theme: { css: string } | null): SiteChrome {
+    return theme === null ? chrome : { ...chrome, themeCss: theme.css };
+  }
+
+  /**
+   * The stylesheet a page's own CSS is served from: content-addressed, so the link never needs a
+   * validator and two pages that share a sheet share a file. `null` when the page has none, which
+   * is what keeps a CSS-less document byte-identical to the one the exporters write.
+   */
+  function pageCssHref(css: string): string | null {
+    return css === '' ? null : `/_css/${cssSha256(css)}.css`;
+  }
+
   /** The key in the URL is a claim; the host (or edge header) is the resolution. Both must agree. */
   function downloadTenant(req: FastifyRequest): string {
     const ctx = resolveRequest(req);
@@ -500,7 +531,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
     try {
       const nav = loadNav(db);
-      const chrome = loadChrome(db);
+      // S8s: the active theme is a row, not the `site.theme_css` string. `?theme=<key>` names an
+      // uploaded theme that is *not* active, which is how the preview page shows a look before
+      // anyone commits to it — the key is unguessable only in the sense that it is a slug the
+      // operator chose, and the CSS it selects is the site's own content either way.
+      const asked = typeof req.query === 'object' && req.query !== null ? (req.query as { theme?: string }).theme : undefined;
+      const preview = typeof asked === 'string' ? themeByKey(db, asked) : undefined;
+      const chrome = withTheme(loadChrome(db), preview ?? activeTheme(db));
       sheet = siteSheet({ chrome, showChrome: hasChrome(chrome, nav) });
     } finally {
       db.close();
@@ -528,6 +565,74 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       return;
     }
     reply.send(sheet);
+  });
+
+  /**
+   * S8s: a stylesheet by its own hash. `/_css/<sha256>.css` is immutable by construction — the
+   * name is the bytes — so this is the one URL on the site a browser may cache for a year
+   * without a validator, and the one an export can write as a plain file that the same document
+   * points at in both trees.
+   *
+   * It carries no tenant in the URL: the Host resolves the tenant, exactly like `/theme.css`,
+   * so a hash stolen from one tenant's page resolves to nothing on another's origin.
+   */
+  app.get('/_css/:file', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const file = String((req.params as { file?: string }).file ?? '');
+    const match = /^([0-9a-f]{64})\.css$/.exec(file);
+    const sha = match === null ? '' : String(match[1] ?? '');
+    if (sha === '') throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'a stylesheet is /_css/<sha256>.css');
+    const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+    try {
+      const css = cssBlob(db, sha);
+      if (css === undefined) {
+        // Not an error the operator caused and not one they can act on: a document naming a
+        // stylesheet this tenant does not have is a stale page or a hand-edited link.
+        reply.code(404).header('cache-control', 'no-store').type('text/plain; charset=utf-8').send('');
+        return;
+      }
+      reply
+        .type('text/css; charset=utf-8')
+        .header('cache-control', 'public, max-age=31536000, immutable')
+        .header('etag', `"${sha.slice(0, 32)}"`)
+        .send(css);
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * S8s: see a look before wearing it.
+   *
+   * `GET /preview-theme?t=<token>&path=/about` renders the real page with a theme that is not
+   * active. The token is an HMAC over tenant + theme + expiry minted by the Themes screen
+   * (`app/render/themes.ts`), so the page is shareable with a colleague for fifteen minutes and
+   * is not an open door afterwards; no cookie is involved, which matters because the admin's
+   * session cookie is scoped to `Path=/admin` and would never reach a page URL.
+   *
+   * The render is `no-store` and `noindex`: it is a preview, not a second copy of the site.
+   */
+  app.get('/preview-theme', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const url = new URL(req.url, 'http://preview.invalid');
+    const token = url.searchParams.get('t') ?? '';
+    const claimed = url.searchParams.get('path') ?? '/';
+    const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+    let keys: string[] = [];
+    try {
+      keys = listThemes(db).map((theme) => theme.key);
+    } finally {
+      db.close();
+    }
+    const themeKey = verifyPreviewToken(env.sessionKey, token, ctx.tenant.key, keys);
+    if (themeKey === null) {
+      reply.code(404).header('cache-control', 'no-store').type('text/plain; charset=utf-8').send('');
+      return;
+    }
+    // `serveNotFound` hijacks the reply and hands the socket to Astro, so a header set on `reply`
+    // here would never reach the wire. `noindex` travels as an option and is written on the raw
+    // response before the hijack, the same way the CSP is.
+    await serveNotFound(req, reply, { themeOverride: themeKey, pathOverride: claimed, noindex: true });
   });
 
   /**
@@ -867,9 +972,18 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     }
   }
 
-  async function serveNotFound(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  interface ServeOptions {
+    /** S8s: render with this theme instead of the active one. Only the preview route sets it. */
+    themeOverride?: string;
+    /** The path to render, when the URL's own path is not the page's (a preview URL). */
+    pathOverride?: string;
+    /** S8s: a preview is not part of the site. Set before the render hijacks the reply. */
+    noindex?: boolean;
+  }
+
+  async function serveNotFound(req: FastifyRequest, reply: FastifyReply, opts: ServeOptions = {}): Promise<void> {
     const ctx = resolveRequest(req);
-    const path = normalisePagePath(req.url);
+    const path = normalisePagePath(opts.pathOverride ?? req.url);
     // §4.3 (E-4): a URL that cannot name a path is refused before a route runs.
     if (path === null) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'the request path is not a page path');
     if (req.method === 'POST' && (await handleDeclaredFormPost(req, reply, ctx, path))) return;
@@ -919,7 +1033,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     // path a package serves (`/blog/<slug>`) and only a synced registry knows those. The
     // variables are declared here so the render call after the `finally` still sees them.
     let nav: NavTree = { header: [], footer: [] };
-    let chrome: (SiteChrome & { logoUrl: string | null; sheetVersion?: string }) | null = null;
+    let chrome: (SiteChrome & { logoUrl: string | null; sheetVersion?: string; previewTheme?: string }) | null = null;
     // §10.3/§11.2: the stored bytes are a fragment that names **keys**; `renderStoredBody`
     // unwraps a legacy row and derives every asset URL. It is the same function the three
     // exporters call, so a page cannot render one way here and another way in a bundle —
@@ -954,14 +1068,21 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       // S8l: the identity bar and footer, from `cms_settings`. `null` when the tenant has set
       // none of it, so a site that has never opened the Site screen renders exactly the bytes
       // it rendered before this feature existed (and the exported tree stays byte-identical).
-      const siteChrome = loadChrome(db);
+      const siteChrome = withTheme(
+        loadChrome(db),
+        opts.themeOverride === undefined ? activeTheme(db) : (themeByKey(db, opts.themeOverride) ?? null),
+      );
       chrome = hasChrome(siteChrome, nav)
         ? {
             ...siteChrome,
             logoUrl: chromeLogoUrl(db, siteChrome),
             // S8r: the sheet's own hash, so the link can name its bytes and the browser can
             // cache it for a year. Same bytes the `/theme.css` route hashes.
+            //
+            // S8s: `&theme=` is only present on a preview render, and only for the theme being
+            // previewed — the same URL still answers unversioned for an old document.
             sheetVersion: sheetVersion(siteSheet({ chrome: siteChrome, showChrome: true })),
+            ...(opts.themeOverride === undefined ? {} : { previewTheme: opts.themeOverride }),
           }
         : null;
       // §13.3.4, `asset.url`: one dispatch per asset this page names, **before** the render,
@@ -1035,8 +1156,23 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     // §10.5 (C-12): the page path hands the socket to Astro, so the policy has to be on the
     // raw response before the hijack — the `onSend` hook above never sees this reply.
     reply.raw.setHeader(CSP_HEADER, cspPolicy());
+    if (opts.noindex === true) reply.raw.setHeader('x-robots-tag', 'noindex, nofollow');
     reply.hijack();
-    await handler(req.raw, reply.raw, undefined, { tenantKey: ctx.tenant.key, path, page, preview: loaded.preview, data, head, nav, chrome });
+    // S8s: the page's own CSS is a file, named by its bytes. The shell links it after the site
+    // sheet, so a page's rules win at equal specificity and nothing is inlined — the policy's
+    // `style-src 'self'` blocks an inline `<style>` and always did (E-41).
+    const cssHref = pageCssHref(page.bodyCss ?? '');
+    await handler(req.raw, reply.raw, undefined, {
+      tenantKey: ctx.tenant.key,
+      path,
+      page,
+      preview: loaded.preview,
+      data,
+      head,
+      nav,
+      chrome,
+      cssHref,
+    });
     // `page.rendered` is an **action**: the return value is discarded and the payload is
     // observation only — `{tenant, path, status, ms}`. A throw here is caught by the dispatch
     // and counted; the response has already been written either way.

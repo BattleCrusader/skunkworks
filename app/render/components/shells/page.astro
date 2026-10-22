@@ -60,9 +60,19 @@ interface Props {
    * supplied by the app (`app/main.ts`), because both are derived from the sheet and the
    * settings the app already has open.
    */
-  chrome?: (SiteChrome & { logoUrl: string | null; sheetVersion?: string }) | null;
+  chrome?: (SiteChrome & { logoUrl: string | null; sheetVersion?: string; previewTheme?: string }) | null;
+  /**
+   * S8s: the page's own stylesheet, already a URL (`/_css/<sha256>.css`), or `null` when the page
+   * has none.
+   *
+   * It used to be `page.bodyCss` interpolated into a `<style>` element, which the site's policy
+   * (`style-src 'self'`, no inline allowance) makes a browser block: the bytes were in the markup
+   * and dead in the browser for as long as the policy has existed (E-41). A file from this origin
+   * is what the policy allows, and it is cached by its own name.
+   */
+  cssHref?: string | null;
 }
-const { page, tenantKey, head, nav, chrome } = Astro.props as Props;
+const { page, tenantKey, head, nav, chrome, cssHref } = Astro.props as Props;
 const header = nav !== undefined && nav.header.length > 0 ? nav.header : null;
 const footer = nav !== undefined && nav.footer.length > 0 ? nav.footer : null;
 const bar = chrome === undefined || chrome === null ? null : chrome;
@@ -94,8 +104,19 @@ const theme = bar === null ? '' : bar.themeCss;
 // paints from cache; without it (an older cached document) the same URL still answers and
 // revalidates, so the two forms never disagree about the bytes.
 const sheetVersion = bar !== null && bar.sheetVersion !== undefined ? bar.sheetVersion : null;
+// S8s: a preview render names the theme it is previewing, so the sheet the page links is the
+// candidate's and not the active one. The `?theme=` half is absent from every other render.
+const previewTheme = bar !== null && bar.previewTheme !== undefined ? bar.previewTheme : null;
+const themeQuery = previewTheme === null ? '' : `&theme=${previewTheme}`;
 const sheetHref =
-  showStyle || theme !== '' ? (sheetVersion === null ? '/theme.css' : `/theme.css?v=${sheetVersion}`) : null;
+  showStyle || theme !== ''
+    ? sheetVersion === null
+      ? `/theme.css${previewTheme === null ? '' : `?theme=${previewTheme}`}`
+      : `/theme.css?v=${sheetVersion}${themeQuery}`
+    : null;
+// The page's own sheet comes *after* the site's, so a page rule wins at equal specificity — the
+// cascade order a person writing `.s-hero{…}` on one page expects.
+const ownSheetHref = cssHref === undefined || cssHref === null || cssHref === '' ? null : cssHref;
 // The site's one sentence. `''` emits nothing at all — the exported shell (`app/export/document.ts`)
 // has no description either, and `test/export-targets.test.ts` compares the two byte for byte.
 const description = bar === null ? null : descriptionText(bar) || null;
@@ -107,8 +128,7 @@ const footerClass = footerBar === null ? '' : footerBar.footerSticky ? 'site-foo
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{page.title}</title>{description !== null ? <meta name="description" content={description} /> : null}{head ? <Fragment set:html={head} /> : null}{sheetHref !== null ? <link rel="stylesheet" href={sheetHref} /> : null}
-    {page.bodyCss ? <style set:html={page.bodyCss} /> : null}
+    <title>{page.title}</title>{description !== null ? <meta name="description" content={description} /> : null}{head ? <Fragment set:html={head} /> : null}{sheetHref !== null ? <link rel="stylesheet" href={sheetHref} /> : null}{ownSheetHref !== null ? <link rel="stylesheet" href={ownSheetHref} /> : null}
   </head>
   <body data-page-path={page.path}>{headerBar !== null ? <header class={headerClass}>{identity ? <a class="site-id" href="/">{headerBar.logoUrl !== null ? <img src={headerBar.logoUrl} alt="" /> : null}<span>{headerBar.title}</span></a> : null}{header !== null ? <nav aria-label="Main"><NavList items={header} className="site-menu" /></nav> : null}</header> : header !== null ? <header><nav aria-label="Main"><NavList items={header} className="site-menu" /></nav></header> : null}
     <main set:html={page.bodyHtml} />{footerBar !== null ? <footer class={footerClass}>{footer !== null ? <nav aria-label="Footer"><NavList items={footer} className="site-menu site-menu--footer" /></nav> : null}{footerBar.footerText !== '' ? <p class="site-footer__text">{footerBar.footerText}</p> : null}</footer> : footer !== null ? <footer><nav aria-label="Footer"><NavList items={footer} /></nav></footer> : null}

@@ -18,6 +18,7 @@ import type Database from 'better-sqlite3';
 
 import { AppError } from '../errors.ts';
 import { syncPageLinks } from '../assets/links.ts';
+import { putCssBlob } from '../render/themes.ts';
 import { canon, unwrapBody } from './canon.ts';
 import { type ListItem, analyseBody, bodySha } from './model.ts';
 import { type Registry, registryCss } from './registry.ts';
@@ -157,7 +158,12 @@ export async function savePage(input: SaveInput): Promise<SaveResult> {
     }
   }
 
-  const css = input.css !== undefined && input.css.trim() !== '' ? input.css : registryCss(registry);
+  // S8s: `undefined` means "the caller has no opinion" — a caller creating a page from outside the
+  // editor, which still gets the component registry's styles so the page is not unstyled. An
+  // **empty string** is an opinion: the operator cleared the CSS panel and means it. Before this,
+  // clearing the box silently refilled it with the registry's 960 bytes, so the panel could never
+  // show what its own author had written.
+  const css = input.css !== undefined ? input.css : registryCss(registry);
   const sha = bodySha(canonical);
   const managedBy = input.managedBy ?? 'editor';
 
@@ -214,6 +220,9 @@ export async function savePage(input: SaveInput): Promise<SaveResult> {
   const protectsBody = !directPublish && existing !== undefined && existing.status !== 'draft';
 
   const write = db.transaction((): { id: number; rev: number; draft: boolean } => {
+    // S8s: the CSS is a file, and its name is its own sha256 — so the row that stores it has to
+    // make sure the file exists. One insert per save, `INSERT OR IGNORE` on bytes we already have.
+    if (css !== '') putCssBlob(db, css);
     // S8b (E-35). Two bodies, one row. `body_*` is what visitors are served and **only publish
     // writes it**; `draft_*` is what the editor writes. A save on a page that is already live
     // therefore writes the draft and leaves the live body alone — pressing Save in the canvas

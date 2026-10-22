@@ -106,8 +106,27 @@ export interface EditorPageInput {
   } | null;
   registry: Registry;
   csrf: string;
-  /** The page's own stylesheet, so the canvas is not unstyled. */
+  /** The page's own stylesheet, as the bytes the draft holds. Shown in the canvas below it. */
   bodyCss: string;
+  /**
+   * S8s: the site's stylesheet, linked into the canvas so the page is edited in the look it will
+   * be published in. `null` when the tenant has no theme and no chrome rules — a canvas with no
+   * sheet is what a brand-new site looks like, and it says so.
+   */
+  sheetHref?: string | null;
+  /**
+   * S8s: the page's own CSS as a URL on the editor's own prefix (the draft, not the published
+   * copy), or `null` when the draft has none. Served session-gated and `no-store`: it is a draft,
+   * and a draft must not be cacheable by anything.
+   */
+  pageCssHref?: string | null;
+  /**
+   * S8s: the site's header and footer, as the shell writes them, so the canvas shows the page in
+   * place instead of a document floating in an editor. `null` when the site has neither bar.
+   */
+  frame?: { header: string; footer: string } | null;
+  /** The page's path, so the header marks the current item the way the site does. */
+  pagePath?: string;
   /**
    * S8h: the blocks this tenant's **enabled** packages contribute. Each becomes a palette entry
    * that inserts a marker; the host draws the view at render time. A disabled package's blocks
@@ -123,6 +142,126 @@ function jsonForScript(value: unknown): string {
   return JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 
+/**
+ * S8s: the basic palette — plain HTML, no registry entry, no `data-gjs-type`.
+ *
+ * The palette was *only* the registry, which is the right rule for anything the renderer has to
+ * know about (a hero, a list bound to a table, a plugin's view) and the wrong rule for `<div>`.
+ * An operator laying out a page reaches for a section, a column, a heading, a rule; every one of
+ * those is ordinary markup the renderer treats as ordinary markup, and until this list existed
+ * the only way to get one was to type it into a page that had been hand-managed — which the editor
+ * refuses to open.
+ *
+ * They carry `data-type="element"` so the picker can tell them apart from a registry entry (it has
+ * no fields for them: the Style Manager is their panel), and they are inserted as **content**, so
+ * GrapesJS parses them into ordinary components — droppable, nestable, draggable, stylable by the
+ * same Style Manager as everything else. That is what "*fully* supported in DnD" means here: a
+ * `div` you can drop a `section` into, and a `section` you can drop a `div` into.
+ *
+ * The starters carry a little copy so a drop is visible and obviously editable; an empty `div`
+ * would be a zero-height box, which is indistinguishable from a drop that did nothing.
+ */
+const BASIC_BLOCKS: PaletteItem[] = [
+  {
+    id: 'basic-section',
+    label: 'Section',
+    category: 'Basic',
+    type: 'element',
+    kind: 'element',
+    content: '<section class="s-band"><h2>Section heading</h2><p>Say what this band is for.</p></section>',
+    editable: [],
+  },
+  {
+    id: 'basic-div',
+    label: 'Div (container)',
+    category: 'Basic',
+    type: 'element',
+    kind: 'element',
+    content: '<div class="s-grid"><div class="s-col"><h3>Column</h3><p>Text.</p></div><div class="s-col"><h3>Column</h3><p>Text.</p></div></div>',
+    editable: [],
+  },
+  {
+    id: 'basic-columns-3',
+    label: 'Three columns',
+    category: 'Basic',
+    type: 'element',
+    kind: 'element',
+    content:
+      '<div class="s-grid"><div class="s-col"><h3>One</h3><p>Text.</p></div><div class="s-col"><h3>Two</h3><p>Text.</p></div><div class="s-col"><h3>Three</h3><p>Text.</p></div></div>',
+    editable: [],
+  },
+  {
+    id: 'basic-stack',
+    label: 'Combo (heading + text + link)',
+    category: 'Basic',
+    type: 'element',
+    kind: 'element',
+    content:
+      '<div><p class="s-eyebrow">Eyebrow</p><h2>A heading that carries the point</h2><p>A paragraph under it, then a way onward.</p><p><a class="s-btn" href="/contact">Get in touch</a></p></div>',
+    editable: [],
+  },
+  { id: 'basic-h2', label: 'Heading h2', category: 'Basic', type: 'element', kind: 'element', content: '<h2>Heading</h2>', editable: [] },
+  { id: 'basic-h3', label: 'Heading h3', category: 'Basic', type: 'element', kind: 'element', content: '<h3>Subheading</h3>', editable: [] },
+  { id: 'basic-p', label: 'Paragraph', category: 'Basic', type: 'element', kind: 'element', content: '<p>Paragraph text.</p>', editable: [] },
+  { id: 'basic-link', label: 'Link', category: 'Basic', type: 'element', kind: 'element', content: '<p><a href="/">Link text</a></p>', editable: [] },
+  {
+    id: 'basic-ul',
+    label: 'Bulleted list',
+    category: 'Basic',
+    type: 'element',
+    kind: 'element',
+    content: '<ul><li>First point</li><li>Second point</li></ul>',
+    editable: [],
+  },
+  {
+    id: 'basic-ol',
+    label: 'Numbered list',
+    category: 'Basic',
+    type: 'element',
+    kind: 'element',
+    content: '<ol><li>First step</li><li>Second step</li></ol>',
+    editable: [],
+  },
+  {
+    id: 'basic-quote',
+    label: 'Quote',
+    category: 'Basic',
+    type: 'element',
+    kind: 'element',
+    content: '<blockquote><p>The sentence worth setting apart.</p><footer>— who said it</footer></blockquote>',
+    editable: [],
+  },
+  {
+    id: 'basic-details',
+    label: 'Collapsible',
+    category: 'Basic',
+    type: 'element',
+    kind: 'element',
+    content: '<details><summary>More detail</summary><p>The part most readers skip.</p></details>',
+    editable: [],
+  },
+  {
+    id: 'basic-table',
+    label: 'Table',
+    category: 'Basic',
+    type: 'element',
+    kind: 'element',
+    content:
+      '<table><thead><tr><th>Heading</th><th>Heading</th></tr></thead><tbody><tr><td>Cell</td><td>Cell</td></tr><tr><td>Cell</td><td>Cell</td></tr></tbody></table>',
+    editable: [],
+  },
+  { id: 'basic-hr', label: 'Divider', category: 'Basic', type: 'element', kind: 'element', content: '<hr>', editable: [] },
+  {
+    id: 'basic-blockquote-attr',
+    label: 'Note',
+    category: 'Basic',
+    type: 'element',
+    kind: 'element',
+    content: '<aside class="s-note"><p>A small note beside the argument.</p></aside>',
+    editable: [],
+  },
+];
+
 export function editorBootPayload(input: EditorPageInput): {
   palette: PaletteItem[];
   categories: string[];
@@ -131,10 +270,20 @@ export function editorBootPayload(input: EditorPageInput): {
   css: string;
   tenant: string;
   csrf: string;
+  /** S8s: what the canvas needs to look like the site. See `applySiteFrame` in the boot script. */
+  frame: {
+    sheet: string | null;
+    pageCss: string | null;
+    header: string;
+    footer: string;
+    path: string;
+  };
 } {
-  // The host's components first, then one group for the packages: a package cannot add a
-  // component (that would be plugin markup in the canvas), only a marker the host resolves.
+  // S8s: the basic elements first — they are what a page is made of — then the host's registry
+  // components, then one group for the packages: a package cannot add a component (that would be
+  // plugin markup in the canvas), only a marker the host resolves.
   const items: PaletteItem[] = [
+    ...BASIC_BLOCKS,
     ...palette(input.registry),
     ...(input.blocks ?? []).map((block) => ({
       id: `block-${block.id.replace(/\//g, '-')}`,
@@ -193,6 +342,13 @@ export function editorBootPayload(input: EditorPageInput): {
     css: input.bodyCss,
     tenant: input.tenant,
     csrf: input.csrf,
+    frame: {
+      sheet: input.sheetHref ?? null,
+      pageCss: input.pageCssHref ?? null,
+      header: input.frame?.header ?? '',
+      footer: input.frame?.footer ?? '',
+      path: input.pagePath ?? input.page?.path ?? '/',
+    },
   };
 }
 
@@ -212,7 +368,7 @@ export function renderEditorPage(input: EditorPageInput): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(title)} — editor</title>
 <link rel="stylesheet" href="${base}/grapesjs.css">
-<style>${payload.css}
+<style>
 body{margin:0;font:14px/1.4 system-ui,sans-serif}
 #skw-layout{display:grid;grid-template-columns:240px 1fr 300px;height:100vh}
 #skw-blocks,#skw-settings{overflow:auto;border-right:1px solid #ddd;padding:.5rem}
@@ -276,7 +432,17 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 #skw-bar .skw-btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
 #skw-bar .skw-save-state{font-size:.8rem;color:#6b6b76;min-width:9rem;text-align:right}
 #skw-bar .skw-save-state[data-dirty="1"]{color:#7a4a00;font-weight:600}
-#skw-layout{height:calc(100vh - 56px)}
+#skw-layout{height:calc(100vh - 56px);display:grid;grid-template-columns:240px 1fr 300px;grid-template-rows:1fr auto}
+/* S8s: the page's own stylesheet, editable where the page is edited. Collapsed it is one line
+   with the count of rules; expanded it is a code pane that takes the bottom third. */
+#skw-css{grid-column:1 / -1;border-top:1px solid #e3e3e8;background:#fff;display:flex;flex-direction:column;max-height:34vh}
+#skw-css-head{display:flex;align-items:center;gap:.6rem;padding:.4rem .75rem;min-height:40px}
+#skw-css-head h2{font-size:.8rem;font-weight:650;margin:0;color:#24242b;white-space:nowrap}
+#skw-css-hint{font-size:.75rem;color:#6b6b76;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#skw-css-text{display:none;margin:0;border:0;border-top:1px solid #eee;padding:.6rem .75rem;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;tab-size:2;resize:vertical;min-height:120px;color:#1f2430;background:#fbfbfd;outline:none}
+#skw-css[data-open="1"] #skw-css-text{display:block}
+#skw-css[data-open="1"]{max-height:52vh}
+#skw-css-text:focus-visible{box-shadow:inset 0 0 0 2px #2563eb}
 </style></head>
 <body data-skw-readonly="${readonly ? '1' : '0'}">
 <header id="skw-bar">
@@ -296,6 +462,14 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
   <aside id="skw-blocks" aria-label="Blocks"></aside>
   <div id="skw-canvas"><div id="gjs"></div></div>
   <aside id="skw-settings" aria-label="Settings"></aside>
+  <section id="skw-css" aria-label="This page's CSS">
+    <header id="skw-css-head">
+      <h2>This page's CSS</h2>
+      <span class="skw-css-hint">Served as its own file, on this page only, <em>after</em> the site's theme — so a rule here wins at equal specificity. Press Save to see it on the page; the canvas shows it when you reload.</span>
+      <button type="button" class="skw-btn" id="skw-css-toggle" aria-expanded="false" aria-controls="skw-css-text">Show CSS</button>
+    </header>
+    <textarea id="skw-css-text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder=".s-hero h1 { font-size: 4.5rem }"${readonly ? ' readonly' : ''}></textarea>
+  </section>
 </div>
 <script type="application/json" id="skw-editor-boot">${jsonForScript(payload)}</script>
 <script src="${base}/grapesjs.js"></script>
@@ -585,6 +759,101 @@ const BOOT_SCRIPT = String.raw`
   editor.on('canvas:frame:load:body', attachPasteGate);
   editor.on('load', attachPasteGate);
 
+
+  // S8s. THE SITE AROUND THE PAGE.
+  //
+  // The canvas is an iframe holding the page body. On its own that is a document in an editor:
+  // browser-default type, no margins, no bar, no footer — which is the report this answers
+  // ("the demo site looks amazing; the editor makes it hard to visualise"). Four things put the
+  // site back, and none of them is a copy of the site's CSS:
+  //
+  //   1. the site's stylesheet, linked — same origin, so style-src 'self' allows it, and the
+  //      theme's own bytes are what make the type, colours and band spacing match;
+  //   2. the page's own draft CSS, linked after it, so a page rule wins at equal specificity;
+  //   3. a real <main>: the shell wraps a page's body in one and every theme's layout selects
+  //      main, so the components are moved into an element of that name and the GrapesJS view
+  //      is pointed at it. main>section is a child selector — nothing else makes it match;
+  //   4. the header and footer, inserted as *siblings* of <main>, so editor.getHtml() (which
+  //      serialises the wrapper) never sees them and Save still stores exactly the page.
+  //
+  // GrapesJS rebuilds the canvas body when components are added or removed, so this runs on every
+  // frame load and after every structural change: the furniture is ours to put back, not to keep.
+  var frameScheduled = false;
+  function scheduleFrame() {
+    if (frameScheduled) return;
+    frameScheduled = true;
+    setTimeout(function () { frameScheduled = false; applySiteFrame(); }, 0);
+  }
+
+  function insertFrameNode(doc, html, before) {
+    // The template is created in the *canvas* document: a node from the admin document inserted
+    // into the frame is adopted by the browser, which is a silent cross-document step that has
+    // bitten this codebase before (the export's DOM). One document, one node.
+    var tpl = doc.createElement('template');
+    tpl.innerHTML = html;
+    var node = tpl.content && tpl.content.firstElementChild;
+    if (!node) return null;
+    node.setAttribute('data-skw-frame', '1');
+    if (before === null) before.parentNode.appendChild(node);
+    else before.parentNode.insertBefore(node, before);
+    return node;
+  }
+
+  function applySiteFrame() {
+    var doc;
+    try { doc = editor.Canvas.getDocument(); } catch (e) { return; }
+    if (!doc || !doc.body || !doc.head) return;
+    doc.body.setAttribute('data-page-path', boot.frame.path);
+
+    if (boot.frame.sheet && !doc.querySelector('link[data-skw-sheet]')) {
+      var sheet = doc.createElement('link');
+      sheet.rel = 'stylesheet';
+      sheet.href = boot.frame.sheet;
+      sheet.setAttribute('data-skw-sheet', '1');
+      doc.head.appendChild(sheet);
+    }
+    if (boot.frame.pageCss && !doc.querySelector('link[data-skw-page-css]')) {
+      var own = doc.createElement('link');
+      own.rel = 'stylesheet';
+      own.href = boot.frame.pageCss;
+      own.setAttribute('data-skw-page-css', '1');
+      doc.head.appendChild(own);
+    }
+
+    var view = editor.getWrapper().view;
+    var el = view && view.el;
+    if (!el) return;
+    if (el.tagName !== 'MAIN') {
+      var main = doc.createElement('main');
+      main.setAttribute('data-skw-page', '1');
+      if (el.id) main.id = el.id;
+      while (el.firstChild) main.appendChild(el.firstChild);
+      el.replaceWith(main);
+      view.el = main;
+      el = main;
+    } else if (!el.getAttribute('data-skw-page')) {
+      el.setAttribute('data-skw-page', '1');
+    }
+
+    var header = doc.querySelector('[data-skw-frame="header"]');
+    if (boot.frame.header) {
+      if (!header) header = insertFrameNode(doc, boot.frame.header, el);
+    } else if (header) {
+      header.remove();
+    }
+    var footer = doc.querySelector('[data-skw-frame="footer"]');
+    if (boot.frame.footer) {
+      if (!footer) insertFrameNode(doc, boot.frame.footer, el.nextSibling);
+    } else if (footer) {
+      footer.remove();
+    }
+  }
+
+  applySiteFrame();
+  editor.on('canvas:frame:load', scheduleFrame);
+  editor.on('component:add', scheduleFrame);
+  editor.on('component:remove', scheduleFrame);
+
   // The editor is on window on purpose: every "the drop does nothing" report is a question about
   // em.get('dragSource'), Components.canMove and the parsed content, and none of that is readable
   // from outside. This is the same instance the page uses; no product code reads it.
@@ -696,6 +965,61 @@ const BOOT_SCRIPT = String.raw`
     return out;
   }
 
+
+  // S8s. THE PAGE'S OWN STYLESHEET.
+  //
+  // A page's CSS is a file the server serves (/_css/<sha>.css), linked after the site's theme.
+  // Before this panel the editor had no field for it and save() sent editor.getCss() — the
+  // Style Manager's generated rules — which meant the stored stylesheet was **replaced by an empty
+  // string** the first time anyone pressed Save. The panel is now the source of truth; what the
+  // Style Manager generates is appended under one marker, so it survives a round trip and does not
+  // accumulate a second copy on every save.
+  var cssBox = document.getElementById('skw-css-text');
+  var cssPanel = document.getElementById('skw-css');
+  var cssToggle = document.getElementById('skw-css-toggle');
+  var GEN_MARK = '/* skw:style-manager */';
+
+  function stripGenerated(css) {
+    var at = css.indexOf(GEN_MARK);
+    return at === -1 ? css : css.slice(0, at).replace(/\s+$/, '');
+  }
+
+  function composeCss() {
+    var hand = cssBox ? stripGenerated(cssBox.value) : '';
+    // avoidProtected is the difference between "the rules the operator made" and "the editor's
+    // own canvas reset". Without it every save appended * { box-sizing: border-box; } body
+    // { margin: 0; } to the page's stylesheet — GrapesJS's baseline, which a site must not
+    // inherit (it is a layout change nobody asked for, and it is not what the Style Manager shows).
+    var gen = (editor.getCss({ avoidProtected: true }) || '').trim();
+    if (gen === '') return hand;
+    return (hand === '' ? '' : hand + '\n\n') + GEN_MARK + '\n' + gen;
+  }
+
+  if (cssBox) {
+    cssBox.value = stripGenerated(boot.css || '');
+    if (cssToggle) {
+      var open = false;
+      try { open = window.localStorage.getItem('skw-css-open') === '1'; } catch (e) { /* private mode */ }
+      var setOpen = function (next) {
+        open = next;
+        cssPanel.setAttribute('data-open', next ? '1' : '0');
+        cssToggle.setAttribute('aria-expanded', next ? 'true' : 'false');
+        cssToggle.textContent = next ? 'Hide CSS' : 'Show CSS';
+        try { window.localStorage.setItem('skw-css-open', next ? '1' : '0'); } catch (e) { /* private mode */ }
+      };
+      setOpen(open);
+      cssToggle.addEventListener('click', function () { setOpen(!open); });
+      // The panel is part of the document: an edit here is a change, exactly as a drag is.
+      cssBox.addEventListener('input', function () { setState('Unsaved changes', true); });
+    }
+  }
+
+  /**
+   * Save. The CSS travels as composeCss(): the panel's hand-written rules, then the Style
+   * Manager's generated ones under a marker. It used to be editor.getCss(), which is the
+   * generated rules only — so a page whose stylesheet was written by hand lost it on the first
+   * Save. That is the defect this line fixes.
+   */
   window.skwSave = function () {
     var body = {
       id: boot.page.id === null ? undefined : boot.page.id,
@@ -703,7 +1027,7 @@ const BOOT_SCRIPT = String.raw`
       title: boot.page.title,
       template: boot.page.template,
       html: editor.getHtml(),
-      css: editor.getCss() || '',
+      css: composeCss(),
       components: inventory(),
     };
     return fetch('/admin/t/' + encodeURIComponent(boot.tenant) + '/editor/save', {
@@ -711,7 +1035,22 @@ const BOOT_SCRIPT = String.raw`
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json', 'x-csrf-token': boot.csrf },
       body: JSON.stringify(body),
-    }).then(function (r) { return r.json(); });
+    }).then(function (r) {
+      return r.json().then(function (answer) {
+        if (answer && answer.ok === true) {
+          // The draft's stylesheet is a file behind a session; the canvas links it. Its v= is
+          // the hash of the bytes the server holds, so a new draft is a new URL — without this the
+          // canvas would keep painting the rules it loaded when the page opened.
+          boot.css = body.css;
+          var link = editor.Canvas.getDocument().querySelector('link[data-skw-page-css]');
+          if (link && boot.frame.pageCss) {
+            link.setAttribute('href', boot.frame.pageCss.split('&v=')[0] + '&v=' + Date.now());
+          }
+          if (cssBox) cssBox.value = stripGenerated(body.css);
+        }
+        return answer;
+      });
+    });
   };
 
   /**

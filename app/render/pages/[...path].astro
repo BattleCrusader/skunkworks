@@ -14,8 +14,10 @@ interface Locals {
   /** `cms_nav`, already loaded, resolved and ordered by the app (`app/render/nav.ts`). */
   nav: NavTree;
   /** S8l: `null` when the tenant has no site chrome; see `app/render/chrome.ts`. */
-  chrome: (SiteChrome & { logoUrl: string | null; sheetVersion?: string }) | null;
+  chrome: (SiteChrome & { logoUrl: string | null; sheetVersion?: string; previewTheme?: string }) | null;
+  /** S8s: the page's own stylesheet URL, or `null`. See `app/render/components/shells/page.astro`. */
+  cssHref?: string | null;
 }
-const { tenantKey, page, head, nav, chrome } = Astro.locals as unknown as Locals;
+const { tenantKey, page, head, nav, chrome, cssHref } = Astro.locals as unknown as Locals;
 ---
-<PageShell page={page} tenantKey={tenantKey} head={head} nav={nav} chrome={chrome} />
+<PageShell page={page} tenantKey={tenantKey} head={head} nav={nav} chrome={chrome} cssHref={cssHref ?? null} />

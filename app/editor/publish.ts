@@ -27,6 +27,7 @@
 import type Database from 'better-sqlite3';
 
 import { syncPageLinks } from '../assets/links.ts';
+import { putCssBlob } from '../render/themes.ts';
 import { AppError } from '../errors.ts';
 import type { Registry } from './registry.ts';
 
@@ -103,6 +104,9 @@ export function publishPage(input: PublishInput): PublishResult {
         WHERE id = ?`,
     ).run(row.draft_html, row.draft_css, row.draft_sha, at, rev, at, input.actorId ?? null, row.id);
 
+    // S8s: the live page's CSS becomes a file at `/_css/<sha>.css`; name it as it is published,
+    // so the document that starts linking it never points at a 404.
+    if (row.draft_css !== '') putCssBlob(db, row.draft_css);
     db.prepare(
       `INSERT INTO cms_page_revision (page_id, rev, body_html, body_css, note, created_by)
        VALUES (?, ?, ?, ?, ?, ?)`,

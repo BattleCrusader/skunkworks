@@ -98,12 +98,27 @@ test('E1 — the editor page carries the generated palette, in registry order, a
     types: { type: string; tagName: string; droppable: boolean }[];
     csrf: string;
   };
-  assert.deepEqual(
-    boot.palette.map((item) => item.id),
-    palette(registry).map((item) => item.id),
+  // S8s: the basic elements come first — a page is made of sections and paragraphs before it is
+  // made of a hero — and they carry no `data-gjs-type`, because they are ordinary markup. The
+  // registry follows in its own order.
+  const ids = boot.palette.map((item) => item.id);
+  const basic = ids.filter((id) => id.startsWith('basic-'));
+  assert.ok(basic.length >= 8, `the basic palette is present: ${basic.length}`);
+  assert.deepEqual(ids.slice(0, basic.length), basic, 'the basic elements lead the palette');
+  assert.deepEqual(ids.slice(basic.length), palette(registry).map((item) => item.id));
+  const registered = boot.palette.slice(basic.length);
+  assert.ok(
+    registered.every((item) => item.content.includes(`data-gjs-type="${item.type}"`)),
+    'every registry block still carries its lock',
   );
-  assert.ok(boot.palette.every((item) => item.content.includes(`data-gjs-type="${item.type}"`)));
-  assert.deepEqual(boot.categories, ['Structure', 'Text', 'Media', 'Commerce', 'Data', 'Interactive']);
+  assert.ok(
+    boot.palette
+      .slice(0, basic.length)
+      .every((item) => !item.content.includes('data-gjs-type')),
+    'a basic element is plain markup, not a registered component',
+  );
+  assert.deepEqual(boot.categories.slice(0, 1), ['Basic']);
+  assert.deepEqual(boot.categories.slice(1), ['Structure', 'Text', 'Media', 'Commerce', 'Data', 'Interactive']);
   assert.equal(boot.types.length, 10);
   assert.equal(boot.csrf, session.csrfToken, 'the page carries the token the boot script posts');
   // No inline script: the page is data + two external scripts, which is the shape the

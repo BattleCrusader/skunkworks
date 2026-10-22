@@ -12,6 +12,8 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { backfillCssBlobs } from '../render/themes.ts';
+
 export const EXIT_OK = 0;
 export const EXIT_CONTROL_FAILED = 15;
 
@@ -137,6 +139,7 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
   const r3 = join(schemaDir, 'r3-amendments.sql');
   const r4 = join(schemaDir, 'r4-amendments.sql');
   const r5 = join(schemaDir, 'r5-amendments.sql');
+  const r6 = join(schemaDir, 'r6-amendments.sql');
   const target = targetVersion(ddl);
   const rel = join('tenants', siteKey, 'site.db');
   const base = { key: siteKey, path: rel };
@@ -188,6 +191,17 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
       // COLUMNs, no rebuild, and every existing row gets an empty draft.
       applyDdl(db, r5);
       at = userVersion(db);
+    }
+    if (at === 5) {
+      // E-49: a stylesheet needs a name that is its own bytes (`/_css/<sha>.css`, cacheable for
+      // ever) and a theme needs to be a row someone can swap, not a text field someone retypes.
+      // Two CREATE TABLEs, no rebuild: no existing table is touched.
+      applyDdl(db, r6);
+      at = userVersion(db);
+      // The blobs are what a document's `/_css/<sha>.css` link resolves to, and a sha256 is not a
+      // SQLite function — so every stylesheet already in the file is named here, once. Idempotent
+      // (`INSERT OR IGNORE` on the name it computes), so a re-run writes nothing.
+      backfillCssBlobs(db);
     }
     if (at !== target) {
       return { ...base, from, to: at, action: 'failed', ok: false, error: `no migration path from v${at} to v${target}` };

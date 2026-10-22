@@ -123,7 +123,28 @@ import type { FieldSpec } from '../plugins/manifest.ts';
 import { groupOf, newSecret, otpauthUri } from './totp.ts';
 import { accountScreen } from './ui/account.ts';
 import { siteScreen, type SiteNavRow } from './ui/site.ts';
-import { CHROME_KEYS, CHROME_TYPES, loadChrome, logoUrl as chromeLogoUrl } from '../render/chrome.ts';
+import {
+  CHROME_KEYS,
+  CHROME_TYPES,
+  chromeHtml,
+  hasChrome,
+  loadChrome,
+  logoUrl as chromeLogoUrl,
+} from '../render/chrome.ts';
+import { loadNav, navListHtml } from '../render/nav.ts';
+import { sheetVersion, siteSheet } from '../render/theme.ts';
+import { matchPluginPage } from '../render/plugin-pages.ts';
+import {
+  THEME_KEY_SETTING,
+  activateTheme,
+  activeTheme,
+  deactivateTheme,
+  deleteTheme,
+  listThemes,
+  previewToken,
+  uploadTheme,
+} from '../render/themes.ts';
+import { themesScreen } from './ui/themes.ts';
 import { layout, type NavKey, type NavItem } from './ui/layout.ts';
 import { pageListScreen, type PageRow } from './ui/pageList.ts';
 import { mediaLibraryScreen, type MediaAsset } from './ui/mediaLibrary.ts';
@@ -945,6 +966,36 @@ ${items}
       this.#siteSave(req, reply, tenant, session);
       return;
     }
+    // --- S8s: themes ---------------------------------------------------------
+    if (action === 'themes' && req.method === 'GET') {
+      this.#themesScreen(reply, req, tenant, session);
+      return;
+    }
+    if (action === 'themes/upload' && req.method === 'POST') {
+      // Origin first, then the parts (the CSRF token is one of them): the same order as the two
+      // other upload doors, for the same reason — nothing is parsed before the origin is trusted.
+      this.#assertOrigin(req);
+      await this.#themeUpload(req, reply, tenant, session);
+      return;
+    }
+    if (action === 'themes/activate' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#themeActivate(req, reply, tenant, session);
+      return;
+    }
+    if (action === 'themes/deactivate' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#themeDeactivate(req, reply, tenant, session);
+      return;
+    }
+    if (action === 'themes/delete' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#themeDelete(req, reply, tenant, session);
+      return;
+    }
     if (action === 'site/nav/add' && req.method === 'POST') {
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
@@ -1032,6 +1083,13 @@ ${items}
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
       this.#editorPick(req, reply, tenant);
+      return;
+    }
+    // S8s: the page's own CSS, as the draft holds it, linked by the canvas. Session-gated and
+    // `no-store` — it is unpublished work, and a browser that cached it would show a page that
+    // no longer exists after the next Save.
+    if (action === 'editor/page.css' && req.method === 'GET') {
+      this.#editorPageCss(reply, req, tenant);
       return;
     }
     if (action === 'editor/media.json' && req.method === 'GET') {
@@ -1231,6 +1289,206 @@ ${items}
     );
   }
 
+
+  // --- S8s: themes ---------------------------------------------------------
+
+  /**
+   * The Themes screen. Reads on the render-read class; the mutating verbs write through
+   * `#siteWrite` — the same two connection classes every other screen uses, because the theme
+   * tables are in the tenant's `site.db` and a read handle that can write is a second tenancy
+   * boundary nobody audited.
+   *
+   * The preview URL is minted here, per render, with a fifteen-minute token: a link that keeps
+   * working is a link that leaks, and the operator only needs it long enough to look.
+   */
+  #themesScreen(reply: FastifyReply, req: FastifyRequest, tenant: Tenant, session: SessionRecord): void {
+    const db = this.#siteDb(tenant.key);
+    try {
+      const themes = listThemes(db);
+      const active = themes.find((theme) => theme.active) ?? null;
+      const pasted = loadChrome(db).themeCss;
+      reply.type('text/html; charset=utf-8').send(
+        themesScreen({
+          tenant: { key: tenant.key, label: tenant.key },
+          user: { email: this.auth.userById(session.userId)?.email ?? '', role: this.#actorOf(session)?.role ?? 'owner' },
+          csrf: this.sessions.csrfToken(session),
+          themes: themes.map((theme) => ({
+            key: theme.key,
+            name: theme.name,
+            bytes: theme.bytes,
+            createdAt: theme.createdAt,
+            active: theme.active,
+            previewHref: `/preview-theme?t=${encodeURIComponent(previewToken(this.#env.sessionKey, tenant.key, theme.key, Date.now()))}&path=/`,
+          })),
+          pastedCssBytes: Buffer.byteLength(pasted, 'utf8'),
+          activeKey: active === null ? null : active.key,
+          ...(queryValue(req.url, 'result') === undefined ? {} : { flash: queryValue(req.url, 'result') }),
+          notices: this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length,
+        }),
+      );
+    } finally {
+      db.close();
+    }
+  }
+
+  /** Only a viewer is refused: a theme is content, and an editor ships content. */
+  #assertMayTheme(session: SessionRecord): void {
+    const actor = this.#actorOf(session);
+    if (actor !== null && actor.role === 'viewer') {
+      throw new AppError('SKW_E_SEC_FORBIDDEN', 'the viewer role may not change the site\u2019s look', { role: actor.role });
+    }
+  }
+
+  /**
+   * `POST /admin/t/<key>/themes/upload` — a `.css` file, in the same shape as the media and plugin
+   * doors: origin, parts, CSRF (a field of the same form), then `uploadTheme()` decides what a
+   * stylesheet is. Nothing here parses CSS; a second answer to that question would be the one that
+   * drifts.
+   */
+  async #themeUpload(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
+    const base = `/admin/t/${tenant.key}/themes`;
+    let file: { filename: string; bytes: Buffer } | null = null;
+    const fields: Record<string, string> = {};
+    try {
+      for await (const part of req.parts()) {
+        if (part.type === 'file') {
+          const bytes = await part.toBuffer();
+          if (file === null && bytes.length > 0) file = { filename: part.filename ?? 'theme.css', bytes };
+        } else {
+          fields[part.fieldname] = String(part.value ?? '');
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && /file too large|exceeds the limit/i.test(err.message)) {
+        this.#seeOther(reply, `${base}?result=large`);
+        return;
+      }
+      throw err;
+    }
+    this.#assertCsrf(req, session, fields.csrf);
+    this.#assertMayTheme(session);
+    if (file === null) {
+      this.#seeOther(reply, `${base}?result=empty`);
+      return;
+    }
+    const chosen = file as { filename: string; bytes: Buffer };
+    if (!/\.css$/i.test(chosen.filename)) {
+      this.#seeOther(reply, `${base}?result=css`);
+      return;
+    }
+    const css = chosen.bytes.toString('utf8');
+    const name = (fields.name ?? '').trim() === '' ? chosen.filename.replace(/\.css$/i, '') : (fields.name ?? '').trim();
+    if (name.length > 120) {
+      this.#seeOther(reply, `${base}?result=name`);
+      return;
+    }
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const theme = uploadTheme(db, {
+        name,
+        css,
+        sourceName: chosen.filename,
+        actorId: session.userId,
+      });
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.#actorOf(session)?.email ?? 'unknown',
+        action: 'admin.theme.upload',
+        targetKind: 'cms_theme',
+        targetId: theme.key,
+        ip: req.socket.remoteAddress ?? '',
+      });
+    } catch (err) {
+      if (err instanceof AppError) {
+        // `uploadTheme()` refuses one of two things: the bytes are too many, or they carry markup.
+        // The message is the only thing that distinguishes them, and it must, because the screen
+        // tells the operator which of the two it was.
+        this.#seeOther(reply, `${base}?result=${/bytes|limit/i.test(err.message) ? 'large' : 'markup'}`);
+        return;
+      }
+      throw err;
+    } finally {
+      db.close();
+    }
+    this.#seeOther(reply, `${base}?result=uploaded`);
+  }
+
+  #themeActivate(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const base = `/admin/t/${tenant.key}/themes`;
+    this.#assertMayTheme(session);
+    const key = (fieldsOf(req.body).theme ?? '').trim();
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const theme = activateTheme(db, key, session.userId);
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.#actorOf(session)?.email ?? 'unknown',
+        action: 'admin.theme.activate',
+        targetKind: 'cms_theme',
+        targetId: theme.key,
+        ip: req.socket.remoteAddress ?? '',
+      });
+    } catch (err) {
+      if (err instanceof AppError) {
+        this.#seeOther(reply, `${base}?result=${encodeURIComponent(err.message)}`);
+        return;
+      }
+      throw err;
+    } finally {
+      db.close();
+    }
+    this.#seeOther(reply, `${base}?result=activated`);
+  }
+
+  #themeDeactivate(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    this.#assertMayTheme(session);
+    const db = this.#siteWrite(tenant.key);
+    try {
+      deactivateTheme(db, session.userId);
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.#actorOf(session)?.email ?? 'unknown',
+        action: 'admin.theme.deactivate',
+        targetKind: 'cms_settings',
+        targetId: THEME_KEY_SETTING,
+        ip: req.socket.remoteAddress ?? '',
+      });
+    } finally {
+      db.close();
+    }
+    this.#seeOther(reply, `/admin/t/${tenant.key}/themes?result=deactivated`);
+  }
+
+  #themeDelete(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const base = `/admin/t/${tenant.key}/themes`;
+    this.#assertMayTheme(session);
+    const key = (fieldsOf(req.body).theme ?? '').trim();
+    const db = this.#siteWrite(tenant.key);
+    try {
+      deleteTheme(db, key);
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.#actorOf(session)?.email ?? 'unknown',
+        action: 'admin.theme.delete',
+        targetKind: 'cms_theme',
+        targetId: key,
+        ip: req.socket.remoteAddress ?? '',
+      });
+    } catch (err) {
+      if (err instanceof AppError) {
+        this.#seeOther(reply, `${base}?result=${encodeURIComponent(err.message)}`);
+        return;
+      }
+      throw err;
+    } finally {
+      db.close();
+    }
+    this.#seeOther(reply, `${base}?result=deleted`);
+  }
 
   // --- S8l: the site's bar and footer (`cms_settings` + `cms_nav`) ----------
 
@@ -2561,6 +2819,42 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
     };
   }
 
+  /**
+   * S8s: the chrome record with the active theme's CSS in it, for a reader that already has a
+   * handle on this tenant. `withTheme` lives inside `buildApp`; the admin is a separate class, so
+   * the two lines are repeated here rather than reaching across the boundary.
+   */
+  #withStoredTheme(db: Database.Database, chrome: ReturnType<typeof loadChrome>): ReturnType<typeof loadChrome> {
+    const theme = activeTheme(db);
+    return theme === null ? chrome : { ...chrome, themeCss: theme.css };
+  }
+
+  /**
+   * The menus, for a screen that must not fail because one row points at a path no package serves
+   * right now. `loadNav` refuses such a row by design (a dead link the CMS made itself); the editor
+   * is not the place to raise that — the Site screen is, and it does.
+   */
+  #safeNav(
+    db: Database.Database,
+    plugins: PluginRuntime | null,
+    tenantKey: string,
+  ): ReturnType<typeof loadNav> {
+    try {
+      return loadNav(db, {
+        pageExists: (candidate: string): boolean => {
+          if (plugins === null) return false;
+          for (const entry of plugins.registry.plugins(tenantKey)) {
+            const declared = [...entry.pages.values()];
+            if (matchPluginPage(declared, candidate) !== undefined) return true;
+          }
+          return false;
+        },
+      });
+    } catch {
+      return { header: [], footer: [] };
+    }
+  }
+
   // --- §10.1–§10.3 (S4a): the editor ----------------------------------------
 
   /**
@@ -2628,6 +2922,27 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
         registry,
         csrf: this.sessions.csrfToken(session),
         bodyCss: pageRow?.css ?? registryCss(registry),
+        // S8s: the site around the page. The sheet the public site links, the draft's own CSS as
+        // its own URL, the header and footer the shell would draw, and the path the header uses to
+        // mark the current item — all of them read from the same rows the site reads, so the
+        // canvas cannot show a look the site will not publish.
+        ...(() => {
+          const chromeLive = loadChrome(db);
+          const themed = this.#withStoredTheme(db, chromeLive);
+          const nav = this.#safeNav(db, this.#plugins, tenant.key);
+          const sheet = siteSheet({ chrome: themed, showChrome: hasChrome(themed, nav) });
+          const pageId = pageRow?.record.id ?? null;
+          const draftCss = pageRow?.css ?? '';
+          return {
+            sheetHref: sheet === '' ? null : `/theme.css?v=${sheetVersion(sheet)}`,
+            pageCssHref:
+              pageId === null || draftCss === ''
+                ? null
+                : `/admin/t/${encodeURIComponent(tenant.key)}/editor/page.css?page=${pageId}&v=${sheetVersion(draftCss)}`,
+            frame: chromeHtml(themed, nav, chromeLogoUrl(db, themed), navListHtml),
+            pagePath: pageRow?.record.path ?? '/',
+          };
+        })(),
         // S8h: every block the tenant's *loaded* packages registered. Loaded is the whole rule:
         // a disabled package has no entry, so its blocks leave the palette without a restart.
         blocks: (this.#plugins?.registry.plugins(tenant.key) ?? []).flatMap((entry) =>
@@ -2647,6 +2962,36 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
       });
       reply.header('cache-control', 'no-store');
       reply.type('text/html; charset=utf-8').send(body);
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * `GET /admin/t/<key>/editor/page.css?page=<id>` — the draft's own stylesheet, for the canvas.
+   *
+   * The public site serves a page's CSS from `/_css/<sha>.css`, content-addressed and cacheable
+   * for ever. A **draft** cannot be: its bytes change with every Save and belong to nobody but the
+   * operator. So this URL is on the admin prefix, behind the session, and answered `no-store`.
+   * The `?v=` is the sheet's hash, so the canvas can tell the browser that a new draft is a new
+   * file — without it the canvas would keep painting the previous draft's rules.
+   */
+  #editorPageCss(reply: FastifyReply, req: FastifyRequest, tenant: Tenant): void {
+    const raw = new URL(req.url, 'http://admin.invalid').searchParams.get('page');
+    if (raw === null || !PAGE_ID_RE.test(raw)) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'not a page id');
+    const db = this.#siteDb(tenant.key);
+    try {
+      const row = db.prepare('SELECT draft_css, body_css, draft_sha FROM cms_page WHERE id = ?').get(Number(raw)) as
+        | { draft_css: string; body_css: string; draft_sha: string }
+        | undefined;
+      if (row === undefined) throw new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'no such page');
+      // The canvas edits the draft when there is one, and the published body otherwise — the same
+      // rule `loadForEditor()` applies to the HTML, so the two halves of a page never disagree.
+      const css = row.draft_sha === '' ? row.body_css : row.draft_css;
+      reply
+        .header('cache-control', 'no-store')
+        .type('text/css; charset=utf-8')
+        .send(css);
     } finally {
       db.close();
     }

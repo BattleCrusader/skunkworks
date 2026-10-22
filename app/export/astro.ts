@@ -22,6 +22,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { pageCssPath } from './document.ts';
 import { renderNotes } from './notes.ts';
 import { assetFile, type Projection } from './project.ts';
 import { filterLockfile, readSourceLock, resolvedVersion } from './lockfile.ts';
@@ -55,10 +56,11 @@ export function shellSource(tenantKey: string): string {
 interface Props {
   title: string;
   path: string;
-  css: string;
+  /** S8s: the page's own stylesheet, as a URL — never the CSS text (see page.astro). */
+  cssHref: string | null;
   body: string;
 }
-const { title, path, css, body } = Astro.props as Props;
+const { title, path, cssHref, body } = Astro.props as Props;
 const tenantKey = ${JSON.stringify(tenantKey)};
 ---
 <!DOCTYPE html>
@@ -66,8 +68,7 @@ const tenantKey = ${JSON.stringify(tenantKey)};
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{title}</title>
-    {css ? <style set:html={css} /> : null}
+    <title>{title}</title>{cssHref !== null ? <link rel="stylesheet" href={cssHref} /> : null}
   </head>
   <body data-page-path={path}>
     <main set:html={body} />
@@ -85,7 +86,7 @@ export function pageSource(page: { path: string; title: string; bodyCss: string 
 import Shell from '../components/Shell.astro';
 import body from '../content/pages/${fragment}?raw';
 ---
-<Shell title={${JSON.stringify(page.title)}} path={${JSON.stringify(page.path)}} css={${JSON.stringify(page.bodyCss)}} body={body} />
+<Shell title={${JSON.stringify(page.title)}} path={${JSON.stringify(page.path)}} cssHref={${JSON.stringify(page.bodyCss === '' ? null : pageCssPath(page.bodyCss))}} body={body} />
 `;
 }
 
@@ -210,6 +211,14 @@ export function planAstro(options: AstroOptions): TreeFile[] {
     files.push({ path: `src/pages/${astroPageFile(page.path)}`, bytes: pageSource(page, fragmentFile(page.path)) });
     files.push({ path: `src/content/pages/${fragmentFile(page.path)}`, bytes: page.bodyHtml });
   }
+
+  // S8s: the stylesheets the pages name, in the project's `public/` — Astro serves that at `/`,
+  // so `public/_css/<sha>.css` is the URL `pageCssPath()` returns.
+  const sheets = new Map<string, string>();
+  for (const page of projection.pages) {
+    if (page.bodyCss !== '') sheets.set(pageCssPath(page.bodyCss), page.bodyCss);
+  }
+  for (const [path, css] of sheets) files.push({ path: `public${path}`, bytes: css });
 
   for (const asset of projection.referenced) {
     files.push({ path: `public/${mediaFile(asset.url)}`, bytes: readFileSync(assetFile(options.contentRoot, asset)) });

@@ -13,8 +13,7 @@
  *       <head>
  *         <meta charset="utf-8">
  *         <meta name="viewport" content="width=device-width, initial-scale=1">
- *         <title>About us</title>
- *         <style>.a{color:red}</style>
+ *     <title>About us</title><link rel="stylesheet" href="/_css/<sha256>.css">
  *       </head>
  *       <body data-page-path="/about">
  *         <main>…body…</main>
@@ -32,6 +31,8 @@
  * `<style`, `<!--`, `javascript:` and `srcdoc` in `body_html`).
  */
 
+import { createHash } from 'node:crypto';
+
 /** The five characters Astro's expression escaping covers, as one function. */
 export function escapeHtml(value: string): string {
   return value
@@ -40,6 +41,16 @@ export function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/**
+ * S8s: the page's CSS is a file, not a `<style>` element — the policy's `style-src 'self'` blocks
+ * an inline one in a browser (E-41), and a content-addressed name is the only URL that can be
+ * cached for a year without asking again (E-48). The name is the sha256 of the bytes, so the live
+ * route (`/_css/:file`) and this document compute it the same way from the same string.
+ */
+export function pageCssPath(css: string): string {
+  return `/_css/${createHash('sha256').update(css, 'utf8').digest('hex')}.css`;
 }
 
 export interface DocumentInput {
@@ -54,14 +65,13 @@ export interface DocumentInput {
  * The document, exactly as the site's Astro shell emits it. No trailing newline: the
  * template's last line ends at `</html>` and Astro adds none, and a byte is a byte.
  *
- * The empty-CSS case is not cosmetic: `{page.bodyCss ? <style/> : null}` sits on its own
- * indented line, and Astro leaves the line's four spaces behind when the expression is
- * null. Measured, not assumed (`scratch/s4b/probe-plain.mts`): without it the exported
- * document is four bytes shorter than the served one and the "same page bytes" gate is
- * red for a reason nobody would guess.
+ * The empty-CSS case is not cosmetic: the shell's `{ownSheetHref !== null ? … : null}` sits
+ * immediately after `</title>`, and Astro leaves nothing behind when it is null. Measured, not
+ * assumed: a document is compared byte for byte with the live response, so a stray space is a red
+ * gate rather than a cosmetic drift.
  */
 export function renderDocument(input: DocumentInput): string {
-  const style = input.bodyCss === '' ? `\n    ` : `\n    <style>${input.bodyCss}</style>`;
+  const style = input.bodyCss === '' ? '' : `<link rel="stylesheet" href="${pageCssPath(input.bodyCss)}">`;
   return (
     `<!DOCTYPE html>\n` +
     `<html lang="en" data-tenant="${escapeHtml(input.tenantKey)}">\n` +

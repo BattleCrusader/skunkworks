@@ -47,9 +47,10 @@ test('migrate creates every missing site.db from site.sql and reports per tenant
       assert.equal(t.ok, t.key !== 'broken', `tenant ${t.key}: ${t.error ?? ''}`);
       if (t.key !== 'broken') {
         assert.equal(t.action, 'created');
-        // The chain's target, not a constant of nature: v5 is E-35's draft columns (S8b). What
+        // The chain's target, not a constant of nature: v6 is E-49's stylesheet blobs and themes
+        // (S8s); v5 was E-35's draft columns (S8b). What
         // this asserts is that a created file lands on the version site.sql ships.
-        assert.equal(t.to, 5, `tenant ${t.key} at v5 (E-35: cms_page draft columns)`);
+        assert.equal(t.to, 6, `tenant ${t.key} at v6 (E-49: cms_css_blob + cms_theme)`);
       }
     }
     assert.deepEqual(report.migrated.sort(), ['acme', 'beta', 'demo-acme']);
@@ -94,7 +95,7 @@ test('a v1 site.db is migrated through the frozen chain to the shipped version',
     assert.equal(legacy?.ok, true, JSON.stringify(legacy));
     assert.equal(legacy?.action, 'migrated');
     assert.equal(legacy?.from, 1);
-    assert.equal(legacy?.to, 5);
+    assert.equal(legacy?.to, 6);
 
     // The chain has to land on the shipped target shape, not merely on a version number.
     // §4.5 (E-14): the comparison is the table text (CHECKs), the trigger bodies and the
@@ -104,7 +105,7 @@ test('a v1 site.db is migrated through the frozen chain to the shipped version',
     const fresh = new Database(freshPath);
     fresh.exec(readFileSync(join(REPO, 'schema', 'site.sql'), 'utf8'));
     try {
-      comparePlanes(migrated, fresh, 'site.db v1->v5');
+      comparePlanes(migrated, fresh, 'site.db v1->v6');
     } finally {
       migrated.close();
       fresh.close();

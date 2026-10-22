@@ -202,6 +202,32 @@ function loadLocation(db: Database.Database, location: NavLocation, pageExists?:
 }
 
 /** The two menus the shell renders, both read from `cms_nav`. */
+/**
+ * S8s: the menu as the shell writes it, for the one caller that is not the shell.
+ *
+ * The editor's canvas shows the site's own header so an operator can see the page in context —
+ * which means it needs the same `<ul class="site-menu"><li><a>…` the Astro component emits, down
+ * to the nesting. A second, hand-written menu here would be a second answer to "what does a menu
+ * look like", and it would drift the first time someone changed the shell. It is generated from
+ * the same `NavTree`, in the same order, with the same escaping rules (Astro escapes text and
+ * attributes the same five characters this does), and a gate test compares the editor's header
+ * with the live page's byte for byte.
+ */
+export function navListHtml(items: readonly NavItem[], className: string): string {
+  const esc = (value: string): string =>
+    value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const render = (level: readonly NavItem[]): string =>
+    `<ul class="${esc(className)}">` +
+    level
+      .map(
+        (item) =>
+          `<li><a href="${esc(item.href)}">${esc(item.label)}</a>${item.children.length > 0 ? render(item.children) : ''}</li>`,
+      )
+      .join('') +
+    `</ul>`;
+  return render(items);
+}
+
 export function loadNav(db: Database.Database, opts: { pageExists?: PageExists } = {}): NavTree {
   return {
     header: loadLocation(db, 'header', opts.pageExists),

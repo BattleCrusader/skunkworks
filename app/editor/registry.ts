@@ -26,7 +26,13 @@ import { join } from 'node:path';
 import { AppError } from '../errors.ts';
 import { attr, elements, parseHtml } from './html.ts';
 
-export type Kind = 'block' | 'shell' | 'island' | 'list';
+/**
+ * S8s: `element` is a plain HTML tag from the editor's own palette — a `div`, a `section`, a
+ * heading — not a registry entry. It carries no `data-gjs-type` (so the renderer treats it as
+ * ordinary markup) and no settings schema (the Style Manager is its panel). Widening this union
+ * is how the palette gained the basic set without inventing a registry row for `<h2>`.
+ */
+export type Kind = 'block' | 'shell' | 'island' | 'list' | 'element';
 export type FieldType = 'text' | 'asset' | 'href';
 
 export interface EditableField {

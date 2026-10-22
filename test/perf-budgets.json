@@ -722,6 +722,34 @@
       ]
     },
     {
+      "file": "test/themes-and-css.test.ts",
+      "worstIdleMs": 994,
+      "measuredOn": "2026-10-23",
+      "load1m": 7.79,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
+      "sha256": "3803870361ae10c1f9261a6acc408c04eefdb138d54c693163221cf136f20f61",
+      "runs": [
+        {
+          "ms": 994,
+          "at": "2026-10-22T13:10:00.835Z",
+          "load1mBefore": 7.79,
+          "load1mAfter": 7.79,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 10
+        },
+        {
+          "ms": 648,
+          "at": "2026-10-22T13:10:01.484Z",
+          "load1mBefore": 7.79,
+          "load1mAfter": 7.79,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 10
+        }
+      ]
+    },
+    {
       "file": "test/admin-allowlist.test.ts",
       "worstIdleMs": 977,
       "measuredOn": "2026-10-21",
@@ -1787,5 +1815,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-22T09:32:28.200Z"
+  "updatedAt": "2026-10-22T13:10:02.337Z"
 }

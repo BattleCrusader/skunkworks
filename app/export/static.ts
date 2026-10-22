@@ -18,7 +18,7 @@
 import { readFileSync } from 'node:fs';
 
 import type { TreeFile } from './tree.ts';
-import { renderDocument } from './document.ts';
+import { pageCssPath, renderDocument } from './document.ts';
 import { renderNotes } from './notes.ts';
 import { assetFile, type Projection } from './project.ts';
 import { CSP_CONF_FILE, cspConf } from '../render/csp.ts';
@@ -54,6 +54,15 @@ function sitemap(projection: Projection, origin: string): string {
 export function planStatic(options: StaticOptions): TreeFile[] {
   const { projection } = options;
   const files: TreeFile[] = [];
+
+  // S8s: every stylesheet a document names, written once. A page with CSS links `_css/<sha>.css`
+  // and this tree is served by a plain file server, so the file has to exist at exactly that path
+  // — the same absolute URL the live site answers, which is what keeps the two trees identical.
+  const sheets = new Map<string, string>();
+  for (const page of projection.pages) {
+    if (page.bodyCss !== '') sheets.set(pageCssPath(page.bodyCss), page.bodyCss);
+  }
+  for (const [path, css] of sheets) files.push({ path: path.replace(/^\//, ''), bytes: css });
 
   for (const page of projection.pages) {
     files.push({
