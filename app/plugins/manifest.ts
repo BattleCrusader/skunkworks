@@ -24,6 +24,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
+import { AppError } from '../errors.ts';
+
 /** §8.3's 14 operations, frozen. Under D36 they are facade methods, not socket ops. */
 export const LOCAL_OPS = ['util.now', 'util.random', 'util.hash', 'log.write'] as const;
 export const HOST_OPS = [
@@ -214,8 +216,18 @@ export interface Manifest {
 
 const TYPES = new Set<ColumnType>(['TEXT', 'INTEGER', 'REAL', 'BLOB', 'ASSET', 'JSON']);
 
+/**
+ * A manifest refusal, as the taxonomy's own code.
+ *
+ * This used to be a plain `Error`, which meant a package with a bad manifest reached the operator
+ * as a **500 with no code** on the upload door and as a stack trace from `skwctl`. A refusal that
+ * names the package and the field is the entire value of manifest validation; throwing it as an
+ * anonymous error threw that away at the one place a person reads it. `SKW_E_PL_REJECTED` is the
+ * frozen PL code for "this package will not be accepted", and it is a 403 — the file is not
+ * malformed (that is `ARCHIVE_FAILED`, 409), it is unacceptable.
+ */
 function bad(id: string, message: string): never {
-  throw new Error(`${id}: ${message}`);
+  throw new AppError('SKW_E_PL_REJECTED', `${id}: ${message}`, { plugin: id });
 }
 
 /** Validate a parsed `plugin.json`. Every refusal names the package and the field. */

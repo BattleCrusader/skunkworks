@@ -3771,3 +3771,30 @@ the ACTIONS column (now `display:inline-block` for `td form`).
 | **E-42** | the menu's markup and every `.site-menu` rule | `app/render/components/shells/nav-list.astro`; `app/render/components/shells/page.astro` | `test/nav-render.test.ts`; `test/admin-site.test.ts` S8l-4; live header screenshot |
 | **E-43** | §8.2's install row, reachable from the console | `app/plugins/archive.ts`, `app/plugins/upload.ts`, `plugins/upload` in `app/admin/routes.ts`, `skwctl plugin pack`; `schema/error-codes.json` +`SKW_E_SEC_FORBIDDEN`, `SKW_E_PL_ARCHIVE_FAILED` | `test/plugin-upload.test.ts` S8o-1..S8o-6 (pack determinism, traversal refusal, ack refusal, signature refusal, install+enable, missing report) |
 | **E-44** | the Site screen's report | `app/admin/ui/layout.ts` `.card--padded`, `.legacy td form`, checkbox rule | live screenshot `/tmp/admin-site.png`; `cardPadding: 22px`, `checkbox: 18x18` |
+
+### E-45 — a manifest refusal was an anonymous error, so the door answered 500
+
+`parseManifest`'s `bad()` threw a plain `Error`. `installFromArchive` re-throws what is not an
+`AppError`, so a package whose table was outside its own namespace reached the operator as
+`500 SKW_E_PLT_INTERNAL` with no sentence and no code — and the same refusal from `skwctl` printed a
+stack trace. Found by running the door for real: a package built from `plugins/menu` with the id
+changed still named `p_menu_item`, which is exactly the mistake a person makes by hand.
+
+`bad()` now throws `AppError('SKW_E_PL_REJECTED', …)` with the package id in the detail, so the
+screen says `SKW_E_PL_REJECTED: livecheck: table p_menu_item is not in this plugin's namespace
+(p_livecheck_…)` and the CLI refuses by name too. `test/plugin-upload.test.ts` **S8o-9** is the
+guard: an archive with an invalid manifest must answer 200 with a coded refusal, not a 500.
+
+### E-46 — `cpSync` into the bind mount produced a 0-byte file with mode 0200
+
+The second thing the live run found. The app container runs `read_only: true` with `/tmp` as a
+tmpfs, and `installPlugin` copied the unpacked package from that tmpfs into the bind-mounted
+`<data>/plugins` with `fs.cpSync`. On this Docker Desktop file-sharing layer that produced
+`EACCES … livecheck.tmp-1` from inside `cpSync` — and the artefact it left behind was a **0-byte
+`plugin.json` with mode 0200**, which nothing could then read or remove.
+
+Measured in isolation inside the running container (a copy of one 8-byte file from `/tmp` to
+`/srv/data/plugins`), so the cause is the crossing, not the package. `installPlugin` now copies with
+an explicit `readFileSync`/`writeFileSync` walk (`copyPackageTree`), fixed modes 0644/0755, and
+refuses any entry that is not a file or a directory. The install is proven live: upload → row
+`disabled`, Enable → `activation 1`, Uninstall → archived and dropped, box left as found.

@@ -239,6 +239,44 @@ test('S8o-5. an acknowledged unsigned upload installs, stays unenabled, and Enab
   assert.match(screen.body, /p_contact_message|message/i);
 });
 
+test('S8o-9. a package whose manifest is invalid is refused by name, not a 500', async () => {
+  // The live run that found this: an archive built from a real package with the id changed still
+  // named the old table, so `parseManifest` refused the namespace — as a plain `Error`, which the
+  // upload door could only turn into a 500 with no code. A refusal that names the package and the
+  // field is the whole value of manifest validation.
+  const broken = join(fixture.dir, 'broken-package');
+  mkdirSync(broken, { recursive: true });
+  writeFileSync(
+    join(broken, 'plugin.json'),
+    JSON.stringify({
+      id: 'livecheck',
+      version: '1.0.0',
+      label: 'Live check',
+      main: 'index.mjs',
+      capabilities: ['store.query'],
+      tables: [{ name: 'p_menu_item', columns: [{ name: 'label', type: 'TEXT', notNull: true }], indexes: [] }],
+      hooks: [],
+    }),
+  );
+  writeFileSync(join(broken, 'index.mjs'), 'export function activate() {}\n');
+  const root = packageRootHash(broken).root;
+  const report = join(fixture.dir, 'broken-report.json');
+  writeFileSync(report, JSON.stringify({ plugin: 'livecheck', version: '1.0.0', root_hash: root, runner_image_digest: DIGEST, ran_at: '2026-10-22T00:00:00.000Z' }));
+  const archive = packPackage(broken, { reportPath: report });
+  const { body, contentType } = multipart(
+    { csrf: session.csrfToken, understand: '1', allow_unsigned: '1' },
+    { name: 'broken.tar.gz', type: 'application/gzip', bytes: archive },
+  );
+  const res = await upload(body, contentType);
+  assert.equal(res.status, 200, 'a bad manifest is a refusal the operator reads, not a 500');
+  assert.match(res.body, /SKW_E_PL_REJECTED/);
+  // The screen escapes the message, so the apostrophe arrives as &#39; — match the sentence, not
+  // the punctuation.
+  assert.match(res.body, /not in this plugin/);
+  assert.match(res.body, /namespace \(p_livecheck_/);
+  assert.equal(installedRow('livecheck'), undefined);
+});
+
 test('S8o-6. installFromArchive refuses an archive with no report instead of installing blind', () => {
   const archive = packPackage(CONTACT);
   assert.throws(

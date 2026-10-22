@@ -23,7 +23,7 @@
  */
 import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { AppError } from '../errors.ts';
@@ -121,6 +121,39 @@ export interface InspectedPackage {
   manifest: Manifest;
 }
 
+
+/**
+ * Copy a package directory, one file at a time, with `readFileSync`/`writeFileSync`.
+ *
+ * Not `cpSync`, and the reason is a bug this deployment hit rather than a style preference: with
+ * the app container's root filesystem read-only and `/tmp` a tmpfs, `cpSync` from the tmpfs
+ * scratch directory into the bind-mounted `<data>/plugins` produced a **0-byte file with mode
+ * 0200**, and then could not even `stat` it — Node's `copyFile` path (it reaches for
+ * `copy_file_range` and copies the mode) does not survive that crossing on this Docker Desktop
+ * file sharing layer. The symptom at the door was `EACCES … livecheck.tmp-1` from inside
+ * `cpSync`, four frames from anything a reader could act on.
+ *
+ * Reading and writing the bytes is slower by microseconds for a package of this size and has no
+ * such cliff. Modes are fixed at 0644/0755: a package is data, never executable, and a mode in an
+ * archive must never reach the filesystem.
+ */
+function copyPackageTree(sourceDir: string, staging: string): void {
+  mkdirSync(staging, { recursive: true, mode: 0o755 });
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    const from = join(sourceDir, entry.name);
+    const to = join(staging, entry.name);
+    if (entry.isDirectory()) {
+      copyPackageTree(from, to);
+      continue;
+    }
+    if (!entry.isFile()) {
+      refuse('SKW_E_PL_ARCHIVE_FAILED', `the package contains something that is not a file or a directory (${entry.name})`, {
+        name: entry.name,
+      });
+    }
+    writeFileSync(to, readFileSync(from), { mode: 0o644 });
+  }
+}
 
 function refuse(code: string, message: string, detail?: Record<string, unknown>): never {
   throw new AppError(code, message, detail ?? {});
@@ -303,13 +336,13 @@ export function installPlugin(input: InstallRequest): InstallResult {
       });
     }
 
-    // Copy first, transaction second. `cpSync` into a sibling then rename is atomic on the
+    // Copy first, transaction second. Copying into a sibling then renaming is atomic on the
     // same filesystem; a copy into the live directory would expose a half package.
     if (!existsSync(target)) {
       mkdirSync(input.pluginsRoot, { recursive: true });
       const staging = `${target}.tmp-${process.pid}`;
       rmSync(staging, { recursive: true, force: true });
-      cpSync(input.sourceDir, staging, { recursive: true });
+      copyPackageTree(input.sourceDir, staging);
       renameSync(staging, target);
     }
 
