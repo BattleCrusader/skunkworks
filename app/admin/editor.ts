@@ -1032,6 +1032,31 @@ const BOOT_SCRIPT = String.raw`
     return authoredIds[component.cid] || '';
   }
 
+  /**
+   * Remove the id the editor invented for this component, if it has one and the operator never
+   * named it. Called before the card is drawn, after the Style Manager is pointed at the element
+   * (pointing it is what creates the id), and once more before the document is serialised — the
+   * last one is the guarantee, because the first two only keep the screen honest.
+   */
+  function dropInventedId(component) {
+    if (!component || component.cid === undefined) return false;
+    var attrs = component.getAttributes();
+    if (!attrs.id || authoredId(component) !== '') return false;
+    forgetRule('#' + attrs.id);
+    component.removeAttributes('id');
+    return true;
+  }
+
+  /** Every unauthored id in the document, dropped. Used by save, the one place it must hold. */
+  function scrubInventedIds() {
+    var walk = function (component) {
+      if (!component || component.cid === undefined) return;
+      dropInventedId(component);
+      component.components().forEach(walk);
+    };
+    walk(editor.getWrapper());
+  }
+
   function forgetRule(selector) {
     try {
       editor.CssComposer.getAll().forEach(function (rule) {
@@ -1295,12 +1320,7 @@ const BOOT_SCRIPT = String.raw`
     var item = boot.palette.filter(function (p) { return p.type === type; })[0];
     chip(selWhere, item ? '<' + tag + '> · ' + item.label : '<' + tag + '>', false);
 
-    // Drop an id the editor invented for this selection, and the empty rule that came with it.
-    var attrsNow = current.getAttributes();
-    if (attrsNow.id && authoredId(current) === '') {
-      forgetRule('#' + attrsNow.id);
-      current.removeAttributes('id');
-    }
+    dropInventedId(current);
     var hook = current.getClasses().length > 0 || authoredId(current) !== '';
     chip(stylesTarget, hook ? selectorFor(current) : 'no hook yet', !hook);
     if (styleNeed !== null) styleNeed.hidden = hook;
@@ -1365,6 +1385,21 @@ const BOOT_SCRIPT = String.raw`
       if (hook) editor.StyleManager.select(current);
       else editor.StyleManager.select([]);
     } catch (e) { /* no target */ }
+    // Pointing the manager at an element is what makes it invent an id, so the drop happens on
+    // both sides of that call — and the card is redrawn from the attributes as they now are.
+    if (dropInventedId(current)) {
+      if (selId !== null && document.activeElement !== selId) selId.value = '';
+      if (selAttrs !== null) {
+        selAttrs.innerHTML = '';
+        var fresh = current.getAttributes();
+        Object.keys(fresh).forEach(function (name) {
+          if (name === 'id' || name === 'class' || name === 'style') return;
+          if (name.indexOf('data-gjs-') === 0) return;
+          attrRow(name, String(fresh[name]));
+        });
+        if (selAttrs.children.length === 0) attrNone();
+      }
+    }
     renderComputed(current);
     renderRules(current);
     updateScaffold();
@@ -1645,6 +1680,8 @@ const BOOT_SCRIPT = String.raw`
    * Save. That is the defect this line fixes.
    */
   window.skwSave = function () {
+    // Content, not bookkeeping: no id the editor invented reaches the stored page.
+    scrubInventedIds();
     var body = {
       id: boot.page.id === null ? undefined : boot.page.id,
       path: boot.page.path,

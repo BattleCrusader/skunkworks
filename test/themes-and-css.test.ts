@@ -374,6 +374,7 @@ test('S8s-11. selecting anything opens the inspector: what it is, what it paints
   }
   assert.match(js, /component:selected', inspector\)/, 'the inspector is what a selection calls');
   assert.match(js, /authoredIds/, 'ids the editor invents are told apart from ids in the content');
+  assert.match(js, /scrubInventedIds\(\)/, 'and none of them reaches the stored page');
   assert.match(js, /renderComputed/, 'the computed values are measured, not assumed');
   assert.match(js, /renderRules/, 'the matching rules are listed');
   assert.match(js, /getComputedStyle/, 'from the canvas itself');
