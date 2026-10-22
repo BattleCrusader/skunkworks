@@ -153,15 +153,19 @@ export function editorBootPayload(input: EditorPageInput): {
       category: 'Plugins',
       type: 'form',
       kind: 'block' as const,
-      // Visible in the canvas: the marker itself draws nothing (the host replaces this whole
-      // element at render time), and a zero-height div reads as "the drop did nothing" —
-      // which is exactly how it was reported. The preview is inert: no typing, no dragging,
-      // and the host throws it away when it draws the real fields.
+      // Visible in the canvas: the marker draws nothing on the page (the host replaces this whole
+      // element at render time), and a zero-height div reads as "the drop did nothing".
+      //
+      // **The root carries no `data-gjs-draggable`.** GrapesJS decides whether a drop is legal by
+      // parsing the block's content and asking `canMove` about *that component's* `draggable` — so
+      // marking the root non-draggable to keep the preview inert made the block impossible to drop
+      // at all: no green line, no insertion, silently. The inertness has to sit on the preview's
+      // own children, which are not the component being dragged.
       content:
-        `<div data-skw-form="${form.id}" class="skw-form-marker" data-gjs-editable="false" data-gjs-draggable="false" ` +
+        `<div data-skw-form="${form.id}" class="skw-form-marker" ` +
         `style="border:1px dashed #8a97a8;border-radius:6px;padding:12px;margin:8px 0;background:#f7f9fc">` +
-        `<div style="font-weight:600;font-size:13px;color:#33415c">${form.label}</div>` +
-        `<div style="font-size:12px;color:#5b6b83;margin-top:4px">Drawn by the site when the page is served — fields, labels and the thanks line come from the package.</div>` +
+        `<div data-gjs-editable="false" style="font-weight:600;font-size:13px;color:#33415c">${form.label}</div>` +
+        `<div data-gjs-editable="false" style="font-size:12px;color:#5b6b83;margin-top:4px">Drawn by the site when the page is served — fields, labels and the thanks line come from the package.</div>` +
         `</div>`,
       editable: [],
     })),
@@ -563,6 +567,11 @@ const BOOT_SCRIPT = String.raw`
   editor.on('canvas:frame:load', attachPasteGate);
   editor.on('canvas:frame:load:body', attachPasteGate);
   editor.on('load', attachPasteGate);
+
+  // The editor is on window on purpose: every "the drop does nothing" report is a question about
+  // em.get('dragSource'), Components.canMove and the parsed content, and none of that is readable
+  // from outside. This is the same instance the page uses; no product code reads it.
+  window.skwEditor = editor;
 
   // 2. The palette. Every registry entry becomes a block; the manager draws the DOM in our
   //    column, groups them by category and owns the drag. The data-type attribute is kept on

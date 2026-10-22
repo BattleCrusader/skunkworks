@@ -273,6 +273,29 @@ test('S8g-1. the blog form is drawn from the declared fields, not from the table
  * visitor receives — including the two properties that make it safe: a draft is not rendered, and a
  * title with markup in it is escaped.
  */
+test('S8m-6. no palette entry makes its own root non-draggable', async () => {
+  // Measured in GrapesJS 0.23.8: `ComponentManager.canMove()` parses the block's content and reads
+  // THAT component's `draggable`; a false value returns SourceReject, so the sorter never shows the
+  // drop line and the drop is refused — with no error anywhere. A `data-gjs-draggable="false"` on a
+  // marker root (added once to keep a form's preview inert) is therefore a palette entry that
+  // silently cannot be dragged onto a page. Inertness belongs on the preview's children.
+  const editor = await get('/admin/t/acme/editor?page=1');
+  assert.equal(editor.status, 200, editor.body);
+  const boot = /<script type="application\/json" id="skw-editor-boot">([\s\S]*?)<\/script>/.exec(editor.body);
+  assert.ok(boot !== null, 'the editor page has no boot payload');
+  const payload = JSON.parse((boot[1] as string).replace(/\\u003c/g, '<')) as {
+    palette: { label: string; content: string }[];
+  };
+  for (const item of payload.palette) {
+    const root = /^<[^>]+>/.exec(item.content)?.[0] ?? '';
+    assert.doesNotMatch(
+      root,
+      /data-gjs-draggable="false"/,
+      `${item.label}: a non-draggable root makes this entry impossible to drop (canMove -> SourceReject)`,
+    );
+  }
+});
+
 test('S8h-1. a plugin block is in the palette, and the page the visitor gets is drawn by the host', async () => {
   // The palette: the editor's boot payload carries the block, with the marker as its content.
   const editor = await get('/admin/t/acme/editor?page=1');
