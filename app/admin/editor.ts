@@ -382,6 +382,23 @@ const BOOT_SCRIPT = String.raw`
   }
 
   /**
+   * E-47: a save or a publish answered "no session" means the idle window closed while the
+   * editor was open. Nothing typed into this document can be saved, so the only useful move
+   * is the login page, carrying this page's own address so signing in comes back to it.
+   *
+   * The console's screens are links and forms, so the server answers them with a redirect
+   * itself; this editor talks to its save and publish routes with fetch, which asks for JSON
+   * and therefore still gets the row-7 404. That is why the branch lives here as well.
+   */
+  function signedOut(res) {
+    var code = res && res.error && res.error.code;
+    if (code !== 'SKW_E_PLT_TENANT_UNKNOWN') return false;
+    setState('Your session expired — taking you back to sign in', true);
+    window.location.assign('/admin/login?next=' + encodeURIComponent(window.location.pathname));
+    return true;
+  }
+
+  /**
    * S8b: Save writes a draft; Publish is what puts it in front of visitors. Save therefore
    * ENABLES Publish rather than claiming the change is live — the sentence this screen used to
    * put on the Save button ("a page that visitors can see updates the moment you save") was
@@ -405,7 +422,7 @@ const BOOT_SCRIPT = String.raw`
           } else {
             setState('Saved as a draft — press Publish to make it live', true);
           }
-        } else {
+        } else if (!signedOut(res)) {
           setState((res && res.error && res.error.message) || 'Could not save', true);
         }
         return ok;
@@ -430,7 +447,7 @@ const BOOT_SCRIPT = String.raw`
           boot.page.status = 'published';
           pillSet('published', 'Live');
           setState('Published — visitors can see it now', false);
-        } else {
+        } else if (!signedOut(res)) {
           setState((res && res.error && res.error.message) || 'Could not publish', true);
           if (button) button.disabled = false;
         }

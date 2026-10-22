@@ -3798,3 +3798,44 @@ Measured in isolation inside the running container (a copy of one 8-byte file fr
 an explicit `readFileSync`/`writeFileSync` walk (`copyPackageTree`), fixed modes 0644/0755, and
 refuses any entry that is not a file or a directory. The install is proven live: upload → row
 `disabled`, Enable → `activation 1`, Uninstall → archived and dropped, box left as found.
+
+### E-47 — an expired session was a 404 for a person, not the login page
+
+`#requireSession` answered every tenant-scoped admin path with `404 SKW_E_PLT_TENANT_UNKNOWN` when
+the cookie no longer resolved to a live row. That is the right answer for an **API** caller (§5.3
+row 7: an unauthenticated JSON request must not report 401/403, and must not confirm that an
+endpoint exists) and the wrong one for the only other caller there is — a person. The console is a
+set of links, the idle window is fifteen minutes when the IP allowlist is empty, and an operator
+who came back after lunch and clicked **Site** or **Account** got a page-not-found for a path that
+plainly exists. E-34 had already settled this exact question for `GET /admin` and answered it with a
+redirect; every screen behind the door still answered 404.
+
+The gate is now split by **who is asking**, in `#sessionGate` (`app/admin/routes.ts`):
+
+| asking | no live session here |
+|---|---|
+| a browser navigation or a form POST (`Accept` names `text/html`) | `302` → `/admin/login?next=<path>` on a GET/HEAD, `303` → `/admin/login` on anything else |
+| any other caller (`application/json`, `*\/\*`, no `Accept` at all) | `404 SKW_E_PLT_TENANT_UNKNOWN`, unchanged |
+
+Two details that are decisions rather than mechanics:
+
+- **`next` is the path they asked for, on GET only.** It is re-validated at the sign-in form by
+  `safeNext` (a query parameter is attacker-controlled). A POST gets no `next`, because the path it
+  names answers only POST and a browser following the redirect would land on a 404;
+  the action it attempted did not happen, so the portal is the honest destination.
+- **A cookie that outlived its row is cleared in the same response.** Without that the browser keeps
+  presenting a dead session and the operator bounces between a login page and a console that
+  believes it is already signed in. No cookie is set when none was presented — looking at the door
+  still mints nothing (D37-1).
+
+The editor is the one surface that does not get the redirect from the server: `skwSave` and
+`skwPublish` are `fetch` calls, which ask for JSON and therefore still receive the row-7 404. Its
+save and publish paths now read `SKW_E_PLT_TENANT_UNKNOWN` out of that body and send the browser to
+`/admin/login?next=<editor path>`, with the status line saying why. Nothing in the document is lost
+silently — the operator lands on the form that gets them back to it.
+
+Guards: **D37-1c** (navigation, no cookie → 302 with `next`, no `Set-Cookie`), **D37-1d** (expired
+row → 302 and `Max-Age=0` on `__Secure-sk-sess-<tenant>` at `Path=/admin`), **D37-1e** (form POST →
+303 to `/admin/login`, and the write it asked for did not land), **D37-1f** (the sign-in form carries
+`next`, signing in returns there with 200), and **D37-1b** left exactly as it was: a JSON read with
+no session is still the row-7 404 with no `Location`.

@@ -860,7 +860,8 @@ ${items}
   async #tenantRoute(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, action: string): Promise<void> {
     if (action === '') {
       this.#requireMethod(req, 'GET');
-      const session = this.#requireSession(req, tenant);
+      const session = this.#sessionGate(req, reply, tenant);
+      if (session === null) return;
       this.#assertTenantMatches(session, tenant);
       await this.#tenantHome(reply, tenant, session);
       return;
@@ -873,7 +874,8 @@ ${items}
       throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no admin route at this path');
     }
 
-    const session = this.#requireSession(req, tenant);
+    const session = this.#sessionGate(req, reply, tenant);
+    if (session === null) return;
     this.#assertTenantMatches(session, tenant);
 
     if (action === 'plugins' && req.method === 'GET') {
@@ -2009,9 +2011,62 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
   }
 
   /**
+   * E-47: an expired session is answered with the login page, not with "no tenant here".
+   *
+   * The 404 was the right answer for a **JSON** caller and the wrong one for a person: the
+   * console is a set of links, an idle window is fifteen minutes, and an operator who came
+   * back after lunch and clicked "Pages" got a page-not-found for a path that plainly exists.
+   * Nothing about that 404 was a security property — the same Host serves a 200 login page at
+   * `/admin/login` (§5.3 row 7 is about not reporting 401/403 to an *API*, and E-34 already
+   * made that reading explicit for `GET /admin`).
+   *
+   * So the split is by **who is asking**, and the two answers are:
+   *
+   * | asking | no live session here | why |
+   * |---|---|---|
+   * | a browser navigation or a form POST (`Accept: text/html`) | `302`/`303` → `/admin/login` | a person needs a way back in, and the login form is already public on this Host |
+   * | anything else (`application/json`, `*\/\*`, no `Accept`) | `404 SKW_E_PLT_TENANT_UNKNOWN` | row 7, unchanged: an API answer must not confirm that an endpoint exists |
+   *
+   * The `next` parameter on a GET is the path they asked for, so signing in resumes there; it
+   * is re-validated at the login form by `safeNext`, because a query parameter is
+   * attacker-controlled. A POST gets no `next`: the path it names only answers POST, so a
+   * browser following the redirect would land on a 404, and the action it attempted did not
+   * happen (nothing was accepted), which leaves the portal as the honest destination.
+   *
+   * A cookie that is present but no longer backed by a live row is **cleared** in the same
+   * response. Otherwise the browser keeps presenting a dead session on every request, and the
+   * operator keeps seeing the login page while the browser insists it is signed in.
+   */
+  #sessionGate(req: FastifyRequest, reply: FastifyReply, tenant: Pick<Tenant, 'key'>): SessionRecord | null {
+    const session = this.sessionFor(header(req, 'cookie'), tenant);
+    if (session !== null) return session;
+
+    if (!wantsHtml(req)) {
+      // Row 7, relocated: no session for this Host's tenant is "no tenant here".
+      throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no session');
+    }
+
+    const name = sessionCookieName(tenant.key);
+    const jar = header(req, 'cookie');
+    if (jar !== undefined && jar.includes(`${name}=`)) {
+      reply.header('set-cookie', this.sessions.clearCookieHeader(name, ADMIN_COOKIE_PATH));
+    }
+    const isNavigation = req.method === 'GET' || req.method === 'HEAD';
+    this.#seeOther(
+      reply,
+      isNavigation ? `/admin/login?next=${encodeURIComponent(pathnameOf(req.url))}` : '/admin/login',
+      isNavigation ? 302 : 303,
+    );
+    return null;
+  }
+
+  /**
    * D37: the session is looked for under **this Host's tenant's name**, and nowhere
    * else. A cookie minted for another tenant is not in this namespace, so it is not
    * a session here — before any row is read, before any tenant comparison runs.
+   *
+   * The routes that serve HTML go through `#sessionGate` instead; this one is kept for the
+   * paths whose caller is an API and whose answer must stay the row-7 404.
    */
   #requireSession(req: FastifyRequest, tenant: Pick<Tenant, 'key'>): SessionRecord {
     const session = this.sessionFor(header(req, 'cookie'), tenant);

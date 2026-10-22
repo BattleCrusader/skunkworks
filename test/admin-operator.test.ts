@@ -143,6 +143,114 @@ test('D37-1b. an unauthenticated tenant-scoped admin path is still the row-7 404
   }
 });
 
+test('D37-1c. an expired session on an admin screen is answered with the login page', async () => {
+  // E-47: a browser navigation (`Accept: text/html`) with no live session gets a way back in.
+  // This is the case the operator hit: fifteen idle minutes, then a click on "Pages", and the
+  // console answered `404 SKW_E_PLT_TENANT_UNKNOWN` for a path that obviously exists.
+  const res = await call({
+    port,
+    path: '/admin/t/acme/site',
+    host: ADMIN_HOST,
+    headers: { accept: 'text/html' },
+  });
+  assert.equal(res.status, 302, res.body);
+  assert.equal(header(res, 'location'), '/admin/login?next=%2Fadmin%2Ft%2Facme%2Fsite');
+  assert.match(String(header(res, 'cache-control')), /no-store/);
+  // No session existed, so there is nothing to clear and no cookie is minted by looking.
+  assert.equal(header(res, 'set-cookie'), undefined);
+});
+
+test('D37-1d. a cookie that outlived its row is cleared on the way to the login page', async () => {
+  const session = await openSession({ port, key: 'acme', email: 'owner@acme.test' });
+  const db = new Database(fixture.controlDb);
+  db.prepare('UPDATE session SET expires_at = ? WHERE id = ?').run(
+    new Date(Date.now() - 1_000).toISOString(),
+    idOf(session.cookie),
+  );
+  db.close();
+
+  const res = await call({
+    port,
+    path: '/admin/t/acme/account',
+    host: ADMIN_HOST,
+    headers: { cookie: session.cookie, accept: 'text/html' },
+  });
+  assert.equal(res.status, 302, res.body);
+  assert.equal(header(res, 'location'), '/admin/login?next=%2Fadmin%2Ft%2Facme%2Faccount');
+  // The browser must stop presenting a session that no longer exists, or it keeps looping
+  // through a login page it believes it does not need.
+  const cleared = String(header(res, 'set-cookie'));
+  assert.match(cleared, /^__Secure-sk-sess-acme=;/);
+  assert.match(cleared, /Path=\/admin/);
+  assert.match(cleared, /Max-Age=0/);
+});
+
+test('D37-1e. a form post with an expired session goes to the login page, without a next', async () => {
+  // 303 on a POST is the honest code: nothing was accepted, and the browser must follow with
+  // a GET. No `next`, because the only method that path answers is POST — sending a browser
+  // back to it after signing in would land on a 404.
+  const res = await call({
+    port,
+    path: '/admin/t/acme/site/save',
+    method: 'POST',
+    host: ADMIN_HOST,
+    headers: { accept: 'text/html', 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'site_name=Recycled',
+  });
+  assert.equal(res.status, 303, res.body);
+  assert.equal(header(res, 'location'), '/admin/login');
+
+  // And the write it asked for did not happen.
+  const db = new Database(fixture.sitePath('acme'), { readonly: true });
+  const row = db.prepare("SELECT value_json FROM cms_settings WHERE key = 'site.name'").get() as
+    | { value_json: string }
+    | undefined;
+  db.close();
+  assert.notEqual(row?.value_json, JSON.stringify('Recycled'));
+});
+
+test('D37-1f. the login page carries the path, and signing in resumes it', async () => {
+  const form = await call({
+    port,
+    path: '/admin/login?next=%2Fadmin%2Ft%2Facme%2Faccount',
+    host: ADMIN_HOST,
+    headers: { accept: 'text/html' },
+  });
+  assert.equal(form.status, 200);
+  assert.match(form.body, /name="next" value="\/admin\/t\/acme\/account"/);
+
+  const signed = await call({
+    port,
+    path: '/admin/login',
+    method: 'POST',
+    host: ADMIN_HOST,
+    headers: {
+      accept: 'text/html',
+      origin: ADMIN_ORIGIN,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      email: 'owner@acme.test',
+      password: PASSWORD,
+      totp: currentTotp(),
+      next: '/admin/t/acme/account',
+    }).toString(),
+  });
+  assert.equal(signed.status, 303, signed.body);
+  assert.equal(header(signed, 'location'), '/admin/t/acme/account');
+  const cookie = cookiePair(signed);
+  assert.notEqual(cookie, undefined);
+
+  const back = await call({
+    port,
+    path: '/admin/t/acme/account',
+    host: ADMIN_HOST,
+    headers: { cookie: String(cookie), accept: 'text/html' },
+  });
+  assert.equal(back.status, 200, back.body);
+  assert.match(back.body, /Your account/);
+});
+
 test('D37-2. /admin is this Host\'s tenant home: their own pages, and no fleet inventory', async () => {
   const session = await openSession({ port, key: 'acme', email: 'owner@acme.test' });
   const res = await call({ port, path: '/admin', host: ADMIN_HOST, headers: { cookie: session.cookie } });
