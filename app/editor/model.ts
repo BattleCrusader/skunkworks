@@ -30,6 +30,7 @@ import { createHash } from 'node:crypto';
 
 import { AppError } from '../errors.ts';
 import { attr, type ElementNode, type HtmlNode, elements, parseHtml, serialize, setAttr } from './html.ts';
+import { BUILT_IN_TYPES, isBuiltInType, isKnownType } from './builtin.ts';
 import type { Registry, RegistryEntry } from './registry.ts';
 
 /** §10.5: the four classes the DB CHECK also refuses, plus the two it cannot express. */
@@ -74,9 +75,10 @@ export function assertBodyAllowed(html: string): void {
 }
 
 /**
- * Every `data-gjs-type` in the input must name a registered component. Called on the
- * **input** of the editor, before GrapesJS normalises it — that is the whole point: after
- * load there is nothing left to check.
+ * Every `data-gjs-type` in the input must name something this build can render — one of our
+ * components, or one of GrapesJS's built-ins (a plain `<h1>` is `text` to GrapesJS, and that
+ * is legitimate content, not a broken claim). Called on the **input** of the editor, before
+ * GrapesJS normalises it — that is the whole point: after load there is nothing left to check.
  */
 export function assertRegistered(html: string, registry: Registry): void {
   for (const el of elements(parseHtml(html))) {
@@ -88,11 +90,11 @@ export function assertRegistered(html: string, registry: Registry): void {
         type: '',
       });
     }
-    if (!registry.byType.has(declared)) {
+    if (!isKnownType(declared, registry.byType)) {
       throw new AppError('SKW_E_RT_COMPONENT_UNKNOWN', `no component is registered for data-gjs-type="${declared}"`, {
         tag: el.tag,
         type: declared,
-        known: [...registry.byType.keys()],
+        known: [...registry.byType.keys(), ...BUILT_IN_TYPES],
       });
     }
   }
@@ -106,6 +108,12 @@ export function assertNesting(nodes: HtmlNode[], registry: Registry, inside: Reg
   for (const node of nodes) {
     if (node.type !== 'element') continue;
     const declared = attr(node, 'data-gjs-type');
+    if (declared !== undefined && isBuiltInType(declared)) {
+      // A plain element: it constrains nothing about its children, exactly like an
+      // unregistered wrapper below.
+      assertNesting(node.children, registry, inside);
+      continue;
+    }
     if (declared !== undefined) {
       const entry = registry.byType.get(declared);
       if (entry === undefined) {

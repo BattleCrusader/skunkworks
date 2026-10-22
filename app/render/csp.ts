@@ -74,6 +74,27 @@ export function cspPolicyWithNonce(nonce: string, frameSrc: readonly string[] = 
     .join('; ');
 }
 
+/**
+ * The **editor** document's policy: the frozen policy with inline style allowed.
+ *
+ * The canvas is an iframe the editor writes into, so it inherits this document's policy — and
+ * GrapesJS applies every Style Manager rule by inserting a `<style>` element into that iframe.
+ * Under `style-src 'self'` those rules are dropped by the browser: a colour could be typed into
+ * the panel, stored in the rule, and never paint. Measured before this: setting colour on an h1
+ * through StyleManager.setStyle produced a rule and no change in getComputedStyle.
+ *
+ * A nonce cannot help — the element is created by GrapesJS at a moment this server does not
+ * choose — and per CSP a nonce in the directive voids 'unsafe-inline', so the editor's document
+ * carries 'unsafe-inline' and no nonce. The blast radius is one authenticated screen: the canvas
+ * renders authored content inside a frame, and what it produces is stored as a served CSS file.
+ * The tenant site, the exported trees and the nginx snippet keep `style-src 'self'` byte for byte.
+ */
+export function cspPolicyForEditor(frameSrc: readonly string[] = []): string {
+  return cspDirectives(frameSrc)
+    .map((directive) => (directive === "style-src 'self'" ? "style-src 'self' 'unsafe-inline'" : directive))
+    .join('; ');
+}
+
 /** The header name, lowercase as HTTP/1.1 sends it. */
 export const CSP_HEADER = 'content-security-policy';
 

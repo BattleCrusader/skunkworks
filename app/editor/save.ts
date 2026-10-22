@@ -20,6 +20,7 @@ import { AppError } from '../errors.ts';
 import { syncPageLinks } from '../assets/links.ts';
 import { putCssBlob } from '../render/themes.ts';
 import { canon, unwrapBody } from './canon.ts';
+import { elements, parseHtml } from './html.ts';
 import { type ListItem, analyseBody, bodySha } from './model.ts';
 import { type Registry, registryCss } from './registry.ts';
 
@@ -175,15 +176,17 @@ export async function savePage(input: SaveInput): Promise<SaveResult> {
     });
   }
 
-  // The shape a degraded paste leaves behind (S4a F2, §7.3): content with no lock, because
-  // GrapesJS dropped the `data-gjs-type` it had no definition for. (a) refuses the paste in
-  // the canvas; this refuses to write the result if it arrives another way. An **empty** body
-  // is not that shape — the admin's create-then-open flow and the browser harness both write
-  // one — so it is still allowed; what is refused is content no component claims.
-  if (stored.html.trim() !== '' && stored.components.length === 0) {
-    throw new AppError('SKW_E_RT_BODY_FORBIDDEN', 'a page body with content must carry a registered component', {
+  // S8s replaced the rule that used to live here ("a non-empty body must carry a registered
+  // component"). It was written when every element in the canvas came from the registry, and it
+  // read a body of plain `<section>`/`<h1>`/`<p>` — which is exactly what the Basic palette
+  // inserts — as the shape a degraded paste leaves behind. The distinction it was reaching for is
+  // now made by type: `analyseBody` refuses a `data-gjs-type` nobody defines, and GrapesJS's own
+  // types are legitimate content. So what is refused here is the remaining degenerate case —
+  // text with no element in it at all, which no renderer can do anything with.
+  if (stored.html.trim() !== '' && elements(parseHtml(stored.html)).length === 0) {
+    throw new AppError('SKW_E_RT_BODY_FORBIDDEN', 'a page body with content must contain an element', {
       page: input.path,
-      rule: 'no-component',
+      rule: 'no-element',
     });
   }
 

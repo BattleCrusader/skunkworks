@@ -493,31 +493,57 @@ test('S8 — a canvas document is stored as a fragment, and a document that is n
 });
 
 /**
- * S4a F2 — the last-moment refusal. (a) refuses the paste in the canvas; this is what
- * happens if the degraded document arrives by another road. S4a §7.3 stored exactly this
- * shape with a 200 (49 B in, 37 B stored, no lock).
+ * S9 — content is content, whatever type GrapesJS gives it.
+ *
+ * This test used to assert the opposite: that a body of plain elements with no registered
+ * component was refused as the shape a degraded paste leaves behind. That rule was written when
+ * every element came from the registry, and it contradicted the Basic palette, which inserts
+ * exactly this shape — an operator who built a page out of sections and headings could not save
+ * it. What the rule was protecting is now enforced by type (S9b), which is the property that
+ * actually mattered: a body claiming a component nobody defines.
  */
-test('S9 — a body with content and no registered component is refused, not written', async () => {
+test('S9 — a body of plain elements saves, and keeps no editor internals', async () => {
+  const handle = db();
+  try {
+    const saved = await savePage({
+      db: handle,
+      registry,
+      path: '/plain',
+      slug: 'plain',
+      title: 'Plain',
+      template: 'page',
+      html: '<body><div><h1>Slides</h1><p>Plain markup, no component.</p></div></body>',
+    });
+    assert.match(saved.bodyHtml, /<h1>Slides<\/h1>/);
+    assert.doesNotMatch(saved.bodyHtml, /data-gjs-type/, 'GrapesJS types are stripped on the way out');
+
+    const row = handle.prepare("SELECT count(*) AS n FROM cms_page WHERE path = '/plain'").get() as { n: number };
+    assert.equal(row.n, 1);
+  } finally {
+    handle.close();
+  }
+});
+
+test('S9b — a body claiming a component this build does not define is still refused', async () => {
   const handle = db();
   try {
     await assert.rejects(
       savePage({
         db: handle,
         registry,
-        path: '/degraded',
-        slug: 'degraded',
-        title: 'Degraded',
+        path: '/unknown-type',
+        slug: 'unknown-type',
+        title: 'Unknown',
         template: 'page',
-        html: '<body>\n  <div><p>slides</p></div>\n</body>',
+        html: '<body><div data-gjs-type="carousel"><p>x</p></div></body>',
       }),
       (err: unknown) => {
         assert.ok(err instanceof AppError);
-        assert.equal(err.code, 'SKW_E_RT_BODY_FORBIDDEN');
-        assert.equal(detailOf(err)['rule'], 'no-component');
+        assert.equal(err.code, 'SKW_E_RT_COMPONENT_UNKNOWN');
         return true;
       },
     );
-    const row = handle.prepare("SELECT count(*) AS n FROM cms_page WHERE path = '/degraded'").get() as { n: number };
+    const row = handle.prepare("SELECT count(*) AS n FROM cms_page WHERE path = '/unknown-type'").get() as { n: number };
     assert.equal(row.n, 0);
   } finally {
     handle.close();

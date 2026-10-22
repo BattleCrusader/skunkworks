@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { PaletteItem, Registry } from '../editor/registry.ts';
-import { palette, paletteCategories, typeDefinitions } from '../editor/registry.ts';
+import { GRAPESJS_TYPES, palette, paletteCategories, typeDefinitions } from '../editor/registry.ts';
 
 import { DATA_GJS_TYPE_PATTERN } from '../editor/paste.ts';
 
@@ -161,105 +161,89 @@ function jsonForScript(value: unknown): string {
  * The starters carry a little copy so a drop is visible and obviously editable; an empty `div`
  * would be a zero-height box, which is indistinguishable from a drop that did nothing.
  */
+/**
+ * One element widget. Plain markup, no `data-gjs-type`, so GrapesJS parses it into an ordinary
+ * component — droppable, nestable, stylable by the Style Manager and editable in place.
+ */
+function elementWidget(id: string, label: string, content: string): PaletteItem {
+  return { id, label, category: 'Basic', type: 'element', kind: 'element', content, editable: [] };
+}
+
+/**
+ * The elements a page is actually made of.
+ *
+ * An operator reported that this list was short of HTML: no h1, no h4–h6, no span/strong/em/code,
+ * no definition list, no image, no form controls. The palette had grown one block at a time from
+ * what a demo needed, which is not the same thing as what the language has.
+ *
+ * Ordered the way a document is written: containers, then text, then lists, then tables, then
+ * media, then controls. Two deliberate absences, both enforced elsewhere:
+ *
+ *  - `<iframe>` is refused by `savePage` (`frame-src 'none'` for every tenant), so offering a
+ *    widget for it would be offering a block that cannot be saved.
+ *  - `<form>` is host-drawn: a page's forms post to its own path and the host forwards them to the
+ *    plugin that declared them (`handleDeclaredFormPost`). A hand-written `<form>` would post into
+ *    the page and get a 404, so the controls are here without a form around them — they are for
+ *    looks until a real form widget is dropped in.
+ */
 const BASIC_BLOCKS: PaletteItem[] = [
-  {
-    id: 'basic-section',
-    label: 'Section',
-    category: 'Basic',
-    type: 'element',
-    kind: 'element',
-    content: '<section class="s-band"><h2>Section heading</h2><p>Say what this band is for.</p></section>',
-    editable: [],
-  },
-  {
-    id: 'basic-div',
-    label: 'Div (container)',
-    category: 'Basic',
-    type: 'element',
-    kind: 'element',
-    content: '<div class="s-grid"><div class="s-col"><h3>Column</h3><p>Text.</p></div><div class="s-col"><h3>Column</h3><p>Text.</p></div></div>',
-    editable: [],
-  },
-  {
-    id: 'basic-columns-3',
-    label: 'Three columns',
-    category: 'Basic',
-    type: 'element',
-    kind: 'element',
-    content:
-      '<div class="s-grid"><div class="s-col"><h3>One</h3><p>Text.</p></div><div class="s-col"><h3>Two</h3><p>Text.</p></div><div class="s-col"><h3>Three</h3><p>Text.</p></div></div>',
-    editable: [],
-  },
-  {
-    id: 'basic-stack',
-    label: 'Combo (heading + text + link)',
-    category: 'Basic',
-    type: 'element',
-    kind: 'element',
-    content:
-      '<div><p class="s-eyebrow">Eyebrow</p><h2>A heading that carries the point</h2><p>A paragraph under it, then a way onward.</p><p><a class="s-btn" href="/contact">Get in touch</a></p></div>',
-    editable: [],
-  },
-  { id: 'basic-h2', label: 'Heading h2', category: 'Basic', type: 'element', kind: 'element', content: '<h2>Heading</h2>', editable: [] },
-  { id: 'basic-h3', label: 'Heading h3', category: 'Basic', type: 'element', kind: 'element', content: '<h3>Subheading</h3>', editable: [] },
-  { id: 'basic-p', label: 'Paragraph', category: 'Basic', type: 'element', kind: 'element', content: '<p>Paragraph text.</p>', editable: [] },
-  { id: 'basic-link', label: 'Link', category: 'Basic', type: 'element', kind: 'element', content: '<p><a href="/">Link text</a></p>', editable: [] },
-  {
-    id: 'basic-ul',
-    label: 'Bulleted list',
-    category: 'Basic',
-    type: 'element',
-    kind: 'element',
-    content: '<ul><li>First point</li><li>Second point</li></ul>',
-    editable: [],
-  },
-  {
-    id: 'basic-ol',
-    label: 'Numbered list',
-    category: 'Basic',
-    type: 'element',
-    kind: 'element',
-    content: '<ol><li>First step</li><li>Second step</li></ol>',
-    editable: [],
-  },
-  {
-    id: 'basic-quote',
-    label: 'Quote',
-    category: 'Basic',
-    type: 'element',
-    kind: 'element',
-    content: '<blockquote><p>The sentence worth setting apart.</p><footer>— who said it</footer></blockquote>',
-    editable: [],
-  },
-  {
-    id: 'basic-details',
-    label: 'Collapsible',
-    category: 'Basic',
-    type: 'element',
-    kind: 'element',
-    content: '<details><summary>More detail</summary><p>The part most readers skip.</p></details>',
-    editable: [],
-  },
-  {
-    id: 'basic-table',
-    label: 'Table',
-    category: 'Basic',
-    type: 'element',
-    kind: 'element',
-    content:
-      '<table><thead><tr><th>Heading</th><th>Heading</th></tr></thead><tbody><tr><td>Cell</td><td>Cell</td></tr><tr><td>Cell</td><td>Cell</td></tr></tbody></table>',
-    editable: [],
-  },
-  { id: 'basic-hr', label: 'Divider', category: 'Basic', type: 'element', kind: 'element', content: '<hr>', editable: [] },
-  {
-    id: 'basic-blockquote-attr',
-    label: 'Note',
-    category: 'Basic',
-    type: 'element',
-    kind: 'element',
-    content: '<aside class="s-note"><p>A small note beside the argument.</p></aside>',
-    editable: [],
-  },
+  // Containers and bands
+  elementWidget('basic-section', 'Section', '<section class="s-band"><h2>Section heading</h2><p>Say what this band is for.</p></section>'),
+  elementWidget('basic-div', 'Div (container)', '<div class="s-grid"><div class="s-col"><h3>Column</h3><p>Text.</p></div><div class="s-col"><h3>Column</h3><p>Text.</p></div></div>'),
+  elementWidget('basic-columns-3', 'Three columns', '<div class="s-grid"><div class="s-col"><h3>One</h3><p>Text.</p></div><div class="s-col"><h3>Two</h3><p>Text.</p></div><div class="s-col"><h3>Three</h3><p>Text.</p></div></div>'),
+  elementWidget('basic-main', 'Main', '<main><p>A main landmark.</p></main>'),
+  elementWidget('basic-article', 'Article', '<article><h2>Article title</h2><p>An article stands on its own.</p></article>'),
+  elementWidget('basic-aside', 'Aside', '<aside class="s-note"><p>A small note beside the argument.</p></aside>'),
+  elementWidget('basic-header', 'Header', '<header><p class="s-eyebrow">Eyebrow</p><h2>Header</h2></header>'),
+  elementWidget('basic-footer', 'Footer', '<footer><p>Footer text.</p></footer>'),
+  elementWidget('basic-nav', 'Nav', '<nav><ul><li><a href="/">Home</a></li><li><a href="/about">About</a></li></ul></nav>'),
+  elementWidget('basic-figure', 'Figure', '<figure><img alt="Describe the image"><figcaption>A caption under the image.</figcaption></figure>'),
+  elementWidget('basic-stack', 'Combo (heading + text + link)', '<div><p class="s-eyebrow">Eyebrow</p><h2>A heading that carries the point</h2><p>A paragraph under it, then a way onward.</p><p><a class="s-btn" href="/contact">Get in touch</a></p></div>'),
+
+  // Text
+  elementWidget('basic-h1', 'Heading h1', '<h1>Page title</h1>'),
+  elementWidget('basic-h2', 'Heading h2', '<h2>Heading</h2>'),
+  elementWidget('basic-h3', 'Heading h3', '<h3>Subheading</h3>'),
+  elementWidget('basic-h4', 'Heading h4', '<h4>Minor heading</h4>'),
+  elementWidget('basic-h5', 'Heading h5', '<h5>Small heading</h5>'),
+  elementWidget('basic-h6', 'Heading h6', '<h6>Smallest heading</h6>'),
+  elementWidget('basic-p', 'Paragraph', '<p>Paragraph text.</p>'),
+  elementWidget('basic-span', 'Span', '<p>A sentence with a <span>span inside it</span>.</p>'),
+  elementWidget('basic-strong', 'Strong', '<p>This part <strong>matters more</strong> than the rest.</p>'),
+  elementWidget('basic-em', 'Emphasis', '<p>This part is <em>said differently</em>.</p>'),
+  elementWidget('basic-small', 'Small print', '<p><small>Terms, notes and other small print.</small></p>'),
+  elementWidget('basic-mark', 'Highlight', '<p>A <mark>highlighted</mark> phrase.</p>'),
+  elementWidget('basic-code', 'Code', '<p>Run <code>make test</code> before you push.</p>'),
+  elementWidget('basic-pre', 'Preformatted', '<pre>line one\nline two\nline three</pre>'),
+  elementWidget('basic-link', 'Link', '<p><a href="/">Link text</a></p>'),
+  elementWidget('basic-cite', 'Citation', '<p><cite>The Work</cite>, 2026</p>'),
+  elementWidget('basic-time', 'Date', '<p><time datetime="2026-10-23">23 October 2026</time></p>'),
+  elementWidget('basic-blockquote', 'Quote', '<blockquote><p>The sentence worth setting apart.</p><footer>— who said it</footer></blockquote>'),
+  elementWidget('basic-hr', 'Divider', '<hr>'),
+  elementWidget('basic-br', 'Line break', '<p>One line<br>and the next.</p>'),
+  elementWidget('basic-details', 'Collapsible', '<details><summary>More detail</summary><p>The part most readers skip.</p></details>'),
+
+  // Lists
+  elementWidget('basic-ul', 'Bulleted list', '<ul><li>First point</li><li>Second point</li></ul>'),
+  elementWidget('basic-ol', 'Numbered list', '<ol><li>First step</li><li>Second step</li></ol>'),
+  elementWidget('basic-dl', 'Definition list', '<dl><dt>Term</dt><dd>What it means.</dd><dt>Another term</dt><dd>And its meaning.</dd></dl>'),
+
+  // Tables
+  elementWidget('basic-table', 'Table', '<table><thead><tr><th>Heading</th><th>Heading</th></tr></thead><tbody><tr><td>Cell</td><td>Cell</td></tr><tr><td>Cell</td><td>Cell</td></tr></tbody></table>'),
+  elementWidget('basic-table-plain', 'Table (row + cells)', '<table><tr><th scope="col">Heading</th><th scope="col">Heading</th></tr><tr><td>Cell</td><td>Cell</td></tr></table>'),
+
+  // Media
+  elementWidget('basic-img', 'Image', '<img alt="Describe the image">'),
+  elementWidget('basic-video', 'Video', '<video controls></video>'),
+  elementWidget('basic-audio', 'Audio', '<audio controls></audio>'),
+
+  // Controls (no <form>: a page's forms are host-drawn — see the comment above)
+  elementWidget('basic-label', 'Label', '<p><label>Field label</label></p>'),
+  elementWidget('basic-input-text', 'Text input', '<p><input type="text" placeholder="Type here"></p>'),
+  elementWidget('basic-input-email', 'Email input', '<p><input type="email" placeholder="name@example.com"></p>'),
+  elementWidget('basic-textarea', 'Text area', '<p><textarea rows="4" placeholder="Say more"></textarea></p>'),
+  elementWidget('basic-select', 'Select', '<p><select><option>First option</option><option>Second option</option></select></p>'),
+  elementWidget('basic-button', 'Button', '<p><button type="button">Button</button></p>'),
 ];
 
 export function editorBootPayload(input: EditorPageInput): {
@@ -267,6 +251,8 @@ export function editorBootPayload(input: EditorPageInput): {
   categories: string[];
   types: { type: string; tagName: string; droppable: boolean }[];
   page: NonNullable<EditorPageInput['page']>;
+  /** GrapesJS's own types — a selection wearing one of these is a plain element, not a component. */
+  builtInTypes: string[];
   css: string;
   tenant: string;
   csrf: string;
@@ -322,6 +308,7 @@ export function editorBootPayload(input: EditorPageInput): {
   const defs = typeDefinitions(input.registry);
   return {
     palette: items,
+    builtInTypes: [...GRAPESJS_TYPES],
     categories: paletteCategories(items),
     types: defs.map((def) => {
       const defaults = (def.model as { defaults: { tagName: string; droppable: boolean } }).defaults;
@@ -784,8 +771,14 @@ const BOOT_SCRIPT = String.raw`
     });
   });
 
+  // What this canvas can render: our components, plus GrapesJS's own types. A plain <h1> is a
+  // text component to GrapesJS, and copying one out of the canvas paints that type onto the
+  // clipboard — so a gate that only knew the registry refused the editor's own output. A type in
+  // neither list is still refused: that is a component this build cannot draw.
   var KNOWN_TYPES = Object.create(null);
+  var BUILT_IN = Object.create(null);
   boot.types.forEach(function (t) { KNOWN_TYPES[t.type] = true; });
+  boot.builtInTypes.forEach(function (t) { KNOWN_TYPES[t] = true; BUILT_IN[t] = true; });
 
   // 0. THE PASTE GATE (S4a F2a). GrapesJS strips a data-gjs-type it has no definition for
   //    *while parsing*, so a pasted block arrives at the save route as a bare div with no
@@ -1391,10 +1384,35 @@ const BOOT_SCRIPT = String.raw`
    * (pointing it is what creates the id), and once more before the document is serialised — the
    * last one is the guarantee, because the first two only keep the screen honest.
    */
+  /** Is there a CSS rule with declarations for this selector? */
+  function ruleHasStyle(selector) {
+    var found = false;
+    try {
+      editor.CssComposer.getAll().forEach(function (rule) {
+        var names = (rule.selectors || []).map(function (s) { return s.getFullName(); });
+        if (names.indexOf(selector) === -1) return;
+        if (Object.keys(rule.getStyle() || {}).length > 0) found = true;
+      });
+    } catch (e) { /* no composer yet */ }
+    return found;
+  }
+
+  /**
+   * Drop the id GrapesJS invents when a bare element is selected — unless something is *using*
+   * it. Styling with the Style Manager writes a rule against that id, so an element whose rule
+   * carries declarations must keep its id or the rule is orphaned: the colour paints in the
+   * canvas and is gone from the stored page. Measured before this: a colour set through the
+   * panel produced a rule for the invented id, and the id was stripped on save.
+   */
   function dropInventedId(component) {
     if (!component || component.cid === undefined) return false;
     var attrs = component.getAttributes();
     if (!attrs.id || authoredId(component) !== '') return false;
+    if (ruleHasStyle('#' + attrs.id)) {
+      // The id is now the hook the operator's declaration points at: treat it as authored.
+      authoredIds[component.cid] = attrs.id;
+      return false;
+    }
     forgetRule('#' + attrs.id);
     component.removeAttributes('id');
     return true;
@@ -1655,6 +1673,41 @@ const BOOT_SCRIPT = String.raw`
    * Everything the inspector shows for one component. It writes only into #skw-selection;
    * #skw-styles and #skw-css belong to other owners and are left alone.
    */
+  /**
+   * What to call the selected thing.
+   *
+   * Not component.get('type'): for every plain element GrapesJS answers text (an h1, a p, a
+   * span are all text components to it), so an h1 was labelled "Text". The palette is the
+   * authority only for our components, and a component is ours when its data-gjs-type is not
+   * one of GrapesJS's own — the registry refuses names that collide, so the two cannot be
+   * confused. Everything else is named by its tag.
+   */
+  var ELEMENT_LABELS = {
+    h1: 'Heading 1', h2: 'Heading 2', h3: 'Heading 3', h4: 'Heading 4', h5: 'Heading 5', h6: 'Heading 6',
+    p: 'Paragraph', span: 'Span', strong: 'Strong', em: 'Emphasis', small: 'Small print', mark: 'Highlight',
+    code: 'Code', pre: 'Preformatted', a: 'Link', cite: 'Citation', time: 'Date', br: 'Line break',
+    hr: 'Divider', blockquote: 'Quote', q: 'Quote', figure: 'Figure', figcaption: 'Caption',
+    img: 'Image', video: 'Video', audio: 'Audio', picture: 'Picture',
+    ul: 'Bulleted list', ol: 'Numbered list', li: 'List item', dl: 'Definition list', dt: 'Term', dd: 'Definition',
+    table: 'Table', thead: 'Table head', tbody: 'Table body', tfoot: 'Table foot', tr: 'Row', th: 'Header cell', td: 'Cell',
+    section: 'Section', div: 'Div', main: 'Main', article: 'Article', aside: 'Aside', header: 'Header',
+    footer: 'Footer', nav: 'Nav', details: 'Collapsible', summary: 'Summary',
+    form: 'Form', label: 'Label', input: 'Input', textarea: 'Text area', select: 'Select', option: 'Option', button: 'Button'
+  };
+
+  function labelFor(component) {
+    if (!component) return '';
+    var tag = String(component.get('tagName') || 'div').toLowerCase();
+    var attrs = {};
+    try { attrs = component.getAttributes() || {}; } catch (e) { attrs = {}; }
+    var declared = attrs['data-gjs-type'] || '';
+    if (declared !== '' && boot.builtInTypes.indexOf(declared) === -1) {
+      var item = boot.palette.filter(function (p) { return p.type === declared; })[0];
+      if (item) return item.label;
+    }
+    return ELEMENT_LABELS[tag] || tag;
+  }
+
   function inspector(component) {
     current = component || null;
     var has = current !== null;
@@ -1673,9 +1726,7 @@ const BOOT_SCRIPT = String.raw`
       return;
     }
     var tag = String(current.get('tagName') || 'div').toLowerCase();
-    var type = current.get('type');
-    var item = boot.palette.filter(function (p) { return p.type === type; })[0];
-    chip(selWhere, item ? '<' + tag + '> · ' + item.label : '<' + tag + '>', false);
+    chip(selWhere, '<' + tag + '> · ' + labelFor(current), false);
 
     actionsEnabled(true);
     dropInventedId(current);
@@ -1712,8 +1763,9 @@ const BOOT_SCRIPT = String.raw`
       selClasses.value = current.getClasses().join(' ');
     }
 
-    if (item) {
-      item.editable.forEach(function (field) {
+    var paletteItem = boot.palette.filter(function (p) { return p.type === current.get('type'); })[0];
+    if (paletteItem) {
+      paletteItem.editable.forEach(function (field) {
         var wrap = document.createElement('div');
         wrap.className = 'field';
         var label = document.createElement('label');
@@ -2003,7 +2055,11 @@ const BOOT_SCRIPT = String.raw`
     var out = [];
     var walk = function (component) {
       var type = component.get('type');
-      if (KNOWN_TYPES[type]) out.push(type);
+      // Our components only. GrapesJS's built-ins are not locks the server can find in the bytes
+      // (canon strips them), so listing them made every save of a plain-element page a 409
+      // "the canvas and the bytes to be stored disagree" — measured on the studio page after an
+      // h1 was styled and saved.
+      if (KNOWN_TYPES[type] && !BUILT_IN[type]) out.push(type);
       component.components().forEach(walk);
     };
     editor.getWrapper().components().forEach(walk);

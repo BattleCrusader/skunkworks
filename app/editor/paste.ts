@@ -27,6 +27,7 @@
  * operator is told which type and why, and nothing is lost.
  */
 import { AppError } from '../errors.ts';
+import { isKnownType } from './builtin.ts';
 import type { Registry } from './registry.ts';
 
 /**
@@ -56,7 +57,10 @@ export function pastedTypes(html: string): string[] {
  */
 export function assertPasteAllowed(html: string, registry: Registry): void {
   for (const type of pastedTypes(html)) {
-    if (registry.byType.has(type)) continue;
+    // A plain element copied out of the canvas arrives wearing GrapesJS's own type (`text` for
+    // an h1 or a p, `default` for a div). Those render as themselves; refusing them made
+    // copy/paste unusable for every element the Basic palette inserts.
+    if (isKnownType(type, registry.byType)) continue;
     throw new AppError('SKW_E_RT_COMPONENT_UNKNOWN', `no component is registered for data-gjs-type="${type}"`, {
       type,
       known: [...registry.byType.keys()],

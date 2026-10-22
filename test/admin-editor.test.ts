@@ -387,14 +387,15 @@ test('E8 — the save refuses bytes whose locks disagree with the inventory the 
 });
 
 /**
- * F2 at the last possible moment: the bytes GrapesJS produces from an unregistered paste.
+ * F2 at the last possible moment — re-pointed at the property that matters.
  *
- * S4a §7.3 measured this exact document being stored with a **200**. The paste gate (a)
- * stops it being created; this asserts that the shape it produces — content, no lock —
- * cannot be written even if it arrives by another road (a stale tab, a second client, a
- * future import that forgets the gate).
+ * This used to send a body of plain elements and demand a 422, because "content with no
+ * registered component" was read as the shape a degraded paste leaves behind. The Basic palette
+ * inserts exactly that shape, so the rule forbade the editor's own output. What a degraded paste
+ * really produces is a claim on a component the build cannot render, and that is what is refused
+ * here — from a second client, a stale tab, or an import that skipped the paste gate.
  */
-test('E9 — component-less bytes (what a degraded paste looks like) are refused, not stored with a 200', async () => {
+test('E9 — bytes claiming a component this build does not define are refused, not stored with a 200', async () => {
   const res = await admin('/admin/t/acme/editor/save', {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: ADMIN_ORIGIN, 'x-csrf-token': session.csrfToken },
@@ -402,13 +403,12 @@ test('E9 — component-less bytes (what a degraded paste looks like) are refused
       path: '/degraded',
       title: 'Degraded',
       template: 'page',
-      html: '<body>\n  <div><p>slides</p></div>\n</body>',
-      components: [],
+      html: '<body>\n  <div data-gjs-type="carousel"><p>slides</p></div>\n</body>',
+      components: ['carousel'],
     }),
   });
   assert.equal(res.status, 422, res.body);
-  assert.equal(codeOf(res), 'SKW_E_RT_BODY_FORBIDDEN');
-  assert.equal((res.json as { error: { detail: Record<string, unknown> } }).error.detail['rule'], 'no-component');
+  assert.equal(codeOf(res), 'SKW_E_RT_COMPONENT_UNKNOWN');
   const db = openAdminWrite(fixture.sitePath('acme'));
   try {
     const count = db.prepare("SELECT count(*) AS n FROM cms_page WHERE path = '/degraded'").get() as { n: number };

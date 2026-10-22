@@ -4170,3 +4170,89 @@ refused before any handler saw it.
 the exception aborted the rest of the boot script — no page in the canvas, no Save, no drops. Caught
 by capturing `Runtime.exceptionThrown` in the browser rather than reading the code. The sweep now
 uses `getAll()` inside a `try`.
+
+
+## E-53 — four ways the editor refused to let you edit
+
+**Reported.** "not all html elements have widgets in the dnd editor, eg. h1 is missing. i can't
+copy/paste items (Paste refused (SKW_E_RT_COMPONENT_UNKNOWN): no component is registered for
+data-gjs-type=\"text\"). I don't have fine grained control of the css of selected values — when
+changing the colour, for instance, nothing happens. selected widgets are not categorised properly,
+h1 blocks are marked as 'Text' when selected."
+
+Four defects, four different layers. Each is measured below; none was a guess from reading code.
+
+### 1. The palette was written from a demo, not from the language
+
+15 widgets, of which 8 were layout starters. No `h1`, no `h4`–`h6`, no `span`/`strong`/`em`/`code`,
+no definition list, no image, no form controls. The list had grown one block at a time from what the
+demo site happened to need. It now carries **46**: containers and landmarks (section, div, main,
+article, aside, header, footer, nav, figure), text (h1–h6, p, span, strong, em, small, mark, code,
+pre, link, cite, time, blockquote, hr, br, details), lists (ul, ol, dl), tables, media (img, video,
+audio) and the form controls (label, input ×2, textarea, select, button). Measured on the live
+screen: `basicCount 46`, every requested id present, 60 blocks rendered and every one labelled.
+
+Two absences are deliberate and enforced elsewhere: `<iframe>` is refused by `savePage` because
+`frame-src` is `none` for every tenant, and `<form>` is host-drawn — a page's forms post to its own
+path and the host forwards them to the plugin that declared them, so a hand-written form would post
+into the page and 404.
+
+### 2. Copy/paste refused every plain element
+
+GrapesJS labels a plain `<h1>`, `<p>`, `<div>` with **its own** component types — `text`,
+`default` — and copying one out of the canvas paints that type onto the clipboard. The paste gate
+compared every `data-gjs-type` against the component registry, where `text` does not exist, and
+refused the whole paste by name. The editor refused its own output.
+
+The distinction the gate wants is "can this build render it", and a plain element is rendered as
+itself. `app/editor/builtin.ts` now answers that question using `GRAPESJS_TYPES` — the list
+`registry.ts` already refuses to collide with, so a `data-gjs-type` in a body is unambiguous — and
+both gates ask it: the browser's paste scan (via the boot payload's `builtInTypes`) and the server's
+`assertPasteAllowed` / `assertRegistered`. A type in neither list is still refused. Measured:
+copy an h1, paste → h1 count 1 → 2, no notice.
+
+On the way out, `canon()` strips GrapesJS's types, so a stored body and an exported page carry our
+components' locks and no editor plumbing.
+
+**And the rule this displaced.** `savePage` refused any non-empty body with no registered component
+— "the shape a degraded paste leaves behind". That was written when every element came from the
+registry, and it forbade exactly what the Basic palette inserts: a page built from sections and
+headings could not be saved. It is now a check that the body contains an element at all, and the
+real property (a claim on a component nobody defines) is enforced by type. Tests S9/E9 re-pointed.
+
+### 3. A Style Manager colour was computed, stored, and never painted
+
+`getComputedStyle` before `rgb(23, 21, 15)`; type `rgb(1,2,3)` into the panel's Colour row; after
+`rgb(23, 21, 15)`. The rule existed — `#i8ql{color:#010203;}` was in `editor.getCss()` — and the
+browser ignored it, because GrapesJS applies rules by inserting a `<style>` element **into the
+canvas iframe**, and the canvas inherits the admin document's CSP: `style-src 'self' 'nonce-…'`. A
+nonce cannot help (the element is created by GrapesJS at a moment the server does not choose), and
+per CSP a nonce in the directive voids `'unsafe-inline'`.
+
+So the editor document gets its own policy — `style-src 'self' 'unsafe-inline'`, no nonce — and
+nothing else moves: the public site, the exported trees and the nginx snippet keep `style-src
+'self'` byte for byte (`cspPolicy()` untouched; `cspPolicyForEditor()` is the one caller). Measured
+after: same interaction, `rgb(23, 21, 15)` → `rgb(1, 2, 3)`.
+
+**The half-fix that would have lost the colour.** Styling a bare element makes GrapesJS invent an
+id and write the rule against it. `dropInventedId` strips unauthored ids on save (S8t), which would
+orphan the rule: colour visible in the canvas, gone from the stored page. It now keeps an invented
+id when a rule with declarations points at it, and records it as authored. Measured end to end:
+style an h1 → Save → the stored body carries `id="imqt"`, the stored CSS carries
+`#imqt{color:#0b1621;}` under the marker.
+
+**And the 409 behind that.** With built-ins now "known", the canvas's component inventory listed
+`text`/`default` while the stored bytes (canon strips them) had nothing to match, so every save of
+a plain-element page was `409 SKW_E_RT_COMPONENT_INVENTORY` — "the canvas and the bytes to be
+stored disagree". The inventory now lists our components only. Measured: save → "Saved as a draft —
+press Publish to put it live".
+
+### 4. An h1 was called "Text"
+
+`inspector()` labelled the selection from `component.get('type')`, which for every plain element is
+`text`, and then looked that up in the palette — where a component can never be called `text`,
+because the registry refuses the collision. The lookup missed and the chip fell back to the tag,
+so an h1 read `<h1>`; the "Text" in the report came from the same type string elsewhere on the
+rail. The chip is now `<tag> · label`, where the label is the palette entry for **our** components
+(identified by a `data-gjs-type` that is not a GrapesJS built-in) and a tag→name table for
+everything else. Measured: `<h1> · Heading 1`.

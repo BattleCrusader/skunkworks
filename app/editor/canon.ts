@@ -25,6 +25,7 @@
  */
 import prettier from 'prettier';
 
+import { isBuiltInType } from './builtin.ts';
 import { type HtmlNode, element, elements, parseHtml, serialize, text } from './html.ts';
 
 export interface CanonOptions {
@@ -47,6 +48,12 @@ function normalise(nodes: HtmlNode[]): HtmlNode[] {
       out.push(node);
       continue;
     }
+    // Our components keep their lock; GrapesJS's own types are editor plumbing and are dropped,
+    // so a stored body and an exported page carry no `data-gjs-type="text"`.
+    const attrs =
+      node.attrs.some(([key, value]) => key === 'data-gjs-type' && isBuiltInType(value))
+        ? node.attrs.filter(([key, value]) => !(key === 'data-gjs-type' && isBuiltInType(value)))
+        : node.attrs;
     const children = normalise(node.children);
     const trimmed = children.filter((child, index) => {
       const whitespaceOnly = child.type === 'text' && child.text === ' ';
@@ -56,7 +63,7 @@ function normalise(nodes: HtmlNode[]): HtmlNode[] {
       // Drop the padding at the edges, keep a single space between inline children.
       return index !== 0 && index !== children.length - 1;
     });
-    out.push(element(node.tag, node.attrs, trimmed));
+    out.push(element(node.tag, attrs, trimmed));
   }
   // Collapse runs of two text nodes produced by the trimming above.
   return out;

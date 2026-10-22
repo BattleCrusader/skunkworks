@@ -23,9 +23,11 @@ import { chromeCss, loadChrome } from '../app/render/chrome.ts';
 import { siteSheet } from '../app/render/theme.ts';
 import { putCssBlob, previewToken, verifyPreviewToken } from '../app/render/themes.ts';
 import { loadEnv } from '../app/env.ts';
+import { loadRegistry } from '../app/editor/registry.ts';
+import { assertPasteAllowed } from '../app/editor/paste.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import { ADMIN_HOST, ADMIN_ORIGIN, TOTP_SECRET, openSession, seedUser, type Sessioned } from './helpers/admin.ts';
-import { REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
+import { REPO, SCHEMA, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, header, type Res } from './helpers/http.ts';
 
 const PAGE_CSS = '.probe-band{outline:3px solid rgb(1,2,3)}';
@@ -291,7 +293,15 @@ test('S8s-7. the canvas is given the site: sheet, draft CSS, and a frame the sav
   assert.match(bootScript.body, /data-skw-frame/);
   assert.match(bootScript.body, /applySiteFrame/);
   assert.match(bootScript.body, /boot\.frame\.sheet/, 'the canvas links the sheet it was given');
-  assert.doesNotMatch(editor.body, /<style>[\s\S]*probe-band/, 'the admin document does not carry the page’s CSS');
+  // The page's CSS is a served file linked into the canvas, never a style element in the admin
+  // document. The check is anchored on the element's own bytes: a `<style>` elsewhere in the
+  // document (the admin chrome's) must not make this pass or fail by accident.
+  const styleBodies = [...editor.body.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => String(m[1] ?? ''));
+  assert.ok(styleBodies.every((body) => !body.includes('probe-band')), 'the admin document does not carry the page’s CSS');
+
+  // The editor document is the one admin screen that allows inline style: GrapesJS applies every
+  // Style Manager rule by inserting a <style> into the canvas iframe, which inherits this policy.
+  assert.match(String(header(editor, 'content-security-policy')), /style-src 'self' 'unsafe-inline'/);
 });
 
 test('S8s-8. the draft stylesheet is on the admin prefix, behind the session, and never cached', async () => {
@@ -414,6 +424,48 @@ test('S8s-12. a palette drag has a drop path of its own, because this build crea
   assert.match(js, /function isBand/, 'a band goes beside a band, never inside one');
   assert.match(js, /function placeElement/, 'and its element is attached, not left detached');
   assert.match(js, /refreshCanvas/, 'the canvas is redrawn from the model after an insert');
+});
+
+test('S8s-13. a plain element is content, not an unknown component — on paste and on save', async () => {
+  // A copied h1 arrives wearing GrapesJS's own type. That is not a claim on a component; it is
+  // how GrapesJS labels every plain element it parses.
+  const registry = loadRegistry(SCHEMA);
+  assert.doesNotThrow(() => assertPasteAllowed('<h1 data-gjs-type="text">Slides</h1>', registry));
+  assert.doesNotThrow(() => assertPasteAllowed('<div data-gjs-type="default"><p>x</p></div>', registry));
+  assert.throws(
+    () => assertPasteAllowed('<div data-gjs-type="carousel">x</div>', registry),
+    (err: unknown) => (err as { code?: string }).code === 'SKW_E_RT_COMPONENT_UNKNOWN',
+    'a type nobody defines is still refused',
+  );
+
+  // And the same body reaches the save route: 200, stored, without editor plumbing in the bytes.
+  const res = await call({
+    port,
+    path: '/admin/t/acme/editor/save',
+    method: 'POST',
+    host: ADMIN_HOST,
+    headers: { origin: ADMIN_ORIGIN, 'content-type': 'application/json', cookie: session.cookie },
+    body: JSON.stringify({
+      path: '/plain-elements',
+      title: 'Plain elements',
+      template: 'page',
+      csrf: session.csrfToken,
+      html: '<body><section><h1 data-gjs-type="text">Slides</h1><p data-gjs-type="text">Plain.</p></section></body>',
+    }),
+  });
+  assert.equal(res.status, 200, res.body);
+  // Read what was actually written, not what the route said about it.
+  const db = openAdminWrite(fixture.sitePath('acme'));
+  try {
+    const row = db.prepare("SELECT body_html AS html FROM cms_page WHERE path = '/plain-elements'").get() as
+      | { html: string }
+      | undefined;
+    assert.ok(row !== undefined, 'the page was stored');
+    assert.match(row.html, /<h1>Slides<\/h1>/);
+    assert.doesNotMatch(row.html, /data-gjs-type/, 'GrapesJS types are stripped on the way out');
+  } finally {
+    db.close();
+  }
 });
 
 test('S8s-9. the theme rows travel in an export, so a bundle arrives wearing its own look', () => {

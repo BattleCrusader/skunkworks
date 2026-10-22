@@ -55,7 +55,7 @@ import {
   verifyPreviewToken,
 } from './render/themes.ts';
 import { faviconSvg, robotsTxt, sitemapXml, type SitemapEntry } from './render/delivery.ts';
-import { CSP_HEADER, cspPolicy, cspPolicyWithNonce } from './render/csp.ts';
+import { CSP_HEADER, cspPolicy, cspPolicyForEditor, cspPolicyWithNonce } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
 import { PREVIEW_PARAM, loadPageForRender } from './render/preview.ts';
 import { SourceCache } from './sources/cache.ts';
@@ -178,6 +178,13 @@ interface RequestContext {
  * a stored body that may not contain `<style>` at all (C-12's CHECK), so it keeps the
  * frozen policy untouched.
  */
+/** `/admin/t/<key>/editor` — the one admin document whose canvas must run its own CSS. */
+export function isEditorDocument(url: string): boolean {
+  const q = url.indexOf('?');
+  const pathname = q === -1 ? url : url.slice(0, q);
+  return /^\/admin\/t\/[^/]+\/editor\/?$/.test(pathname);
+}
+
 export function isAdminDocument(url: string): boolean {
   const q = url.indexOf('?');
   const pathname = q === -1 ? url : url.slice(0, q);
@@ -338,6 +345,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     const type = reply.getHeader('content-type');
     if (typeof type === 'string' && type.startsWith('text/html')) {
       if (typeof payload === 'string' && isAdminDocument(req.url)) {
+        // The editor's canvas applies style rules by inserting a <style> into an iframe that
+        // inherits this document's policy, so it needs 'unsafe-inline' and, because a nonce
+        // voids it, no nonce. One screen; the public site is untouched.
+        if (isEditorDocument(req.url)) {
+          reply.header(CSP_HEADER, cspPolicyForEditor());
+          return payload;
+        }
         const nonce = randomBytes(16).toString('base64');
         reply.header(CSP_HEADER, cspPolicyWithNonce(nonce));
         return withNonce(payload, nonce);
