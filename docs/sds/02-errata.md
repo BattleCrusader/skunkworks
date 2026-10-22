@@ -3860,6 +3860,24 @@ CPU throttle turns a sticky header with `backdrop-filter: blur(8px)` into second
 "Style & Layout". With the GPU available the same page scores 100 with TBT 0. Recorded because it
 is exactly the kind of number that gets quoted as a finding.
 
+The same trap has a second form, measured later on the shipped code: **TBT is a CPU-throttled
+instrument, so a saturated host reads as a slow page.** One mobile run reported performance 76 with
+TBT 1,260 ms while the box was at load 4.95/7.37/7.98 on 8 CPUs (a gate and a `hermes verify` had
+just finished). Four runs back to back afterwards, two with `--enable-gpu --use-angle=metal` and two
+without:
+
+| run | performance | LCP | TBT |
+|---|---|---|---|
+| GPU 1 | 99 | 1.2 s | 120 ms |
+| GPU 2 | **100** | 0.9 s | 0 ms |
+| software 1 | **100** | 0.8 s | 0 ms |
+| software 2 | **100** | 0.9 s | 0 ms |
+| the 76 | 76 | 1.3 s | 1,260 ms |
+
+So the shipped number is 100 (median of four, range 99–100) and the 76 was the machine, not the page.
+The blog post page measures 100 / TBT 0 / LCP 0.8 s on the same pass. One run is not a measurement
+when the instrument depends on an idle CPU.
+
 **So the rendering did not get slower.** The delivery did, in four measurable ways, all of which a
 static Astro build gets for free and a CMS has to be taught:
 
