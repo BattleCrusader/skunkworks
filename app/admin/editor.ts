@@ -443,7 +443,20 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
    halfway through its rows looks like a bug in the values rather than a scrollbar away. */
 .skw-card{flex:0 0 auto;border:1px solid #e4e4e9;border-radius:10px;background:#fff;overflow:hidden}
 .skw-card__head{display:flex;align-items:center;gap:.45rem;padding:.5rem .6rem;border-bottom:1px solid #f0f0f3;background:#fff;position:sticky;top:0;z-index:2}
-.skw-card__head h2{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#6b6b76;margin:0;white-space:nowrap}
+/* A card header is a control: the whole title is the toggle, the chip and the caret say what
+   is inside it and whether it is open. State lives in data-collapsed on the card. */
+.skw-fold{display:inline-flex;align-items:center;gap:.35rem;padding:.1rem .2rem .1rem 0;border:0;border-radius:6px;background:transparent;color:#6b6b76;font:inherit;cursor:pointer}
+.skw-fold span{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;white-space:nowrap}
+.skw-fold svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round;transition:transform .16s ease}
+.skw-fold:hover{color:#24242b}
+.skw-fold:focus-visible{outline:2px solid #2563eb;outline-offset:1px}
+.skw-card[data-collapsed="1"] .skw-fold svg{transform:rotate(-90deg)}
+.skw-card[data-collapsed="1"] > *:not(.skw-card__head){display:none!important}
+.skw-actions{display:flex;flex-wrap:wrap;gap:.3rem;margin:.15rem 0 .35rem}
+.skw-railbtn--danger{color:#8a1c1c;border-color:#e7c9c9}
+.skw-railbtn--danger:hover{background:#fdecec;border-color:#d9a3a3}
+.skw-row--stack{grid-template-columns:58px minmax(0,1fr);align-items:start}
+.skw-in--area{height:auto;min-height:58px;padding:.35rem .45rem;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical}
 .skw-chip{font:11.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#24242b;background:#f3f3f6;border:1px solid #e6e6ea;border-radius:999px;padding:.28rem .45rem;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .skw-chip[data-empty="1"]{color:#9a9aa4;background:#fafafc}
 .skw-body{padding:.55rem .6rem .65rem}
@@ -512,42 +525,63 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
   <aside id="skw-blocks" aria-label="Blocks"></aside>
   <div id="skw-canvas"><div id="gjs"></div></div>
   <aside id="skw-settings" aria-label="Inspector">
-    <section class="skw-card" id="skw-selection" aria-labelledby="skw-selection-head">
-      <header class="skw-card__head"><h2 id="skw-selection-head">Selection</h2><span class="skw-chip" id="skw-sel-where" data-empty="1">nothing selected</span></header>
-      <div class="skw-body">
+    <section class="skw-card" id="skw-selection">
+      <header class="skw-card__head">
+        <button type="button" class="skw-fold" data-skw-collapse aria-expanded="true" aria-controls="skw-selection-body"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><span>Selection</span></button>
+        <span class="skw-chip" id="skw-sel-where" data-empty="1">nothing selected</span>
+      </header>
+      <div class="skw-body" id="skw-selection-body">
         <p class="skw-hint" id="skw-sel-empty">Click an element in the page — or drop one from the library — to see its tag, id, classes and every attribute it carries. All of them are editable here.</p>
         <div id="skw-sel-body" hidden>
           <div class="skw-row"><label for="skw-sel-id">id</label><input class="skw-in" id="skw-sel-id" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="(no id)"></div>
           <div class="skw-row"><label for="skw-sel-classes">classes</label><input class="skw-in" id="skw-sel-classes" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="space separated"></div>
           <div class="skw-attrhead"><span>Attributes</span><button type="button" class="skw-railbtn" id="skw-attr-add">+ add</button></div>
           <div class="skw-attrs" id="skw-sel-attrs"></div>
+          <div class="skw-row skw-row--stack" id="skw-text-row" hidden><label for="skw-sel-text">text</label><textarea class="skw-in skw-in--area" id="skw-sel-text" rows="3" spellcheck="true"></textarea></div>
           <div id="skw-sel-fields"></div>
+          <div class="skw-attrhead"><span>Element</span></div>
+          <div class="skw-actions">
+            <button type="button" class="skw-railbtn" id="skw-el-up" title="Move this element before its previous sibling">↑ up</button>
+            <button type="button" class="skw-railbtn" id="skw-el-down" title="Move this element after its next sibling">↓ down</button>
+            <button type="button" class="skw-railbtn" id="skw-el-dup" title="Duplicate this element">Duplicate</button>
+            <button type="button" class="skw-railbtn skw-railbtn--danger" id="skw-el-del" title="Delete this element">Delete</button>
+          </div>
         </div>
       </div>
     </section>
-    <section class="skw-card" id="skw-computed" aria-labelledby="skw-computed-head">
-      <header class="skw-card__head"><h2 id="skw-computed-head">Computed</h2><span class="skw-chip" id="skw-computed-chip" data-empty="1">—</span></header>
-      <div class="skw-body">
+    <section class="skw-card" id="skw-computed">
+      <header class="skw-card__head">
+        <button type="button" class="skw-fold" data-skw-collapse aria-expanded="true" aria-controls="skw-computed-body"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><span>Computed</span></button>
+        <span class="skw-chip" id="skw-computed-chip" data-empty="1">—</span>
+      </header>
+      <div class="skw-body" id="skw-computed-body">
         <p class="skw-hint" id="skw-computed-empty">Select an element to see the values the browser is actually painting — including everything it inherits.</p>
         <dl class="skw-computed" id="skw-computed-list" hidden></dl>
       </div>
     </section>
-    <section class="skw-card" id="skw-styles-card" aria-labelledby="skw-styles-head">
-      <header class="skw-card__head"><h2 id="skw-styles-head">CSS · this element</h2><span class="skw-chip" id="skw-styles-target" data-empty="1">—</span></header>
+    <section class="skw-card" id="skw-styles-card">
+      <header class="skw-card__head">
+        <button type="button" class="skw-fold" data-skw-collapse aria-expanded="true" aria-controls="skw-styles-body"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><span>CSS · this element</span></button>
+        <span class="skw-chip" id="skw-styles-target" data-empty="1">—</span>
+      </header>
+      <div id="skw-styles-body">
       <p class="skw-hint" id="skw-style-need" hidden>No class or id yet — a CSS rule needs a selector. Name one here and the properties appear.</p>
       <div id="skw-style-give" hidden><input class="skw-in" id="skw-style-class" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="class name"><button type="button" class="skw-railbtn" id="skw-style-add">Style it</button></div>
-      <div id="skw-styles"></div>
+      <div id="skw-styles" hidden></div>
       <details id="skw-rules-details"><summary>Rules reaching this element</summary><ol class="skw-rules" id="skw-rules"></ol></details>
+      </div>
     </section>
     <section class="skw-card" id="skw-css" aria-label="This page's CSS" data-open="1">
       <header class="skw-card__head">
-        <h2>Page CSS</h2>
+        <button type="button" class="skw-fold" data-skw-collapse aria-expanded="true" aria-controls="skw-css-body"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><span>Page CSS</span></button>
         <span class="skw-chip" id="skw-css-count">0 rules</span>
         <button type="button" class="skw-railbtn" id="skw-css-toggle" aria-expanded="true" aria-controls="skw-css-text" style="margin-left:auto">Hide</button>
       </header>
+      <div id="skw-css-body">
       <p class="skw-hint" id="skw-css-hint">Its own file, this page only, loaded <em>after</em> the theme — a rule here wins at equal specificity. Press Save to put it on the page.</p>
       <div id="skw-css-actions"><button type="button" class="skw-railbtn" id="skw-css-scaffold"${readonly ? ' disabled' : ''}>Add a rule for the selected element</button></div>
       <textarea id="skw-css-text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder=".s-hero h1 { font-size: 4.5rem }"${readonly ? ' readonly' : ''}></textarea>
+      </div>
     </section>
   </aside>
 </div>
@@ -887,10 +921,34 @@ const BOOT_SCRIPT = String.raw`
     return node;
   }
 
+  /**
+   * WHERE THE WIDGET WILL LAND.
+   *
+   * GrapesJS draws its insertion marker *inside the canvas document* (.gjs-placeholder-int),
+   * and the rules that give it a colour live in the editor's own stylesheet — which does not
+   * cross the frame boundary. Measured on the live screen: the canvas had no rule mentioning
+   * gjs-placeholder at all, so a drag produced either nothing or a transparent 3 px box. The
+   * rules below are written into the canvas head, and the [data-skw-drop] outline is a second,
+   * independent signal: the block the pointer is over is outlined while a palette drag is in
+   * flight, so there is always somewhere visibly "here" to drop.
+   */
+  function ensureCanvasRules(doc) {
+    // A served file, not an inline <style>: the admin's CSP allows stylesheets from this origin
+    // and nothing else, so an injected <style> was silently dropped — the canvas had exactly one
+    // sheet (the site theme) and an unstyled placeholder.
+    if (doc.querySelector('link[data-skw-canvas-css]')) return;
+    var link = doc.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = '/admin/t/' + encodeURIComponent(boot.tenant) + '/editor/canvas.css';
+    link.setAttribute('data-skw-canvas-css', '1');
+    doc.head.appendChild(link);
+  }
+
   function applySiteFrame() {
     var doc;
     try { doc = editor.Canvas.getDocument(); } catch (e) { return; }
     if (!doc || !doc.body || !doc.head) return;
+    ensureCanvasRules(doc);
     doc.body.setAttribute('data-page-path', boot.frame.path);
 
     if (boot.frame.sheet && !doc.querySelector('link[data-skw-sheet]')) {
@@ -935,10 +993,54 @@ const BOOT_SCRIPT = String.raw`
     } else if (footer) {
       footer.remove();
     }
+    // The canvas frame is created after this script starts, and rebuilt on a structural change:
+    // the drop listeners are attached here, where the document is known to exist.
+    canvasDropHints();
   }
 
+  /**
+   * The pointer's target, marked while a drag is in flight. The palette lives in this document
+   * and the canvas is another one, so "a drag is happening" is tracked here (dragstart/dragend
+   * fire at the source) and the marking happens there.
+   */
+  var draggingWidget = false;
+  var dropHint = null;
+
+  function clearDropHint() {
+    if (dropHint !== null && dropHint.parentNode !== null) dropHint.removeAttribute('data-skw-drop');
+    dropHint = null;
+  }
+
+  function canvasDropHints() {
+    var doc;
+    try { doc = editor.Canvas.getDocument(); } catch (e) { return; }
+    if (!doc || !doc.body || doc.__skwDropHints === true) return;
+    doc.__skwDropHints = true;
+    var BLOCKS = /^(SECTION|DIV|ARTICLE|MAIN|HEADER|FOOTER|NAV|UL|OL|TABLE|FORM|LI|P|H1|H2|H3|H4|BLOCKQUOTE|FIGURE)$/;
+    doc.addEventListener('dragover', function (event) {
+      if (!draggingWidget) return;
+      var node = event.target;
+      while (node && node.nodeType === 1 && node !== doc.body && BLOCKS.test(node.tagName) === false) node = node.parentNode;
+      if (!node || node.nodeType !== 1) return;
+      if (node === dropHint) return;
+      clearDropHint();
+      node.setAttribute('data-skw-drop', '1');
+      dropHint = node;
+    }, true);
+    doc.addEventListener('drop', clearDropHint, true);
+    doc.addEventListener('dragend', clearDropHint, true);
+    doc.addEventListener('dragleave', function (event) {
+      if (event.target === doc.documentElement) clearDropHint();
+    }, true);
+  }
+
+  document.addEventListener('dragstart', function () { draggingWidget = true; }, true);
+  document.addEventListener('dragend', function () { draggingWidget = false; clearDropHint(); }, true);
+  document.addEventListener('drop', function () { draggingWidget = false; clearDropHint(); }, true);
+
   applySiteFrame();
-  editor.on('canvas:frame:load', scheduleFrame);
+  canvasDropHints();
+  editor.on('canvas:frame:load', function () { scheduleFrame(); canvasDropHints(); });
   editor.on('component:add', scheduleFrame);
   editor.on('component:remove', scheduleFrame);
 
@@ -999,6 +1101,8 @@ const BOOT_SCRIPT = String.raw`
   var computedEmpty = el('skw-computed-empty');
   var rulesList = el('skw-rules');
   var stylesBox = el('skw-styles');
+  var textRow = el('skw-text-row');
+  var textBox = el('skw-sel-text');
   var styleNeed = el('skw-style-need');
   var styleGive = el('skw-style-give');
   var styleClass = el('skw-style-class');
@@ -1095,6 +1199,9 @@ const BOOT_SCRIPT = String.raw`
     ['line-height', 'Leading'],
     ['color', 'Colour'],
     ['background-color', 'Fill'],
+    ['display', 'Display'],
+    ['text-transform', 'Transform'],
+    ['border-radius', 'Radius'],
   ];
 
   function shortFamily(value) {
@@ -1309,6 +1416,7 @@ const BOOT_SCRIPT = String.raw`
     if (!has) {
       chip(selWhere, 'nothing selected', true);
       chip(stylesTarget, '—', true);
+      actionsEnabled(false);
       if (stylesBox !== null) stylesBox.hidden = true;
       renderComputed(null);
       renderRules(null);
@@ -1320,6 +1428,7 @@ const BOOT_SCRIPT = String.raw`
     var item = boot.palette.filter(function (p) { return p.type === type; })[0];
     chip(selWhere, item ? '<' + tag + '> · ' + item.label : '<' + tag + '>', false);
 
+    actionsEnabled(true);
     dropInventedId(current);
     var hook = current.getClasses().length > 0 || authoredId(current) !== '';
     chip(stylesTarget, hook ? selectorFor(current) : 'no hook yet', !hook);
@@ -1340,6 +1449,15 @@ const BOOT_SCRIPT = String.raw`
       attrRow(name, String(attrs[name]));
     });
     if (selAttrs !== null && selAttrs.children.length === 0) attrNone();
+    // A leaf component's text is content, not an attribute; the field is only shown when there
+    // is text to edit, and it writes through components() so the model stays the source.
+    var leafText = String(current.get('type')) === 'text' || current.components().length === 0;
+    if (textRow !== null) textRow.hidden = !leafText;
+    if (textBox !== null && leafText && document.activeElement !== textBox) {
+      textBox.value = String(current.get('content') !== undefined && current.get('content') !== null
+        ? current.get('content')
+        : (current.getEl() !== null && current.getEl() !== undefined ? current.getEl().textContent || '' : ''));
+    }
     if (selId !== null && document.activeElement !== selId) selId.value = attrs.id || '';
     if (selClasses !== null && document.activeElement !== selClasses) {
       selClasses.value = current.getClasses().join(' ');
@@ -1426,6 +1544,103 @@ const BOOT_SCRIPT = String.raw`
     if (selClasses !== null && document.activeElement !== selClasses) {
       selClasses.value = current.getClasses().join(' ');
     }
+  });
+
+  if (textBox !== null) {
+    textBox.addEventListener('input', function () {
+      if (current === null) return;
+      // components() is the write that works for both kinds. Measured on the live page: on a
+      // component of type "text", set('content', value) leaves the element and the serialised
+      // document empty; components(value) updates both; writing the child textnode's content
+      // updates the model and leaves the DOM showing the old string. One write, the one that
+      // holds.
+      current.components(textBox.value);
+      setState('Unsaved changes', true);
+    });
+  }
+
+  // ---- element actions -------------------------------------------------------------------
+  var elUp = el('skw-el-up');
+  var elDown = el('skw-el-down');
+  var elDup = el('skw-el-dup');
+  var elDel = el('skw-el-del');
+
+  /** Re-place a component at a new index inside its own parent. */
+  function moveTo(component, index) {
+    var parent = component.parent();
+    if (parent === undefined || parent === null) return false;
+    var siblings = parent.components();
+    var at = Math.max(0, Math.min(siblings.length - 1, index));
+    if (at === siblings.indexOf(component)) return false;
+    siblings.remove(component, { temporary: true });
+    siblings.add(component, { at: at });
+    return true;
+  }
+
+  function actionsEnabled(next) {
+    var list = [elUp, elDown, elDup, elDel];
+    list.forEach(function (node) { if (node !== null) node.disabled = next === false || readonly; });
+  }
+
+  if (elUp !== null) elUp.addEventListener('click', function () {
+    if (current === null) return;
+    var parent = current.parent();
+    if (parent && moveTo(current, parent.components().indexOf(current) - 1)) {
+      setState('Unsaved changes', true);
+      inspector(current);
+    }
+  });
+  if (elDown !== null) elDown.addEventListener('click', function () {
+    if (current === null) return;
+    var parent = current.parent();
+    if (parent && moveTo(current, parent.components().indexOf(current) + 1)) {
+      setState('Unsaved changes', true);
+      inspector(current);
+    }
+  });
+  if (elDup !== null) elDup.addEventListener('click', function () {
+    if (current === null) return;
+    var parent = current.parent();
+    if (!parent) return;
+    var copy = current.clone();
+    parent.components().add(copy, { at: parent.components().indexOf(current) + 1 });
+    setState('Unsaved changes', true);
+    inspector(copy);
+  });
+  if (elDel !== null) elDel.addEventListener('click', function () {
+    if (current === null) return;
+    var node = current;
+    var parent = node.parent();
+    inspector(null);
+    node.remove();
+    setState('Unsaved changes', true);
+    if (parent) {
+      var rest = parent.components();
+      if (rest.length > 0) inspector(rest.at(0));
+    }
+  });
+
+  // ---- collapsible cards ------------------------------------------------------------------
+  // One control per card, state kept per card id, everything open until the operator says
+  // otherwise: a rail whose sections forget they were collapsed is a rail you fold twice.
+  function foldKey(id) { return 'skw-fold-' + id; }
+
+  document.querySelectorAll('[data-skw-collapse]').forEach(function (button) {
+    var card = button.closest('.skw-card');
+    if (!card) return;
+    var id = card.id || 'card';
+    var stored = null;
+    try { stored = window.localStorage.getItem(foldKey(id)); } catch (e) { stored = null; }
+    var collapsed = stored === '1';
+    var apply = function (next) {
+      card.setAttribute('data-collapsed', next ? '1' : '0');
+      button.setAttribute('aria-expanded', next ? 'false' : 'true');
+      try { window.localStorage.setItem(foldKey(id), next ? '1' : '0'); } catch (e) { /* private mode */ }
+    };
+    apply(collapsed);
+    button.addEventListener('click', function () {
+      apply(card.getAttribute('data-collapsed') !== '1');
+    });
   });
 
   // A property typed into the Style Manager changes what is painted; the measurement follows it.
@@ -1737,6 +1952,21 @@ const BOOT_SCRIPT = String.raw`
  * server's `pastedTypes()` builds from the same constant.
  */
 export const EDITOR_BOOT_JS = BOOT_SCRIPT.replace('__SKW_PASTE_TYPE_PATTERN__', JSON.stringify(DATA_GJS_TYPE_PATTERN));
+
+/**
+ * Styles the canvas needs and GrapesJS's own sheet cannot provide, because that sheet lives in
+ * the editor document and CSS does not cross into the frame. Served as a file — the admin's CSP
+ * permits `style-src 'self'` and nothing inline.
+ *
+ * `.gjs-placeholder-int` is the insertion marker the sorter writes into the canvas while a drag
+ * is in flight; without a colour it is a transparent box. `[data-skw-drop]` is the outline this
+ * editor puts on the element the pointer is over.
+ */
+export const CANVAS_CSS = [
+  '.gjs-placeholder-int{background:#2563eb !important;box-shadow:0 0 0 1px rgba(37,99,235,.35) !important;border-radius:2px}',
+  '.gjs-placeholder,.gjs-placeholder-parent{outline:2px solid #2563eb !important;outline-offset:-2px}',
+  '[data-skw-drop="1"]{outline:2px dashed #2563eb !important;outline-offset:-2px;box-shadow:inset 0 0 0 9999px rgba(37,99,235,.045)}',
+].join('\n');
 
 /** The vendored GrapesJS bundle, read once. Served from the admin origin, never a CDN. */
 let cachedGrapes: string | null = null;

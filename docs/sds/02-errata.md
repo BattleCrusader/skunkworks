@@ -4076,3 +4076,45 @@ header and footer. The marker now carries its kind.
 asserted: 16.13:1 body, 8.99:1 muted, 8.66:1 muted-on-card, 7.54:1 accent and primary-button label.
 Uploaded through the real Themes screen, previewed on the real page (desktop and 430 px), then
 deleted — the tenant's theme list is empty, as it was found.
+
+
+## E-51 — the drop target was invisible, and the rail could not be folded
+
+**Symptom.** "When dragging widgets in the editor window, no place is highlighted to drop the widget."
+
+**Cause.** The insertion marker GrapesJS draws during a drag (`.gjs-placeholder-int`) is created
+*inside the canvas iframe*, and the rules that colour it live in the editor's own stylesheet, in
+another document — CSS does not cross a frame boundary. Measured on the live screen: the canvas had
+exactly **one** stylesheet (the site theme) and no rule mentioning `gjs-placeholder`, so the marker
+was either absent or a transparent box.
+
+An inline `<style>` written into the canvas head does not fix it either. The admin's CSP is
+`style-src 'self'`, which drops injected style elements — and the first attempt at this fix did
+exactly that: the element existed, `styleSheets.length` stayed at 1, and the outline never painted.
+The rules are now a served file, `/admin/t/<key>/editor/canvas.css` (`CANVAS_CSS` in
+`app/admin/editor.ts`), linked into the canvas head. Measured after: the canvas lists
+`canvas.css, theme.css?v=96d8e2ecdae0` and the marker's rules resolve.
+
+A second, independent signal was added because a 3 px line is a small thing to ask an operator to
+trust: while a palette drag is in flight (tracked by `dragstart` in the editor document, because
+that is the only document the palette lives in), the element under the pointer gets
+`[data-skw-drop="1"]` — a dashed blue outline with a 4.5% wash. Measured: hovering the hero heading
+during a synthetic palette drag yields one marked element with
+`outline: dashed rgb(37, 99, 235)`.
+
+**Also in this pass, at the operator's request:**
+
+* **Every rail card folds.** Selection, Computed, CSS · this element and Page CSS each carry a
+  chevron button (`[data-skw-collapse]`); state is per card in `localStorage`, so a folded section
+  stays folded.
+* **The Selection card does more than show.** It gains a text field for leaf components, and four
+  element actions — move up, move down, duplicate, delete. Measured: duplicate takes the work grid
+  from 3 to 4 articles, delete returns it to 3, move-down reorders the first two and move-up puts
+  them back.
+* **Computed grew** from 8 to 11 rows: display, text-transform and border-radius join the type and
+  colour measurements.
+
+**One write, not three.** On a component of type `text`, `set('content', v)` leaves both the element
+and the serialised document empty; `components(v)` updates both; writing the child textnode's
+`content` updates the model and leaves the DOM showing the old string. The text field now uses
+`components(v)` only — measured all three side by side rather than guessed.

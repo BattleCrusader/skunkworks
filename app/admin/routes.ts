@@ -74,6 +74,7 @@ import { loadRegistry, registryCss } from '../editor/registry.ts';
 import { publishPage } from '../editor/publish.ts';
 import { loadForEditor, savePage } from '../editor/save.ts';
 import {
+  CANVAS_CSS,
   EDITOR_BOOT_JS,
   grapesJsBundle,
   grapesJsCss,
@@ -1096,7 +1097,7 @@ ${items}
       this.#editorMedia(reply, tenant);
       return;
     }
-    if (action === 'editor/grapesjs.js' || action === 'editor/grapesjs.css' || action === 'editor/editor.js') {
+    if (action === 'editor/grapesjs.js' || action === 'editor/grapesjs.css' || action === 'editor/editor.js' || action === 'editor/canvas.css') {
       this.#editorAsset(reply, action);
       return;
     }
@@ -3116,6 +3117,12 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
     if (action === 'editor/grapesjs.css') {
       reply.header('cache-control', 'public, max-age=86400');
       reply.type('text/css; charset=utf-8').send(grapesJsCss(repoRoot));
+      return;
+    }
+    if (action === 'editor/canvas.css') {
+      // Editor chrome for inside the canvas frame; not a site asset, so never cached.
+      reply.header('cache-control', 'no-store');
+      reply.type('text/css; charset=utf-8').send(CANVAS_CSS);
       return;
     }
     reply.header('cache-control', 'public, max-age=86400');

@@ -322,7 +322,7 @@ test('S8s-10. the palette carries the basic elements, and the page’s CSS is ed
 
   // The CSS panel: the box on the page and the boot field it is filled from.
   assert.match(editor.body, /<textarea id="skw-css-text"/);
-  assert.match(editor.body, /<h2>Page CSS<\/h2>/);
+  assert.match(editor.body, /<span>Page CSS<\/span>/);
   assert.equal(payload.css, PAGE_CSS, 'the panel opens on the stylesheet the draft holds');
 
   const script = await get('/admin/t/acme/editor/editor.js');
@@ -352,6 +352,12 @@ test('S8s-11. selecting anything opens the inspector: what it is, what it paints
   assert.match(html, /id="skw-styles"/);
   assert.match(html, /id="skw-rules"/);
 
+  // (c2) every card folds, and the selection card can act on the element it describes
+  assert.equal((html.match(/data-skw-collapse/g) ?? []).length, 4, 'one fold control per card');
+  for (const id of ['skw-el-up', 'skw-el-down', 'skw-el-dup', 'skw-el-del', 'skw-sel-text']) {
+    assert.match(html, new RegExp(`id="${id}"`), `the selection card offers ${id}`);
+  }
+
   // (d) the page's stylesheet, in the same rail
   assert.match(html, /id="skw-css"/);
   assert.match(html, /id="skw-css-text"/);
@@ -375,6 +381,15 @@ test('S8s-11. selecting anything opens the inspector: what it is, what it paints
   assert.match(js, /component:selected', inspector\)/, 'the inspector is what a selection calls');
   assert.match(js, /authoredIds/, 'ids the editor invents are told apart from ids in the content');
   assert.match(js, /scrubInventedIds\(\)/, 'and none of them reaches the stored page');
+
+  // The canvas is another document: the rules that draw the insertion marker and the drop outline
+  // must arrive there as a stylesheet the CSP allows, not as an inline <style> it would drop.
+  assert.match(js, /editor\/canvas\.css/, 'the canvas links its own stylesheet');
+  const canvasCss = await get('/admin/t/acme/editor/canvas.css');
+  assert.equal(canvasCss.status, 200);
+  assert.match(String(header(canvasCss, 'content-type')), /text\/css/);
+  assert.match(canvasCss.body, /\.gjs-placeholder-int/);
+  assert.match(canvasCss.body, /\[data-skw-drop="1"\]/, 'the element under the pointer is outlined');
   assert.match(js, /renderComputed/, 'the computed values are measured, not assumed');
   assert.match(js, /renderRules/, 'the matching rules are listed');
   assert.match(js, /getComputedStyle/, 'from the canvas itself');
