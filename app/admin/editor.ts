@@ -993,9 +993,25 @@ const BOOT_SCRIPT = String.raw`
     } else if (footer) {
       footer.remove();
     }
+
+    // GrapesJS appends a newly added component to the document body it knows about, which is the
+    // element we renamed to <main> only after the fact. Anything that lands beside <main> — a
+    // dropped band, a pasted fragment — is moved inside it, so it gets the theme's page width and
+    // the sorter sees it as part of the page. Measured before this: the model held six sections
+    // and the DOM showed five under <main>.
+    var strays = [];
+    for (var s = 0; s < doc.body.children.length; s += 1) {
+      var child = doc.body.children[s];
+      if (child === el || child.hasAttribute('data-skw-frame')) continue;
+      // Only a node that *is* a component belongs to the page; GrapesJS keeps its own style and
+      // script containers beside the wrapper (gjs-css-rules, gjs-js-cont) and those stay put.
+      if (componentFromElement(child) === null) continue;
+      strays.push(child);
+    }
+    strays.forEach(function (child) { el.appendChild(child); });
     // The canvas frame is created after this script starts, and rebuilt on a structural change:
     // the drop listeners are attached here, where the document is known to exist.
-    canvasDropHints();
+    canvasDrops();
   }
 
   /**
@@ -1005,42 +1021,250 @@ const BOOT_SCRIPT = String.raw`
    */
   var draggingWidget = false;
   var dropHint = null;
+  var dragBlock = null;
 
   function clearDropHint() {
     if (dropHint !== null && dropHint.parentNode !== null) dropHint.removeAttribute('data-skw-drop');
     dropHint = null;
   }
 
-  function canvasDropHints() {
+  /**
+   * The block a palette element belongs to.
+   *
+   * Not via the view: in this build a block model has no view property (measured — block.view
+   * is undefined for every block), and the rendered element's model lives in the editor's own
+   * data store, which is not reachable from page script. So every block carries data-block-id
+   * in its attributes, which BlockView writes onto the element it renders, and the lookup is a
+   * dictionary hit.
+   */
+  function blockFromElement(node) {
+    var element = node && node.closest ? node.closest('.gjs-block') : null;
+    if (!element) return null;
+    var key = element.getAttribute('data-block-id');
+    if (!key) return null;
+    return editor.Blocks.get(key) || null;
+  }
+
+  /** The component whose rendered element is node, searched depth-first over the wrapper. */
+  function componentFromElement(node) {
+    var found = null;
+    var walk = function (component) {
+      if (found !== null || !component) return;
+      var el = null;
+      try { el = component.getEl ? component.getEl() : null; } catch (e) { el = null; }
+      if (el === node) { found = component; return; }
+      component.components().forEach(walk);
+    };
+    walk(editor.getWrapper());
+    return found;
+  }
+
+  // Containers a block may be dropped *into*. Anything else — a heading, a paragraph, a link —
+  // takes the block beside it instead, because a section inside an h1 is never what was meant.
+  var CONTAINERS = /^(SECTION|DIV|MAIN|ARTICLE|ASIDE|HEADER|FOOTER|NAV|UL|OL|LI|TABLE|TBODY|TR|TD|TH|FORM|FIGURE|BLOCKQUOTE|DETAILS|BODY)$/;
+
+  /**
+   * Insert content where the pointer is. Inside a container the position is the child index the
+   * pointer's Y falls into; beside a leaf it is the position after that leaf in its parent.
+   */
+  /**
+   * Put the new component's element where the model says it is.
+   *
+   * Measured on the live screen: after append() the component exists, getHtml() contains it,
+   * but getEl().isConnected is false and its parent is a DIV that is not in the document — the
+   * editor rendered it into a container this screen no longer uses (the wrapper element was
+   * renamed to <main> after GrapesJS built it). So the element is placed by hand, immediately
+   * before the element of the component that follows it in the model, or before the footer.
+   */
+  function placeElement(component, parent, index) {
+    var el = null;
+    try { el = component.getEl ? component.getEl() : null; } catch (e) { el = null; }
+    if (!el || el.nodeType !== 1 || el.isConnected) return;
+    var next = parent.components().at(index + 1);
+    var ref = null;
+    try { ref = next && next.getEl ? next.getEl() : null; } catch (e) { ref = null; }
+    if (ref && ref.isConnected && ref.parentNode) {
+      ref.parentNode.insertBefore(el, ref);
+      return;
+    }
+    var doc = el.ownerDocument;
+    var footer = doc.querySelector('[data-skw-frame="footer"]');
+    if (footer && footer.parentNode) {
+      footer.parentNode.insertBefore(el, footer);
+      return;
+    }
+    var mainEl = doc.querySelector('main[data-skw-page]');
+    (mainEl || doc.body).appendChild(el);
+  }
+
+  function appendAt(component, content, index) {
+    component.append(content, { at: index });
+    var inserted = component.components().at(index);
+    if (inserted) placeElement(inserted, component, index);
+    return inserted;
+  }
+
+  /** A block whose own markup is a page band, rather than something that lives inside one. */
+  function isBand(content) {
+    var html = typeof content === 'string' ? content : '';
+    return /^\s*<section[\s>]/i.test(html);
+  }
+
+  /** The outermost component under the wrapper that contains this one — a page band. */
+  function topLevelAncestor(component) {
+    var node = component;
+    var wrapper = editor.getWrapper();
+    while (node !== null && node.parent() && node.parent() !== wrapper) node = node.parent();
+    return node === wrapper ? null : node;
+  }
+
+  function insertContent(content, node, clientY) {
+    var wrapper = editor.getWrapper();
+    var target = componentFromElement(node);
+    if (target === null || target === wrapper) {
+      return appendAt(wrapper, content, wrapper.components().length);
+    }
+    // A band goes beside the band you dropped it on, never inside it: a second hero section
+    // nested in the first one's grid is a structure nobody asked for.
+    if (isBand(content)) {
+      var band = topLevelAncestor(target);
+      if (band !== null) {
+        var bandParent = band.parent() || wrapper;
+        return appendAt(bandParent, content, bandParent.components().indexOf(band) + 1);
+      }
+    }
+
+    var tag = String(target.get('tagName') || '').toUpperCase();
+    var children = target.components();
+
+    // A block may only go *inside* a container that is not itself a page-level band. A section
+    // dropped onto a heading becomes a new band after that heading's section, not a section
+    // inside the hero — which is what a nesting rule alone would produce.
+    if (CONTAINERS.test(tag) && children.length > 0 && target.parent() !== wrapper) {
+      var at = children.length;
+      for (var i = 0; i < children.length; i += 1) {
+        var childEl = children.at(i).getEl();
+        if (!childEl) continue;
+        var rect = childEl.getBoundingClientRect();
+        if (clientY < rect.top + rect.height / 2) { at = i; break; }
+      }
+      return appendAt(target, content, at);
+    }
+
+    // Everything else — a leaf, or a container that is already a page-level band — takes the
+    // block as its next sibling at the level it was dropped on.
+    var parent = target.parent();
+    if (parent === null || parent === undefined) return appendAt(wrapper, content, wrapper.components().length);
+    var index = parent.components().indexOf(target) + 1;
+    return appendAt(parent, content, index);
+  }
+
+  /**
+   * THE DROP PATH.
+   *
+   * GrapesJS ships a native drag path that routes the drop through its ComponentSorter, and this
+   * build never creates that sorter: Canvas.getSorter is undefined, Blocks.config.getSorter
+   * is undefined, so nothing calls preventDefault on dragover, the browser refuses the drop, and
+   * not even a drop event fires. Measured, not assumed: a real CDP drag over the canvas
+   * produced dragenter/dragover/drop with defaultPrevented: false and the component count
+   * stayed at 5.
+   *
+   * So the drop is ours. dragover accepts and marks the target; drop inserts the block's content
+   * at the pointer and selects what it inserted. Blocks also insert on click (at the end of the
+   * page) so the palette works without a drag at all.
+   */
+  function canvasDrops() {
     var doc;
     try { doc = editor.Canvas.getDocument(); } catch (e) { return; }
-    if (!doc || !doc.body || doc.__skwDropHints === true) return;
-    doc.__skwDropHints = true;
+    if (!doc || !doc.body || doc.__skwDrops === true) return;
+    doc.__skwDrops = true;
     var BLOCKS = /^(SECTION|DIV|ARTICLE|MAIN|HEADER|FOOTER|NAV|UL|OL|TABLE|FORM|LI|P|H1|H2|H3|H4|BLOCKQUOTE|FIGURE)$/;
+
+    function nearestBlock(node) {
+      while (node && node.nodeType === 1 && node !== doc.body && BLOCKS.test(node.tagName) === false) node = node.parentNode;
+      return node && node.nodeType === 1 ? node : doc.body;
+    }
+
     doc.addEventListener('dragover', function (event) {
       if (!draggingWidget) return;
-      var node = event.target;
-      while (node && node.nodeType === 1 && node !== doc.body && BLOCKS.test(node.tagName) === false) node = node.parentNode;
-      if (!node || node.nodeType !== 1) return;
+      // Without this the browser treats the canvas as a non-drop zone and no drop event follows.
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      var node = nearestBlock(event.target);
       if (node === dropHint) return;
       clearDropHint();
       node.setAttribute('data-skw-drop', '1');
       dropHint = node;
     }, true);
-    doc.addEventListener('drop', clearDropHint, true);
+
+    doc.addEventListener('drop', function (event) {
+      if (!draggingWidget || dragBlock === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      var content = dragBlock.get('content');
+      var node = nearestBlock(event.target);
+      var inserted = null;
+      try {
+        inserted = insertContent(content, node, event.clientY);
+      } catch (e) {
+        inserted = null;
+      }
+      clearDropHint();
+      draggingWidget = false;
+      dragBlock = null;
+      if (inserted !== null) {
+        setState('Unsaved changes', true);
+        // The model is right the moment append() returns; the canvas is not, because the wrapper
+        // element is one this editor renamed after GrapesJS built it. A refresh redraws the
+        // document from the model, which is what puts the new band on screen.
+        try { editor.refreshCanvas(); } catch (e) { /* older builds */ }
+        scheduleFrame();
+        try { editor.select(inserted, { scrollIntoView: true }); } catch (e) { /* removed */ }
+      }
+    }, true);
+
     doc.addEventListener('dragend', clearDropHint, true);
     doc.addEventListener('dragleave', function (event) {
       if (event.target === doc.documentElement) clearDropHint();
     }, true);
   }
 
-  document.addEventListener('dragstart', function () { draggingWidget = true; }, true);
-  document.addEventListener('dragend', function () { draggingWidget = false; clearDropHint(); }, true);
-  document.addEventListener('drop', function () { draggingWidget = false; clearDropHint(); }, true);
+  document.addEventListener('dragstart', function (event) {
+    var block = blockFromElement(event.target);
+    if (block === null) return;
+    draggingWidget = true;
+    dragBlock = block;
+  }, true);
+  document.addEventListener('dragend', function () {
+    draggingWidget = false;
+    dragBlock = null;
+    clearDropHint();
+  }, true);
+  document.addEventListener('drop', function () {
+    draggingWidget = false;
+    dragBlock = null;
+    clearDropHint();
+  }, true);
+
+  // Click a block to add it at the end of the page. The drag is the fast path; this is the one
+  // that works with a trackpad, a keyboard, or a browser that will not start a drag at all.
+  document.addEventListener('click', function (event) {
+    if (readonly) return;
+    var block = blockFromElement(event.target);
+    if (block === null) return;
+    var wrapper = editor.getWrapper();
+    var inserted = null;
+    try { inserted = insertContent(block.get('content'), wrapper.getEl(), 10e6); } catch (e) { inserted = null; }
+    if (inserted === null) return;
+    setState('Unsaved changes', true);
+    try { editor.refreshCanvas(); } catch (e) { /* older builds */ }
+    scheduleFrame();
+    try { editor.select(inserted, { scrollIntoView: true }); } catch (e) { /* removed */ }
+  }, true);
 
   applySiteFrame();
-  canvasDropHints();
-  editor.on('canvas:frame:load', function () { scheduleFrame(); canvasDropHints(); });
+  canvasDrops();
+  editor.on('canvas:frame:load', function () { scheduleFrame(); canvasDrops(); });
   editor.on('component:add', scheduleFrame);
   editor.on('component:remove', scheduleFrame);
 
@@ -1061,10 +1285,35 @@ const BOOT_SCRIPT = String.raw`
       ...(readonly ? { disable: true } : {}),
     });
   });
+  // Every palette block is tagged on its *model*, because the model's attributes object is what
+  // BlockView writes onto the element — and that element is the only thing page script can see.
   boot.palette.forEach(function (item) {
-    var view = editor.Blocks.get(item.id);
-    if (view) view.set('attributes', { 'data-type': item.type });
+    var block = editor.Blocks.get(item.id);
+    if (!block) return;
+    var attrs = {};
+    var existing = block.get('attributes') || {};
+    Object.keys(existing).forEach(function (key) { attrs[key] = existing[key]; });
+    attrs['data-block-id'] = item.id;
+    attrs['data-type'] = item.type;
+    block.set('attributes', attrs);
   });
+  // A block added by a package is not in boot.palette, so it needs the tag too. The collection is
+  // not a Backbone one: forEach is not a function on it (that threw here once, and the exception
+  // took the rest of the boot script with it — no page, no Save, no drops). getAll() is the
+  // accessor the editor actually has, and the sweep is guarded, because tagging a palette is not
+  // worth a dead editor.
+  try {
+    var everyBlock = typeof editor.Blocks.getAll === 'function' ? editor.Blocks.getAll() : [];
+    everyBlock.forEach(function (block) {
+      if (!block || typeof block.get !== 'function') return;
+      var attrs = {};
+      var existing = block.get('attributes') || {};
+      Object.keys(existing).forEach(function (key) { attrs[key] = existing[key]; });
+      if (attrs['data-block-id']) return;
+      attrs['data-block-id'] = String(block.get('id'));
+      block.set('attributes', attrs);
+    });
+  } catch (e) { /* the palette still works, the tag is a convenience */ }
 
   // 3. The document. page.bodyHtml is what the server validated; a hand-managed page is
   //    read-only in the canvas (§10.6) because the next drag would re-serialise it.

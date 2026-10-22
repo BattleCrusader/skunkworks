@@ -395,6 +395,27 @@ test('S8s-11. selecting anything opens the inspector: what it is, what it paints
   assert.match(js, /getComputedStyle/, 'from the canvas itself');
 });
 
+test('S8s-12. a palette drag has a drop path of its own, because this build creates no sorter', async () => {
+  const script = await get('/admin/t/acme/editor/editor.js');
+  const js = script.body;
+
+  // The palette element is the only thing page script can see, so each block carries its id in
+  // the attributes BlockView writes onto that element.
+  assert.match(js, /data-block-id/, 'blocks are addressable from the DOM');
+  assert.match(js, /function blockFromElement/, 'and resolved back to their model');
+  assert.match(js, /function canvasDrops/, 'the drop path is ours');
+
+  // dragover must be accepted, or the browser never delivers a drop at all. That is the defect
+  // this test exists for: GrapesJS's sorter is never created here (Canvas.getSorter and
+  // Blocks.config.getSorter are both undefined), so nothing called preventDefault.
+  const dragover = /addEventListener\('dragover'[\s\S]{0,600}?preventDefault\(\)/.exec(js);
+  assert.ok(dragover !== null, 'dragover calls preventDefault');
+  assert.match(js, /function insertContent/, 'content is placed where the pointer is');
+  assert.match(js, /function isBand/, 'a band goes beside a band, never inside one');
+  assert.match(js, /function placeElement/, 'and its element is attached, not left detached');
+  assert.match(js, /refreshCanvas/, 'the canvas is redrawn from the model after an insert');
+});
+
 test('S8s-9. the theme rows travel in an export, so a bundle arrives wearing its own look', () => {
   const projection = JSON.parse(readFileSync(`${REPO}/schema/export-projection.json`, 'utf8')) as {
     tables: Record<string, { mode: string }>;

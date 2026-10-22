@@ -4118,3 +4118,55 @@ during a synthetic palette drag yields one marked element with
 and the serialised document empty; `components(v)` updates both; writing the child textnode's
 `content` updates the model and leaves the DOM showing the old string. The text field now uses
 `components(v)` only — measured all three side by side rather than guessed.
+
+
+## E-52 — the widget would not drop, because nothing ever accepted the drag
+
+**Symptom.** "dnd of widgets does nothing. It doesn't insert the widget." The drop outline had just
+been added, so the target was visible and the block still did not arrive.
+
+**Cause.** A native HTML5 drop happens only if something calls `preventDefault()` on `dragover`.
+GrapesJS does that in its `ComponentSorter`, and **this build never creates that sorter**:
+
+| check | measured |
+|---|---|
+| `editor.Canvas.getSorter` | `undefined` |
+| `editor.Blocks.config.getSorter` | `undefined` |
+| `ComponentSorter` on the canvas | never constructed |
+| a real CDP drag over the canvas | `dragenter/dragover/drop` all `defaultPrevented: false` |
+| component count after that drop | 5 → 5 |
+
+With `nativeDnD` on (the default), the block element is `draggable="true"`, so the block view's
+`mousedown` handler returns early — it only starts a sort in the non-native path — and the drag is
+handed to a browser that has no drop zone. `Blocks.__startDrag` did run (it sets `em.dragSource`),
+which is why the drag *looked* alive: the source was set, the target was marked, and the drop was
+refused before any handler saw it.
+
+**The drop path, now ours.**
+
+1. `data-block-id` is written into each **block model's** attributes, because BlockView writes the
+   model's attributes onto the rendered element — and that element is the only object page script
+   can reach. A block model has no `view` property in this build (measured), and the element's model
+   lives in the editor's private data store.
+2. `dragover` in the canvas calls `preventDefault()` and marks the element under the pointer.
+3. `drop` resolves the block, inserts its content at the pointer, and selects what it inserted.
+   A block whose own markup is a `<section>` goes **beside** the band it was dropped on; anything
+   else goes inside the container it was dropped into.
+4. `placeElement()` attaches the new element by hand. Measured: after `append()` the component
+   exists and `getHtml()` contains it, but `getEl().isConnected` is **false** and its parent is a
+   DIV outside the document — the editor rendered it into a container this screen replaced when it
+   renamed the wrapper to `<main>`. The element is now placed before the next component's element,
+   or before the footer.
+5. Clicking a block inserts at the end of the page, because a drag is not the only way to use a
+   palette and not every browser will start one.
+
+**Measured after the fix**, with a real mouse drag driven through CDP drag interception
+(`Input.setInterceptDrags` → `dragEnter` → `dragOver` → `drop`): sections 5 → **6**, components
+5 → **6**, `dirty` set, the inserted `<section>` selected, and the DOM chain of the new band
+`section.s-band → main → body → html`. Synthetic drag and click agree. Undo returns the page to 5.
+
+**A boot script that dies takes the screen with it.** The first version of the block tagging called
+`editor.Blocks.forEach(...)`; the collection is not a Backbone one, `forEach` is not a function, and
+the exception aborted the rest of the boot script — no page in the canvas, no Save, no drops. Caught
+by capturing `Runtime.exceptionThrown` in the browser rather than reading the code. The sweep now
+uses `getAll()` inside a `try`.
