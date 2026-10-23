@@ -50,6 +50,8 @@ import {
   activeThemeKey,
   cssBlob,
   listThemes,
+  themeAsset,
+  themeAssetsRoot,
   sha256 as cssSha256,
   themeByKey,
   verifyPreviewToken,
@@ -610,6 +612,67 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
         .header('cache-control', 'public, max-age=31536000, immutable')
         .header('etag', `"${sha.slice(0, 32)}"`)
         .send(css);
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * S8x: the files a theme's stylesheet names.
+   *
+   * A theme is a package, so its pictures and fonts have to be reachable at a URL the rewritten
+   * stylesheet already points at — `/_theme/<key>/assets/hero.jpg?v=<sha8>`. Three properties make
+   * this the right shape:
+   *
+   *  1. **The URL names the tenant by Host, not by path.** Same rule as `/_css/<sha>.css`: an asset
+   *     URL copied from one tenant's page resolves to nothing on another's origin.
+   *  2. **The row decides, not the path.** The path in the request is looked up in `cms_theme_asset`
+   *     joined to the theme key, so a request cannot name a file the database does not say exists —
+   *     `../../control.db` finds no row and answers 404 without the filesystem ever being consulted
+   *     for a name the operator chose.
+   *  3. **Immutable, because the URL carries the hash.** The sheet is only ever stored with `?v=`
+   *     baked in, so a year-long cache cannot serve the previous image after a re-upload: a
+   *     re-upload is a new theme key, and a new key is a new URL.
+   *
+   * An SVG is served with a policy of its own. It is an image the browser will also happily execute
+   * as a document if someone opens it directly, and this is the tenant's own origin, so the
+   * response gets `default-src 'none'` and `nosniff` — the file renders as a picture and does
+   * nothing else.
+   */
+  app.get('/_theme/:key/*', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const params = req.params as { key?: string; '*': string };
+    const key = String(params.key ?? '');
+    const path = String(params['*'] ?? '');
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(key) || path === '') {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'a theme file is /_theme/<key>/<path>');
+    }
+    const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+    try {
+      const row = themeAsset(db, key, path);
+      if (row === undefined) {
+        reply.code(404).header('cache-control', 'no-store').type('text/plain; charset=utf-8').send('');
+        return;
+      }
+      const file = join(themeAssetsRoot(env.dataDir, ctx.tenant.key), key, row.path);
+      let bytes: Buffer;
+      try {
+        bytes = readFileSync(file);
+      } catch {
+        // A row without its file is a broken install, not a bad request: say 404 (the URL is
+        // correct and the bytes are not) rather than 500 on every page that shows the image.
+        reply.code(404).header('cache-control', 'no-store').type('text/plain; charset=utf-8').send('');
+        return;
+      }
+      reply
+        .type(row.contentType)
+        .header('cache-control', 'public, max-age=31536000, immutable')
+        .header('etag', `"${row.sha256.slice(0, 32)}"`)
+        .header('x-content-type-options', 'nosniff');
+      if (row.contentType === 'image/svg+xml') {
+        reply.header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:");
+      }
+      reply.send(bytes);
     } finally {
       db.close();
     }

@@ -33,15 +33,24 @@
  * is: the site is not a file share.
  */
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type Database from 'better-sqlite3';
 
 import { AppError } from '../errors.ts';
+import { THEME_MAX_BYTES, rewriteAssetUrls, type ThemeAsset } from './theme-bundle.ts';
+
+export { THEME_MAX_BYTES };
+export type { ThemeAsset };
 
 /** The pointer. One value, therefore one active theme. */
 export const THEME_KEY_SETTING = 'site.theme_key';
 
-/** A theme is a stylesheet a person wrote; 512 KiB is generous for one and small enough to read. */
-export const THEME_MAX_BYTES = 512 * 1024;
+/**
+ * A theme is a stylesheet a person wrote; 512 KiB is generous for one and small enough to read.
+ * The number lives in `theme-bundle.ts`, beside the reader that enforces it on a package's sheet,
+ * so a `.css` upload and a `.zip` upload cannot disagree about the ceiling.
+ */
 
 /** The most a `cms_css_blob` row may hold — the schema's CHECK is the second lock. */
 export const CSS_MAX_BYTES = 1024 * 1024;
@@ -56,6 +65,37 @@ export interface ThemeRow {
   sourceName: string | null;
   createdAt: string;
   active: boolean;
+  /** How many files the package carried, and how much they weigh. */
+  assetCount: number;
+  assetBytes: number;
+}
+
+/** One file a theme's stylesheet names. The bytes are on disk; this is the row that names them. */
+export interface ThemeAssetRow {
+  path: string;
+  sha256: string;
+  bytes: number;
+  contentType: string;
+}
+
+/**
+ * Where a tenant's theme files live: `tenants/<key>/theme-assets/<theme_key>/<path>`.
+ *
+ * Beside the tenant's `site.db` and not in `content/`: content is what the media library owns and
+ * what an export copies as `media/`, and a theme's files are neither — they are part of a look, they
+ * are served from `/_theme/<key>/…`, and they are deleted with the theme.
+ */
+export function themeAssetsRoot(dataDir: string, tenantKey: string): string {
+  return join(dataDir, 'tenants', tenantKey, 'theme-assets');
+}
+
+export function themeAssetDir(root: string, themeKey: string): string {
+  return join(root, themeKey);
+}
+
+/** `/admin`-free and tenant-scoped: the URL a rewritten stylesheet refers to. */
+export function themeAssetPath(themeKey: string, path: string): string {
+  return join(themeAssetDir('', themeKey), path);
 }
 
 /** How long a theme preview link works. Long enough to look, short enough to not linger. */
@@ -114,6 +154,8 @@ interface ThemeJoin {
   bytes: number;
   source_name: string | null;
   created_at: string;
+  asset_count: number;
+  asset_bytes: number;
 }
 
 export function sha256(text: string): string {
@@ -209,11 +251,15 @@ function toRow(row: ThemeJoin, activeKey: string): ThemeRow {
     bytes: row.bytes,
     sourceName: row.source_name,
     createdAt: row.created_at,
+    assetCount: row.asset_count,
+    assetBytes: row.asset_bytes,
     active: row.theme_key === activeKey,
   };
 }
 
-const SELECT = `SELECT t.id, t.theme_key, t.name, t.css_sha256, b.css, b.bytes, t.source_name, t.created_at
+const SELECT = `SELECT t.id, t.theme_key, t.name, t.css_sha256, b.css, b.bytes, t.source_name, t.created_at,
+                       (SELECT COUNT(*) FROM cms_theme_asset a WHERE a.theme_id = t.id) AS asset_count,
+                       (SELECT COALESCE(SUM(a.bytes), 0) FROM cms_theme_asset a WHERE a.theme_id = t.id) AS asset_bytes
                   FROM cms_theme t JOIN cms_css_blob b ON b.sha256 = t.css_sha256`;
 
 export function listThemes(db: Database.Database): ThemeRow[] {
@@ -270,6 +316,10 @@ export interface UploadThemeInput {
   css: string;
   sourceName?: string;
   actorId: number | null;
+  /** The files the package carried. Empty for a bare `.css` upload. */
+  assets?: readonly ThemeAsset[];
+  /** Absolute directory for the tenant's theme files. Required when `assets` is non-empty. */
+  assetsRoot?: string;
 }
 
 /**
@@ -277,34 +327,106 @@ export interface UploadThemeInput {
  * missing would be a row that renders as an unstyled site, which is worse than a refused upload.
  */
 export function uploadTheme(db: Database.Database, input: UploadThemeInput): ThemeRow {
-  const css = input.css;
-  const bytes = Buffer.byteLength(css, 'utf8');
+  const assets = input.assets ?? [];
+  const bytes = Buffer.byteLength(input.css, 'utf8');
   if (bytes === 0) throw new AppError('SKW_E_PL_REJECTED', `${input.name} is empty`);
   if (bytes > THEME_MAX_BYTES) {
     throw new AppError('SKW_E_PL_REJECTED', `${input.name} is ${bytes} bytes; the limit is ${THEME_MAX_BYTES}`, { bytes });
   }
-  refuseMarkup(css, input.name);
+  refuseMarkup(input.css, input.name);
+  if (assets.length > 0 && input.assetsRoot === undefined) {
+    // A programming error, not an operator one: the caller read a package and forgot where its
+    // files go. Refusing beats storing rows for bytes nobody wrote.
+    throw new AppError('SKW_E_PL_INTERNAL', 'a theme package needs somewhere to put its files');
+  }
   const name = input.name.trim().slice(0, 120) || 'Untitled theme';
   const key = themeKeyFrom(name, (candidate) => {
     const hit = db.prepare(`SELECT 1 FROM cms_theme WHERE theme_key = ?`).get(candidate);
     return hit !== undefined;
   });
-  const write = db.transaction(() => {
-    const sha = putCssBlob(db, css);
-    const result = db
-      .prepare(
-        `INSERT INTO cms_theme (theme_key, name, css_sha256, source_name, created_by)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(key, name, sha, input.sourceName ?? null, input.actorId);
-    return Number(result.lastInsertRowid);
-  });
-  const id = write();
+
+  // The sheet is stored *after* the rewrite, so the blob is the exact bytes the browser gets and
+  // its sha is therefore its name. The key has to exist before the rewrite, which is why it is
+  // allocated above rather than by the INSERT.
+  const css = rewriteAssetUrls(input.css, key, assets);
+  const root = input.assetsRoot;
+
+  if (root !== undefined && assets.length > 0) {
+    const dir = themeAssetDir(root, key);
+    try {
+      for (const asset of assets) {
+        const target = join(dir, asset.path);
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, asset.bytes);
+      }
+    } catch (err) {
+      rmSync(dir, { recursive: true, force: true });
+      throw new AppError('SKW_E_PLT_INTERNAL', `the theme's files could not be written: ${(err as Error).message}`);
+    }
+  }
+
+  let id: number;
+  try {
+    const write = db.transaction(() => {
+      const sha = putCssBlob(db, css);
+      const result = db
+        .prepare(
+          `INSERT INTO cms_theme (theme_key, name, css_sha256, source_name, created_by)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(key, name, sha, input.sourceName ?? null, input.actorId);
+      const themeId = Number(result.lastInsertRowid);
+      const insertAsset = db.prepare(
+        `INSERT INTO cms_theme_asset (theme_id, path, sha256, bytes, content_type) VALUES (?, ?, ?, ?, ?)`,
+      );
+      for (const asset of assets) {
+        insertAsset.run(themeId, asset.path, asset.sha256, asset.bytes.length, asset.contentType);
+      }
+      return themeId;
+    });
+    id = write();
+  } catch (err) {
+    // The row is the record; files without a row are unreachable, so they go.
+    if (root !== undefined) rmSync(themeAssetDir(root, key), { recursive: true, force: true });
+    throw err;
+  }
+
   const row = themeByKey(db, key);
   if (row === undefined || row.id !== id) {
     throw new AppError('SKW_E_PL_INTERNAL', 'the theme was written but cannot be read back', { key });
   }
   return row;
+}
+
+/**
+ * One file of one theme, by the path the stylesheet names.
+ *
+ * The lookup is by theme key and path — not by a filesystem path the request supplied — so a URL
+ * can only name a file this table says exists. `/_theme/<key>/../../etc/passwd` finds no row.
+ */
+export function themeAsset(db: Database.Database, themeKey: string, path: string): ThemeAssetRow | undefined {
+  const row = db
+    .prepare(
+      `SELECT a.path, a.sha256, a.bytes, a.content_type
+         FROM cms_theme_asset a JOIN cms_theme t ON t.id = a.theme_id
+        WHERE t.theme_key = ? AND a.path = ?`,
+    )
+    .get(themeKey, path) as { path: string; sha256: string; bytes: number; content_type: string } | undefined;
+  if (row === undefined) return undefined;
+  return { path: row.path, sha256: row.sha256, bytes: row.bytes, contentType: row.content_type };
+}
+
+/** Every file of one theme, for the export that has to write them. */
+export function themeAssets(db: Database.Database, themeKey: string): ThemeAssetRow[] {
+  const rows = db
+    .prepare(
+      `SELECT a.path, a.sha256, a.bytes, a.content_type
+         FROM cms_theme_asset a JOIN cms_theme t ON t.id = a.theme_id
+        WHERE t.theme_key = ?
+        ORDER BY a.path`,
+    )
+    .all(themeKey) as { path: string; sha256: string; bytes: number; content_type: string }[];
+  return rows.map((row) => ({ path: row.path, sha256: row.sha256, bytes: row.bytes, contentType: row.content_type }));
 }
 
 /**
@@ -336,7 +458,7 @@ export function deactivateTheme(db: Database.Database, actorId: number | null): 
  * the kind of operator mistake a refusal is for. Deactivate first, which is one click and is the
  * moment the operator sees what the site looks like without it.
  */
-export function deleteTheme(db: Database.Database, key: string): void {
+export function deleteTheme(db: Database.Database, key: string, assetsRoot?: string): void {
   const theme = themeByKey(db, key);
   if (theme === undefined) throw new AppError('SKW_E_PL_REJECTED', `no theme named ${key}`, { key });
   if (theme.active) {
@@ -344,6 +466,14 @@ export function deleteTheme(db: Database.Database, key: string): void {
   }
   // The blob is left in place on purpose: another theme, or a page, may share those exact bytes,
   // and a content-addressed file that exists is never wrong. Pruning is a separate job with a
-  // reference count, not a side effect of deleting a row.
-  db.prepare(`DELETE FROM cms_theme WHERE theme_key = ?`).run(key);
+  // reference count, not a side effect of deleting a row. The assets are the opposite: their path
+  // is owned by this theme key and by nothing else, so they go with it.
+  db.transaction(() => {
+    db.prepare(`DELETE FROM cms_theme_asset WHERE theme_id = ?`).run(theme.id);
+    db.prepare(`DELETE FROM cms_theme WHERE theme_key = ?`).run(key);
+  })();
+  if (assetsRoot !== undefined) {
+    const dir = themeAssetDir(assetsRoot, key);
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  }
 }

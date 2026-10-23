@@ -143,8 +143,10 @@ import {
   deleteTheme,
   listThemes,
   previewToken,
+  themeAssetsRoot,
   uploadTheme,
 } from '../render/themes.ts';
+import { readThemeBundle } from '../render/theme-bundle.ts';
 import { themesScreen } from './ui/themes.ts';
 import { layout, type NavKey, type NavItem } from './ui/layout.ts';
 import { pageListScreen, type PageRow } from './ui/pageList.ts';
@@ -1319,6 +1321,8 @@ ${items}
             bytes: theme.bytes,
             createdAt: theme.createdAt,
             active: theme.active,
+            assetCount: theme.assetCount,
+            assetBytes: theme.assetBytes,
             previewHref: `/preview-theme?t=${encodeURIComponent(previewToken(this.#env.sessionKey, tenant.key, theme.key, Date.now()))}&path=/`,
           })),
           pastedCssBytes: Buffer.byteLength(pasted, 'utf8'),
@@ -1373,12 +1377,26 @@ ${items}
       return;
     }
     const chosen = file as { filename: string; bytes: Buffer };
-    if (!/\.css$/i.test(chosen.filename)) {
+    if (!/\.(?:css|zip)$/i.test(chosen.filename)) {
       this.#seeOther(reply, `${base}?result=css`);
       return;
     }
-    const css = chosen.bytes.toString('utf8');
-    const name = (fields.name ?? '').trim() === '' ? chosen.filename.replace(/\.css$/i, '') : (fields.name ?? '').trim();
+    // A package is read before any row is written: the reader is where a zip's members are
+    // refused by name, and an operator who fixed their file should not have a half-theme to
+    // delete. `readThemeBundle` never touches the database.
+    let bundle;
+    try {
+      bundle = readThemeBundle({ filename: chosen.filename, bytes: chosen.bytes });
+    } catch (err) {
+      if (err instanceof AppError) {
+        this.#seeOther(reply, `${base}?result=${encodeURIComponent(err.message)}`);
+        return;
+      }
+      throw err;
+    }
+    const css = bundle.css;
+    const typedName = (fields.name ?? '').trim();
+    const name = typedName !== '' ? typedName : (bundle.name ?? chosen.filename.replace(/\.(?:css|zip)$/i, ''));
     if (name.length > 120) {
       this.#seeOther(reply, `${base}?result=name`);
       return;
@@ -1390,6 +1408,8 @@ ${items}
         css,
         sourceName: chosen.filename,
         actorId: session.userId,
+        assets: bundle.assets,
+        assetsRoot: themeAssetsRoot(this.#env.dataDir, tenant.key),
       });
       this.#audit({
         tenantId: tenant.id,
@@ -1469,7 +1489,7 @@ ${items}
     const key = (fieldsOf(req.body).theme ?? '').trim();
     const db = this.#siteWrite(tenant.key);
     try {
-      deleteTheme(db, key);
+      deleteTheme(db, key, themeAssetsRoot(this.#env.dataDir, tenant.key));
       this.#audit({
         tenantId: tenant.id,
         userId: session.userId,

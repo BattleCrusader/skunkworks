@@ -12,7 +12,7 @@ skinparam class {
   ArrowColor #444444
 }
 
-title Skunkworks schema v6  (generated from one spec)
+title Skunkworks schema v7  (generated from one spec)
 
 package "control.db  (global, never exported, user_version 4)" {
   entity tenant as "tenant" <<control>> {
@@ -111,7 +111,7 @@ package "control.db  (global, never exported, user_version 4)" {
   }
 }
 
-package "tenants/<key>/site.db  (one file per tenant, user_version 6)" {
+package "tenants/<key>/site.db  (one file per tenant, user_version 7)" {
   entity cms_settings as "cms_settings" <<site>> {
     key : TEXT <<PK>>
     value_json : TEXT <<NN>>
@@ -373,6 +373,15 @@ package "tenants/<key>/site.db  (one file per tenant, user_version 6)" {
     created_at : TEXT <<NN>>
     created_by : INTEGER
   }
+  entity cms_theme_asset as "cms_theme_asset" <<site>> {
+    id : INTEGER <<PK>>
+    theme_id : INTEGER <<FK>>
+    path : TEXT <<NN>>
+    sha256 : TEXT <<NN>>
+    bytes : INTEGER <<NN>>
+    content_type : TEXT <<NN>>
+    created_at : TEXT <<NN>>
+  }
   entity cms_plugin_installed as "cms_plugin_installed" <<site>> {
     id : INTEGER <<PK>>
     plugin_id : TEXT <<UQ>>
@@ -433,6 +442,7 @@ cms_form ||--o{ cms_form_submission : "form_id"
 cms_nav ||--o{ cms_nav : "parent_id"
 cms_page ||--o{ cms_page_revision : "page_id"
 cms_plugin_installed ||--o{ cms_plugin_setting : "plugin_id"
+cms_theme ||--o{ cms_theme_asset : "theme_id"
 tenant ||--o{ deploy_token : "tenant_id"
 tenant ||--o{ domain : "tenant_id"
 tenant ||--o{ session : "tenant_id"

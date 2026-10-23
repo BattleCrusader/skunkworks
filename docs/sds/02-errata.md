@@ -4256,3 +4256,89 @@ so an h1 read `<h1>`; the "Text" in the report came from the same type string el
 rail. The chip is now `<tag> · label`, where the label is the palette entry for **our** components
 (identified by a `data-gjs-type` that is not a GrapesJS built-in) and a tag→name table for
 everything else. Measured: `<h1> · Heading 1`.
+
+
+## E-54 — the upload that worked and was never mentioned, and a theme that could only be text
+
+**Reported.** "the styling on a selected element isn't quite working yet, see screenshot. Also theme
+uploading isn't working. And I think it's a bit thin. Maybe we need our own package or maybe zip.
+What if users want to upload images/assets as part of the theme? The images/assets will need to be
+saved in the container and the db will need to be updated to link the files properly."
+
+Three claims. One was wrong in an instructive way.
+
+### 1. "Theme uploading isn't working" — it worked, and said nothing
+
+Measured, through the operator's own form in a real browser: pick `midnight-kiln.css`, press Upload
+→ `303 /admin/t/abc123/themes?result=uploaded`, a new row in `cms_theme`, and **no** element on the
+screen with `class="acct__flash"` — `flash: null`, `flashClass: null`. The screen computed the
+sentence ("Theme uploaded. It is not active yet — preview it, then activate."), passed it to
+`layout({ flash })`, and `layout` had no such prop. The spread made it type-check: TypeScript does
+not excess-check object literals spread into a call, so an unknown key rides through and is
+discarded. Every refusal — wrong file type, too large, markup in the sheet, a bad name — was dropped
+the same way, which is why the upload looked dead.
+
+The message is now part of `LayoutInput`'s contract (`{ text, kind: 'ok' | 'bad' }`), rendered above
+the page's own content, and the screen decides the kind from the outcome rather than from the status
+code — every one of these POSTs answers `303`, so "did it work" is not a question the status can
+answer. Measured after: green flash on upload, amber on `?result=large`, and an activate/delete
+refusal carried as its own message.
+
+### 2. "A bit thin" — a theme was one stylesheet
+
+A stylesheet is the rules; a look also has pictures. `cms_theme_asset` (schema v7) is one row per
+file — `path`, `sha256`, `bytes`, `content_type` — the bytes live at
+`data/tenants/<key>/theme-assets/<theme_key>/<path>`, and `GET /_theme/<key>/<path>` answers only
+when a row names that path (so a traversal is a 404 with no filesystem lookup, and an SVG is served
+with `default-src 'none'` + `nosniff` because it is also a document on the tenant's own origin).
+
+A package is a `.zip` — what a right-click on a folder produces — read by `app/render/zip.ts`: the
+central directory, stored and deflated members, CRC per member. No new dependency: the claim in
+`archive.ts` that "Node ships `zlib`, not an inflate path for the container format" is half wrong —
+a member is a raw deflate stream and `inflateRawSync` is exactly that. Refused by name: zip64,
+multi-disk, encrypted members, symlinks, `..`/absolute names, AppleDouble (`__MACOSX/`, `._*`), a
+member over 8 MiB, a package over 32 MiB expanded or 400 files, a CRC mismatch, and any file type
+that is not a picture, a font or text.
+
+The rewrite happens **once, at upload**: `url(assets/hero.jpg)` becomes
+`url("/_theme/<key>/assets/hero.jpg?v=<sha8>")`, so the blob is the exact bytes the browser gets, its
+sha is its name, and `/_css/<sha>.css` stays immutable. Measured end to end on the live box: package
+→ row (`assets/mark.svg`, 113 B, `image/svg+xml`) → file on disk → `GET /_theme/s8x-kit/assets/mark.svg`
+`200 image/svg+xml 113 B`.
+
+Still true, and unchanged: the **static export does not link the site theme at all** (no
+`/theme.css` in `app/export`), so an exported tree neither wears the theme nor references its assets.
+That is a pre-existing limit of the export target, not a consequence of packages, and it is the next
+thing to close if an exported site is ever expected to look like the live one.
+
+### 3. "Styling isn't quite working" — the panel edits a different question
+
+Measured by selecting the `<em>` in the hero heading: the rail said `no hook yet` with the Style
+Manager hidden — while the Style Manager was still bound, and a value typed into it wrote
+`#i2dg{color:#010203}` against an id GrapesJS had invented. The rail and the panel disagreed about
+what was being edited, and the element's actual colour (`main em{color:var(--accent)}`, from the
+theme) appeared nowhere on the screen.
+
+Three changes, each measured on the deployed build:
+
+ - **The rules that reach the selection are listed first**, with their declarations, and each one has
+   **Use in page CSS**: a copy lands in the page's own stylesheet, which is linked after the theme, so
+   an equal-specificity page rule wins. That is the only honest way to *change* a theme value from
+   this screen — the Style Manager edits this page's rules and nothing else. Measured: `main em`
+   listed with `font-style: italic; color: var(--accent)`, one click appends 192 bytes to the page
+   CSS and the state line reads "Copied — Save to apply it to this page". The list filters
+   `gjs-selected` / `gjs-placeholder-int`, which are the canvas's own furniture.
+ - **A bare element gets a name that reads like content.** The suggestion was the tag name, which
+   produced `.em` — indistinguishable from the tag, ambiguous across the page. It is now derived from
+   the nearest *named* ancestor: `s-hero-em` for the `<em>` inside `.s-hero`.
+ - **The badge says what the element is.** GrapesJS draws `Component.getName()`, which prefers `type`
+   over `tagName`, and every plain element here is `type: 'text'` — so an `<h1>` announced itself as
+   "Text" in the canvas and the rail, twice reported. `Canvas.setCustomBadgeLabel(labelFor)` replaces
+   it. Measured: `h1 -> Heading 1`, `em -> Emphasis`, `ul -> Bulleted list`, where `getName()` still
+   returns `Text`, `Text`, `Ul`.
+
+### What the slice cost
+
+Schema **v7** (`cms_theme_asset`, `r7-amendments.sql`, one CREATE TABLE and one index, no rebuild),
+`app/render/zip.ts`, `app/render/theme-bundle.ts`, asset storage and serving, `layout` flash,
+the themes screen, and the editor rail. 7 new tests in `test/theme-bundle.test.ts`; `733 → 740`.

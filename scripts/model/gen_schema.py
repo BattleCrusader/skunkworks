@@ -36,7 +36,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # sha) and `cms_theme` (an uploaded look, one of which may be active). The blob is why a page's
 # CSS can be a file with a name no one has to remember — and why an export can write exactly the
 # files its documents point at.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 # E-20 (02-errata §8): the control plane moves to v4 — `audit_seal` is a day segment, not a
 # cumulative snapshot — and `schema/control-r4.sql` is the v3 -> v4 delta.
 CONTROL_VERSION = 4
@@ -476,6 +476,15 @@ SITE = {
  ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
  ("created_by","INTEGER",None),
 ], checks=[], indexes=[("ix_ct_created","created_at",False)]),
+"cms_theme_asset": dict(note="S8x: a theme is a package, not a stylesheet. The bytes live on disk beside the tenant (`tenants/<key>/theme-assets/<theme_key>/<path>`) and this row is the link the renderer follows: path -> sha, so the URL can be immutable and an export can copy exactly the files a document names. Deleting the theme deletes the rows and the directory.", cols=[
+ ("id","INTEGER","PRIMARY KEY AUTOINCREMENT"),
+ ("theme_id","INTEGER","NOT NULL REFERENCES cms_theme(id)"),
+ ("path","TEXT","NOT NULL CHECK(length(path) BETWEEN 1 AND 200 AND substr(path,1,1) <> '/' AND path NOT GLOB '*..*')"),
+ ("sha256","TEXT","NOT NULL CHECK(length(sha256) = 64)"),
+ ("bytes","INTEGER","NOT NULL CHECK(bytes > 0)"),
+ ("content_type","TEXT","NOT NULL CHECK(length(content_type) BETWEEN 3 AND 100)"),
+ ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+], checks=[], uniques=[("uq_cta_path","theme_id, path")], indexes=[("ix_cta_theme","theme_id",False)]),
 "cms_plugin_installed": dict(note="C-5/C-9: the installed manifest is the ONLY source of a p_* table's export class and of the capability list shown at install. signature_state first_party = our key in the image; imported = the tenant owner imported a publisher key; no CA exists.", cols=[
  ("id","INTEGER","PRIMARY KEY AUTOINCREMENT"),
  ("plugin_id","TEXT","NOT NULL UNIQUE CHECK(plugin_id GLOB '[a-z][a-z0-9]*' AND length(plugin_id) BETWEEN 2 AND 20)"),

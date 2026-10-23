@@ -140,6 +140,7 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
   const r4 = join(schemaDir, 'r4-amendments.sql');
   const r5 = join(schemaDir, 'r5-amendments.sql');
   const r6 = join(schemaDir, 'r6-amendments.sql');
+  const r7 = join(schemaDir, 'r7-amendments.sql');
   const target = targetVersion(ddl);
   const rel = join('tenants', siteKey, 'site.db');
   const base = { key: siteKey, path: rel };
@@ -202,6 +203,12 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
       // SQLite function — so every stylesheet already in the file is named here, once. Idempotent
       // (`INSERT OR IGNORE` on the name it computes), so a re-run writes nothing.
       backfillCssBlobs(db);
+    }
+    if (at === 6) {
+      // S8x: a theme is a package, not a stylesheet. One CREATE TABLE, no rebuild: the themes a
+      // tenant already has are stylesheets with no assets, which is exactly what their rows say.
+      applyDdl(db, r7);
+      at = userVersion(db);
     }
     if (at !== target) {
       return { ...base, from, to: at, action: 'failed', ok: false, error: `no migration path from v${at} to v${target}` };

@@ -394,6 +394,17 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 #skw-notice{margin:0;padding:.6rem .8rem;background:#fdecec;border-bottom:1px solid #d9a3a3;color:#8a1c1c;font-weight:600}
 #skw-notice[hidden]{display:none}
 [data-skw-readonly="1"] #skw-canvas{opacity:.7}
+  /* S8x: the rules that reach the selection. They are the answer to "where does this colour come
+     from", so they sit above the Style Manager and each one can be copied into the page's CSS. */
+  #skw-rules-block{margin:0 0 .5rem}
+  .skw-rules{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.35rem}
+  .skw-rules li{border:1px solid #ececef;border-radius:6px;padding:.35rem .45rem;background:#fcfcfd}
+  .skw-rulehead{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
+  .skw-rulehead code{font-size:11.5px;color:#1d3a8a;background:#f1f4fd;padding:.05rem .3rem;border-radius:4px}
+  .skw-media{font-size:11px;color:#8a6d1f}
+  .skw-rulebody{margin-top:.2rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#4a4a52;word-break:break-word}
+  .skw-rulemq{margin:0;white-space:pre-wrap}
+  .skw-railbtn--use{margin-left:auto;font-size:11px;padding:.1rem .4rem}
 /* The editor's own toolbar. GrapesJS ships default panel buttons whose icons are Font
    Awesome class names ('fa fa-eye', 'fa fa-code', 'fa fa-arrows-alt' …), and this repo
    never loads Font Awesome — so every one of them rendered as an empty 30×30 box. Rather
@@ -552,10 +563,14 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
         <span class="skw-chip" id="skw-styles-target" data-empty="1">—</span>
       </header>
       <div id="skw-styles-body">
+      <div id="skw-rules-block" hidden>
+        <div class="skw-attrhead"><span>What already applies</span></div>
+        <p class="skw-hint">The theme's rules that reach this element, top of the cascade first. Copy one into the page's CSS to change it: this page's sheet loads after the theme, so an equal-specificity rule here wins.</p>
+        <ol class="skw-rules" id="skw-rules"></ol>
+      </div>
       <p class="skw-hint" id="skw-style-need" hidden>No class or id yet — a CSS rule needs a selector. Name one here and the properties appear.</p>
       <div id="skw-style-give" hidden><input class="skw-in" id="skw-style-class" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="class name"><button type="button" class="skw-railbtn" id="skw-style-add">Style it</button></div>
       <div id="skw-styles" hidden></div>
-      <details id="skw-rules-details"><summary>Rules reaching this element</summary><ol class="skw-rules" id="skw-rules"></ol></details>
       </div>
     </section>
     <section class="skw-card" id="skw-css" aria-label="This page's CSS" data-open="1">
@@ -636,6 +651,17 @@ const BOOT_SCRIPT = String.raw`
     // neither — the defect the operator reported as "the green line appears, then nothing".
     blockManager: { appendTo: '#skw-blocks' },
   });
+
+  /**
+   * What the badge over a selected element says.
+   *
+   * GrapesJS's default is Component.getName(), which prefers type over tagName — and every
+   * plain element in this editor has type 'text', so an h1 announced itself as "Text" in the canvas
+   * badge and the rail. That is the same string the operator reported twice. A name is a property of
+   * the element, not of the class that renders it, so the badge asks labelFor, which is the one
+   * function that knows both our components and the tag table.
+   */
+  try { editor.Canvas.setCustomBadgeLabel(function (model) { return labelFor(model); }); } catch (e) { /* older build */ }
 
   // The toolbar. Four controls, wired to the editor's own commands, plus a dirty marker so
   // "did that save?" is answered on screen instead of guessed.
@@ -1342,6 +1368,7 @@ const BOOT_SCRIPT = String.raw`
   var computedList = el('skw-computed-list');
   var computedEmpty = el('skw-computed-empty');
   var rulesList = el('skw-rules');
+  var rulesBlock = el('skw-rules-block');
   var stylesBox = el('skw-styles');
   var textRow = el('skw-text-row');
   var textBox = el('skw-sel-text');
@@ -1439,6 +1466,51 @@ const BOOT_SCRIPT = String.raw`
   }
 
   /** The selector a CSS rule would use for this component: id, else first class, else its tag. */
+  /**
+   * A class name for a bare element that reads like content.
+   *
+   * The suggestion used to be the tag name, which produced ".em" — a selector that looks like a
+   * typo of em, collides with every other <em> on the page, and says nothing about which one it is.
+   * A name is derived from the element's nearest named ancestor instead: the <em> inside
+   * .s-hero h1 becomes "s-hero-em", which is unique, readable in a stylesheet, and stable if the
+   * element moves within that block.
+   */
+  function suggestClass(component) {
+    var tag = String(component.get('tagName') || 'div').toLowerCase();
+    var parts = [];
+    var fallback = '';
+    var node = component.parent ? component.parent() : null;
+    var guard = 0;
+    // Walk out to the nearest ancestor that is *named*. A tag is not a name: h1-em says less about
+    // where the element lives than s-hero-em, and the nearest tag is the thing the element is
+    // already inside — the class is what identifies the block. So a tag is only remembered as a
+    // fallback for a page whose ancestors carry no classes at all.
+    while (node && parts.length === 0 && guard < 12) {
+      guard += 1;
+      var classes = node.getClasses ? node.getClasses() : [];
+      if (classes.length > 0) {
+        parts.push(classes[0]);
+        break;
+      }
+      var parentName = String(node.get('tagName') || '').toLowerCase();
+      if (fallback === '' && parentName !== '' && parentName !== 'body') fallback = parentName;
+      node = node.parent ? node.parent() : null;
+    }
+    if (parts.length === 0 && fallback !== '') parts.push(fallback);
+    var base = (parts.join('-') + '-' + tag)
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40);
+    if (base === '' || base === tag) base = tag + '-block';
+    var candidate = base;
+    var n = 2;
+    while (n < 100 && document.querySelector('#gjs .' + candidate) !== null) {
+      candidate = base + '-' + n;
+      n += 1;
+    }
+    return candidate;
+  }
+
   function selectorFor(component) {
     var classes = component.getClasses();
     if (classes.length > 0) return '.' + classes[0];
@@ -1538,7 +1610,10 @@ const BOOT_SCRIPT = String.raw`
   function renderRules(component) {
     if (rulesList === null) return;
     rulesList.innerHTML = '';
-    if (component === null) return;
+    if (component === null) {
+      if (rulesBlock !== null) rulesBlock.hidden = true;
+      return;
+    }
     var node = component.getEl();
     var doc = null;
     try { doc = editor.Canvas.getDocument(); } catch (e) { doc = null; }
@@ -1556,6 +1631,9 @@ const BOOT_SCRIPT = String.raw`
           continue;
         }
         if (rule.type !== 1 || !rule.selectorText) continue;
+        // Our own canvas furniture: gjs-selected draws the selection box and gjs-placeholder-int the
+        // drop marker. They match every element on the canvas and say nothing about the page.
+        if (/gjs-/.test(rule.selectorText)) continue;
         // A universal reset matches every element and says nothing about this one: a rule whose
         // selector starts with * and names no class, id or attribute is not about this element.
         if (/^\s*\*/.test(rule.selectorText) && !/[.#\[]/.test(rule.selectorText)) continue;
@@ -1575,19 +1653,47 @@ const BOOT_SCRIPT = String.raw`
       if (rules === null) continue;
       walkRules(rules, '');
     }
+    if (rulesBlock !== null) rulesBlock.hidden = false;
     found.slice(0, 12).forEach(function (entry) {
       var li = document.createElement('li');
+      var head = document.createElement('div');
+      head.className = 'skw-rulehead';
       var code = document.createElement('code');
       code.textContent = entry.selector;
-      li.appendChild(code);
+      head.appendChild(code);
       if (entry.media !== '') {
         var media = document.createElement('span');
         media.className = 'skw-media';
         media.textContent = '  @' + entry.media;
-        li.appendChild(media);
+        head.appendChild(media);
       }
+      // A rule from the theme is where the value the operator can see actually comes from, and the
+      // Style Manager can never show it: that panel edits rules *this page* owns. So the useful verb
+      // is not "edit it here" but "start a page rule from it" — the page's sheet is linked after
+      // the theme, so an equal-specificity rule on this page wins, and the operator can then see
+      // and change every declaration in the panel above.
+      if (!readonly && entry.css !== '') {
+        var use = document.createElement('button');
+        use.type = 'button';
+        use.className = 'skw-railbtn skw-railbtn--use';
+        use.textContent = 'Use in page CSS';
+        use.title = 'Append this rule to the page stylesheet, where it can be edited';
+        use.addEventListener('click', function () {
+          copyRuleToPage(entry);
+        });
+        head.appendChild(use);
+      }
+      li.appendChild(head);
       var body = document.createElement('div');
-      body.textContent = entry.css.length > 150 ? entry.css.slice(0, 150) + '…' : entry.css;
+      body.className = 'skw-rulebody';
+      body.textContent = entry.css.length > 220 ? entry.css.slice(0, 220) + '…' : entry.css;
+      if (entry.media !== '') {
+        var wrap = document.createElement('pre');
+        wrap.className = 'skw-rulemq';
+        wrap.textContent = '@media ' + entry.media + ' {\n  ' + entry.selector + ' { ' + entry.css + ' }\n}';
+        body.textContent = '';
+        body.appendChild(wrap);
+      }
       li.appendChild(body);
       rulesList.appendChild(li);
     });
@@ -1596,6 +1702,31 @@ const BOOT_SCRIPT = String.raw`
       none.textContent = 'No stylesheet rule names this element; it inherits everything it shows.';
       rulesList.appendChild(none);
     }
+  }
+
+  /**
+   * Take a rule that reaches the selected element and give the page its own copy of it.
+   *
+   * The copy is written into the page's stylesheet in the same order the cascade already applied it,
+   * and the page's sheet is linked after the theme (page.astro links /_css/<sha>.css second), so
+   * at equal specificity the copy wins. That is the only way an operator can *change* a theme value
+   * from this screen: the Style Manager edits this page's rules and nothing else, and pretending
+   * otherwise is what made the panel look broken.
+   */
+  function copyRuleToPage(entry) {
+    if (cssBox === null) return;
+    var block = entry.media === ''
+      ? entry.selector + ' { ' + entry.css + ' }'
+      : '@media ' + entry.media + ' { ' + entry.selector + ' { ' + entry.css + ' } }';
+    var currentText = cssBox.value.replace(/\s+$/, '');
+    if (currentText.indexOf(block) !== -1) {
+      setState('Already in the page\u2019s CSS', true);
+      return;
+    }
+    cssBox.value = (currentText === '' ? '' : currentText + '\n\n') + block + '\n';
+    cssBox.dispatchEvent(new Event('input', { bubbles: true }));
+    cssBox.focus();
+    setState('Copied — Save to apply it to this page', true);
   }
 
   function chip(node, text, empty) {
@@ -1685,6 +1816,8 @@ const BOOT_SCRIPT = String.raw`
   var ELEMENT_LABELS = {
     h1: 'Heading 1', h2: 'Heading 2', h3: 'Heading 3', h4: 'Heading 4', h5: 'Heading 5', h6: 'Heading 6',
     p: 'Paragraph', span: 'Span', strong: 'Strong', em: 'Emphasis', small: 'Small print', mark: 'Highlight',
+    b: 'Bold', i: 'Italic', u: 'Underline', s: 'Strikethrough', sub: 'Subscript', sup: 'Superscript',
+    abbr: 'Abbreviation', address: 'Address', kbd: 'Key', samp: 'Sample', var: 'Variable',
     code: 'Code', pre: 'Preformatted', a: 'Link', cite: 'Citation', time: 'Date', br: 'Line break',
     hr: 'Divider', blockquote: 'Quote', q: 'Quote', figure: 'Figure', figcaption: 'Caption',
     img: 'Image', video: 'Video', audio: 'Audio', picture: 'Picture',
@@ -1737,7 +1870,7 @@ const BOOT_SCRIPT = String.raw`
     // With no hook there is no target, and the manager keeps drawing the last one's sectors.
     if (stylesBox !== null) stylesBox.hidden = !hook;
     if (styleClass !== null && hook === false && document.activeElement !== styleClass) {
-      styleClass.value = tag;
+      styleClass.value = suggestClass(current);
     }
 
     var attrs = current.getAttributes();

@@ -49,6 +49,17 @@ export interface LayoutInput {
   chrome?: 'app' | 'plain';
   /** A short line under the page, for the operator: tenant, mode, build. */
   colophon?: string;
+  /**
+   * What the last action did, and whether it worked.
+   *
+   * This is a prop and not a screen's own markup because a screen that posts and redirects has
+   * nowhere else to put it: `POST /themes/upload` answers `303 …?result=uploaded`, the GET renders a
+   * fresh page, and any state the POST held is gone. Twice now a screen has computed a message,
+   * passed it into this function, and had it silently dropped (the Themes screen, S8x) — so the
+   * message is part of the layout's contract, rendered above the page's own content, instead of a
+   * string each screen has to remember to draw.
+   */
+  flash?: { text: string; kind: 'ok' | 'bad' };
 }
 
 /**
@@ -457,10 +468,14 @@ export function layout(input: LayoutInput): string {
     input.chrome === 'plain'
       ? ''
       : '  <a class="skip" href="#main">Skip to content</a>\n';
+  const flash =
+    input.flash === undefined
+      ? ''
+      : `  <div class="acct__flash acct__flash--${input.flash.kind}" role="status">\n    <span>${esc(input.flash.text)}</span>\n  </div>\n`;
   const main =
     input.chrome === 'plain'
-      ? `<main id="main">\n${input.body}\n</main>`
-      : `<main id="main" class="page">\n${input.body}\n</main>`;
+      ? `<main id="main">\n${flash}${input.body}\n</main>`
+      : `<main id="main" class="page">\n${flash}${input.body}\n</main>`;
   return `<!doctype html>
 <html lang="en">
 <head>

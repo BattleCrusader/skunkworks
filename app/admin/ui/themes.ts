@@ -32,6 +32,9 @@ export interface ThemeListRow {
   bytes: number;
   createdAt: string;
   active: boolean;
+  /** Files the package carried, and how much they weigh — the difference between a sheet and a look. */
+  assetCount: number;
+  assetBytes: number;
   /** The signed preview URL for this theme, or `null` when a token could not be minted. */
   previewHref: string | null;
 }
@@ -55,11 +58,20 @@ const FLASH: Record<string, string> = {
   deleted: 'Theme deleted.',
   empty: 'That file was empty, so nothing was stored.',
   large: 'That file exceeds the theme limit and was not stored.',
-  css: 'A theme is a .css file. That upload was not one.',
+  css: 'A theme is a .css file or a .zip package. That upload was neither.',
   markup: 'That stylesheet contains a closing style tag or a script tag; a theme cannot carry markup.',
   name: 'Give the theme a name of 120 characters or fewer.',
   role: 'Your role may look at themes but not change them.',
 };
+
+/**
+ * Which outcomes are good news.
+ *
+ * The screen says "uploaded" in green and "the archive is zip64" in amber, and the difference is
+ * whether the operator has to do anything — not whether the request was a 303 either way, which is
+ * exactly the distinction a status code cannot carry.
+ */
+const GOOD = new Set(['uploaded', 'activated', 'deactivated', 'deleted']);
 
 function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -73,7 +85,7 @@ export function themesScreen(input: ThemesScreenInput): string {
     input.themes.length === 0
       ? `<p class="note">No themes yet. Upload a stylesheet, or keep using the pasted CSS on the Site screen.</p>`
       : `<table>
-      <thead><tr><th>Theme</th><th>Key</th><th>Size</th><th>Uploaded</th><th>State</th><th></th></tr></thead>
+      <thead><tr><th>Theme</th><th>Key</th><th>Sheet</th><th>Files</th><th>Uploaded</th><th>State</th><th></th></tr></thead>
       <tbody>
 ${input.themes
   .map((theme) => {
@@ -95,10 +107,17 @@ ${input.themes
       canChange && !theme.active
         ? `<form method="post" action="${base}/delete"><input type="hidden" name="csrf" value="${esc(input.csrf)}"><input type="hidden" name="theme" value="${esc(theme.key)}"><button class="btn btn--sm btn--danger" type="submit">Delete</button></form>`
         : '';
+    // A theme that carries files is a package; one that does not is a stylesheet. The operator
+    // should be able to see which they uploaded without opening the preview.
+    const files =
+      theme.assetCount === 0
+        ? '<span class="note">stylesheet only</span>'
+        : `${theme.assetCount} file${theme.assetCount === 1 ? '' : 's'} · ${bytes(theme.assetBytes)}`;
     return `      <tr>
         <td><strong>${esc(theme.name)}</strong></td>
         <td><code>${esc(theme.key)}</code></td>
         <td>${bytes(theme.bytes)}</td>
+        <td>${files}</td>
         <td>${esc(theme.createdAt.replace('T', ' ').slice(0, 16))}</td>
         <td>${pill}</td>
         <td class="rowey">${preview}${act}${del}</td>
@@ -111,11 +130,11 @@ ${input.themes
   const upload = canChange
     ? `<div class="card card--padded">
       <h2>Upload a theme</h2>
-      <p class="note">One <code>.css</code> file. It is stored in this site's database with its own hash, so the same file uploaded twice is stored once.</p>
+      <p class="note">A <code>.css</code> file, or a <code>.zip</code> package holding <code>theme.css</code> plus the pictures and fonts its rules name (a <code>theme.json</code> with a <code>name</code> is optional). The stylesheet is stored by its own hash — the same file uploaded twice is stored once — and a package's files are kept beside this site's database and linked to the theme, so the look arrives with its images.</p>
       <form method="post" action="${base}/upload" enctype="multipart/form-data" class="uploadcard">
         <input type="hidden" name="csrf" value="${esc(input.csrf)}">
-        <label for="theme-file">Stylesheet</label>
-        <input id="theme-file" type="file" name="theme" accept=".css,text/css" required>
+        <label for="theme-file">Stylesheet or package</label>
+        <input id="theme-file" type="file" name="theme" accept=".css,.zip,text/css,application/zip,application/x-zip-compressed" required>
         <label for="theme-name">Name <span class="note">(optional — defaults to the file name)</span></label>
         <input id="theme-name" name="name" maxlength="120" placeholder="Editorial serif">
         <p><button class="btn btn--primary" type="submit">Upload</button></p>
@@ -134,7 +153,12 @@ ${input.themes
     user: input.user,
     active: 'themes',
     ...(input.notices === undefined ? {} : { notices: input.notices }),
-    ...(input.flash === undefined ? {} : { flash: FLASH[input.flash] ?? input.flash }),
+    // `flash` used to be passed into `layout()` as a bare string, which the layout silently dropped:
+    // the upload worked, the redirect carried `?result=uploaded`, and the screen said nothing at
+    // all (S8x). It is now a value the layout renders, with a kind that decides the colour.
+    ...(input.flash === undefined
+      ? {}
+      : { flash: { text: FLASH[input.flash] ?? input.flash, kind: GOOD.has(input.flash) ? 'ok' : 'bad' } }),
     body: `<h1>Themes</h1>
     <p class="note">A theme is one stylesheet the whole site wears: the chrome's rules plus the theme's own, served as one cacheable file. Only one theme is active at a time${input.activeKey === null ? ' — none is right now' : ` — currently <code>${esc(input.activeKey)}</code>`}.</p>
     <p class="note">${fallback}</p>

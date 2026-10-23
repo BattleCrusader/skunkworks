@@ -86,8 +86,8 @@ test('A1. the DDL a fresh tenant gets carries activation_seq, DEFAULT 0, and the
   const ddl = readFileSync(join(SCHEMA, 'site.sql'), 'utf8');
   assert.match(ddl, /activation_seq INTEGER NOT NULL DEFAULT 0 CHECK\(activation_seq >= 0\)/);
   // The DDL's own version, asserted so this file cannot silently test a database it did not
-  // create. It moves with schema/site.sql (v6 since E-49's css blob + theme tables).
-  assert.match(ddl, /PRAGMA user_version = 6;/);
+  // create. It moves with schema/site.sql (v7 since E-54's theme asset table).
+  assert.match(ddl, /PRAGMA user_version = 7;/);
   const db = new Database(siteDbFile(), { readonly: true });
   try {
     const columns = db.pragma('table_info(cms_plugin_installed)') as { name: string; dflt_value: string | null; notnull: number }[];
@@ -148,10 +148,12 @@ test('A4. a v3 database migrates forward, keeps its rows, and seeds them 0', () 
     v3.exec('ALTER TABLE cms_page DROP COLUMN draft_css');
     v3.exec('ALTER TABLE cms_page DROP COLUMN draft_sha');
     v3.exec('ALTER TABLE cms_page DROP COLUMN draft_updated_at');
-    // ... and everything the chain added after v3 *structurally*, which since E-49 is two tables.
-    // Without this the r6 delta would run against a file that already has them and refuse.
+    // ... and everything the chain added after v3 *structurally*, which since E-54 is three tables.
+    // Without this the r6/r7 deltas would run against a file that already has them and refuse.
+    v3.exec('DROP TABLE cms_theme_asset');
     v3.exec('DROP TABLE cms_theme');
     v3.exec('DROP TABLE cms_css_blob');
+    v3.exec('DROP INDEX IF EXISTS ix_cta_theme');
     v3.exec('DROP INDEX IF EXISTS ix_ct_created');
     v3.exec('DROP INDEX IF EXISTS ix_ccb_created');
     v3.pragma('user_version = 3');
@@ -177,11 +179,11 @@ test('A4. a v3 database migrates forward, keeps its rows, and seeds them 0', () 
   assert.equal(report.ok, true, report.error);
   assert.equal(report.action, 'migrated');
   assert.equal(report.from, 3);
-  assert.equal(report.to, 6);
+  assert.equal(report.to, 7);
 
   const after = new Database(path, { readonly: true });
   try {
-    assert.equal(Number(after.pragma('user_version', { simple: true })), 6);
+    assert.equal(Number(after.pragma('user_version', { simple: true })), 7);
     const row = after.prepare(`SELECT activation_seq FROM cms_plugin_installed WHERE plugin_id = 'actseq'`).get() as
       | { activation_seq: number }
       | undefined;
