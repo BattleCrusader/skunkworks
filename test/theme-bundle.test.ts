@@ -181,6 +181,33 @@ test('S8x-1. the screen says what the upload did — in colour, not silently', a
   assert.match(custom.body, /midnight-kiln is the active theme/);
 });
 
+test('S8x-1b. the picker reports what the browser is holding, not just "No file chosen"', async () => {
+  const page = await screen();
+  assert.equal(page.status, 200);
+  // Our own status line, driven by the input's own files: the native label lives in the browser's
+  // shadow DOM and says the same thing before and after a picker that handed nothing back.
+  assert.match(page.body, /id="theme-picked"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(page.body, /data-skw-upload/);
+  // No `accept` filter at all: the OS open panel enforces it, and a panel that refuses a file
+  // closes with an empty selection and no message. The server decides by name and says why.
+  assert.doesNotMatch(page.body, /id="theme-file"[^>]*accept=/, 'the picker is not a second opinion about what a theme may be');
+  assert.match(page.body, /id="theme-upload" disabled/, 'Upload is dead until there is a file');
+  assert.match(page.body, new RegExp('<script src="/admin/t/acme/themes/pick\.js" defer></script>'));
+
+  // The script is served, not inline: the admin policy is script-src self + nonce.
+  const js = await call({ port, path: '/admin/t/acme/themes/pick.js', host: ADMIN_HOST, headers: { cookie: session.cookie } });
+  assert.equal(js.status, 200);
+  assert.equal(js.headers['content-type'], 'text/javascript; charset=utf-8');
+  assert.equal(js.headers['cache-control'], 'no-store');
+  assert.match(js.body, /addEventListener\('change'/);
+  assert.match(js.body, /ready to upload/);
+  assert.match(js.body, /handed back no file/, 'a picker that returns nothing is named, not shrugged at');
+  // The drop path is not decoration: it is the way out when the panel refuses a file it can read.
+  assert.match(js.body, /addEventListener\('drop'/);
+  assert.match(js.body, /new DataTransfer\(\)/);
+  assert.match(page.body, /drag the file onto this card/);
+});
+
 test('S8x-2. a zip package stores its own files and rewrites the sheet to point at them', async () => {
   const bundle = zipOf([
     { name: 'theme.css', bytes: Buffer.from(SHEET, 'utf8') },

@@ -516,34 +516,6 @@
       ]
     },
     {
-      "file": "test/theme-bundle.test.ts",
-      "worstIdleMs": 1400,
-      "measuredOn": "2026-10-23",
-      "load1m": 7.59,
-      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
-      "sha256": "fbdd4767d61554b45d6350401bf5431d25c11e2463676cf00a47b068f0961be5",
-      "runs": [
-        {
-          "ms": 1400,
-          "at": "2026-10-23T00:13:05.159Z",
-          "load1mBefore": 7.59,
-          "load1mAfter": 7.59,
-          "idle": true,
-          "exitCode": 0,
-          "tests": 7
-        },
-        {
-          "ms": 845,
-          "at": "2026-10-23T00:13:06.006Z",
-          "load1mBefore": 7.59,
-          "load1mAfter": 7.59,
-          "idle": true,
-          "exitCode": 0,
-          "tests": 7
-        }
-      ]
-    },
-    {
       "file": "test/admin-plugin-notices.test.ts",
       "worstIdleMs": 1367,
       "measuredOn": "2026-10-21",
@@ -597,6 +569,34 @@
           "idle": true,
           "exitCode": 0,
           "tests": 12
+        }
+      ]
+    },
+    {
+      "file": "test/theme-bundle.test.ts",
+      "worstIdleMs": 1143,
+      "measuredOn": "2026-10-23",
+      "load1m": 7.66,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "7281beb1814046b5b0b463311ce74ed65a4211e24cb0452809ae4c4c742f77d8",
+      "runs": [
+        {
+          "ms": 1143,
+          "at": "2026-10-23T01:36:23.005Z",
+          "load1mBefore": 7.66,
+          "load1mAfter": 7.66,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 8
+        },
+        {
+          "ms": 550,
+          "at": "2026-10-23T01:36:23.556Z",
+          "load1mBefore": 7.66,
+          "load1mAfter": 7.66,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 8
         }
       ]
     },
@@ -1843,5 +1843,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-23T00:13:06.938Z"
+  "updatedAt": "2026-10-23T01:36:23.877Z"
 }

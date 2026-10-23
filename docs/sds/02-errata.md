@@ -4342,3 +4342,38 @@ Three changes, each measured on the deployed build:
 Schema **v7** (`cms_theme_asset`, `r7-amendments.sql`, one CREATE TABLE and one index, no rebuild),
 `app/render/zip.ts`, `app/render/theme-bundle.ts`, asset storage and serving, `layout` flash,
 the themes screen, and the editor rail. 7 new tests in `test/theme-bundle.test.ts`; `733 → 740`.
+
+
+### E-54 addendum — the picker that was not the form's problem
+
+Reported after E-54 shipped: *"when i select a theme or zip file, it does not say that the file is
+ready for uploading. It just keep saying 'No file chosen'"*, and then the discriminator that settled
+it: **"dnd of the theme file onto the file selection panel works, but using the file chooser does
+not."**
+
+Both paths end at the same `change` event on the same input, so the JavaScript was not the
+difference — the operating system's open panel was. Two changes, and the second is the one that
+matters:
+
+ 1. **The picker is no longer a second opinion about what a theme may be.** `accept=".css,.zip"`
+    was removed. The panel enforces it, and a macOS panel that refuses a file closes with an empty
+    selection and no message: the operator sees "No file chosen" and has no way to tell a refusal
+    from a dead control. The server decides by name and says why. (The `accept` list had also grown
+    MIME types — `application/zip` and friends — which is exactly the kind of second opinion that
+    can disagree with an extension.)
+ 2. **The card is a drop target, and says so.** A drop carries the file's bytes; the panel can hand
+    back nothing at all (an online-only iCloud/Desktop item, a sandboxed panel). Measured on this
+    screen after the change: `dragenter` → `data-drag="over"`, `drop` → `"skw-s8z-drop.zip · 780 B —
+    ready to upload."`, Upload enabled, `303 ?result=uploaded`, row written. The chooser path,
+    re-run with the filter gone, also reports ready.
+
+The status line is ours, not the browser's: name, size, "ready to upload", or — when the picker
+returns nothing — the sentence that says so and names the workaround. Upload stays `disabled` until
+that line says ready, so "nothing chosen" and "the browser refused you" cannot look the same.
+
+### What this cost the operator
+
+The verification probe's cleanup deleted every theme on the live tenant, which removed a theme the
+operator had uploaded minutes earlier (`midnight-kiln`). It was restored from
+`themes/midnight-kiln.css` under the same name and key, unactivated, which is the state it was in.
+Probe cleanup now deletes only the keys a probe created — a live box is not a fixture.

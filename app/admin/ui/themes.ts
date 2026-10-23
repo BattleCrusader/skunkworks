@@ -78,6 +78,107 @@ function bytes(n: number): string {
   return `${(n / 1024).toFixed(1)} KiB`;
 }
 
+/**
+ * The picker's feedback, as a served file rather than an inline `<script>`.
+ *
+ * The admin document's policy is `script-src 'self'` + a nonce; a served file needs neither the
+ * nonce plumbed through this screen nor an inline exception, and it is the same shape the editor's
+ * own boot script uses. It does three things, all of them about *telling the operator what the
+ * browser is holding*: name the chosen file and its size, enable Upload only when there is one, and
+ * say when the picker returned nothing at all (an online-only iCloud/OneDrive item is dropped
+ * silently by the browser, which is indistinguishable from a broken form).
+ */
+export const THEME_PICK_JS = `(function () {
+  var form = document.querySelector('form[data-skw-upload]');
+  if (!form) return;
+  var input = form.querySelector('input[type=file]');
+  var status = form.querySelector('.uploadstate');
+  var button = form.querySelector('button[type=submit]');
+  if (!input || !status || !button) return;
+  var label = button.textContent;
+  var EMPTY = 'No file chosen yet — a .css stylesheet or a .zip package. You can also drag the file onto this card.';
+  var REFUSED = 'The file picker handed back no file. If it lives in iCloud Drive or another online-only folder, download it first, then choose it again.';
+
+  function size(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KiB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MiB';
+  }
+
+  function reflect() {
+    var file = input.files && input.files[0] ? input.files[0] : null;
+    if (file === null) {
+      status.setAttribute('data-state', 'empty');
+      status.textContent = EMPTY;
+      button.disabled = true;
+      button.textContent = label;
+      return;
+    }
+    status.setAttribute('data-state', 'ready');
+    status.textContent = file.name + ' · ' + size(file.size) + ' — ready to upload.';
+    button.disabled = false;
+    button.textContent = 'Upload ' + file.name;
+  }
+
+  input.addEventListener('change', function () {
+    reflect();
+    if (!input.files || input.files.length === 0) {
+      status.setAttribute('data-state', 'refused');
+      status.textContent = REFUSED;
+    }
+  });
+
+  // The card is a drop target, not just the 250 px control inside it.
+  //
+  // Two reasons, and the second is the one that matters: a target the size of the card is easier to
+  // hit, and on macOS the open panel can hand back nothing at all (an online-only iCloud or
+  // Desktop-and-Documents item, or a panel that refused the file) while a drag of the same file
+  // carries its bytes. Measured on this screen: the drop path delivered the file where the chooser
+  // did not, so the drop path is not a nicety — it is the way out.
+  function takeFiles(files) {
+    if (!files || files.length === 0) return;
+    try {
+      var transfer = new DataTransfer();
+      transfer.items.add(files[0]);
+      input.files = transfer.files;
+    } catch (e) {
+      return;
+    }
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  ['dragenter', 'dragover'].forEach(function (type) {
+    form.addEventListener(type, function (event) {
+      event.preventDefault();
+      form.setAttribute('data-drag', 'over');
+    });
+  });
+  ['dragleave', 'dragend'].forEach(function (type) {
+    form.addEventListener(type, function (event) {
+      if (event.target !== form && form.contains(event.target)) return;
+      form.removeAttribute('data-drag');
+    });
+  });
+  form.addEventListener('drop', function (event) {
+    event.preventDefault();
+    form.removeAttribute('data-drag');
+    takeFiles(event.dataTransfer ? event.dataTransfer.files : null);
+  });
+
+  form.addEventListener('submit', function (event) {
+    if (!input.files || input.files.length === 0) {
+      event.preventDefault();
+      reflect();
+      return;
+    }
+    button.disabled = true;
+    button.textContent = 'Uploading…';
+  });
+
+  reflect();
+})();
+`;
+
 export function themesScreen(input: ThemesScreenInput): string {
   const base = `/admin/t/${encodeURIComponent(input.tenant.key)}/themes`;
   const canChange = input.user.role !== 'viewer';
@@ -131,14 +232,29 @@ ${input.themes
     ? `<div class="card card--padded">
       <h2>Upload a theme</h2>
       <p class="note">A <code>.css</code> file, or a <code>.zip</code> package holding <code>theme.css</code> plus the pictures and fonts its rules name (a <code>theme.json</code> with a <code>name</code> is optional). The stylesheet is stored by its own hash — the same file uploaded twice is stored once — and a package's files are kept beside this site's database and linked to the theme, so the look arrives with its images.</p>
-      <form method="post" action="${base}/upload" enctype="multipart/form-data" class="uploadcard">
+      <form method="post" action="${base}/upload" enctype="multipart/form-data" class="uploadcard uploadcard--theme" data-skw-upload>
         <input type="hidden" name="csrf" value="${esc(input.csrf)}">
         <label for="theme-file">Stylesheet or package</label>
-        <input id="theme-file" type="file" name="theme" accept=".css,.zip,text/css,application/zip,application/x-zip-compressed" required>
+        <!-- No accept filter. It is the operating system's open panel that enforces it, and on
+             macOS a panel that rejects a file closes with an empty selection and no message — the
+             operator sees "No file chosen" and cannot tell that the dialog refused them. The server
+             decides what a theme may be, by name, and says why (a .css, or a .zip whose root holds
+             theme.css). The picker should not be a second, silent opinion. -->
+        <input id="theme-file" type="file" name="theme" required aria-describedby="theme-picked">
+        <!--
+          S8x follow-up: the native control's "No file chosen" is drawn by the browser, in the
+          browser's own shadow DOM, and it is the only place the selection was reported. When a
+          picker hands nothing back — an online-only iCloud/OneDrive file is the usual case — the
+          screen said "No file chosen" before and after the click and the operator had no way to
+          tell a refusal from a page that does not work. This line is ours: it names the file, its
+          size and whether the Upload button is now live.
+        -->
+        <p class="uploadstate" id="theme-picked" data-state="empty" role="status" aria-live="polite">No file chosen yet — a <code>.css</code> stylesheet or a <code>.zip</code> package. You can also drag the file onto this card.</p>
         <label for="theme-name">Name <span class="note">(optional — defaults to the file name)</span></label>
         <input id="theme-name" name="name" maxlength="120" placeholder="Editorial serif">
-        <p><button class="btn btn--primary" type="submit">Upload</button></p>
+        <p><button class="btn btn--primary" type="submit" id="theme-upload" disabled>Upload</button></p>
       </form>
+      <script src="${base}/pick.js" defer></script>
     </div>`
     : `<div class="card card--padded"><h2>Upload a theme</h2><p class="note">Your role may look at themes but not add them.</p></div>`;
 
@@ -160,7 +276,7 @@ ${input.themes
       ? {}
       : { flash: { text: FLASH[input.flash] ?? input.flash, kind: GOOD.has(input.flash) ? 'ok' : 'bad' } }),
     body: `<h1>Themes</h1>
-    <p class="note">A theme is one stylesheet the whole site wears: the chrome's rules plus the theme's own, served as one cacheable file. Only one theme is active at a time${input.activeKey === null ? ' — none is right now' : ` — currently <code>${esc(input.activeKey)}</code>`}.</p>
+    <p class="note">A theme is the look the whole site wears: the chrome's rules plus the theme's own, served as one cacheable file, with any pictures and fonts the package carried served from the theme's own URLs. Only one theme is active at a time${input.activeKey === null ? ' — none is right now' : ` — currently <code>${esc(input.activeKey)}</code>`}.</p>
     <p class="note">${fallback}</p>
     ${upload}
     <div class="card card--padded">

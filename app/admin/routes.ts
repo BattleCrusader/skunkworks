@@ -147,7 +147,7 @@ import {
   uploadTheme,
 } from '../render/themes.ts';
 import { readThemeBundle } from '../render/theme-bundle.ts';
-import { themesScreen } from './ui/themes.ts';
+import { THEME_PICK_JS, themesScreen } from './ui/themes.ts';
 import { layout, type NavKey, type NavItem } from './ui/layout.ts';
 import { pageListScreen, type PageRow } from './ui/pageList.ts';
 import { mediaLibraryScreen, type MediaAsset } from './ui/mediaLibrary.ts';
@@ -1101,6 +1101,14 @@ ${items}
     }
     if (action === 'editor/grapesjs.js' || action === 'editor/grapesjs.css' || action === 'editor/editor.js' || action === 'editor/canvas.css') {
       this.#editorAsset(reply, action);
+      return;
+    }
+    // S8x: the Themes screen's picker feedback. A served file, not an inline script: the admin
+    // document's policy allows `script-src 'self'`, and a per-screen nonce is plumbing this screen
+    // does not need. `no-store` because it is screen behaviour, not a cached asset.
+    if (action === 'themes/pick.js' && req.method === 'GET') {
+      reply.header('cache-control', 'no-store');
+      reply.type('text/javascript; charset=utf-8').send(THEME_PICK_JS);
       return;
     }
     // §7.1 / §9: the media library — the thumbnail grid, the search, and the picker that

@@ -347,6 +347,22 @@ td form[action$="/disable"] button,td form[action$="/uninstall"] button{border-c
    is the two-column property sheet — which otherwise wins on specificity and lays this form out
    as label|control pairs, with the file field squeezed into a 230 px column. */
 .legacy .uploadcard{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;max-width:720px;margin:0 0 10px;padding:18px;border:1px solid var(--line);border-radius:var(--r);background:var(--card-2);align-items:start}
+/* S8x: the Themes upload card is on a designed screen, not a legacy one, so it carries its own
+   rules. Without them the label, the picker and the Name field rendered as one inline run — the
+   state of the form was genuinely hard to read, which is half of why "it says No file chosen"
+   looked like a broken control rather than an empty one. */
+.uploadcard--theme{display:grid;grid-template-columns:minmax(0,1fr);gap:11px;max-width:560px;margin:0 0 10px;padding:16px;border:1px solid var(--line);border-radius:var(--r);background:var(--card-2);align-items:start}
+.uploadcard--theme>label{font-size:12.5px;font-weight:600;color:var(--ink-2);margin:0}
+.uploadcard--theme input[type="file"]{display:block;margin-top:2px;font:13px/1.4 var(--sans);color:var(--ink);max-width:100%;min-height:0;padding:9px 12px;background:#fff;border:1px solid var(--line-2);border-radius:var(--r-sm);cursor:pointer}
+.uploadcard--theme input[type="file"]::file-selector-button{margin:0 10px 0 0;padding:5px 11px;font:600 12.5px/1.2 var(--sans);color:var(--ink);background:var(--card);border:1px solid var(--line-2);border-radius:var(--r-sm);cursor:pointer}
+.uploadcard--theme input[type="file"]::file-selector-button:hover{background:var(--card-2)}
+.uploadcard--theme input:not([type]){display:block;width:100%;max-width:100%;min-height:0;padding:9px 12px;font:13px/1.4 var(--sans);color:var(--ink);background:#fff;border:1px solid var(--line-2);border-radius:var(--r-sm)}
+.uploadcard--theme>button,.uploadcard--theme p{margin:0}
+.uploadcard--theme[data-drag="over"]{border-color:var(--blue);background:var(--blue-soft);box-shadow:0 0 0 3px var(--blue-line)}
+.uploadstate{margin:0;font-size:12.5px;line-height:1.45;color:var(--ink-2)}
+.uploadstate[data-state="empty"]{color:var(--ink-2)}
+.uploadstate[data-state="ready"]{color:var(--green-ink);font-weight:600}
+.uploadstate[data-state="refused"]{color:var(--amber-ink);font-weight:600}
 .legacy .uploadcard>label,.legacy .uploadcard>button{grid-column:1}
 .legacy .uploadcard>label{font-size:12.5px;font-weight:600;color:var(--ink-2);margin:0}
 .legacy .uploadcard input[type="file"]{display:block;margin-top:6px;font:13px/1.4 var(--sans);color:var(--ink);max-width:100%;min-height:0;padding:9px 12px;background:#fff;border:1px solid var(--line-2);border-radius:var(--r-sm)}
