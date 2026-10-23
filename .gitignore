@@ -28,3 +28,4 @@ __pycache__/
 
 # theme packages are build output; the sources in themes/<name>/ are what is tracked
 themes/*.zip
+scratch/
