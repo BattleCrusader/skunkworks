@@ -1,0 +1,797 @@
+/*
+ * Letterpress — a light theme for the studio site, and the first one that carries its own pictures.
+ *
+ * Direction: printed matter, not screen matter. A warm paper ground with a real grain in it, ink
+ * that sits *on* the paper rather than glowing out of it, one vermilion accent used like a second
+ * ink pass, and hard offset shadows where a dark theme would have a glow. Display type is a serif
+ * at tight leading, body type is a humanist sans at 1.65, and every rule is a hairline that is
+ * actually a hairline (1px, not a 2px "border" that reads as a box).
+ *
+ * The pictures are the point of the package format: a hero plate, three work plates and a paper
+ * grain, all shipped inside the `.zip` and all named relatively in this sheet, so the uploader
+ * rewrites them to `/_theme/letterpress/assets/…?v=<sha>` and the theme depends on nobody's CDN.
+ *
+ * Contrast, WCAG relative luminance against this palette:
+ *   #17130e on #f4eee3 … 16.01:1   body ink
+ *   #3d342a on #f4eee3 … 10.55:1   secondary prose
+ *   #6b6053 on #f4eee3 …  5.31:1   muted: eyebrows, meta, footer
+ *   #a83a17 on #f4eee3 …  5.54:1   accent as text (links, em, numbers)
+ *   #a83a17 on #fbf7ee …  5.98:1   accent as text on a card
+ *   #f4eee3 on #a83a17 …  5.54:1   paper label on the accent button
+ * Every pairing clears AA for normal text. The muted tone is the smallest step from the ground,
+ * so it is the one to re-check whenever the ground is warmed or cooled.
+ *
+ * Nothing here adds a selector the pages do not already carry: the chrome contract
+ * (`.site-header`, `.site-id`, `.site-menu`, `.site-footer`) plus the `s-*` vocabulary of the
+ * seeded pages, the `list`/`list__items` feed widget, and the host-drawn contact form.
+ */
+
+:root {
+  --paper: #f4eee3;
+  --paper-2: #fbf7ee;
+  --paper-3: #ece4d5;
+  --ink: #17130e;
+  --ink-2: #3d342a;
+  --muted: #6b6053;
+  --rule: rgba(23, 19, 14, 0.16);
+  --rule-soft: rgba(23, 19, 14, 0.09);
+  --accent: #a83a17;
+  --accent-deep: #7d2a0f;
+  --teal: #2c545a;
+  --shadow-card: 6px 6px 0 rgba(23, 19, 14, 0.1);
+  --shadow-lift: 2px 2px 0 rgba(23, 19, 14, 0.22);
+  --measure: 62ch;
+  --frame: 74rem;
+}
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  background: var(--paper);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { transition: none !important; animation: none !important; }
+}
+
+/*
+ * Two background layers, in this order: the grain plate over the paper colour. The grain is a
+ * 192px tile with an alpha channel, so it repeats without a seam and darkens the paper by a few
+ * percent — enough that a large empty area reads as a sheet rather than as a flat fill.
+ */
+body {
+  margin: 0;
+  color: var(--ink);
+  background-color: var(--paper);
+  background-image: url(assets/grain.png);
+  background-repeat: repeat;
+  background-size: 192px 192px;
+  font: 17px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "kern" 1, "liga" 1;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4 {
+  font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-weight: 600;
+  letter-spacing: -0.018em;
+  line-height: 1.12;
+  margin: 0 0 0.55em;
+  color: var(--ink);
+  text-wrap: balance;
+}
+
+p { margin: 0 0 1.15em; }
+a { color: inherit; text-decoration: none; }
+
+a:not(.s-btn):not(.site-id) {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.22em;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+a:not(.s-btn):not(.site-id):hover {
+  color: var(--accent);
+  text-decoration-color: var(--accent);
+}
+
+img { max-width: 100%; height: auto; display: block; }
+::selection { background: var(--accent); color: var(--paper); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.88em;
+  background: var(--paper-3);
+  color: var(--ink-2);
+  padding: 0.1em 0.36em;
+  border-radius: 2px;
+}
+
+/* ── the bar ───────────────────────────────────────────────────────────────── */
+
+.site-header {
+  max-width: var(--frame);
+  margin: 0 auto;
+  padding: 1.05rem 2.5rem;
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+/*
+ * Sticky, but not opaque: the grain has to keep moving under the bar, or a sticky header reads as
+ * a slab pasted over the page. The blur is the only place in the theme where a filter is used, and
+ * it is on a 60px strip rather than on the section behind a hero.
+ */
+.site-header--sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: color-mix(in srgb, var(--paper) 86%, transparent);
+  backdrop-filter: saturate(130%) blur(8px);
+  -webkit-backdrop-filter: saturate(130%) blur(8px);
+}
+
+/* The mark is a package file, not a font glyph: an inline SVG set as a background box. */
+.site-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  font-family: ui-serif, "Iowan Old Style", Palatino, Georgia, serif;
+  font-size: 1.06rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  text-decoration: none;
+}
+.site-id::before {
+  content: "";
+  width: 1.6rem;
+  height: 1.6rem;
+  flex: none;
+  background: url(assets/mark.svg) center / contain no-repeat;
+}
+.site-id:hover { color: var(--accent); }
+.site-id img { height: 1.7rem; width: auto; }
+.site-header nav { margin-left: auto; display: flex; align-items: center; }
+
+.site-menu {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.92rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+.site-menu li { display: block; }
+.site-menu a {
+  display: inline-block;
+  padding: 0.42rem 0.7rem;
+  color: var(--muted);
+  border-radius: 2px;
+  text-decoration: none;
+  transition: color 0.14s ease, background-color 0.14s ease;
+}
+.site-menu a:hover { color: var(--ink); background: var(--rule-soft); }
+
+.site-menu a[href="/contact"] {
+  margin-left: 0.8rem;
+  padding: 0.4rem 0.95rem;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 2px;
+}
+.site-menu a[href="/contact"]:hover { background: var(--accent); border-color: var(--accent); color: var(--paper); }
+
+/* The current page is marked the way a printed index marks it: an underline in the second ink. */
+body[data-page-path="/"] .site-header .site-menu a[href="/"],
+body[data-page-path="/about"] .site-header .site-menu a[href="/about"],
+body[data-page-path="/pricing"] .site-header .site-menu a[href="/pricing"],
+body[data-page-path="/writing"] .site-header .site-menu a[href="/writing"],
+body[data-page-path="/contact"] .site-header .site-menu a[href="/contact"] {
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.site-footer {
+  max-width: var(--frame);
+  margin: 0 auto;
+  padding: 1.35rem 2.5rem 2.2rem;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1rem 2rem;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+.site-footer--sticky { position: sticky; bottom: 0; z-index: 20; }
+.site-menu--footer { gap: 0.6rem; font-size: 0.86rem; }
+.site-menu--footer a { padding: 0.2rem 0.4rem; }
+.site-footer__text {
+  margin: 0 0 0 auto;
+  max-width: 46ch;
+  text-align: right;
+  color: var(--muted);
+}
+
+/* ── the page ──────────────────────────────────────────────────────────────── */
+
+main {
+  display: block;
+  max-width: var(--frame);
+  margin: 0 auto;
+  padding: 0 2.5rem;
+}
+
+main > section {
+  padding: 4.25rem 0;
+  border-bottom: 1px solid var(--rule-soft);
+  position: relative;
+}
+main > section:last-child { border-bottom: 0; padding-bottom: 4.75rem; }
+
+/* A section that carries an aside is a two-column spread: the reading column, then the margin. */
+main > section:has(> .s-aside) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16.5rem;
+  gap: 3.5rem;
+  align-items: start;
+}
+
+main p { max-width: var(--measure); color: var(--ink-2); }
+main p:last-child { margin-bottom: 0; }
+main em { font-style: italic; color: var(--accent); }
+main strong { color: var(--ink); font-weight: 650; }
+
+.s-eyebrow {
+  margin: 0 0 1.35rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.s-eyebrow::before {
+  content: "";
+  display: inline-block;
+  width: 1.6rem;
+  height: 1px;
+  margin-right: 0.7rem;
+  vertical-align: 0.3em;
+  background: var(--accent);
+}
+
+/* ── hero ──────────────────────────────────────────────────────────────────── */
+
+/*
+ * The plate is a package file: a 1800×1100 abstract printed sheet, set behind the hero and faded
+ * out to the right and bottom with a mask, so the type always sits on paper. `isolation` keeps the
+ * plate's stacking context from leaking into the sticky header above it.
+ */
+.s-hero {
+  padding: 4.75rem 0 4.25rem;
+  isolation: isolate;
+}
+.s-hero::after {
+  content: "";
+  position: absolute;
+  inset: -1px 0 -1px auto;
+  width: min(44%, 30rem);
+  /* Held to the right and down: the plate's disc is the brightest thing in the package, and it
+     lands on the facts column if the plate is centred on the section. Ghosted, not hidden — the
+     text always sits on paper, never inside the picture. */
+  background: url(assets/hero-plate.jpg) 84% 34% / cover no-repeat;
+  opacity: 0.4;
+  z-index: -1;
+  -webkit-mask-image: linear-gradient(to left, #000 2%, rgba(0, 0, 0, 0.3) 54%, transparent 92%),
+                      linear-gradient(to bottom, #000 55%, transparent 100%);
+  mask-image: linear-gradient(to left, #000 2%, rgba(0, 0, 0, 0.3) 54%, transparent 92%),
+              linear-gradient(to bottom, #000 55%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+  pointer-events: none;
+}
+
+.s-hero h1 {
+  font-size: clamp(2.5rem, 5.6vw, 4.35rem);
+  line-height: 1.02;
+  letter-spacing: -0.032em;
+  max-width: 15.5ch;
+  margin: 0 0 1.9rem;
+}
+.s-hero h1 em { color: var(--accent); font-style: italic; }
+
+.s-hero__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 3.25rem;
+  align-items: start;
+}
+
+.s-lede {
+  font-size: 1.16rem;
+  line-height: 1.6;
+  color: var(--ink-2);
+  max-width: 44ch;
+  margin: 0;
+}
+
+/* The facts are set as a printed table of figures: numerals in the serif, labels in small caps. */
+.s-facts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+  font-size: 0.86rem;
+  color: var(--muted);
+  border-top: 1px solid var(--rule);
+}
+.s-facts li {
+  display: grid;
+  grid-template-columns: 4.6rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.9rem;
+  padding: 0.72rem 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.s-facts b {
+  font-family: ui-serif, Palatino, Georgia, serif;
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.s-facts span { line-height: 1.4; }
+
+.s-actions { display: flex; flex-wrap: wrap; gap: 0.8rem; margin: 2.4rem 0 0; }
+
+/* ── buttons ───────────────────────────────────────────────────────────────── */
+
+.s-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.82rem 1.4rem;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  font-size: 0.76rem;
+  font-weight: 650;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+  background: transparent;
+  color: var(--ink);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+}
+.s-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--paper);
+  box-shadow: var(--shadow-lift);
+}
+.s-btn--primary:hover { background: var(--accent-deep); color: var(--paper); }
+.s-btn--quiet { border-color: var(--rule); color: var(--ink-2); }
+.s-btn--quiet:hover { border-color: var(--ink); color: var(--ink); background: var(--paper-2); }
+.s-btn:hover { transform: translate(-1px, -1px); }
+.s-btn:active { transform: translate(0, 0); box-shadow: none; }
+.s-actions .s-btn { text-decoration: none; }
+
+/* ── section heads ─────────────────────────────────────────────────────────── */
+
+.s-section__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 2.75rem;
+  align-items: end;
+  margin: 0 0 3rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 2px solid var(--ink);
+}
+.s-section__head h2 { margin: 0; font-size: clamp(1.65rem, 2.6vw, 2.15rem); }
+.s-section__head p { margin: 0; font-size: 0.98rem; color: var(--muted); max-width: 48ch; }
+
+/* ── selected work, and the three plates ───────────────────────────────────── */
+
+.s-work {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2.25rem;
+}
+.s-work article { display: flex; flex-direction: column; }
+.s-work__meta {
+  margin: 0 0 0.7rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.s-work h3 { font-size: 1.2rem; margin: 1.15rem 0 0.5rem; line-height: 1.25; }
+.s-work p { font-size: 0.94rem; color: var(--ink-2); margin: 0; }
+
+/*
+ * A specimen is a plate: the package's picture, an ink hairline, and the work's number set in the
+ * corner like a plate mark. The three pictures are deliberately different hues, so the row reads as
+ * a series rather than a repeated swatch.
+ */
+.s-specimen {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border: 1px solid var(--ink);
+  background: var(--paper-3) center / cover no-repeat;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.s-specimen span {
+  position: absolute;
+  left: 0.75rem;
+  bottom: 0.7rem;
+  display: inline-block;
+  padding: 0.1rem 0.42rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  color: var(--paper);
+  background: var(--ink);
+}
+.s-specimen--kiln { background-image: url(assets/plate-kiln.jpg); }
+.s-specimen--tide { background-image: url(assets/plate-tide.jpg); }
+.s-specimen--chalk { background-image: url(assets/plate-chalk.jpg); }
+.s-specimen--tide span { background: var(--teal); }
+
+/* ── tiers ─────────────────────────────────────────────────────────────────── */
+
+.s-tiers {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem;
+  align-items: stretch;
+}
+.s-tier {
+  display: flex;
+  flex-direction: column;
+  padding: 1.75rem 1.6rem 1.5rem;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  box-shadow: var(--shadow-card);
+}
+.s-tier h3 {
+  margin: 0 0 0.9rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.s-tier__price {
+  margin: 0 0 1.35rem;
+  font-family: ui-serif, Palatino, Georgia, serif;
+  font-size: 2.05rem;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.s-tier__price small {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.76rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.s-tier ul {
+  list-style: none;
+  margin: 0 0 1.5rem;
+  padding: 1.2rem 0 0;
+  border-top: 1px solid var(--rule-soft);
+  display: grid;
+  gap: 0.55rem;
+  font-size: 0.92rem;
+  color: var(--ink-2);
+}
+.s-tier li { position: relative; padding-left: 1.05rem; }
+.s-tier li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 0.4rem;
+  height: 1px;
+  background: var(--accent);
+}
+.s-tier p:last-child { margin-top: auto; margin-bottom: 0; }
+.s-tier .s-btn { width: 100%; justify-content: center; }
+
+/* The featured tier is printed in the second ink: an accent edge, not a glow. */
+.s-tier--featured {
+  background: var(--paper-2);
+  border-color: var(--ink);
+  border-top: 4px solid var(--accent);
+  box-shadow: 8px 8px 0 rgba(168, 58, 23, 0.14);
+}
+.s-tier--featured h3 { color: var(--accent); }
+
+/* ── numbered list ─────────────────────────────────────────────────────────── */
+
+.s-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--rule);
+}
+.s-list > li {
+  display: grid;
+  grid-template-columns: 3.2rem minmax(0, 1fr);
+  column-gap: 1.4rem;
+  padding: 1.5rem 0;
+  border-bottom: 1px solid var(--rule-soft);
+  align-items: start;
+}
+.s-list__n {
+  grid-row: span 2;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  padding-top: 0.42em;
+}
+.s-list h3 { margin: 0 0 0.4rem; font-size: 1.08rem; }
+.s-list p { margin: 0; font-size: 0.95rem; color: var(--muted); max-width: 58ch; }
+
+.s-more { margin: 1.75rem 0 0; font-size: 0.95rem; }
+.s-more a { color: var(--accent); }
+
+/* ── prose, principles, the margin ─────────────────────────────────────────── */
+
+.s-prose h2 { font-size: clamp(1.55rem, 2.4vw, 1.95rem); margin-bottom: 1.1rem; }
+.s-prose p { max-width: 60ch; }
+
+.s-principles {
+  list-style: none;
+  margin: 2.1rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.1rem;
+}
+.s-principles li {
+  padding: 1.1rem 1.15rem;
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  border-left: 3px solid var(--accent);
+}
+.s-principles b {
+  display: block;
+  font-family: ui-serif, Palatino, Georgia, serif;
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 0.35rem;
+}
+.s-principles span { display: block; font-size: 0.9rem; line-height: 1.55; color: var(--muted); }
+
+.s-aside {
+  position: sticky;
+  top: 5.5rem;
+  padding: 1.25rem 1.25rem 1.1rem;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  font-size: 0.9rem;
+}
+.s-aside h3 {
+  margin: 0 0 0.8rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.s-aside .list__items { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.1rem; }
+.s-aside .list__items a {
+  display: block;
+  padding: 0.34rem 0;
+  border-bottom: 1px solid var(--rule-soft);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+.s-aside .list__items a:hover { color: var(--accent); }
+.s-aside .list__items li:last-child a { border-bottom: 0; }
+
+/* A feed list on its own (the journal index) is a printed table of contents. */
+.list { margin: 0; }
+.list__items { list-style: none; margin: 0; padding: 0; }
+main > section > .list .list__items {
+  border-top: 1px solid var(--rule);
+  counter-reset: entry;
+}
+main > section > .list .list__items li {
+  counter-increment: entry;
+  border-bottom: 1px solid var(--rule-soft);
+}
+main > section > .list .list__items li a {
+  display: flex;
+  align-items: baseline;
+  gap: 1.4rem;
+  padding: 1.05rem 0;
+  font-family: ui-serif, Palatino, Georgia, serif;
+  font-size: 1.22rem;
+  color: var(--ink);
+  text-decoration: none;
+}
+main > section > .list .list__items li a::before {
+  content: counter(entry, decimal-leading-zero);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+main > section > .list .list__items li a:hover { color: var(--accent); }
+
+/* ── contact, and the host-drawn form ──────────────────────────────────────── */
+
+.s-contact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: 3.25rem;
+  align-items: start;
+}
+.s-contact h2 { font-size: clamp(1.5rem, 2.3vw, 1.9rem); }
+.s-contact__note {
+  margin: 0 0 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--rule-soft);
+  font-size: 0.94rem;
+  color: var(--ink-2);
+}
+.s-contact__note b {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.skw-form__wrap {
+  padding: 1.75rem 1.6rem;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  box-shadow: var(--shadow-card);
+}
+.skw-form.fields { display: grid; gap: 1.05rem; margin: 0; }
+.field { display: grid; gap: 0.35rem; }
+.field label {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.field input,
+.field textarea,
+.skw-form input:not([type="hidden"]),
+.skw-form textarea {
+  width: 100%;
+  padding: 0.62rem 0.7rem;
+  font: inherit;
+  font-size: 0.96rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.field input:hover, .field textarea:hover { border-color: color-mix(in srgb, var(--ink) 35%, transparent); }
+.field input:focus, .field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.field textarea { resize: vertical; min-height: 8.5rem; }
+.skw-form button[type="submit"] {
+  justify-self: start;
+  padding: 0.82rem 1.6rem;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 650;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--paper);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  cursor: pointer;
+  box-shadow: var(--shadow-lift);
+  transition: background-color 0.14s ease, transform 0.12s ease;
+}
+.skw-form button[type="submit"]:hover { background: var(--accent-deep); transform: translate(-1px, -1px); }
+.skw-form button[type="submit"]:active { transform: none; box-shadow: none; }
+
+/* ── a single post ─────────────────────────────────────────────────────────── */
+
+.skw-post { max-width: 46rem; padding: 3.5rem 0 1rem; }
+.skw-post h1 {
+  font-size: clamp(2rem, 4.2vw, 3rem);
+  line-height: 1.05;
+  letter-spacing: -0.028em;
+  margin: 0 0 1.6rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 2px solid var(--ink);
+}
+.skw-post p { font-size: 1.06rem; line-height: 1.72; color: var(--ink-2); max-width: 66ch; }
+.skw-post p:first-of-type::first-letter {
+  float: left;
+  font-family: ui-serif, Palatino, Georgia, serif;
+  font-size: 3.1rem;
+  line-height: 0.86;
+  padding: 0.1em 0.12em 0 0;
+  color: var(--accent);
+}
+
+/* ── narrow ────────────────────────────────────────────────────────────────── */
+
+@media (max-width: 62rem) {
+  .site-header, .site-footer { padding-left: 1.5rem; padding-right: 1.5rem; }
+  main { padding: 0 1.5rem; }
+  .s-hero::after { width: 52%; opacity: 0.35; }
+  .s-work { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .s-tiers { grid-template-columns: minmax(0, 1fr); }
+  .s-section__head { grid-template-columns: minmax(0, 1fr); gap: 0.9rem; align-items: start; }
+  .s-contact { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+  main > section:has(> .s-aside) { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+  .s-aside { position: static; }
+}
+
+@media (max-width: 40rem) {
+  body { font-size: 16px; }
+  .site-header { gap: 1rem; padding: 0.85rem 1.15rem; flex-wrap: wrap; }
+  .site-header nav { margin-left: 0; width: 100%; }
+  .site-menu { gap: 0; font-size: 0.88rem; }
+  .site-menu a { padding: 0.4rem 0.55rem; }
+  .site-menu a[href="/contact"] { margin-left: auto; }
+  main { padding: 0 1.15rem; }
+  main > section { padding: 3rem 0; }
+  .s-hero { padding: 3rem 0 2.75rem; }
+  .s-hero::after { display: none; }
+  .s-hero__grid { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+  .s-facts li { grid-template-columns: 3.8rem minmax(0, 1fr); }
+  .s-work { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+  .s-principles { grid-template-columns: minmax(0, 1fr); }
+  .site-footer { flex-direction: column; align-items: flex-start; gap: 0.6rem; }
+  .site-footer__text { margin: 0; text-align: left; }
+  .skw-form__wrap { padding: 1.25rem 1.1rem; }
+}
+
+@media (prefers-contrast: more) {
+  :root { --rule: rgba(23, 19, 14, 0.34); --rule-soft: rgba(23, 19, 14, 0.2); --muted: #554b3f; }
+  body { background-image: none; }
+}
+
+@media print {
+  body { background: #fff; color: #000; }
+  .site-header, .site-footer, .s-hero::after, .skw-form__wrap { display: none; }
+  main { max-width: none; padding: 0; }
+  a { text-decoration: none; color: #000; }
+}

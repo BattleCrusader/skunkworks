@@ -9,6 +9,7 @@ before it is activated.
 | file | ground | accent | notes |
 |---|---|---|---|
 | `midnight-kiln.css` | `#0c0d10` ink | `#ff7a4d` ember | Dark editorial. Paper-cream text, hairline rules, cards instead of boxes, one soft glow at the top of the page. Contrast measured: 16.13:1 body, 8.99:1 muted, 7.54:1 accent. |
+| `letterpress/` → `letterpress.zip` | `#f4eee3` paper | `#a83a17` vermilion | Light printed-matter theme, and the first package: a hero plate, three work plates, a paper grain and a printer's mark, all carried inside the zip. Contrast measured: 16.01:1 body, 10.55:1 prose, 5.31:1 muted, 5.54:1 accent. |
 
 ## Two shapes, one door (S8x)
 
@@ -102,7 +103,20 @@ cp themes/midnight-kiln.css /tmp/kiln/theme.css
 printf '{"name":"Midnight Kiln"}\n' > /tmp/kiln/theme.json
 cp /path/to/a/logo.svg /tmp/kiln/assets/logo.svg
 printf '\n.site-header__mark{background:url(assets/logo.svg) no-repeat center/contain}\n' >> /tmp/kiln/theme.css
-(cd /tmp/kiln && zip -qr ../kiln.zip theme.css theme.json assets)
+(cd /tmp/kiln && zip -qr ../kiln.zip theme.css theme.json assets -x '.DS_Store' -x '__MACOSX/*' -x '._*')
+```
+
+The three `-x` flags matter: Finder writes `.DS_Store` into any folder it opens, `zip -r` includes it,
+and the reader refuses that name — so a package built in Finder fails with "`.DS_Store` is not
+something a theme may carry" until it is excluded. `themes/letterpress/` is built this way, and
+`S8x-8` in `test/theme-bundle.test.ts` packs that folder and runs the real reader over it, so a
+picture the sheet names and the folder does not hold fails the gate rather than uploading cleanly
+and 404ing in a browser.
+
+```sh
+# this repository's own package
+cd themes/letterpress && zip -qrX ../letterpress.zip theme.css theme.json assets \
+  -x '.DS_Store' -x '__MACOSX/*' -x '._*'
 ```
 
 Upload `kiln.zip` on **Themes**. The list shows the file count and total size beside the sheet, so a

@@ -4377,3 +4377,38 @@ The verification probe's cleanup deleted every theme on the live tenant, which r
 operator had uploaded minutes earlier (`midnight-kiln`). It was restored from
 `themes/midnight-kiln.css` under the same name and key, unactivated, which is the state it was in.
 Probe cleanup now deletes only the keys a probe created — a live box is not a fixture.
+
+## 16. E-55 — a theme is data, and data has no type checker
+
+The package format shipped in S8x and nothing in the repository used it. The reference package is now
+`themes/letterpress/` (sources) → `themes/letterpress.zip` (what an operator uploads): a light
+printed-matter theme with **six pictures inside the zip** — a 1800×1100 hero plate, three 1200×800
+work plates, a 192px paper grain and a printer's mark — each named relatively in `theme.css` and
+rewritten at upload to `/_theme/letterpress/assets/…?v=<sha8>`.
+
+**Measured, through the real admin door on the live tenant:**
+
+```
+upload  303 → /admin/t/abc123/themes?result=uploaded
+row     Letterpress | letterpress | 25.2 KiB | 6 files · 246.5 KiB | Not active
+preview 200, sheet /theme.css?v=dae2ee6681aa&theme=letterpress, cache-control immutable
+assets  200 image/png 32443 · image/svg+xml 374 · image/jpeg 57220 · 65419 · 32121 · 64861
+        every one `public, max-age=31536000, immutable`
+pages   / /about /pricing /writing /contact /blog/<slug> all render it; 0 broken images
+```
+
+The seven screenshots were taken through `/preview-theme?t=<signed token>`, so the live site was
+never switched: a preview renders the real page with a theme that is not active, `no-store`, `noindex`.
+
+**What this cost, and what now prevents it.** A theme is data, so no type check and no route test
+looks inside it. A sheet that names `assets/hero.jpg` in a package that does not carry it uploads
+cleanly and 404s in a browser — the "honest outcome of a broken package" the module documents, but a
+broken deliverable for the operator. The first run of the new guard (`S8x-8`) failed on exactly that
+class of mistake: Finder had written `.DS_Store` into `themes/letterpress/`, `zip -r` had included it,
+and the reader refused the archive by name. The packing step now excludes OS bookkeeping the way an
+operator's `zip -x` must, the recipe in `themes/README.md` carries the three `-x` flags, and `S8x-8`
+packs the shipped folder and runs the real reader over it — so the next picture that is named but
+not carried fails the gate instead of the browser.
+
+**Not done, deliberately:** the theme is left **Not active**. Activating it is one POST on the Themes
+screen, and it is the operator's call which look the site wears.

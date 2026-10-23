@@ -20,12 +20,14 @@
  */
 import assert from 'node:assert/strict';
 import { crc32, deflateRawSync } from 'node:zlib';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 import { after, before, test } from 'node:test';
 
 import { openAdminWrite } from '../app/db/classes.ts';
 import { loadEnv } from '../app/env.ts';
 import { themeAssetsRoot } from '../app/render/themes.ts';
+import { readThemeBundle, rewriteAssetUrls } from '../app/render/theme-bundle.ts';
 import { readZip } from '../app/render/zip.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import { ADMIN_HOST, ADMIN_ORIGIN, TOTP_SECRET, openSession, seedUser, type Sessioned } from './helpers/admin.ts';
@@ -370,4 +372,40 @@ test('S8x-7. the reader refuses what the format cannot promise', () => {
     { name: '._assets', bytes: Buffer.from('junk') },
   ]);
   assert.deepEqual(readZip(mac).map((entry) => entry.path), ['theme.css']);
+});
+
+/**
+ * The one package this repository ships. A theme is data, so nothing type-checks it and no route
+ * test would notice a picture that the sheet names and the folder does not hold — that package
+ * would upload cleanly and then 404 in a browser. This reads the sources off disk, packs them the
+ * way an operator's `zip` would, and runs the same reader the upload route runs.
+ */
+test('S8x-8. the shipped Letterpress package carries every file its sheet names', async () => {
+  const dir = new URL('../themes/letterpress/', import.meta.url).pathname;
+  const members: Member[] = [];
+  for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    // Finder writes `.DS_Store` into any folder it opens, and `zip -r` includes it. The reader
+    // refuses that name on purpose; an operator's build excludes it, and so does this packing step.
+    if (entry.name === '.DS_Store' || entry.name.startsWith('._') || entry.parentPath.includes('__MACOSX')) continue;
+    const path = relative(dir, join(entry.parentPath, entry.name)).split(sep).join('/');
+    members.push({ name: path, bytes: readFileSync(join(entry.parentPath, entry.name)) });
+  }
+  const bundle = readThemeBundle({ filename: 'letterpress.zip', bytes: zipOf(members) });
+
+  assert.equal(bundle.name, 'Letterpress', 'theme.json names it');
+  assert.ok(bundle.assets.length >= 6, `a package with pictures holds them; found ${bundle.assets.length}`);
+  assert.match(bundle.css, /^\/\*/m, 'the sheet is documented like the rest of the repository');
+  assert.doesNotMatch(bundle.css, /<script|<\/style/i, 'a stylesheet cannot carry markup');
+
+  const named = [...bundle.css.matchAll(/url\(\s*['"]?(assets\/[^'")]+)/g)].map((m) => m[1] as string);
+  assert.ok(named.length >= 5, 'the sheet names the package files');
+  const carried = new Set(bundle.assets.map((asset) => asset.path));
+  for (const path of named) assert.ok(carried.has(path), `${path} is named by the sheet and carried by the package`);
+
+  const rewritten = rewriteAssetUrls(bundle.css, 'letterpress', bundle.assets);
+  const absolute = [...rewritten.matchAll(/url\("(\/_theme\/[^"]+)"\)/g)].map((m) => m[1] as string);
+  assert.equal(absolute.length, named.length, 'every relative reference became an absolute one');
+  for (const url of absolute) assert.match(String(url), /^\/_theme\/letterpress\/assets\/[a-z0-9-]+\.(?:jpg|png|svg)\?v=[0-9a-f]{8}$/);
+  assert.equal(/(['"]?)url\(\s*assets\//.test(rewritten), false, 'nothing relative survives the rewrite');
 });

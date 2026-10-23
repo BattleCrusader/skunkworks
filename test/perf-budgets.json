@@ -573,34 +573,6 @@
       ]
     },
     {
-      "file": "test/theme-bundle.test.ts",
-      "worstIdleMs": 1143,
-      "measuredOn": "2026-10-23",
-      "load1m": 7.66,
-      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
-      "sha256": "7281beb1814046b5b0b463311ce74ed65a4211e24cb0452809ae4c4c742f77d8",
-      "runs": [
-        {
-          "ms": 1143,
-          "at": "2026-10-23T01:36:23.005Z",
-          "load1mBefore": 7.66,
-          "load1mAfter": 7.66,
-          "idle": true,
-          "exitCode": 0,
-          "tests": 8
-        },
-        {
-          "ms": 550,
-          "at": "2026-10-23T01:36:23.556Z",
-          "load1mBefore": 7.66,
-          "load1mAfter": 7.66,
-          "idle": true,
-          "exitCode": 0,
-          "tests": 8
-        }
-      ]
-    },
-    {
       "file": "test/site-delivery.test.ts",
       "worstIdleMs": 1119,
       "measuredOn": "2026-10-22",
@@ -888,6 +860,34 @@
           "idle": true,
           "exitCode": 0,
           "tests": 8
+        }
+      ]
+    },
+    {
+      "file": "test/theme-bundle.test.ts",
+      "worstIdleMs": 898,
+      "measuredOn": "2026-10-23",
+      "load1m": 5.53,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "c7e8b3bbc0f23e029f70079d3456fd0a9c3595c26d88fe710018767d7aa1a63e",
+      "runs": [
+        {
+          "ms": 856,
+          "at": "2026-10-23T03:36:55.246Z",
+          "load1mBefore": 5.53,
+          "load1mAfter": 5.53,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 9
+        },
+        {
+          "ms": 898,
+          "at": "2026-10-23T03:36:56.145Z",
+          "load1mBefore": 5.53,
+          "load1mAfter": 5.53,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 9
         }
       ]
     },
@@ -1843,5 +1843,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-23T01:36:23.877Z"
+  "updatedAt": "2026-10-23T03:36:56.476Z"
 }
