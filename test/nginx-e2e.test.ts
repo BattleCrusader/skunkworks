@@ -146,23 +146,43 @@ before(async () => {
 
   writeFileSync(join(tmp, 'nginx.conf'), nginxConf());
 
-  edgePort = await freePort();
+  /**
+   * Start one edge container and return the host port it is published on.
+   *
+   * `freePort()` binds and releases: between that release and docker's own bind, another process
+   * can take the port, and docker then refuses with `address already in use`. The suite passed
+   * alone and failed inside the full run three times before this loop existed, so a port that is
+   * free when asked for is a port that is free *now*, not when docker gets to it. Six attempts,
+   * a fresh port each time, and loopback only — the same one-line lesson the harness keeps
+   * relearning.
+   */
+  const runEdge = async (name: string, confDir: string): Promise<number> => {
+    let last = '';
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const port = await freePort();
+      const run = spawnSync(
+        'docker',
+        [
+          'run', '--rm', '-d',
+          '--name', name,
+          '--add-host', 'host.docker.internal:host-gateway',
+          '-p', `127.0.0.1:${port}:80`,
+          '-v', `${join(tmp, 'nginx.conf')}:/etc/nginx/nginx.conf:ro`,
+          '-v', `${confDir}:/etc/nginx/conf.d:ro`,
+          '-v', `${snippets}:/etc/nginx/snippets:ro`,
+          'nginx:1.31-alpine',
+        ],
+        { encoding: 'utf8' },
+      );
+      if (run.status === 0) return port;
+      last = String(run.stderr ?? '');
+      if (!last.includes('address already in use')) break;
+    }
+    throw new Error(`docker run for ${name} failed: ${last}`);
+  };
+
   container = trackContainer(`skw-nginx-e2e-${process.pid}`);
-  const run = spawnSync(
-    'docker',
-    [
-      'run', '--rm', '-d',
-      '--name', container,
-      '--add-host', 'host.docker.internal:host-gateway',
-      '-p', `${edgePort}:80`,
-      '-v', `${join(tmp, 'nginx.conf')}:/etc/nginx/nginx.conf:ro`,
-      '-v', `${conf}:/etc/nginx/conf.d:ro`,
-      '-v', `${snippets}:/etc/nginx/snippets:ro`,
-      'nginx:1.31-alpine',
-    ],
-    { encoding: 'utf8' },
-  );
-  assert.equal(run.status, 0, run.stderr);
+  edgePort = await runEdge(container, conf);
 
   // Wait for the edge to answer, then for the app behind it.
   for (let i = 0; i < 60; i += 1) {
@@ -195,23 +215,8 @@ before(async () => {
       adminAllowlist: parseAdminAllowlist(allowlist.join(',')),
     });
     writeFileSync(join(c, '10-app.conf'), prepareAppConf(text, { gateway, appPort }).text);
-    const port = await freePort();
     const name_ = trackContainer(`skw-nginx-e2e-${name}-${process.pid}`);
-    const run2 = spawnSync(
-      'docker',
-      [
-        'run', '--rm', '-d',
-        '--name', name_,
-        '--add-host', 'host.docker.internal:host-gateway',
-        '-p', `${port}:80`,
-        '-v', `${join(tmp, 'nginx.conf')}:/etc/nginx/nginx.conf:ro`,
-        '-v', `${c}:/etc/nginx/conf.d:ro`,
-        '-v', `${snippets}:/etc/nginx/snippets:ro`,
-        'nginx:1.31-alpine',
-      ],
-      { encoding: 'utf8' },
-    );
-    assert.equal(run2.status, 0, run2.stderr);
+    const port = await runEdge(name_, c);
     for (let i = 0; i < 60; i += 1) {
       const p = await call({ port, path: '/healthz', host: 'acme.test' }).catch(() => undefined);
       if (p !== undefined && p.status === 200) return { port, container: name_ };
