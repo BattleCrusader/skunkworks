@@ -163,6 +163,16 @@ test('E1b — the editor has a toolbar of its own, and no button is a missing Fo
   const boot = await admin('/admin/t/acme/editor/editor.js');
   assert.match(boot.body, /panels:\s*\{\s*defaults:\s*\[\s*\]\s*\}/, 'GrapesJS default panels must be disabled');
 
+  // E-59: two more defaults of GrapesJS's own, found by the browser sweep as three console errors
+  // on every open — a stylesheet link to Font Awesome on cdnjs (blocked by style-src 'self') and a
+  // telemetry beacon to app.grapesjs.com (blocked by default-src 'self'). A tenant's session is not
+  // GrapesJS's business, and a request the CSP always refuses is noise the operator cannot act on.
+  assert.match(boot.body, /cssIcons:\s*''/, 'no icon stylesheet may be fetched from a CDN');
+  assert.match(boot.body, /telemetry:\s*false/, 'the telemetry beacon must be off');
+  // The served document is where a <link> or a beacon would live; the boot script's own comments
+  // may name the vendor, so the absence is asserted on the page.
+  assert.doesNotMatch(res.body, /cdnjs|app\.grapesjs\.com/, 'the page fetches neither');
+
   // The save button is wired to the same POST the boot script already exposed, and Ctrl+S
   // does not open the browser's save dialog.
   assert.match(boot.body, /window\.skwSave\(\)/);

@@ -160,7 +160,7 @@ test('S8a-6. the account forms refuse a request with no CSRF token', async () =>
 // --- 3. email ---------------------------------------------------------------
 
 test('S8a-7. changing the email changes the identity the next login resolves', async () => {
-  const res = await postForm('/admin/t/acme/account/email', { email: 'ops@acme.test' });
+  const res = await postForm('/admin/t/acme/account/email', { email: 'ops@acme.test', current_password: PASSWORD });
   assert.equal(res.status, 303, res.body);
 
   const shown = await get('/admin/t/acme/account', { cookie: session.cookie });
@@ -174,11 +174,33 @@ test('S8a-7. changing the email changes the identity the next login resolves', a
 });
 
 test('S8a-8. an email that is not an email is refused by name', async () => {
-  const res = await postForm('/admin/t/acme/account/email', { email: 'not-an-email' });
+  const res = await postForm('/admin/t/acme/account/email', { email: 'not-an-email', current_password: PASSWORD });
   assert.equal(res.status, 303, res.body);
   assert.match(locationOf(res), /e=email/);
   const shown = await get('/admin/t/acme/account', { cookie: session.cookie });
   assert.match(shown.body, /ops@acme\.test/, 'the address must not have changed');
+});
+
+/**
+ * S8a-7b (E-59). **The sign-in address is not movable by a session alone.**
+ *
+ * The email is the login identity: a borrowed cookie that can rewrite it can move the account to
+ * an address the borrower reads, then take it over through the reset flow. The password change on
+ * the same screen re-verifies the current password; this one did not, so the sweep's "Save email"
+ * button changed the address with no proof at all. Both refusals are named, and neither writes.
+ */
+test('S8a-7b. changing the email needs the current password, and a wrong one changes nothing', async () => {
+  const absent = await postForm('/admin/t/acme/account/email', { email: 'stolen@acme.test' });
+  assert.equal(absent.status, 303, absent.body);
+  assert.match(locationOf(absent), /e=current/, 'no password is a refusal, not a pass');
+  assert.match((await get('/admin/t/acme/account', { cookie: session.cookie })).body, /ops@acme\.test/);
+
+  const wrong = await postForm('/admin/t/acme/account/email', { email: 'stolen@acme.test', current_password: 'not-the-password' });
+  assert.equal(wrong.status, 303, wrong.body);
+  assert.match(locationOf(wrong), /e=current/);
+  const shown = await get('/admin/t/acme/account', { cookie: session.cookie });
+  assert.match(shown.body, /ops@acme\.test/, 'the address is untouched after a wrong password');
+  assert.doesNotMatch(shown.body, /stolen@acme\.test/);
 });
 
 // --- 4. password ------------------------------------------------------------

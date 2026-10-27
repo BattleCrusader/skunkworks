@@ -4598,3 +4598,70 @@ POST /admin/t/fractional/messages/<id>/delete  303 → /admin/t/fractional/messa
 in place (harmless, nothing points at it) rather than deleted, because deleting a form definition is
 an operator decision, not a cleanup.
 
+## 20. E-59 — every control, pressed: five things the screens were hiding
+
+The operator asked for a browser sweep of **every input and every clickable item**, on the public
+site and on every admin screen. Two scripts do it in real Chrome (Playwright driving the repo's own
+Chromium, `scratch/sweep-inventory.mjs`, `scratch/sweep-actions.mjs`, `scratch/sweep-destructive.mjs`):
+one enumerates and follows every link, presses every non-destructive button and types into every
+field; the second presses the destructive verbs on data it created first. Both log console errors,
+page errors and every non-2xx response per page.
+
+Coverage: `/`, `/contact`, `/careers`; `/admin/login`; pages, media, tables index, a table list, a
+row form, a new-row form, plugins, themes, site, account, messages, a message row, the editor; and
+`abc123`'s tenant (blog + menu plugins) for the same screens. 26 pages, 168 link targets, 66
+buttons, 178 form controls.
+
+Five defects, all in the admin, none visible to a test that only asserts markup:
+
+**1. Reordering a menu item answered 500 — on both arrows.** `#siteNavMove` swapped two rows by
+parking the moving one at `position = -1`, and `cms_nav` carries `CHECK (position >= 0)` plus a
+unique index on `(location, parent, position)`. The constraint fired on the first statement:
+
+```
+unhandled: SqliteError: CHECK constraint failed: position >= 0
+    at #siteNavMove (app/admin/routes.js:1481)
+```
+
+The parking slot is now one past the highest position in that list: legal, and free by
+construction.
+
+**2. The visibility flash said the opposite of what happened.** The route flashes
+`hidden:<the new value>`; the map had `hidden:1 → "Menu item hidden"` and
+`hidden:0 → "Menu item is visible again"`. Pressing Hide therefore said *visible again*, and the
+operator's only confirmation was a lie. The two sentences are swapped back.
+
+**3. The editor phoned two third parties on every open.** GrapesJS injects a Font Awesome
+stylesheet from cdnjs and posts a telemetry beacon to `app.grapesjs.com` unless told otherwise. The
+admin CSP (`style-src 'self'`, `default-src 'self'`) refused both, so every editor load logged
+three console errors, and a tenant's session was still *offered* to a vendor. `cssIcons: ''` and
+`telemetry: false` are now set in the boot config — the requests are not made at all.
+
+**4. The row list printed a blank id column, and an empty list was a void.** The list built its
+header from column *names* and its cells from an array with the row's id *value* pushed on the
+front, so every id cell read `row['6']` — a column that does not exist — and printed nothing. One
+array of names now drives both. And a table with no rows rendered a bare header: it now says
+`Nothing here yet. Add the first one.` in a row that spans the table.
+
+**5. Changing the sign-in address needed no password.** The account screen's password form
+re-verifies the current password; the email form — the *login identity* — verified nothing. A
+borrowed cookie could move the account to an address the borrower reads, then use the reset flow.
+It now asks for the password once, refuses by name (`?e=current`), writes the same audit row as the
+password path (`admin.email.change.failed`), and changes nothing on a wrong or missing password.
+
+Measured after the fixes, same scripts, live tenant:
+
+```
+26 pages · 168 link targets · 66 buttons · 178 fields
+  links  0 non-2xx that are not external (LinkedIn answers 999 to any headless client)
+  buttons 0 failures · 0 pages with a console error or a failed request
+  editor  3 console errors → 0
+  destructive pass 13/13: media upload + delete, public form submit, message delete,
+            theme deactivate + activate, plugin disable + enable, nav add + move + delete
+```
+
+What the sweep cannot see, stated so nobody mistakes it for total coverage: the editor's canvas is
+not a page of links (its drag/drop surface is exercised by the S8n/S8v probes), a `delete` on a
+row that other rows reference is a data question rather than a UI one, and the sweep's own clicks
+create audit rows — it cleans up after itself by deleting what it created.
+

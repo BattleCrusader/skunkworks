@@ -629,6 +629,17 @@ const BOOT_SCRIPT = String.raw`
     height: '100%',
     storageManager: false,
     fromElement: false,
+    // Two things GrapesJS does by default that this product must not do:
+    //
+    //   - it injects a stylesheet link to Font Awesome on cdnjs. The admin CSP is style-src self,
+    //     so the link is blocked on every load and the console fills with a violation; the repo
+    //     ships no icon font on purpose (our icons are inline SVG). An empty cssIcons stops the
+    //     request rather than failing it.
+    //   - it posts a telemetry beacon to app.grapesjs.com. A tenant's editing session is not
+    //     GrapesJS's business, and with the CSP in the way the beacon was a failed request on
+    //     every page load (E-59: three console errors per open).
+    cssIcons: '',
+    telemetry: false,
     // The canvas is the page's own markup: no iframe, so the admin CSP applies to it and
     // a component cannot escape into a frame the server did not configure.
     canvas: { scripts: [], styles: [] },

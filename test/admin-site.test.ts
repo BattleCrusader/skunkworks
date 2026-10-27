@@ -316,3 +316,66 @@ test('S8o-8. a theme stylesheet with a "<" is refused, and the site keeps the ol
   assert.equal(after.body, before.body, 'a refused save writes nothing');
   assert.doesNotMatch(after.body, /alert\(1\)/);
 });
+
+/**
+ * S8l-9 (E-59). **The two arrow buttons work, and the two sentences say what happened.**
+ *
+ * The browser sweep pressed every control on the Site screen. ↓ and ↑ both answered **500** —
+ * `#siteNavMove` parked the moving row at `position = -1` for the swap, and `cms_nav` carries
+ * `CHECK (position >= 0)` plus a unique index on (location, parent, position), so the constraint
+ * fired on the first statement of the transaction. And the Hide button flashed
+ * "Menu item is visible again" for `hidden:0`, which is the key for *just hid it* — the two
+ * sentences were swapped.
+ */
+test('S8l-9. reordering a menu works, and the visibility flash says what actually happened', async () => {
+  const added = await post('/admin/t/acme/site/nav/add', {
+    location: 'footer',
+    label: 'First',
+    href_kind: 'page',
+    href_target: '/pricing',
+  });
+  assert.equal(added.status, 303, added.body);
+  const second = await post('/admin/t/acme/site/nav/add', {
+    location: 'footer',
+    label: 'Second',
+    href_kind: 'page',
+    href_target: '/about',
+  });
+  assert.equal(second.status, 303, second.body);
+
+  const ids = (body: string): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const m of body.matchAll(/data-nav-id="(\d+)"><td>([^<]+)</g)) out[m[2] as string] = m[1] as string;
+    return out;
+  };
+  const order = async (): Promise<string[]> =>
+    [...(await get('/admin/t/acme/site')).body.matchAll(/data-nav-id="(\d+)"><td>([^<]+)</g)]
+      .map((m) => m[2] as string)
+      .filter((label) => label === 'First' || label === 'Second');
+  assert.deepEqual(await order(), ['First', 'Second']);
+
+  const id = ids((await get('/admin/t/acme/site')).body);
+  const secondId = id.Second ?? '';
+  assert.ok(secondId !== '', 'the Second row must be on the screen');
+  const moved = await post('/admin/t/acme/site/nav/move', { id: secondId, direction: 'up' });
+  assert.equal(moved.status, 303, `the up arrow answered ${moved.status}, not a 500: ${moved.body}`);
+  assert.match(String(moved.headers.location), /flash=moved/);
+  assert.deepEqual(await order(), ['Second', 'First'], 'the two rows swapped places');
+
+  const back = await post('/admin/t/acme/site/nav/move', { id: secondId, direction: 'down' });
+  assert.equal(back.status, 303, back.body);
+  assert.deepEqual(await order(), ['First', 'Second']);
+
+  // The flash sentences follow the value, not the button.
+  const hidden = await get('/admin/t/acme/site?flash=hidden:0');
+  assert.match(hidden.body, /no longer renders/, 'hidden:0 means it was just hidden');
+  assert.doesNotMatch(hidden.body, /visible again/);
+  const shown = await get('/admin/t/acme/site?flash=hidden:1');
+  assert.match(shown.body, /visible again/);
+
+  for (const label of ['First', 'Second']) {
+    const page = await get('/admin/t/acme/site');
+    const again = ids(page.body);
+    assert.equal((await post('/admin/t/acme/site/nav/delete', { id: again[label] ?? '' })).status, 303);
+  }
+});

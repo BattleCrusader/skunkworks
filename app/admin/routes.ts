@@ -1043,7 +1043,7 @@ ${items}
     if (action === 'account/email' && req.method === 'POST') {
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
-      this.#accountEmail(req, reply, tenant, session);
+      await this.#accountEmail(req, reply, tenant, session);
       return;
     }
     if (action === 'totp/enrol' && req.method === 'POST') {
@@ -1752,7 +1752,18 @@ ${items}
           )
           .get(row.location, row.parent_id, row.id, row.position) as { id: number; position: number } | undefined;
         if (neighbour === undefined) return false;
-        db.prepare(`UPDATE cms_nav SET position = -1 WHERE id = ?`).run(row.id);
+        // The swap needs a parking slot that is **both** legal and free: `cms_nav.position` is
+        // `CHECK (position >= 0)` and `ux_nav_pos` makes it unique per (location, parent). The
+        // parking value used to be -1, which the CHECK refused — every move answered 500 with
+        // "CHECK constraint failed: position >= 0" (found by the browser sweep, E-59). One past
+        // the highest position in this list is guaranteed to satisfy both.
+        const parked = db
+          .prepare(
+            `SELECT ifnull(max(position), -1) + 1 AS next FROM cms_nav
+              WHERE location = ? AND ifnull(parent_id, 0) = ifnull(?, 0)`,
+          )
+          .get(row.location, row.parent_id) as { next: number };
+        db.prepare(`UPDATE cms_nav SET position = ? WHERE id = ?`).run(parked.next, row.id);
         db.prepare(`UPDATE cms_nav SET position = ? WHERE id = ?`).run(row.position, neighbour.id);
         db.prepare(`UPDATE cms_nav SET position = ? WHERE id = ?`).run(neighbour.position, row.id);
         return true;
@@ -1863,13 +1874,37 @@ ${items}
     this.#seeOther(reply, `${base}?changed=1`);
   }
 
-  #accountEmail(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+  /**
+   * Change the sign-in address — and re-prove the password first.
+   *
+   * The email is the login identity, so changing it from a session alone was a takeover path: a
+   * borrowed cookie could move the account to an address the attacker reads, then use the reset
+   * flow to take it over. The password change on the same screen already re-verifies; this one
+   * did not (E-59). One argon2 verify, the same refusal and the same audit row the password
+   * path writes.
+   */
+  async #accountEmail(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
     const base = `/admin/t/${tenant.key}/account`;
     const fields = fieldsOf(req.body);
     const email = (fields.email ?? '').trim();
     // 254 is the only length the transport actually promises (RFC 5321 §4.5.3.1.3).
     if (email === '' || email.length > 254 || !EMAIL_SHAPE.test(email)) {
       this.#seeOther(reply, `${base}?e=email`);
+      return;
+    }
+    const current = fields.current_password ?? '';
+    const ok = current !== '' && (await this.auth.verifyPassword(session.userId, current));
+    if (!ok) {
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.auth.userById(session.userId)?.email ?? 'unknown',
+        action: 'admin.email.change.failed',
+        targetKind: 'user_account',
+        targetId: String(session.userId),
+        ip: req.socket.remoteAddress ?? '',
+      });
+      this.#seeOther(reply, `${base}?e=current`);
       return;
     }
     const db = openAdminWrite(this.#controlPath, this.#env.dbBusyTimeoutMs);
@@ -3709,13 +3744,20 @@ ${items}
         : declared.filter((name) => info.columns.some((c) => c.name === name));
       const heading = (name: string): string =>
         screen?.fields?.find((f) => f.name === name)?.label ?? name;
-      const head = [info.pk, ...shown.filter((c) => c !== info.pk)].map((c) => `<th>${esc(heading(c))}</th>`).join('');
-      const body = rows
-        .map((row) => {
-          const cells = [String(row[info.pk]), ...shown.filter((c) => c !== info.pk)].map((c) => `<td>${esc(String(row[c] ?? ''))}</td>`).join('');
-          return `<tr data-id="${esc(String(row[info.pk]))}">${cells}<td><a href="${esc(base)}/${encodeURIComponent(String(row[info.pk]))}">edit</a></td></tr>`;
-        })
-        .join('\n');
+      // The columns of the list, once. It used to be built twice — the header from a list of
+      // *names* and the cells from a list that had the row's id *value* pushed on the front — so
+      // every id cell rendered `row['6']`, which is nothing, and the id column came out blank
+      // (E-59). One array of names, one way to read a cell.
+      const cols = [info.pk, ...shown.filter((c) => c !== info.pk)];
+      const head = cols.map((c) => `<th>${esc(heading(c))}</th>`).join('');
+      const body = rows.length === 0
+        ? `<tr><td class="rows__empty" colspan="${cols.length + 1}">Nothing here yet. <a href="${esc(base)}/new">Add the first one</a>.</td></tr>`
+        : rows
+            .map((row) => {
+              const cells = cols.map((c) => `<td>${esc(String(row[c] ?? ''))}</td>`).join('');
+              return `<tr data-id="${esc(String(row[info.pk]))}">${cells}<td><a href="${esc(base)}/${encodeURIComponent(String(row[info.pk]))}">edit</a></td></tr>`;
+            })
+            .join('\n');
       reply.type('text/html; charset=utf-8').send(
         page(
           `Skunkworks — ${tenant.key} — ${table}`,

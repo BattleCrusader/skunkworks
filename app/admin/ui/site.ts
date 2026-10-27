@@ -62,8 +62,10 @@ const FLASH: Record<string, string> = {
   added: 'Menu item added.',
   removed: 'Menu item removed.',
   moved: 'Menu item moved.',
-  'hidden:1': 'Menu item hidden — it no longer renders.',
-  'hidden:0': 'Menu item is visible again.',
+  // The key is `hidden:<the new value>`, so 0 means it was just hidden. The two sentences were
+  // the other way round: pressing Hide said "visible again" (E-59).
+  'hidden:0': 'Menu item hidden — it no longer renders.',
+  'hidden:1': 'Menu item is visible again.',
   title: 'A site name is required: it is the link back to your home page.',
   'logo-missing': 'That asset key is not in the media library, so no logo was saved.',
   'href-kind': 'Pick a link kind of page, url or asset.',

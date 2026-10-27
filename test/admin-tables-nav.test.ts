@@ -82,3 +82,42 @@ test('S8d-4. "new row" is a place you can leave without submitting', async () =>
   assert.match(res.body, /href="\/admin\/t\/acme\/tables\/cms_page"/);
   assert.match(res.body, /class="appnav"/);
 });
+
+/**
+ * S8d-5 (E-59). **The list shows the row's id, and an empty list says so.**
+ *
+ * The browser sweep caught two things in one table: the `id` column was blank on every row (the
+ * cells were rendered by mapping over `[String(row[pk]), ...names]`, so each cell read
+ * `row['6']` — a column that does not exist — and printed nothing), and a table with no rows
+ * rendered a bare header with nothing under it, which reads as a broken screen rather than an
+ * empty one.
+ */
+test('S8d-5. the row list prints the primary key, and an empty table says it is empty', async () => {
+  const fixtureDb = new (await import('better-sqlite3')).default(fixture.sitePath('acme'));
+  try {
+    fixtureDb.prepare("DELETE FROM cms_nav").run();
+    fixtureDb
+      .prepare("INSERT INTO cms_nav (location, label, href_kind, href_target, position, visible) VALUES ('header', 'Home', 'page', '/', 0, 1)")
+      .run();
+  } finally {
+    fixtureDb.close();
+  }
+
+  const list = await get('/admin/t/acme/tables/cms_nav');
+  assert.equal(list.status, 200, list.body);
+  assert.match(list.body, /<tbody>[\s\S]*<tr data-id="(\d+)"><td>\1<\/td>/, 'the id cell carries the id, not an empty string');
+  // id, location, parent_id, label — the empty parent_id is a real column, not a gap.
+  assert.match(list.body, /data-id="(\d+)"><td>\1<\/td><td>header<\/td><td><\/td><td>Home<\/td>/, 'and the row reads across in column order');
+
+  // Empty is a sentence, not a void.
+  const emptyDb = new (await import('better-sqlite3')).default(fixture.sitePath('acme'));
+  try {
+    emptyDb.prepare('DELETE FROM cms_nav').run();
+  } finally {
+    emptyDb.close();
+  }
+  const empty = await get('/admin/t/acme/tables/cms_nav');
+  assert.equal(empty.status, 200, empty.body);
+  assert.match(empty.body, /Nothing here yet/, 'an empty table says so');
+  assert.match(empty.body, /Add the first one/, 'and offers the way to start');
+});

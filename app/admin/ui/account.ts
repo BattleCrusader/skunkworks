@@ -77,12 +77,17 @@ ${flashOf(input.flash)}
     <div class="acct">
       <section class="card acct__card" aria-labelledby="acct-email">
         <h2 id="acct-email">Your email</h2>
-        <p class="acct__lede">This is the address you sign in with. Changing it does not change your password.</p>
+        <p class="acct__lede">This is the address you sign in with. Changing it does not change your password, and it asks for that password first — the address is the login identity, so a session alone must not be able to move it.</p>
         <form method="post" action="${esc(`${base}/account/email`)}" enctype="application/x-www-form-urlencoded">
           <input type="hidden" name="csrf" value="${csrf}">
           <div class="sf">
             <label for="account-email">Email address</label>
             <input id="account-email" type="email" name="email" value="${email}" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+          </div>
+          <div class="sf">
+            <label for="account-email-password">Your current password</label>
+            <input id="account-email-password" type="password" name="current_password" autocomplete="current-password" required aria-describedby="email-password-help">
+            <p class="help" id="email-password-help">Asked once, here, because the address is how you sign in.</p>
           </div>
           <button class="btn btn--primary" type="submit">Save email</button>
         </form>
