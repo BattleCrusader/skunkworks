@@ -4412,3 +4412,46 @@ not carried fails the gate instead of the browser.
 
 **Not done, deliberately:** the theme is left **Not active**. Activating it is one POST on the Themes
 screen, and it is the operator's call which look the site wears.
+
+## 17. E-56 — a client site, and the three things it taught the product
+
+Fractional Works is the first site built *for a client* rather than for ourselves: three pages, a
+theme package with its own fonts and a drawn diagram, and one enquiry form. Three findings came out
+of building it, and each one is a defect in the product rather than in the site.
+
+**1. A `page.head` plugin cannot read the database.** The search metadata was written as a package
+first — a table of descriptions and JSON-LD keyed by path, answered through the `page.head` filter.
+It cannot work. A hook callback receives `(call, value)` and nothing else; the `ctx` handed to
+`activate()` is closed when activation ends, so there is no store to read and no per-request facade.
+The only data a hook sees is what the host chose to put in `call`. A package that "reads at render
+time" would have to cache every row at activation and go stale in silence. `cms_page.seo_json` has
+existed since the page table was written and nothing read it; that column is where per-page metadata
+belongs, and `app/render/seo.ts` now reads it. Six tests in `test/page-seo.test.ts`.
+
+**2. The static export carried no look at all.** `planStatic()` wrote pages, page CSS and media, and
+never the active theme — so the tree that goes to Netlify or Cloudflare Pages was an unstyled
+skeleton with a title. It also dropped `seo_json`. Both are closed: the exporter writes `theme.css`,
+the package's own files under `_theme/<key>/`, and each document's composed head. The guard is the
+one the byte-identity test enforces — a tenant with no theme and no `seo_json` exports exactly as
+before (T1/T2/T3).
+
+**3. A tenant database is written by the CMS, not by the host.** Seeding from the host while the app
+held the database produced `SQLITE_READONLY`, and a `chmod` across a live WAL produced one
+`database disk image is malformed` read that a checkpoint cured (`pragma integrity_check` → ok once
+the app stopped and the stale `-shm` was removed). The rule is now in the site's README: stop the
+app, write, start it.
+
+**Measured, on the exported tree served over plain HTTP (the same bytes that would be deployed):**
+
+```
+desktop  99 / 100 / 100 / 100    FCP 0.4 s  LCP 0.5 s  TBT 0 ms  CLS 0.073
+mobile   97 / 100 / 100 / 100    FCP 2.0 s  LCP 2.3 s  TBT 0 ms  CLS 0.001
+0 binary failures on either
+```
+
+The last four points of best practices were a favicon: a static tree with none makes every page
+load ask for `/favicon.ico` and log a 404. Emitted only for a site with a theme, because a tenant
+without one has no mark to draw it from and its document must stay byte-identical to the served one.
+
+**The form, measured live:** `202 {"ok":true,"id":1}` and one row for a real submission; `202
+{"ok":true}` and no row when `_hp` is filled; a named `400` when `_pt` is missing.
