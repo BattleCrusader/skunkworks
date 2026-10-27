@@ -32,12 +32,13 @@
  */
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
-import { readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, normalize, sep } from 'node:path';
 
 import { generateAppConf } from '../../tools/nginx_gen.ts';
 import { renderNotes } from './notes.ts';
 import { cspConf } from '../render/csp.ts';
+import { themeAssetsRoot } from '../render/themes.ts';
 import { assetFile, symlinkTarget, type Projection } from './project.ts';
 import type { TreeFile } from './tree.ts';
 
@@ -380,6 +381,38 @@ export function planCms(options: CmsOptions): CmsPlan {
     for (const file of pkg.files) {
       files.push({ path: `data/plugins/${pkg.id}/${file.path}`, bytes: readFileSync(join(pkg.dir, file.path)) });
     }
+  }
+
+  // --- 2c. the theme's own files (E-60) --------------------------------------------
+  // A theme is a package: its stylesheet is a row (`cms_theme` -> `cms_css_blob`), but its
+  // fonts, pictures and diagrams are **files beside the tenant**, and `cms_theme_asset` is
+  // the link the renderer follows (`/_theme/<key>/<path>?v=<sha8>`). The bundle shipped the
+  // rows and not the bytes, so an exported themed site rendered a stylesheet that named a
+  // font nobody had: every `/_theme/…` URL 404'd, and only the browser console said so.
+  // Found by exporting fractionalworks.com.au and serving it on a second box.
+  //
+  // A row with no file is a refusal, not a skip: a bundle that names an asset it does not
+  // carry is exactly the defect this block closes, and a silent omission is how it shipped
+  // the first time.
+  const themeFiles = options.sourceDb
+    .prepare(
+      `SELECT t.theme_key AS theme_key, a.path AS path
+         FROM cms_theme_asset a JOIN cms_theme t ON t.id = a.theme_id
+        ORDER BY t.theme_key, a.path`,
+    )
+    .all() as { theme_key: string; path: string }[];
+  const themeRoot = themeAssetsRoot(options.tmpDir, tenant.key);
+  for (const entry of themeFiles) {
+    const source = join(themeRoot, entry.theme_key, entry.path);
+    if (!existsSync(source)) {
+      throw new Error(
+        `SKW_E_EXP_THEME_ASSET: cms_theme_asset names ${entry.theme_key}/${entry.path} but ${source} is not on disk`,
+      );
+    }
+    files.push({
+      path: `data/tenants/${tenant.key}/theme-assets/${entry.theme_key}/${entry.path}`,
+      bytes: readFileSync(source),
+    });
   }
 
   // --- 3. the bytes ---------------------------------------------------------------

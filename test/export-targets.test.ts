@@ -34,6 +34,9 @@ import { call } from '../test/helpers/http.ts';
 
 const NOW = '2026-10-20T12:00:00.000Z';
 const SHA = (text: string): string => createHash('sha256').update(text).digest('hex');
+const THEME_CSS = ':root{--ink:#111}';
+const THEME_ASSET_PATH = 'assets/mark.svg';
+const THEME_MARK = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"></svg>';
 
 let fixture: Fixture;
 let handle: AppHandle;
@@ -53,6 +56,21 @@ before(async () => {
   };
   asset('work/one', 'image/jpeg', 'image', 'public');
   asset('team/studio', 'image/jpeg', 'image', 'public');
+  // E-60: a theme is a package — a stylesheet row plus files beside the tenant. The bundle
+  // used to ship the rows without the bytes, so an exported themed site 404'd every
+  // `/_theme/…` URL and rendered a font nobody had.
+  db.prepare('INSERT INTO cms_css_blob (sha256, css, bytes) VALUES (?, ?, ?)').run(
+    SHA(THEME_CSS),
+    THEME_CSS,
+    Buffer.byteLength(THEME_CSS),
+  );
+  db.prepare("INSERT INTO cms_theme (theme_key, name, css_sha256) VALUES ('acme-kit', 'Acme kit', ?)").run(SHA(THEME_CSS));
+  const themeId = (
+    db.prepare("SELECT id FROM cms_theme WHERE theme_key = 'acme-kit'").get() as { id: number }
+  ).id;
+  db.prepare(
+    'INSERT INTO cms_theme_asset (theme_id, path, sha256, bytes, content_type) VALUES (?, ?, ?, ?, ?)',
+  ).run(themeId, THEME_ASSET_PATH, SHA(THEME_MARK), Buffer.byteLength(THEME_MARK), 'image/svg+xml');
   const page = (path: string, title: string, body: string, css: string): void => {
     const slug = path === '/' ? 'home' : path.replace(/^\//, '').replace(/\//g, '-');
     db.prepare(
@@ -88,6 +106,11 @@ before(async () => {
   }
 
   work = mkdtempSync(join(tmpdir(), 'skw-s4b-targets-'));
+  // The theme asset lives beside the tenant database, which is what `tmpDir` is for an
+  // export (`--data-dir`): `<data>/tenants/<key>/theme-assets/<theme_key>/<path>`.
+  const themeAssetFile = join(work, 'tenants', 'acme', 'theme-assets', 'acme-kit', THEME_ASSET_PATH);
+  mkdirSync(dirname(themeAssetFile), { recursive: true });
+  writeFileSync(themeAssetFile, THEME_MARK);
   cleanups.push(() => rmSync(work, { recursive: true, force: true }));
   for (const target of ['static', 'astro', 'cms'] as const) {
     const out = join(work, target);
@@ -252,6 +275,19 @@ test('T3 — the CMS bundle verifies, boots against its own site.db, and serves 
     stdio: 'pipe',
   });
   assert.match(verify, /file\(s\) verified, no render tree, no render rows/);
+
+  // E-60: the theme package's files travel with the theme's rows. A bundle that carried
+  // `cms_theme_asset` and not the bytes installed cleanly and served a page whose
+  // stylesheet named a font nobody had — measured on fractionalworks.com.au's export.
+  const shippedThemeAsset = join(trees.cms, 'data', 'tenants', 'acme', 'theme-assets', 'acme-kit', THEME_ASSET_PATH);
+  assert.equal(existsSync(shippedThemeAsset), true, 'the bundle must carry the theme package\u2019s files');
+  assert.equal(readFileSync(shippedThemeAsset, 'utf8'), THEME_MARK);
+  const manifest = JSON.parse(readFileSync(join(trees.cms, 'BUNDLE.json'), 'utf8')) as { files: { path: string }[] };
+  assert.equal(
+    manifest.files.some((f) => f.path === 'data/tenants/acme/theme-assets/acme-kit/assets/mark.svg'),
+    true,
+    'BUNDLE.json must list the theme file, or verification cannot notice its loss',
+  );
 
   // Boot the product against the bundle: a fresh control.db (the seed's job is S4c), the
   // bundle's own `data/site.db` as the tenant, the bundle's own `content/`.

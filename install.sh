@@ -198,6 +198,14 @@ if [ -f "$BUNDLE/data/site.db" ]; then
       chmod 0644 "$dest"
       say "tenant: $key site.db installed from the bundle ($mode, $status)"
     fi
+    # E-60: a theme is a package. Its stylesheet is a row, but its fonts and pictures are
+    # files beside the tenant database, and `cms_theme_asset` is the link the renderer
+    # follows. A bundle used to carry the rows and not the bytes, so an installed themed
+    # site served a stylesheet naming a font nobody had — every `/_theme/…` URL 404'd.
+    if [ -d "$BUNDLE/data/tenants/$key/theme-assets" ] && [ ! -d "$DATA_DIR/tenants/$key/theme-assets" ]; then
+      cp -R "$BUNDLE/data/tenants/$key/theme-assets" "$DATA_DIR/tenants/$key/theme-assets"
+      say "tenant: $key theme assets installed ($(find "$DATA_DIR/tenants/$key/theme-assets" -type f | wc -l | tr -d ' ') files)"
+    fi
   done
 fi
 

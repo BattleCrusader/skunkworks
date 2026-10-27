@@ -4675,3 +4675,37 @@ not a page of links (its drag/drop surface is exercised by the S8n/S8v probes), 
 row that other rows reference is a data question rather than a UI one, and the sweep's own clicks
 create audit rows — it cleans up after itself by deleting what it created.
 
+---
+
+## 21. E-60 — the bundle shipped the theme's rows and not its bytes
+
+**Found by** exporting `fractionalworks.com.au` for a second server and serving it there.
+The site came up, styled, with one difference nobody would see without opening devtools: the
+fonts and the diagram were 404s.
+
+A theme is a **package** (`cms_theme` row → `cms_css_blob` for the stylesheet, plus
+`cms_theme_asset` rows naming `assets/<file>`). The bytes live beside the tenant —
+`tenants/<key>/theme-assets/<theme_key>/<path>` — and the renderer follows the row to the
+file (`/_theme/<key>/assets/<name>?v=<sha8>`). `--target cms` shipped the rows, the `site.db`
+that references them, and **not the directory**. Installed on a fresh box: every
+`/_theme/…` URL answered `404`, the document still named `url("/_theme/…/fraunces-latin.woff2")`,
+and the browser fell back to a system serif. A bundle that verifies (`BUNDLE.json`,
+`bundle_verify.mjs`) can still be missing the only files the page needs.
+
+Two halves, both closed:
+
+1. **`app/export/cms.ts`** reads `cms_theme_asset` and ships each file at
+   `data/tenants/<key>/theme-assets/<theme_key>/<path>`, so the manifest lists them and
+   `bundle_verify` would notice a loss. A row whose file is absent is a refusal
+   (`SKW_E_EXP_THEME_ASSET`), not a skip: a silent omission is how this shipped.
+2. **`install.sh`** copies `data/tenants/<key>/theme-assets` beside the tenant database, the
+   same step as `data/site.db`. Without it the bundle would carry the bytes and the install
+   would leave them behind.
+
+`test/export-targets.test.ts` (T3) now seeds a theme with one asset and asserts the bundle
+carries the file **and** that `BUNDLE.json` lists it.
+
+Measured after the fix, on a second box from a fresh volume: `/theme.css` 24,937 B
+(`?v=8a032aed562c`), `fraunces-latin.woff2` `200 font/woff2 67,388 B`,
+`diagram.svg` `200 image/svg+xml`, and all six public documents byte-identical to the live
+site (sha256, 6/6).
