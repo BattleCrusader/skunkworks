@@ -573,6 +573,34 @@
       ]
     },
     {
+      "file": "test/plugin-library.test.ts",
+      "worstIdleMs": 1221,
+      "measuredOn": "2026-10-27",
+      "load1m": 7.54,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "8a4ed8553782442742796b68e681eb6256d563cce888816b4a46bd70f3d74ebe",
+      "runs": [
+        {
+          "ms": 1221,
+          "at": "2026-10-27T03:35:14.335Z",
+          "load1mBefore": 7.54,
+          "load1mAfter": 7.54,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 8
+        },
+        {
+          "ms": 690,
+          "at": "2026-10-27T03:35:15.025Z",
+          "load1mBefore": 7.54,
+          "load1mAfter": 7.54,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 8
+        }
+      ]
+    },
+    {
       "file": "test/site-delivery.test.ts",
       "worstIdleMs": 1119,
       "measuredOn": "2026-10-22",
@@ -1871,5 +1899,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-27T02:32:52.872Z"
+  "updatedAt": "2026-10-27T03:35:15.335Z"
 }

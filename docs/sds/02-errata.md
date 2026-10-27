@@ -4455,3 +4455,62 @@ without one has no mark to draw it from and its document must stay byte-identica
 
 **The form, measured live:** `202 {"ok":true,"id":1}` and one row for a real submission; `202
 {"ok":true}` and no row when `_hp` is filled; a named `400` when `_pt` is missing.
+
+## 18. E-57 — a package is visible before it is anyone's
+
+The question that found this was the simplest one an operator can ask: *where is the contact form's
+data, and shouldn't a plugin have its own database?* The answer to the second half is no — the
+isolation boundary is the **tenant**, not the plugin, because one `site.db` per tenant is what makes
+`p_*` tables safe to create at all. A plugin with a database of its own would be a plugin that can
+reach every other tenant's rows, and the sandbox deliberately never hands out that path.
+
+The first half was a defect, and it was mine:
+
+> `#pluginsScreen` rendered only rows in **this tenant's** `cms_plugin_installed`. A `.tar.gz`
+> placed in `data/plugins/` on the box was real, loadable, and **invisible to every tenant** until
+> somebody ran `skwctl plugin install --tenant <key>` from a shell.
+
+So `fractional` — a site with a form and no plugin — could not see that `contact`, `blog` and `menu`
+were sitting on the same machine. Every new tenant began life at a shell prompt, which is the wheel
+nobody wants to reinvent. The screen also had no way to tell "not installed here" from "does not
+exist", because it only ever asked about one tenant.
+
+**The three states are now drawn separately, and they are different things:**
+
+| State | Where it lives | Whose |
+|---|---|---|
+| In the library | `data/plugin-library/<file>.tar.gz` | the box's — every tenant sees every entry |
+| Installed | a row in *that tenant's* `cms_plugin_installed`, tables in *that tenant's* `site.db` | one tenant's |
+| Enabled | `cms_plugin_installed.enabled`, `activation_seq` | one tenant's |
+
+`app/plugins/library.ts` lists the shelf and reads nothing else. It is deliberately forgiving: an
+archive it cannot parse is **listed with its error and no id**, because a listing that hid it would
+have an operator conclude the library is empty, and a listing that guessed an id from unreadable
+bytes would be inventing one. `readLibraryArchive()` matches the name against `LIBRARY_FILE` before
+it joins a path, so `../../control.db` is refused as a *name* rather than resolved as a path — a
+resolved-path check is one symlink from wrong.
+
+`POST /admin/t/<key>/plugins/install` is the upload door with the file already on the box: the
+archive's bytes go to `installFromArchive()`, the same function the multipart upload and `skwctl`
+use, so the signature check, the test-report binding, the schema-range check and the transaction are
+the ones that already existed. Nothing new decides what a valid package is.
+
+**The boundary, measured** (`test/plugin-library.test.ts`, 8 tests):
+
+```
+L1  the shelf lists the package for both tenants, neither of which has installed it
+L2  no acknowledgement → the screen says so; no row, no table
+L3  ../control.db, /etc/passwd, contact.tar, CONTACT-1.1.0.tar.gz → 400 SKW_E_PLT_REQUEST_INVALID
+L4  unsigned without the loud flag → SKW_E_PL_SIGNATURE, nothing written
+L5  acknowledged install → 303 "installed contact@1.1.0 for acme only", row enabled = 0,
+    p_contact_message created in acme's site.db
+L6  beta: no row, no p_contact_message, still offered the package on its own shelf,
+    and no data-plugin="contact" anywhere on its screen
+L7  the same root installs idempotently (one row); different bytes under the same id are
+    refused — uninstall is the only way round, as §8.2 says
+L8  an unreadable archive is listed as unreadable, not hidden and not guessed at
+```
+
+**What this does not do:** it does not enable on install. Installing copies bytes and creates
+tables; Enable remains the separate press, because a package that starts running in the same request
+that accepted its bytes is a screen with no reader (E-38/S8o's rule, unchanged).

@@ -120,6 +120,7 @@ import { Auth, Semaphore, verifyTotp, type LoginFailureReason } from './auth.ts'
 import { MAX_ARCHIVE_BYTES } from '../plugins/archive.ts';
 import type { DeclarativeScreen } from '../plugins/registry.ts';
 import { installFromArchive } from '../plugins/upload.ts';
+import { LIBRARY_FILE, libraryDir, listLibrary, readLibraryArchive } from '../plugins/library.ts';
 import type { FieldSpec } from '../plugins/manifest.ts';
 import { groupOf, newSecret, otpauthUri } from './totp.ts';
 import { accountScreen } from './ui/account.ts';
@@ -923,6 +924,12 @@ ${items}
     // S8o: the upload door. A package arrives as one `.tar.gz` instead of a shell session.
     // Origin first, then the parts (the CSRF field is one of them), then nothing is written
     // outside a scratch directory until `installPlugin` runs.
+    if (action === 'plugins/install' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      await this.#pluginInstallFromLibrary(req, reply, tenant, session);
+      return;
+    }
     if (action === 'plugins/upload' && req.method === 'POST') {
       this.#assertOrigin(req);
       await this.#pluginUpload(req, reply, tenant, session);
@@ -2065,6 +2072,45 @@ ${items}
             })
             .join('\n');
 
+    // The library is the box, not the tenant: every archive in `data/plugin-library/` is listed
+    // for every tenant, and the only per-tenant fact about it is whether THIS tenant installed it.
+    // A package present here and absent below is the whole point of the section — it is visible
+    // before it is anybody's, so a new tenant does not begin life at a shell prompt.
+    const libraryEntries = listLibrary(libraryDir(this.#env.dataDir));
+    const installedIds = new Set(installed.map((row) => row.plugin_id));
+    const libraryRows =
+      libraryEntries.length === 0
+        ? '<tr><td colspan="5">The library is empty. A <code>.tar.gz</code> from <code>skwctl plugin pack</code> placed in <code>data/plugin-library/</code> is visible here to every tenant on this box.</td></tr>'
+        : libraryEntries
+            .map((entry) => {
+              const name = entry.id === null ? esc(entry.file) : `${esc(entry.id)} <span class="muted">${esc(entry.file)}</span>`;
+              const version = entry.version === null ? '—' : esc(entry.version);
+              const report =
+                entry.error !== null
+                  ? `unreadable: ${esc(entry.error)}`
+                  : entry.report === null
+                    ? 'no test report — an install will be refused'
+                    : `${esc(entry.report.ran_at)} <span class="muted">(self-attested)</span>`;
+              const state =
+                entry.error !== null
+                  ? 'not installable'
+                  : entry.id !== null && installedIds.has(entry.id)
+                    ? 'installed for this tenant'
+                    : 'available';
+              const action =
+                entry.error !== null || entry.id === null || installedIds.has(entry.id)
+                  ? ''
+                  : `<form method="post" action="/admin/t/${esc(tenant.key)}/plugins/install">
+  <input type="hidden" name="package" value="${esc(entry.file)}">
+  <input type="hidden" name="csrf" value="${esc(csrf)}">
+  <label class="ack"><input type="checkbox" name="allow_unsigned" value="1"> Unsigned</label>
+  <label class="ack"><input type="checkbox" name="understand" value="1" required> Runs in-process</label>
+  <button type="submit" title="install this package for ${esc(tenant.key)} only; its tables are created in this tenant's database">Install</button>
+</form>`;
+              return `<tr data-library="${esc(entry.file)}"><td>${name}</td><td>${version}</td><td>${report}</td><td>${state}</td><td>${action}</td></tr>`;
+            })
+            .join('\n');
+
     const loadedLine =
       loaded.length === 0
         ? '<p>No plugin is loaded in this process for this tenant.</p>'
@@ -2125,6 +2171,17 @@ ${noticeRows}
 </table>
 <h2>Loaded now</h2>
 ${loadedLine}
+<h2>Available on this box</h2>
+<p>Packages in the box's library, which every tenant can see. Installing one creates its tables in
+<b>this tenant's</b> database only: another tenant installing the same package gets its own copy of
+the schema and its own rows, and neither can read the other's. Installing does not start anything —
+Enable is the separate switch below.</p>
+<table>
+<thead><tr><th>Package</th><th>Version</th><th>Test report</th><th>State</th><th>Action</th></tr></thead>
+<tbody>
+${libraryRows}
+</tbody>
+</table>
 <h2>Installed</h2>
 <table>
 <thead><tr><th>Plugin</th><th>Version</th><th>State</th><th>activation_seq</th><th>Action</th></tr></thead>
@@ -2225,6 +2282,93 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
         reply,
         `/admin/t/${encodeURIComponent(tenant.key)}/plugins?result=${encodeURIComponent(
           `installed ${result.plugin}@${result.version} (root ${result.root_hash.slice(0, 12)}…, self-attested test report)${unsigned}. Press Enable to run it.`,
+        )}`,
+      );
+    } catch (err) {
+      if (err instanceof AppError) {
+        this.#pluginsScreen(reply, tenant, session, undefined, `${err.code}: ${err.message}`);
+        return;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * `POST /admin/t/<key>/plugins/install` — install one package from the box's library for this tenant.
+   *
+   * The same install an upload performs, sourced from the machine instead of from a browser: the
+   * archive's bytes go to `installFromArchive()`, which unpacks into a scratch directory it owns,
+   * reads the report the archive carries beside the package root, and writes into *this tenant's*
+   * `site.db` only. Nothing here decides what a valid package is — that is `installPlugin()`'s
+   * single answer — and nothing here can install for another tenant, because the database path is
+   * derived from the host's tenant and never from the form.
+   *
+   * The refusals an operator is meant to read stay refusals on the screen: no acknowledgement is a
+   * sentence, an archive the library does not hold is a named 400, and a package that fails its
+   * own test report comes back with the code that says which file was stale.
+   */
+  async #pluginInstallFromLibrary(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    tenant: Tenant,
+    session: SessionRecord,
+  ): Promise<void> {
+    const runtime = this.#plugins;
+    if (runtime === null) {
+      throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'the plugin runtime is not attached to this process');
+    }
+    const fields = fieldsOf(req.body);
+    const file = fields.package ?? '';
+    if (!LIBRARY_FILE.test(file)) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'name a package from the library', { package: file });
+    }
+    const actor = this.#actorOf(session);
+    if (actor !== null && (actor.role === 'editor' || actor.role === 'viewer')) {
+      throw new AppError('SKW_E_SEC_FORBIDDEN', `the ${actor.role} role may not install packages: a plugin runs in this process`, {
+        role: actor.role,
+      });
+    }
+    if (fields.understand !== '1') {
+      this.#pluginsScreen(
+        reply,
+        tenant,
+        session,
+        undefined,
+        'Not installed: the acknowledgement box is not decoration. A plugin runs in this process and can read every tenant on this box (D36).',
+      );
+      return;
+    }
+    let archive: Buffer;
+    try {
+      archive = readLibraryArchive(libraryDir(this.#env.dataDir), file);
+    } catch (err) {
+      this.#pluginsScreen(reply, tenant, session, undefined, `Not installed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const siteDb = join(this.#env.dataDir, 'tenants', tenant.key, 'site.db');
+    try {
+      const result = installFromArchive({
+        archive,
+        filename: file,
+        siteDb,
+        pluginsRoot: runtime.pluginsDirectory(),
+        allowUnsigned: fields.allow_unsigned === '1',
+        trustDir: join(this.#env.dataDir, 'trust'),
+      });
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: actor?.email ?? 'unknown',
+        action: 'admin.plugin.install',
+        targetKind: 'cms_plugin_installed',
+        targetId: result.plugin,
+        ip: req.socket.remoteAddress ?? '',
+      });
+      const unsigned = result.signature_state === 'unsigned' ? ' — UNSIGNED: no publisher signature was verified' : ` — signed by ${result.publisher}`;
+      this.#seeOther(
+        reply,
+        `/admin/t/${encodeURIComponent(tenant.key)}/plugins?result=${encodeURIComponent(
+          `installed ${result.plugin}@${result.version} for ${tenant.key} only (root ${result.root_hash.slice(0, 12)}…, self-attested test report)${unsigned}. Its tables are in this tenant's database; press Enable to run it.`,
         )}`,
       );
     } catch (err) {
