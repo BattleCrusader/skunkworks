@@ -34,26 +34,26 @@
     },
     {
       "file": "test/nginx-e2e.test.ts",
-      "worstIdleMs": 10310,
+      "worstIdleMs": 10716,
       "measuredOn": "2026-10-27",
-      "load1m": 5.6,
+      "load1m": 5.69,
       "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
-      "sha256": "3715ea3e21445c73139329d04e83be19b40ce75bbae17e9378871b0c0b52ed4e",
+      "sha256": "5d58e59118c8b5dd92371d7541ed39002ffda0cbf212ac8dc3295c15041e715b",
       "runs": [
         {
-          "ms": 9926,
-          "at": "2026-10-27T02:32:41.731Z",
-          "load1mBefore": 5.3,
-          "load1mAfter": 5.6,
+          "ms": 10716,
+          "at": "2026-10-27T04:12:25.868Z",
+          "load1mBefore": 5.69,
+          "load1mAfter": 5.82,
           "idle": true,
           "exitCode": 0,
           "tests": 13
         },
         {
-          "ms": 10310,
-          "at": "2026-10-27T02:32:52.043Z",
-          "load1mBefore": 5.6,
-          "load1mAfter": 5.12,
+          "ms": 10688,
+          "at": "2026-10-27T04:12:36.559Z",
+          "load1mBefore": 5.82,
+          "load1mAfter": 5.44,
           "idle": true,
           "exitCode": 0,
           "tests": 13
@@ -62,26 +62,26 @@
     },
     {
       "file": "test/nginx-media-e2e.test.ts",
-      "worstIdleMs": 9115,
-      "measuredOn": "2026-10-21",
-      "load1m": 7.16,
-      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
-      "sha256": "9fd077670ea53f0961087a7d1eb96eedc35deac1439e671bfc4509f282dc9724",
+      "worstIdleMs": 7571,
+      "measuredOn": "2026-10-27",
+      "load1m": 5.44,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "81771feda755f5d3d8f212e691a55e5635fb75a717f6e4807c4a2a09f36541c4",
       "runs": [
         {
-          "ms": 9115,
-          "at": "2026-10-21T07:04:12.688Z",
-          "load1mBefore": 7.16,
-          "load1mAfter": 13.47,
+          "ms": 7571,
+          "at": "2026-10-27T04:12:44.428Z",
+          "load1mBefore": 5.44,
+          "load1mAfter": 5.82,
           "idle": true,
           "exitCode": 0,
           "tests": 5
         },
         {
-          "ms": 9048,
-          "at": "2026-10-21T07:05:38.318Z",
-          "load1mBefore": 7.86,
-          "load1mAfter": 7.47,
+          "ms": 7568,
+          "at": "2026-10-27T04:12:51.996Z",
+          "load1mBefore": 5.82,
+          "load1mAfter": 5.83,
           "idle": true,
           "exitCode": 0,
           "tests": 5
@@ -223,17 +223,26 @@
     },
     {
       "file": "test/onboarding.test.ts",
-      "worstIdleMs": 4440,
-      "measuredOn": "2026-10-21",
-      "load1m": 7.23,
-      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
-      "sha256": "ae20243c1bc284483710aacdb5ce7eefd68ffbd38300254015d83e9a16469b8b",
+      "worstIdleMs": 4438,
+      "measuredOn": "2026-10-27",
+      "load1m": 7.21,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "b52bac37a71f5abea2e767cfdf7e3fdb999b8fdfa96c161a1a15169543e93a0b",
       "runs": [
         {
-          "ms": 4440,
-          "at": "2026-10-21T05:44:26.553Z",
-          "load1mBefore": 7.23,
-          "load1mAfter": 7.2,
+          "ms": 4405,
+          "at": "2026-10-27T04:12:56.714Z",
+          "load1mBefore": 5.83,
+          "load1mAfter": 7.21,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 1
+        },
+        {
+          "ms": 4438,
+          "at": "2026-10-27T04:13:01.152Z",
+          "load1mBefore": 7.21,
+          "load1mAfter": 7.43,
           "idle": true,
           "exitCode": 0,
           "tests": 1
@@ -318,26 +327,26 @@
     },
     {
       "file": "test/nginx-gated-e2e.test.ts",
-      "worstIdleMs": 2595,
-      "measuredOn": "2026-10-21",
-      "load1m": 7.47,
-      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/1540960256B",
-      "sha256": "c40b7eda63560f3811fa060d5fb453410c06a94f2ef0a56f46f4455a08ebf405",
+      "worstIdleMs": 2847,
+      "measuredOn": "2026-10-27",
+      "load1m": 7.43,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "06b7b15ac4dacaa60ea89785387b25ba28cc66fded2611e4dab22640dfd48905",
       "runs": [
         {
-          "ms": 2595,
-          "at": "2026-10-21T07:05:41.079Z",
-          "load1mBefore": 7.47,
-          "load1mAfter": 8.39,
+          "ms": 2847,
+          "at": "2026-10-27T04:13:04.296Z",
+          "load1mBefore": 7.43,
+          "load1mAfter": 7.4,
           "idle": true,
           "exitCode": 0,
           "tests": 4
         },
         {
-          "ms": 2504,
-          "at": "2026-10-21T07:05:51.820Z",
-          "load1mBefore": 7.78,
-          "load1mAfter": 7.78,
+          "ms": 2803,
+          "at": "2026-10-27T04:13:07.099Z",
+          "load1mBefore": 7.4,
+          "load1mAfter": 7.4,
           "idle": true,
           "exitCode": 0,
           "tests": 4
@@ -1899,5 +1908,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-27T03:35:15.335Z"
+  "updatedAt": "2026-10-27T04:13:07.585Z"
 }

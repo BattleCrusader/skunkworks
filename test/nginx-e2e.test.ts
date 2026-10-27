@@ -26,6 +26,7 @@ import { buildApp, type AppHandle } from '../app/main.ts';
 import { parseAdminAllowlist } from '../app/admin/allowlist.ts';
 import { loadEnv } from '../app/env.ts';
 import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
+import { startEdge } from './helpers/docker-edge.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, header, postRaw } from './helpers/http.ts';
 import { removeContainer, trackContainer } from './helpers/docker.ts';
@@ -157,28 +158,21 @@ before(async () => {
    * relearning.
    */
   const runEdge = async (name: string, confDir: string): Promise<number> => {
-    let last = '';
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      const port = await freePort();
-      const run = spawnSync(
-        'docker',
-        [
-          'run', '--rm', '-d',
-          '--name', name,
-          '--add-host', 'host.docker.internal:host-gateway',
-          '-p', `127.0.0.1:${port}:80`,
-          '-v', `${join(tmp, 'nginx.conf')}:/etc/nginx/nginx.conf:ro`,
-          '-v', `${confDir}:/etc/nginx/conf.d:ro`,
-          '-v', `${snippets}:/etc/nginx/snippets:ro`,
-          'nginx:1.31-alpine',
-        ],
-        { encoding: 'utf8' },
-      );
-      if (run.status === 0) return port;
-      last = String(run.stderr ?? '');
-      if (!last.includes('address already in use')) break;
-    }
-    throw new Error(`docker run for ${name} failed: ${last}`);
+    const started = await startEdge({
+      freePort,
+      args: (port) => [
+        'run', '--rm', '-d',
+        '--name', name,
+        '--add-host', 'host.docker.internal:host-gateway',
+        '-p', `127.0.0.1:${port}:80`,
+        '-v', `${join(tmp, 'nginx.conf')}:/etc/nginx/nginx.conf:ro`,
+        '-v', `${confDir}:/etc/nginx/conf.d:ro`,
+        '-v', `${snippets}:/etc/nginx/snippets:ro`,
+        'nginx:1.31-alpine',
+      ],
+    });
+    if (started.run.status !== 0) throw new Error(`docker run for ${name} failed: ${started.run.stderr}`);
+    return started.port;
   };
 
   container = trackContainer(`skw-nginx-e2e-${process.pid}`);

@@ -28,6 +28,7 @@ import { buildApp, type AppHandle } from '../app/main.ts';
 import { loadEnv } from '../app/env.ts';
 import { migrateTenant } from '../app/db/migrate.ts';
 import { generateAppConf, readHosts } from '../tools/nginx_gen.ts';
+import { startEdge } from './helpers/docker-edge.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call } from './helpers/http.ts';
 import { removeContainer, trackContainer } from './helpers/docker.ts';
@@ -94,23 +95,22 @@ before(async () => {
 
   writeFileSync(join(tmp, 'nginx.conf'), nginxConf());
 
-  edgePort = await freePort();
   container = trackContainer(`skw-onboarding-${process.pid}`);
-  const run = spawnSync(
-    'docker',
-    [
+  const started = await startEdge({
+    freePort,
+    args: (port) => [
       'run', '--rm', '-d',
       '--name', container,
       '--add-host', 'host.docker.internal:host-gateway',
-      '-p', `${edgePort}:80`,
+      '-p', `127.0.0.1:${port}:80`,
       '-v', `${join(tmp, 'nginx.conf')}:/etc/nginx/nginx.conf:ro`,
       '-v', `${conf}:/etc/nginx/conf.d`,
       '-v', `${snippets}:/etc/nginx/snippets:ro`,
       'nginx:1.31-alpine',
     ],
-    { encoding: 'utf8' },
-  );
-  assert.equal(run.status, 0, run.stderr);
+  });
+  edgePort = started.port;
+  assert.equal(started.run.status, 0, started.run.stderr);
 
   for (let i = 0; i < 60; i += 1) {
     const probe = await call({ port: edgePort, path: '/healthz', host: 'acme.test' }).catch(() => undefined);

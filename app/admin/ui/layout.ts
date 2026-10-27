@@ -368,6 +368,12 @@ td form[action$="/disable"] button,td form[action$="/uninstall"] button{border-c
 .legacy .uploadcard input[type="file"]{display:block;margin-top:6px;font:13px/1.4 var(--sans);color:var(--ink);max-width:100%;min-height:0;padding:9px 12px;background:#fff;border:1px solid var(--line-2);border-radius:var(--r-sm)}
 .legacy .uploadcard .ack{display:flex;gap:9px;align-items:flex-start;font-weight:400;font-size:12.5px;color:var(--ink-2);line-height:1.45}
 .legacy .uploadcard .ack input{width:16px;height:16px;min-height:0;margin:1px 0 0;accent-color:var(--blue);flex:none}
+/* The library's Install form sits inside a table cell: two stacked 16px checkboxes made every row
+   twice as tall as its text and squeezed the button below them. Inline, they read as the two
+   conditions they are, on one line, and the button stays beside them. */
+.legacy td form .ack{display:inline-flex;gap:5px;align-items:center;font-size:11.5px;line-height:1.2;margin:0 10px 0 0;color:var(--ink-2);white-space:nowrap}
+.legacy td form .ack input{width:13px;height:13px;min-height:0;margin:0;flex:none;accent-color:var(--blue)}
+.legacy td form button{margin-left:2px}
 .legacy .uploadcard>button{justify-self:start;grid-column:1}
 
 /* account: two narrow cards side by side, the sign-out card full width under them */
