@@ -176,6 +176,39 @@ a directory with an `index.html`.
 **A static tree has no server, so the enquiry form cannot store anything.** Either point the form at
 Formspree/Netlify Forms first (see above) and re-export, or keep the form only on the CMS deployment.
 
+### C. A self-contained image on another server (the CMS, form included)
+
+For a box that should run the site *and* keep the editor, the export is a kit that builds its own
+image — no registry, no Node on the host, no nginx to configure:
+
+```sh
+node --no-warnings --experimental-strip-types app/cli/export.ts \
+  --target cms --tenant fractional \
+  --data-dir data --content content \
+  --origin https://fractionalworks.com.au \
+  --out /tmp/fw-cms
+```
+
+`/tmp/fw-cms` is the stock bundle (verified by `BUNDLE.json`). The kit wraps it in
+`Dockerfile` + `docker-compose.yml` + `Caddyfile` + `provision.sh` + `deploy.sh` and the app's own
+sources; on the server:
+
+```sh
+tar xf fractionalworks-deploy.tar.gz && cd fractionalworks-deploy
+./deploy.sh            # build -> verify bundle -> seed the volume -> up
+```
+
+`provision.sh` runs the bundle's own sequence inside the image (`bundle_verify.mjs` →
+`control.sql` → `seed_control.mjs` → tenant `site.db` → theme assets → `skwctl admin bootstrap`),
+so the only host requirements are Docker and free ports 80/443. Caddy obtains the certificate and
+sets `X-Forwarded-Proto: https`, which the admin's origin check requires.
+
+Verified on a second box from a fresh volume: seven documents byte-identical to the live site,
+five theme assets, admin sign-in, form POST → `303 ?sent=1` → one row.
+
+**`--target cms` ships the theme package's files only since E-60** — before that the bundle carried
+`cms_theme_asset` rows and not the bytes, and every `/_theme/…` URL 404'd on the new box.
+
 ## What is verified
 
 - 748 tests, 0 failures (`make test`), including six for per-page SEO and the export gates.
