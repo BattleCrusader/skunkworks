@@ -16,6 +16,8 @@
  *   L5  the install lands: the row, the tables, and the flash that says "for this tenant only"
  *   L6  the other tenant has the package on its shelf and none of its schema or rows
  *   L7  a second install of one id is refused: uninstall is the only way round, as §8.2 says
+ *   L8  an archive that cannot be read is listed as unreadable, with its error and no id
+ *   L9  a second *version* is refused before a row is written: a box holds one version
  */
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -52,7 +54,7 @@ function reportFor(packageDir: string, plugin: string, name: string): string {
   const path = join(fixture.dir, name);
   writeFileSync(
     path,
-    `${JSON.stringify({ plugin, version: '1.1.0', root_hash: root, runner_image_digest: DIGEST, ran_at: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify({ plugin, version: '1.2.0', root_hash: root, runner_image_digest: DIGEST, ran_at: new Date().toISOString() }, null, 2)}\n`,
   );
   return path;
 }
@@ -125,7 +127,7 @@ before(async () => {
   libraryRoot = join(fixture.env.SKW_DATA_DIR as string, 'plugin-library');
   mkdirSync(libraryRoot, { recursive: true });
   const report = reportFor(CONTACT, 'contact', 'contact-report.json');
-  archiveName = 'contact-1.1.0.tar.gz';
+  archiveName = 'contact-1.2.0.tar.gz';
   writeFileSync(join(libraryRoot, archiveName), packPackage(CONTACT, { reportPath: report }));
 
   handle = await buildApp({ env: loadEnv(fixture.env) });
@@ -169,7 +171,7 @@ test('L2. installing without the acknowledgement writes nothing, and says why', 
 });
 
 test('L3. a name that is not a library name is refused as a request, not resolved as a path', async () => {
-  for (const name of ['../control.db', '/etc/passwd', 'contact.tar', 'CONTACT-1.1.0.tar.gz']) {
+  for (const name of ['../control.db', '/etc/passwd', 'contact.tar', 'CONTACT-1.2.0.tar.gz']) {
     const res = await install(acme, 'acme', ACME_HOST, { package: name, understand: '1', allow_unsigned: '1' });
     assert.equal(res.status, 400, `${name} → ${res.status} ${res.body}`);
     assert.equal(codeOf(res), 'SKW_E_PLT_REQUEST_INVALID', `${name} must be refused by name`);
@@ -188,7 +190,7 @@ test('L5. the acknowledged install lands: a row for this tenant, its tables in i
   const res = await install(acme, 'acme', ACME_HOST, { package: archiveName, understand: '1', allow_unsigned: '1' });
   assert.equal(res.status, 303, res.body);
   const location = decodeURIComponent(String(header(res, 'location')));
-  assert.match(location, /installed contact@1\.1\.0 for acme only/);
+  assert.match(location, /installed contact@1\.2\.0 for acme only/);
   assert.match(location, /this tenant's database/);
   assert.match(location, /UNSIGNED/);
   assert.match(location, /press Enable/, 'installing is not running: enable stays a separate press');
@@ -213,7 +215,7 @@ test('L7. the same bytes install idempotently; different bytes under one id are 
   // Same root twice is not an error: the row is the identity, so a second press changes nothing.
   const again = await install(acme, 'acme', ACME_HOST, { package: archiveName, understand: '1', allow_unsigned: '1' });
   assert.equal(again.status, 303, again.body);
-  assert.equal(installedRow('acme', 'contact')?.version, '1.1.0');
+  assert.equal(installedRow('acme', 'contact')?.version, '1.2.0');
   const rows = (() => {
     const db = openAdminWrite(fixture.sitePath('acme'));
     try {
@@ -230,12 +232,12 @@ test('L7. the same bytes install idempotently; different bytes under one id are 
   cpSync(CONTACT, changed, { recursive: true });
   writeFileSync(join(changed, 'index.mjs'), `${readFileSync(join(changed, 'index.mjs'), 'utf8')}\n// a later build\n`);
   const changedReport = reportFor(changed, 'contact', 'contact-changed-report.json');
-  const changedName = 'contact-1.2.0.tar.gz';
+  const changedName = 'contact-9.9.9.tar.gz';
   writeFileSync(join(libraryRoot, changedName), packPackage(changed, { reportPath: changedReport }));
   const refused = await install(acme, 'acme', ACME_HOST, { package: changedName, understand: '1', allow_unsigned: '1' });
   assert.equal(refused.status, 200, refused.body);
   assert.match(refused.body, /SKW_E_PL_/, 'a refusal with a code, not a 500');
-  assert.equal(installedRow('acme', 'contact')?.version, '1.1.0', 'the installed row is untouched');
+  assert.equal(installedRow('acme', 'contact')?.version, '1.2.0', 'the installed row is untouched');
 });
 
 test('L8. an unreadable archive is listed on the shelf with its error, not silently hidden', async () => {
@@ -253,4 +255,27 @@ test('L8. an unreadable archive is listed on the shelf with its error, not silen
     rmSync(broken, { force: true });
   }
   assert.equal(existsSync(broken), false);
+});
+
+/**
+ * L9. **A box holds one version of a package, and it says so before writing a row.**
+ *
+ * The package *tree* is box-wide (`data/plugins/<id>`) while the installed row is per tenant, so a
+ * second version cannot live beside the first. Before this guard, installing a later build for a tenant
+ * that had never installed it succeeded — and then Enable refused with "contact changed on disk
+ * after it was installed and signed", naming two roots and no remedy. The row was a promise the
+ * box could not keep.
+ *
+ * L7 left a changed archive on the shelf; this installs it for the tenant that has no row, which
+ * is exactly the case that used to slip through.
+ */
+test('L9. a second version of one package is refused at install, naming both roots', async () => {
+  const changedName = 'contact-9.9.9.tar.gz';
+  const res = await install(beta, 'beta', BETA_HOST, { package: changedName, understand: '1', allow_unsigned: '1' });
+  assert.equal(res.status, 200, res.body);
+  assert.match(res.body, /SKW_E_PL_SCHEMA/, 'a refusal with a code, not a 500');
+  assert.match(res.body, /a box holds one version of a package/, 'the refusal says what the rule is');
+  assert.match(res.body, /uninstall it from every tenant/, 'and what to do about it');
+  assert.equal(installedRow('beta', 'contact'), undefined, 'a refused install must not write the row');
+  assert.equal(tables('beta').includes('p_contact_message'), false, 'and must not create the table');
 });

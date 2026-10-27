@@ -36,6 +36,7 @@
 const BODY_MAX_BYTES = 12 * 1024;
 const NAME_MAX = 120;
 const EMAIL_MAX = 254;
+const COMPANY_MAX = 160;
 const MESSAGE_MAX = 4_000;
 /** The same shape the core form intake accepts, so one address is not legal in one form and not the other. */
 const EMAIL = /^[^\s@<>]{1,64}@[^\s@<>]{1,190}\.[^\s@<>]{2,24}$/;
@@ -61,6 +62,9 @@ export function activate(ctx) {
     await args.facade['store.write']('p_contact_message', {
       name: checked.value.name,
       email: checked.value.email,
+      // 1.2.0: the firm the enquiry came from, when the visitor named one. Null, not '', so a
+      // missing company reads as "not given" rather than as a company with an empty name.
+      company: checked.value.company === '' ? null : checked.value.company,
       message: checked.value.message,
       // Explicit rather than the column default: the row this package creates says what state it
       // is in, and a later change to the default cannot silently reclassify it.
@@ -82,6 +86,10 @@ export function activate(ctx) {
     fields: [
       { name: 'name', label: 'Your name', type: 'text', required: true, maxLength: 120 },
       { name: 'email', label: 'Your email', type: 'email', required: true, maxLength: 254 },
+      // Optional, and declared between email and message so the host draws it where a person
+      // expects it. A page may relabel any of these (data-skw-label-*): the package names the
+      // field, the page says what this site calls it.
+      { name: 'company', label: 'Company', type: 'text', required: false, maxLength: 160 },
       { name: 'message', label: 'Message', type: 'textarea', required: true, maxLength: 4000 },
     ],
   });
@@ -96,13 +104,17 @@ function validate(payload) {
   const name = typeof payload.name === 'string' ? payload.name.trim() : '';
   const email = typeof payload.email === 'string' ? payload.email.trim() : '';
   const message = typeof payload.message === 'string' ? payload.message.trim() : '';
+  // Optional: absent, null and '' all mean "not given". A value that is present but too long is
+  // still refused by name, because it is a field the form drew and the visitor filled in.
+  const company = typeof payload.company === 'string' ? payload.company.trim() : '';
 
   if (name === '' || name.length > NAME_MAX) fields.push('name');
   if (email === '' || email.length > EMAIL_MAX || !EMAIL.test(email)) fields.push('email');
+  if (company.length > COMPANY_MAX) fields.push('company');
   if (message === '' || message.length > MESSAGE_MAX) fields.push('message');
 
   if (fields.length > 0) return { ok: false, fields };
-  return { ok: true, value: { name, email, message } };
+  return { ok: true, value: { name, email, company, message } };
 }
 
 function utf8Bytes(value) {

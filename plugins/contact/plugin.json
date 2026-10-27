@@ -1,52 +1,117 @@
 {
   "id": "contact",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "main": "index.mjs",
   "hooks": [],
-  "description": "A contact-capture package: one owned table, a declarative Messages screen, and a public POST /_plugin/contact/submit that validates its body and inserts a row. The screen is drawn from the fields declared here, so a message reads as a message and not as six columns. It answers {ok:true} and never echoes the submitted message back.",
-  "capabilities": ["store.insert"],
+  "description": "A contact-capture package: one owned table, a declarative Messages screen, and a public POST /_plugin/contact/submit that validates its body and inserts a row. The screen is drawn from the fields declared here, so a message reads as a message and not as six columns. It answers {ok:true} and never echoes the submitted message back. 1.2.0 adds the optional `company` column, so a firm's enquiry form keeps the name of the firm it came from instead of folding it into the message.",
+  "capabilities": [
+    "store.insert"
+  ],
   "tables": [
     {
       "name": "p_contact_message",
       "export": "rows",
       "columns": [
-        { "name": "name", "type": "TEXT", "notNull": true },
-        { "name": "email", "type": "TEXT", "notNull": true },
-        { "name": "message", "type": "TEXT", "notNull": true },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "notNull": true
+        },
+        {
+          "name": "email",
+          "type": "TEXT",
+          "notNull": true
+        },
+        {
+          "name": "company",
+          "type": "TEXT"
+        },
+        {
+          "name": "message",
+          "type": "TEXT",
+          "notNull": true
+        },
         {
           "name": "status",
           "type": "TEXT",
           "notNull": true,
           "default": "new"
         },
-        { "name": "created_at", "type": "TEXT", "notNull": true, "indexed": true },
-        { "name": "ip_hash", "type": "TEXT" }
+        {
+          "name": "created_at",
+          "type": "TEXT",
+          "notNull": true,
+          "indexed": true
+        },
+        {
+          "name": "ip_hash",
+          "type": "TEXT"
+        }
       ],
       "fields": [
-        { "name": "name", "label": "From", "widget": "text", "required": true },
-        { "name": "email", "label": "Reply to", "widget": "text", "required": true },
+        {
+          "name": "name",
+          "label": "From",
+          "widget": "text",
+          "required": true
+        },
+        {
+          "name": "email",
+          "label": "Reply to",
+          "widget": "text",
+          "required": true
+        },
+        {
+          "name": "company",
+          "label": "Company",
+          "widget": "text",
+          "help": "Optional. Who the question is from."
+        },
         {
           "name": "message",
           "label": "Message",
           "widget": "textarea",
           "rows": 10,
           "required": true,
-          "help": "What the visitor sent. It is their text — edit it only to redact."
+          "help": "What the visitor sent. It is their text \u2014 edit it only to redact."
         },
         {
           "name": "status",
           "label": "Handling",
           "widget": "select",
-          "options": ["new", "read", "replied", "archived"],
+          "options": [
+            "new",
+            "read",
+            "replied",
+            "archived"
+          ],
           "required": true,
           "help": "Where this message is in your own workflow. Nothing else reads it."
         },
-        { "name": "created_at", "widget": "auto", "default": "now" },
-        { "name": "ip_hash", "label": "Sender fingerprint", "widget": "hidden" }
+        {
+          "name": "created_at",
+          "widget": "auto",
+          "default": "now"
+        },
+        {
+          "name": "ip_hash",
+          "label": "Sender fingerprint",
+          "widget": "hidden"
+        }
       ],
-      "list": ["name", "email", "status", "created_at"]
+      "list": [
+        "name",
+        "email",
+        "status",
+        "created_at"
+      ]
     }
   ],
   "settings": [],
-  "endpoints": [{ "name": "submit", "method": "POST" }]
+  "endpoints": [
+    {
+      "name": "submit",
+      "method": "POST"
+    }
+  ]
 }

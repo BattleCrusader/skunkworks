@@ -570,9 +570,15 @@ a.fw-btn { text-decoration: none; }
 .fw-contact__list a { text-decoration: none; border-bottom: 1px solid var(--rule); }
 .fw-contact__list a:hover { border-bottom-color: var(--accent); color: var(--accent); }
 
-/* ── the form (core form block: the host injects _pt and the _hp honeypot) ──── */
+/* ── the form ────────────────────────────────────────────────────────────────
+   Two forms wear this: the core form block (the host injects _pt and the _hp
+   honeypot) and a package's declared form, which the host draws from the marker
+   `data-skw-form`. Same paper, same rules, same type — a visitor cannot tell which
+   one the host filled in, and that is the point. The package owns the fields; this
+   sheet owns how they look.                                                   */
 
-.fw-form {
+.fw-form,
+.skw-form {
   display: grid;
   gap: 1.1rem;
   padding: clamp(1.4rem, 2.6vw, 2rem);
@@ -580,8 +586,10 @@ a.fw-btn { text-decoration: none; }
   border: 1px solid var(--rule-ink);
   margin: 0;
 }
-.fw-field { display: grid; gap: 0.35rem; }
-.fw-field label {
+.fw-field,
+.skw-form .field { display: grid; gap: 0.35rem; }
+.fw-field label,
+.skw-form .field label {
   font-family: var(--mono);
   font-size: 0.68rem;
   letter-spacing: 0.18em;
@@ -589,7 +597,9 @@ a.fw-btn { text-decoration: none; }
   color: var(--muted);
 }
 .fw-field input,
-.fw-field textarea {
+.fw-field textarea,
+.skw-form .field input,
+.skw-form .field textarea {
   width: 100%;
   padding: 0.7rem 0.75rem;
   font-family: var(--sans);
@@ -600,14 +610,38 @@ a.fw-btn { text-decoration: none; }
   border-radius: 0;
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
-.fw-field input:hover, .fw-field textarea:hover { border-color: var(--rule-ink); }
-.fw-field input:focus, .fw-field textarea:focus {
+.fw-field input:hover, .fw-field textarea:hover,
+.skw-form .field input:hover, .skw-form .field textarea:hover { border-color: var(--rule-ink); }
+.fw-field input:focus, .fw-field textarea:focus,
+.skw-form .field input:focus, .skw-form .field textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
-.fw-field textarea { resize: vertical; min-height: 9rem; line-height: 1.55; }
-.fw-form button[type='submit'] { justify-self: start; margin-top: 0.4rem; }
+.fw-field textarea,
+.skw-form .field textarea { resize: vertical; min-height: 9rem; line-height: 1.55; }
+.fw-form button[type='submit'],
+.skw-form button[type='submit'] {
+  justify-self: start;
+  margin-top: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.95rem 1.5rem;
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--paper);
+  background: var(--warm);
+  border: 1px solid var(--warm);
+  border-radius: 0;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+.fw-form button[type='submit']:hover,
+.skw-form button[type='submit']:hover { background: var(--ink); border-color: var(--ink); }
 .fw-form__alt {
   margin: 0.2rem 0 0;
   font-size: 0.85rem;
@@ -616,6 +650,25 @@ a.fw-btn { text-decoration: none; }
 .fw-form__alt a { color: var(--accent); }
 /* The intake's honeypot wrapper, injected before the button: present, invisible, unreachable. */
 .fw-form .form__hp { position: absolute; left: -9999px; margin: 0; }
+
+/* What the host says after a send, in the same box the fields were in. */
+.skw-form__wrap { display: block; }
+.skw-form__thanks {
+  margin: 0;
+  padding: clamp(1.4rem, 2.6vw, 2rem);
+  background: var(--paper-2);
+  border: 1px solid var(--rule-ink);
+  border-left: 3px solid var(--accent);
+  color: var(--ink-2);
+}
+.skw-form__error {
+  margin: 0;
+  padding: 0.7rem 0.85rem;
+  background: color-mix(in srgb, var(--warm) 8%, var(--paper));
+  border-left: 3px solid var(--warm);
+  color: var(--accent-warm, var(--warm));
+  font-size: 0.92rem;
+}
 
 /* ── careers ────────────────────────────────────────────────────────────────── */
 

@@ -3583,6 +3583,16 @@ ${items}
       this.#formPage(reply, tenant, screen.table, id, session, screen.title, screen);
       return;
     }
+    // E-58: the row form's Delete button posts to `<action>/<id>/delete`, and the table screens
+    // answered that URL while a *package's* screen did not — so deleting a message from the
+    // Messages screen was refused as "no such admin action". The screen draws the same form, so
+    // it must answer the same action.
+    if (parts.length === 2 && parts[1] === 'delete') {
+      this.#requireMethod(req, 'POST');
+      this.#write(tenant, (db) => deleteRow(db, screen.table, parts[0] as string, this.#actor(session)));
+      reply.code(303).header('location', `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}`).send('');
+      return;
+    }
     throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
   }
 

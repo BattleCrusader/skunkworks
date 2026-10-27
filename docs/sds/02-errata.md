@@ -4514,3 +4514,87 @@ L8  an unreadable archive is listed as unreadable, not hidden and not guessed at
 **What this does not do:** it does not enable on install. Installing copies bytes and creates
 tables; Enable remains the separate press, because a package that starts running in the same request
 that accepted its bytes is a screen with no reader (E-38/S8o's rule, unchanged).
+
+## 19. E-58 — the form had two owners, and the screen had a Delete button nobody answered
+
+Four things were wrong at once on the first tenant whose contact form was a **package's** form
+rather than a core form. They are recorded together because they are one lesson: the moment a
+package owns the form, every path the form touches has to be the package's path — the store, the
+words, the version, and the screen an operator uses to work the results.
+
+**1. A visitor's enquiry had no door.** `/contact` posted to `POST /f/enquiry` (core intake) and the
+row landed in `cms_form_submission`. Nothing in `app/` read that table: `grep` finds three
+references, all writes or export bookkeeping, zero screens. Three real submissions — including the
+operator's own two tests — were invisible in the admin, which is what "where is it saved?" meant.
+The fix is not a screen over the core table; it is to stop having two stores. The page's form is now
+the `contact` package's form, its rows are `p_contact_message`, and the Messages screen is the door.
+
+**2. A package's form could not speak the site's language.** The package is generic — its last
+field is "Message", its button is "Send". The site asks "What's broken?" and says "Send it". The
+marker now carries the words:
+
+```html
+<div data-skw-form="contact/contact"
+     data-skw-label-message="What's broken?" data-skw-submit="Send it"
+     data-skw-thanks="Thanks — your message is on its way. …"></div>
+```
+
+Structure stays the package's (which fields exist, where they post); wording stays the page's. The
+values are escaped and capped (120 chars per label, 300 for the thanks line) and a marker cannot
+smuggle an element into the form: `S8k-3` renders `&lt;img src=x onerror=…&gt;` as text.
+
+**3. `contact` 1.2.0 keeps the name of the firm.** The enquiry form asks for a company and the
+1.1.0 table had nowhere to put it, so a migration would have folded it into the message. The
+package gained an optional `company` column: given, it is stored; omitted, it is `NULL` rather than
+`''`, because "not given" is a different fact from "named nothing".
+
+**4. A box holds one version of a package, and it used to find out too late.** The package *tree*
+is box-wide (`data/plugins/<id>`) while the installed row is per tenant. Installing 1.2.0 for a
+tenant that had never installed the package wrote a row naming 1.2.0's root while the directory
+still held another tenant's 1.1.0 bytes — and then **Enable** refused with "contact changed on disk
+after it was installed and signed", naming two hashes and no remedy. The install now compares the
+archive's root against the directory's before writing anything:
+
+```
+SKW_E_PL_SCHEMA  contact on this box is root cbdf849f902f…; this archive is 4d6e82646c20… —
+                 a box holds one version of a package, so uninstall it from every tenant before
+                 installing another
+```
+
+The upgrade path this box actually took, for the record: uninstall `contact` from `abc123` (which
+archives the package *and* its rows to `data/plugin-archive/contact-1.1.0-…json`), install 1.2.0
+for `fractional`, install 1.2.0 for `abc123`, restore its three rows, then migrate `fractional`'s
+three core submissions into `p_contact_message` (`company` from the payload, `brief` → `message`)
+and delete them from `cms_form_submission`.
+
+**5. The Delete button on a package's screen was a dead button.** The row form is generated once
+and used by both the table screens and a package's declared screen; its Delete control posts to
+`<action>/<id>/delete`. `#tableRoute` answered that URL; `#pluginScreenRoute` did not, so deleting a
+message from the Messages screen returned:
+
+```
+400  {"error":{"code":"SKW_E_PLT_REQUEST_INVALID","message":"no such admin action"}}
+```
+
+Reported by the operator from the live screen. The plugin route now answers the same action with the
+same guard (Origin, then CSRF) and redirects back to the screen, not to a table URL. `S8k-4` drives
+it: create through the screen's own form, GET `/<id>/delete` → 400, POST → 303 to `/messages`, row
+gone.
+
+**Measured, on the live tenant** (`fractionalworks.com.au`, after deploy):
+
+```
+GET  /contact                      200  3 937 B   <form class="skw-form fields" data-skw-form="contact/contact">
+                                            labels: Name / Email / Company / What's broken?
+                                            button: Send it
+POST /contact  (name, email, company, message)   303 → /contact?sent=1
+     p_contact_message             → 4 rows (3 migrated + 1 live), company preserved
+GET  /contact?sent=1             200  the page's own thanks line, not the package's
+GET  /admin/t/fractional/messages 200  4 rows
+POST /admin/t/fractional/messages/<id>/delete  303 → /admin/t/fractional/messages
+```
+
+`cms_form_submission` in `fractional` now holds 0 rows; the core `cms_form` row `enquiry` is left
+in place (harmless, nothing points at it) rather than deleted, because deleting a form definition is
+an operator decision, not a cleanup.
+

@@ -513,3 +513,167 @@ test('S8k-2. the contact form is drawn by the host, and a submit lands a row', a
   assert.match(errorPage.body, /That did not send/);
   assert.match(errorPage.body, /name="name"/, 'the form is back for another try');
 });
+
+/**
+ * S8k-3. **A page says the words; the package owns the fields.**
+ *
+ * The contact package is generic: it calls its last field "Message". Fractional Works asks
+ * "What's broken?", and its button says "Send it". Copy belongs to the page, structure to the
+ * package — so the marker may carry `data-skw-label-<field>`, `data-skw-submit` and
+ * `data-skw-thanks`, and the host draws the package's fields in the page's words.
+ *
+ * It also proves that `company` (1.2.0's optional column) travels: given, it lands in the row;
+ * omitted, the row says NULL rather than an empty string. And a marker's words are text, never
+ * markup.
+ */
+test('S8k-3. the page supplies the words, and an optional field stays optional', async () => {
+  const marker =
+    '<h1>Contact</h1><div data-skw-form="contact/contact" data-skw-label-message="What is broken?"' +
+    ' data-skw-submit="Send it" data-skw-thanks="Got it &mdash; we will reply."></div>';
+  const db = new Database(fixture.sitePath('acme'));
+  try {
+    db.prepare("UPDATE cms_page SET body_html = ? WHERE path = '/pricing'").run(marker);
+  } finally {
+    db.close();
+  }
+
+  const page = await call({ port, path: '/pricing', host: 'acme.test' });
+  assert.equal(page.status, 200, page.body);
+  assert.match(page.body, />What is broken\?</, 'the page renamed the package\'s field');
+  assert.doesNotMatch(page.body, />Message</, 'the package\'s own label is not what a visitor reads');
+  assert.match(page.body, />Send it</, 'the page named the button');
+  assert.match(page.body, /name="company"/, 'the optional company field is drawn');
+
+  // Given: the row carries it.
+  const withFirm = await call({
+    port,
+    path: '/pricing',
+    method: 'POST',
+    host: 'acme.test',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      _skw_form: 'contact/contact',
+      name: 'Grace Hopper',
+      email: 'grace@example.com',
+      company: 'Acme Pty Ltd',
+      message: 'The deploy is broken.',
+    }).toString(),
+  });
+  assert.equal(withFirm.status, 303, withFirm.body);
+  assert.equal(header(withFirm, 'location'), '/pricing?sent=1');
+
+  const thanks = await call({ port, path: '/pricing?sent=1', host: 'acme.test' });
+  assert.equal(thanks.status, 200, thanks.body);
+  assert.match(thanks.body, /Got it/, 'the page\'s own thanks line, not the package\'s');
+
+  // Omitted: NULL, not '' — "not given" is a different fact from "named nothing".
+  const noFirm = await call({
+    port,
+    path: '/pricing',
+    method: 'POST',
+    host: 'acme.test',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      _skw_form: 'contact/contact',
+      name: 'Alan Turing',
+      email: 'alan@example.com',
+      message: 'No firm here.',
+    }).toString(),
+  });
+  assert.equal(noFirm.status, 303, noFirm.body);
+
+  const db2 = new Database(fixture.sitePath('acme'));
+  try {
+    const rows = db2
+      .prepare("SELECT company, message FROM p_contact_message WHERE email IN ('grace@example.com', 'alan@example.com') ORDER BY email")
+      .all() as { company: string | null; message: string }[];
+    assert.equal(rows.length, 2, 'both submits wrote a row');
+    const alan = rows.find((r) => r.message === 'No firm here.');
+    assert.ok(alan !== undefined);
+    assert.equal(alan.company, null, 'an omitted company is NULL');
+    const grace = rows.find((r) => r.message === 'The deploy is broken.');
+    assert.ok(grace !== undefined);
+    assert.equal(grace.company, 'Acme Pty Ltd');
+  } finally {
+    db2.close();
+  }
+
+  // The marker's words are text. A page cannot make the host emit an element by naming one.
+  const db3 = new Database(fixture.sitePath('acme'));
+  try {
+    db3.prepare("UPDATE cms_page SET body_html = ? WHERE path = '/pricing'").run(
+      '<h1>Contact</h1><div data-skw-form="contact/contact" data-skw-label-message="&lt;img src=x onerror=alert(1)&gt;"></div>',
+    );
+  } finally {
+    db3.close();
+  }
+  const escaped = await call({ port, path: '/pricing', host: 'acme.test' });
+  assert.equal(escaped.status, 200, escaped.body);
+  assert.doesNotMatch(escaped.body, /<img/, 'a label is a label, not markup');
+  assert.match(escaped.body, /&lt;img src=x onerror=alert\(1\)&gt;/, 'it is shown, escaped');
+
+  // Leave the page as S8k-2 left it, for anyone running this file's tests alone.
+  const db4 = new Database(fixture.sitePath('acme'));
+  try {
+    db4.prepare("UPDATE cms_page SET body_html = ? WHERE path = '/pricing'").run(
+      '<h1>Contact</h1><div data-skw-form="contact/contact"></div>',
+    );
+  } finally {
+    db4.close();
+  }
+});
+
+/**
+ * S8k-4. **The Delete button a package's screen draws is a button the admin answers.**
+ *
+ * The row form is generated once and used by both the table screens and a package's declared
+ * screen, and its Delete control posts to `<action>/<id>/delete`. The table screens answered that
+ * URL; a package's screen fell through to "no such admin action" — so the Messages screen had a
+ * Delete button that always failed, which is worse than no button at all.
+ */
+test('S8k-4. a row on a package screen can be edited and deleted from that screen', async () => {
+  const created = await post('/admin/t/acme/messages', {
+    name: 'Delete Me',
+    email: 'delete@example.com',
+    company: 'Acme',
+    message: 'Please remove this row.',
+    status: 'new',
+  });
+  assert.equal(created.status, 303, created.body);
+
+  const id = (() => {
+    const db = new Database(fixture.sitePath('acme'));
+    try {
+      const row = db.prepare("SELECT id FROM p_contact_message WHERE email = 'delete@example.com'").get() as
+        | { id: number }
+        | undefined;
+      return row?.id;
+    } finally {
+      db.close();
+    }
+  })();
+  assert.ok(id !== undefined, 'the screen form wrote no row');
+
+  const form = await get(`/admin/t/acme/messages/${id}`);
+  assert.equal(form.status, 200, form.body);
+  assert.ok(form.body.includes(`action="/admin/t/acme/messages/${id}/delete"`), 'the Delete button names this screen');
+
+  // GET is not a delete, and says so.
+  const wrongMethod = await get(`/admin/t/acme/messages/${id}/delete`);
+  assert.equal(wrongMethod.status, 400, wrongMethod.body);
+  assert.equal((wrongMethod.json as { error?: { code?: string } }).error?.code, 'SKW_E_PLT_REQUEST_INVALID');
+
+  const deleted = await post(`/admin/t/acme/messages/${id}/delete`, {});
+  assert.equal(deleted.status, 303, deleted.body);
+  assert.equal(header(deleted, 'location'), '/admin/t/acme/messages', 'back to the list it came from');
+
+  const gone = (() => {
+    const db = new Database(fixture.sitePath('acme'));
+    try {
+      return db.prepare('SELECT id FROM p_contact_message WHERE id = ?').get(id) as { id: number } | undefined;
+    } finally {
+      db.close();
+    }
+  })();
+  assert.equal(gone, undefined, 'the row is gone');
+});

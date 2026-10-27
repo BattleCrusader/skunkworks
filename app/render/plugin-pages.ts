@@ -99,12 +99,36 @@ export function pluginPageBody(row: Record<string, unknown>, page: DeclarativePa
 }
 
 /**
- * The form a package declared, as host markup.
+ * The form a package declared, as host markup — see `pluginFormHtml` below.
  *
- * No `action`: a form with no action posts to the URL it is on, which is exactly right — the page
- * path is the form's endpoint, and the host forwards. The package's id travels in a hidden field,
- * and the visitor's values are the only other thing that does.
+ * The words a **page** may say instead of the package's defaults: submit label, one label per
+ * field, and the sentence after a successful send.
+ *
+ * Copy is the product, and a package is generic — the contact package calls its third field
+ * "Message", while the page it is dropped into may want "What's broken?". Structure belongs to
+ * the package (what fields exist, where they post); wording belongs to the page (what this site
+ * says to its own visitors). The page supplies it as attributes on the marker, so the saved body
+ * still carries no form markup.
  */
+export interface FormCopy {
+  labels?: ReadonlyMap<string, string>;
+  submit?: string;
+  thanks?: string;
+}
+
+/** Attribute prefixes a marker may use. `data-skw-label-message="What's broken?"`. */
+const COPY_LABEL_PREFIX = 'data-skw-label-';
+const COPY_SUBMIT = 'data-skw-submit';
+const COPY_THANKS = 'data-skw-thanks';
+const LABEL_MAX = 120;
+const THANKS_MAX = 300;
+
+/** Text from a page is escaped at render (never trusted), and capped so one page cannot bloat a form. */
+function capped(value: string, max: number): string {
+  const trimmed = value.trim();
+  return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
+}
+
 /**
  * Replace `[data-skw-form]` markers with the form the package declared.
  *
@@ -128,15 +152,43 @@ export function resolveFormMarkers(
       const form = lookup(id);
       if (form === undefined) return node; // fail closed: an unknown form draws nothing extra
       changed = true;
-      return element('div', [['class', 'skw-form__wrap']], parseHtml(pluginFormHtml(form, opts)));
+      return element('div', [['class', 'skw-form__wrap']], parseHtml(pluginFormHtml(form, opts, copyOf(node.attrs))));
     });
   const out = walk(tree);
   return changed ? serialize(out) : html;
 }
 
-export function pluginFormHtml(form: DeclarativeForm, opts: { error?: string; sent?: boolean } = {}): string {
+/** The marker's own wording, read off its attributes. Absent attributes fall back to the package. */
+function copyOf(attrs: readonly (readonly [string, string])[]): FormCopy {
+  const labels = new Map<string, string>();
+  let submit: string | undefined;
+  let thanks: string | undefined;
+  for (const [name, value] of attrs) {
+    if (name === COPY_SUBMIT) submit = capped(value, LABEL_MAX);
+    else if (name === COPY_THANKS) thanks = capped(value, THANKS_MAX);
+    else if (name.startsWith(COPY_LABEL_PREFIX)) {
+      const field = name.slice(COPY_LABEL_PREFIX.length);
+      if (/^[a-z][a-z0-9_]{0,40}$/.test(field)) labels.set(field, capped(value, LABEL_MAX));
+    }
+  }
+  return { labels, ...(submit === undefined || submit === '' ? {} : { submit }), ...(thanks === undefined || thanks === '' ? {} : { thanks }) };
+}
+
+/**
+ * The markup for a declared form.
+ *
+ * No `action`: a form with no action posts to the URL it is on, which is exactly right — the page
+ * path is the form's endpoint, and the host forwards. The package's id travels in a hidden field,
+ * and the visitor's values are the only other thing that does.
+ */
+export function pluginFormHtml(
+  form: DeclarativeForm,
+  opts: { error?: string; sent?: boolean } = {},
+  copy: FormCopy = {},
+): string {
   if (opts.sent === true) {
-    return `<p class="skw-form__thanks" role="status">${escapeText(form.thanks)}</p>`;
+    const thanks = copy.thanks ?? form.thanks;
+    return `<p class="skw-form__thanks" role="status">${escapeText(thanks)}</p>`;
   }
   const fields = form.fields
     .map((field) => {
@@ -144,18 +196,20 @@ export function pluginFormHtml(form: DeclarativeForm, opts: { error?: string; se
       const common = `id="${escapeAttr(id)}" name="${escapeAttr(field.name)}"${field.required === true ? ' required' : ''}${
         field.maxLength === undefined ? '' : ` maxlength="${field.maxLength}"`
       }`;
+      const label = copy.labels?.get(field.name) ?? field.label;
       const control =
         field.type === 'textarea'
           ? `<textarea ${common} rows="5"></textarea>`
           : `<input ${common} type="${field.type === 'email' ? 'email' : 'text'}">`;
-      return `<div class="field"><label for="${escapeAttr(id)}">${escapeText(field.label)}</label>${control}</div>`;
+      return `<div class="field"><label for="${escapeAttr(id)}">${escapeText(label)}</label>${control}</div>`;
     })
     .join('\n');
   const error = opts.error === undefined ? '' : `<p class="skw-form__error" role="alert">${escapeText(opts.error)}</p>`;
+  const submit = copy.submit ?? 'Send';
   return `<form method="post" class="skw-form fields" data-skw-form="${escapeAttr(form.id)}">
 <input type="hidden" name="_skw_form" value="${escapeAttr(form.id)}">
 ${error}
 ${fields}
-<button type="submit">Send</button>
+<button type="submit">${escapeText(submit)}</button>
 </form>`;
 }

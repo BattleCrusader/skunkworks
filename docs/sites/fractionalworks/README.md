@@ -2,7 +2,8 @@
 
 A three-page site for a fractional software engineering firm, built in the Skunkworks CMS: three
 `cms_page` rows, a theme package, and one enquiry form. No page carries a `<script>`, a `<style>` or
-a stylesheet of its own — the look is a theme, the copy is content, and the form is a row.
+a stylesheet of its own — the look is a theme, the copy is content, and the form is a **package's**
+form, drawn by the host.
 
 | | |
 |---|---|
@@ -10,7 +11,8 @@ a stylesheet of its own — the look is a theme, the copy is content, and the fo
 | Host | `fractionalworks.com.au` |
 | Pages | `/`, `/contact`, `/careers` |
 | Theme | `fractional-works` — `themes/fractionalworks/` → `themes/fractionalworks.zip` |
-| Form | `cms_form` row `enquiry` (`mode = store`) |
+| Form | `contact` package **1.2.0**, enabled — `/contact` and `/` carry a `data-skw-form` marker |
+| Messages | `p_contact_message` in this tenant's `site.db`, read at **Admin → Messages** |
 | Menu | header: Contact · footer: Careers, Contact |
 
 ## The five placeholders
@@ -71,28 +73,42 @@ first produces `fractional-works-2`.
 
 ## The form
 
-`<form data-gjs-type="form" data-form="enquiry">` on `/contact` (and the close section of `/`)
-binds to the `cms_form` row. The host supplies what a hand-written form cannot:
+The enquiry form belongs to the **`contact` package** (1.2.0), not to a `cms_form` row. `/contact`
+and the close section of `/` carry a marker, and the host draws the fields the package declared:
 
-- `action="/f/enquiry"`, `method="post"`;
-- a signed `_pt` intent token, 30-minute TTL and a 1.5-second minimum fill;
-- an `_hp` honeypot inside `aria-hidden` markup — filled means `202` and **no row**;
-- per-field `required`/`maxlength` from `fields_json`, and 5 submissions per 10 minutes per
-  fingerprint.
-
-Measured on the live tenant: a real submission answers `202 {"ok":true,"id":1}` and writes one row;
-a submission with `_hp` filled answers `202 {"ok":true}` and writes none; a missing `_pt` is a named
-`400` refusal.
-
-Submissions land in `cms_form_submission`. To send them somewhere else instead — Netlify Forms,
-Formspree — set the row to forward mode; the markup does not change:
-
-```sql
-UPDATE cms_form SET mode = 'forward', action_url = 'https://formspree.io/f/<id>' WHERE key = 'enquiry';
+```html
+<div data-skw-form="contact/contact"
+     data-skw-label-name="Name" data-skw-label-email="Email"
+     data-skw-label-company="Company" data-skw-label-message="What's broken?"
+     data-skw-submit="Send it"
+     data-skw-thanks="Thanks — your message is on its way. …"></div>
 ```
 
-The honeypot and token are then bypassed (the third party receives a plain POST), so keep the
-honeypot field name in the service's own spam settings.
+The package owns the **structure** (four fields, posted to its own endpoint); the page owns the
+**words**, which is why the marker carries them. A page with no marker attributes gets the package's
+own labels instead.
+
+What happens on submit: the browser posts the page's own URL, the host forwards the declared fields
+to `POST /_plugin/contact/submit` as JSON, the package validates and inserts one row, and the
+visitor is redirected to `?sent=1` — where the page shows its thanks line instead of the form. A
+refused submit comes back to `?form_error=1` with the form still filled in. Measured on the live
+tenant: `303 → /contact?sent=1`, one row, `company` preserved; an invalid address answers
+`?form_error=1` and writes nothing.
+
+Messages live in `p_contact_message` **in this tenant's database** and are read at
+**Admin → Messages** (list, open, edit, delete). They are exported with the rest of the tenant's
+rows.
+
+**The old core form is still installed but unused.** `cms_form` row `enquiry` (`mode = store`) and
+`POST /f/enquiry` still work — nothing points at them. The three submissions that arrived on the
+core path were migrated into `p_contact_message` on 2026-10-27 (name, email, company, brief →
+message) and removed from `cms_form_submission`. To send the form somewhere else entirely (Netlify
+Forms, Formspree), change the marker to a hand-written `<form action="…">`; a package form always
+posts to its own host.
+
+**A box holds one version of a package.** `data/plugins/contact` is shared by every tenant, so
+upgrading it means uninstalling it from every tenant first (each uninstall archives its rows to
+`data/plugin-archive/`). Installing a second version alongside is refused by name.
 
 ## Deploying
 

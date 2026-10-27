@@ -162,14 +162,8 @@ export const HOME: string = `
       <li><span>LinkedIn</span><a href="__LINKEDIN_URL__">profile</a></li>
       <li><span>ABN</span>__ABN__</li>
     </ul>
-    <form class="fw-form" data-gjs-type="form" data-form="enquiry">
-      <div class="fw-field"><label for="fw-name">Name</label><input id="fw-name" name="name" type="text" maxlength="120" required autocomplete="name"></div>
-      <div class="fw-field"><label for="fw-email">Email</label><input id="fw-email" name="email" type="email" maxlength="254" required autocomplete="email"></div>
-      <div class="fw-field"><label for="fw-company">Company</label><input id="fw-company" name="company" type="text" maxlength="160" autocomplete="organization"></div>
-      <div class="fw-field"><label for="fw-brief">What's broken?</label><textarea id="fw-brief" name="brief" rows="6" maxlength="4000" required></textarea></div>
-      <button class="fw-btn fw-btn--primary" type="submit">Send it</button>
-      <p class="fw-form__alt">Prefer email? __BUSINESS_EMAIL__</p>
-    </form>
+    <div data-skw-form="contact/contact" data-skw-label-name="Name" data-skw-label-email="Email" data-skw-label-company="Company" data-skw-label-message="What's broken?" data-skw-submit="Send it" data-skw-thanks="Thanks — your message is on its way. One of us reads every one of these, and we reply to the address you left."></div>
+    <p class="fw-form__alt">Prefer email? __BUSINESS_EMAIL__</p>
   </div>
 </section>
 `;
@@ -186,14 +180,8 @@ export const CONTACT: string = `
       <li><span>LinkedIn</span><a href="__LINKEDIN_URL__">profile</a></li>
       <li><span>ABN</span>__ABN__</li>
     </ul>
-    <form class="fw-form" data-gjs-type="form" data-form="enquiry">
-      <div class="fw-field"><label for="fw-name">Name</label><input id="fw-name" name="name" type="text" maxlength="120" required autocomplete="name"></div>
-      <div class="fw-field"><label for="fw-email">Email</label><input id="fw-email" name="email" type="email" maxlength="254" required autocomplete="email"></div>
-      <div class="fw-field"><label for="fw-company">Company</label><input id="fw-company" name="company" type="text" maxlength="160" autocomplete="organization"></div>
-      <div class="fw-field"><label for="fw-brief">What's broken?</label><textarea id="fw-brief" name="brief" rows="6" maxlength="4000" required></textarea></div>
-      <button class="fw-btn fw-btn--primary" type="submit">Send it</button>
-      <p class="fw-form__alt">Prefer email? __BUSINESS_EMAIL__</p>
-    </form>
+    <div data-skw-form="contact/contact" data-skw-label-name="Name" data-skw-label-email="Email" data-skw-label-company="Company" data-skw-label-message="What's broken?" data-skw-submit="Send it" data-skw-thanks="Thanks — your message is on its way. One of us reads every one of these, and we reply to the address you left."></div>
+    <p class="fw-form__alt">Prefer email? __BUSINESS_EMAIL__</p>
     <p class="fw-note">One of us reads every one of these. If it is not a fit, we will say so.</p>
   </div>
 </section>

@@ -299,7 +299,7 @@ test('S4. contact activates: POST submit validates, writes one row, and never ec
   );
   assert.deepEqual(
     screen.fields?.map((f) => f.name),
-    ['name', 'email', 'message', 'status', 'created_at', 'ip_hash'],
+    ['name', 'email', 'company', 'message', 'status', 'created_at', 'ip_hash'],
   );
   assert.deepEqual(screen.fields?.find((f) => f.name === 'status')?.options, ['new', 'read', 'replied', 'archived']);
   assert.equal(screen.fields?.find((f) => f.name === 'ip_hash')?.widget, 'hidden');
@@ -308,7 +308,12 @@ test('S4. contact activates: POST submit validates, writes one row, and never ec
   const declaredForm = [...entry.forms.values()][0];
   assert.equal(declaredForm?.id, 'contact/contact');
   assert.equal(declaredForm?.endpoint, 'submit');
-  assert.deepEqual(declaredForm?.fields.map((f) => f.name), ['name', 'email', 'message']);
+  assert.deepEqual(declaredForm?.fields.map((f) => f.name), ['name', 'email', 'company', 'message']);
+  assert.equal(
+    declaredForm?.fields.find((f) => f.name === 'company')?.required,
+    undefined,
+    'company is optional: a visitor who is asking for themselves has no firm to name',
+  );
   assert.ok(runtime.endpoint(TENANT, 'contact', 'POST', 'submit') !== undefined, 'POST submit was not registered');
 
   const empty = asRecord(await invoke('contact', 'submit', 'POST', '/_plugin/contact/submit', ''));
@@ -359,9 +364,10 @@ test('S4. contact activates: POST submit validates, writes one row, and never ec
   assert.equal(countRows('p_contact_message'), 1);
   const row = read(
     (db) =>
-      db.prepare('SELECT name, email, message, status, created_at, ip_hash FROM p_contact_message').get() as {
+      db.prepare('SELECT name, email, company, message, status, created_at, ip_hash FROM p_contact_message').get() as {
         name: string;
         email: string;
+        company: string | null;
         message: string;
         status: string;
         created_at: string;
@@ -371,6 +377,7 @@ test('S4. contact activates: POST submit validates, writes one row, and never ec
   assert.equal(row.name, 'Ada Lovelace');
   assert.equal(row.email, 'ada@example.com');
   assert.equal(row.message, message);
+  assert.equal(row.company, null, 'a submission with no company stores NULL, not an empty string');
   assert.equal(row.status, 'new');
   assert.match(row.created_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(row.ip_hash, null, 'no client address reaches an endpoint, so ip_hash stays NULL rather than invented');

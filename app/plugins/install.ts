@@ -336,6 +336,23 @@ export function installPlugin(input: InstallRequest): InstallResult {
       });
     }
 
+    // The package **tree** is the box's, not the tenant's (`data/plugins/<id>`), so it can hold one
+    // version at a time. Before this guard existed, installing a second version for a *different*
+    // tenant wrote a row the runtime could never enable: the row named the archive's root, the
+    // directory still held the first tenant's bytes, and `enable` refused with "contact changed on
+    // disk after it was installed and signed" — a true statement about the wrong moment, and no
+    // way to act on it. Refuse here, where the operator is standing, and say what to do.
+    if (existsSync(target)) {
+      const onDisk = packageRootHash(target).root;
+      if (onDisk !== root) {
+        refuse(
+          'SKW_E_PL_SCHEMA',
+          `${source.id} on this box is root ${onDisk}; this archive is ${root} — a box holds one version of a package, so uninstall it from every tenant before installing another`,
+          { box_root_hash: onDisk, archive_root_hash: root },
+        );
+      }
+    }
+
     // Copy first, transaction second. Copying into a sibling then renaming is atomic on the
     // same filesystem; a copy into the live directory would expose a half package.
     if (!existsSync(target)) {

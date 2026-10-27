@@ -18,14 +18,14 @@ can read the other's. Installing does not enable — Enable is a separate press.
 
 ```sh
 skwctl plugin pack plugins/contact --report test-reports/contact.json \
-  --out data/plugin-library/contact-1.1.0.tar.gz
+  --out data/plugin-library/contact-1.2.0.tar.gz
 ```
 
 The report must be bound to the package's **own root hash**, and it must sit beside the package in
 the archive rather than inside it — a file inside the root changes the hash the report attests,
 which is why `pack` puts it there and why `unpackArchive` refuses an archive that has one inside.
 
-Every tenant then sees `contact-1.1.0.tar.gz` under **Available on this box** until it installs it
+Every tenant then sees `contact-1.2.0.tar.gz` under **Available on this box** until it installs it
 for itself. The library is a directory, not a database: adding an archive is `cp`, removing one
 removes it from the shelf for tenants that have not installed it (installed copies are unaffected).
 
@@ -39,11 +39,16 @@ removes it from the shelf for tenants that have not installed it (installed copi
 
 ## Shipped packages
 
-| Package | Table | Screen | Public endpoint |
-|---|---|---|---|
-| `blog` | `p_blog_post` | “Blog posts” | `GET /_plugin/blog/posts` |
-| `contact` | `p_contact_message` | “Messages” | `POST /_plugin/contact/submit` |
-| `menu` | `p_menu_item` | menus | `GET /_plugin/menu/items` |
+| Package | Version | Table | Screen | Public endpoint |
+|---|---|---|---|---|
+| `blog` | 1.1.0 | `p_blog_post` | “Blog posts” | `GET /_plugin/blog/posts` |
+| `contact` | 1.2.0 | `p_contact_message` | “Messages” | `POST /_plugin/contact/submit` |
+| `menu` | 1.0.0 | `p_menu_item` | menus | `GET /_plugin/menu/items` |
+
+`contact` 1.2.0 adds the optional `company` column: a firm's enquiry form keeps the name of the firm
+it came from instead of folding it into the message. A form the host draws can be given the page's
+own words — `data-skw-label-<field>`, `data-skw-submit`, `data-skw-thanks` on the marker — because
+the package owns the fields and the page owns the copy.
 
 `plugins/` holds the sources; `data/plugin-library/` holds the archives. The zip/tar artefacts are
 build output and are gitignored.
