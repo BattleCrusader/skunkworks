@@ -2,7 +2,7 @@
   "schema": 1,
   "multiplier": 4,
   "staleCheckFloorMs": 3000,
-  "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+  "box": "Francoiss-Mac-mini.local darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
   "measurements": [
     {
       "file": "test/first-boot-tls.test.ts",
@@ -1859,6 +1859,34 @@
       ]
     },
     {
+      "file": "test/accounts-policy.test.ts",
+      "worstIdleMs": 163,
+      "measuredOn": "2026-10-28",
+      "load1m": 5.19,
+      "box": "Francoiss-Mac-mini.local darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "39810b32154880bf89f6193f55362c8703a8bf7e387f3e0fcbb8d0bd1a2526f4",
+      "runs": [
+        {
+          "ms": 163,
+          "at": "2026-10-27T23:48:56.656Z",
+          "load1mBefore": 5.19,
+          "load1mAfter": 5.19,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 13
+        },
+        {
+          "ms": 138,
+          "at": "2026-10-27T23:48:56.796Z",
+          "load1mBefore": 5.19,
+          "load1mAfter": 5.19,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 13
+        }
+      ]
+    },
+    {
       "file": "test/timeout-budget.test.ts",
       "worstIdleMs": 157,
       "measuredOn": "2026-10-21",
@@ -1917,5 +1945,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-27T09:46:36.291Z"
+  "updatedAt": "2026-10-27T23:48:57.169Z"
 }
