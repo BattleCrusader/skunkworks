@@ -98,6 +98,7 @@ interface Row {
   template: string;
   body_html: string;
   body_css: string;
+  seo_json: string | null;
   updated_at: string;
 }
 
@@ -110,6 +111,7 @@ function toRecord(row: Row): PageRecord {
     template: row.template,
     bodyHtml: row.body_html,
     bodyCss: row.body_css,
+    seoJson: row.seo_json ?? null,
     updatedAt: row.updated_at,
   };
 }
@@ -125,7 +127,7 @@ export function loadPageForRender(db: Database.Database, opts: LoadPageOptions):
     if (!ok) return { page: null, preview: false };
     const row = db
       .prepare(
-        `SELECT id, path, title, status, template, body_html, body_css, updated_at
+        `SELECT id, path, title, status, template, body_html, body_css, seo_json, updated_at
            FROM cms_page WHERE path = ? LIMIT 1`,
       )
       .get(opts.path) as Row | undefined;

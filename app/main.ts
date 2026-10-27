@@ -43,6 +43,7 @@ import sharp from 'sharp';
 import { loadPluginPage, matchPluginPage, pluginPageBody, resolveFormMarkers } from './render/plugin-pages.ts';
 import { loadNav, type NavTree } from './render/nav.ts';
 import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings, type SiteChrome } from './render/chrome.ts';
+import { originFromHost, pageSeoHead, parsePageSeo } from './render/seo.ts';
 import { matchesEtag, sheetEtag, sheetVersion, siteSheet } from './render/theme.ts';
 import {
   THEME_KEY_SETTING,
@@ -1097,6 +1098,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
               template: 'page',
               bodyHtml: pluginPageBody(row, match.page),
               bodyCss: '',
+              // A package's detail page has no `cms_page` row and therefore no `seo_json`; its
+              // metadata belongs to the package's own columns, not to this record.
+              seoJson: null,
               updatedAt: new Date().toISOString(),
             };
           }
@@ -1214,10 +1218,23 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
         { tenant: ctx.tenant.key, path, page: { title: page.title, template: page.template } },
         page.bodyHtml,
       );
+      // The page's own search metadata, from `cms_page.seo_json`. Composed first so a package's
+      // `page.head` markup is appended after it rather than replacing it; with no `seo_json` the
+      // string stays empty and the document is byte-for-byte what it was before this existed.
+      const seo = parsePageSeo(stored.seoJson);
+      if (seo !== null) {
+        head = pageSeoHead({
+          seo,
+          path,
+          documentTitle: page.title,
+          siteName: chrome === null ? '' : chrome.title,
+          origin: originFromHost(req.headers.host),
+        });
+      }
       // §13.3.4, `page.head`: extra `<meta>`/`<link>` markup in `<head>`, ≤ 4 KiB, and
       // nothing else — the shell interpolates the returned string inside `<head>` and the
       // filter has no parameter for the body, the status or a header.
-      head = await filterSite<string>('page.head', ctx.tenant.key, { tenant: ctx.tenant.key, path }, '');
+      head += await filterSite<string>('page.head', ctx.tenant.key, { tenant: ctx.tenant.key, path }, '');
     } finally {
       plugins.leave(ctx.tenant.key);
     }

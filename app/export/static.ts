@@ -15,10 +15,12 @@
  *    Without an origin the export ships no sitemap rather than a broken one, and the
  *    notes say why.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 
 import type { TreeFile } from './tree.ts';
 import { pageCssPath, renderDocument } from './document.ts';
+import { pageSeoHead } from '../render/seo.ts';
 import { renderNotes } from './notes.ts';
 import { assetFile, type Projection } from './project.ts';
 import { CSP_CONF_FILE, cspConf } from '../render/csp.ts';
@@ -28,6 +30,18 @@ export interface StaticOptions {
   /** The live `content/` root, for the byte copies. */
   contentRoot: string;
   origin?: string;
+  /**
+   * The tenant's active theme, verbatim. Written once as `/theme.css` and linked by every document,
+   * which is the same URL the live site serves and the same bytes — a static tree that only
+   * carried `body_css` would deploy a site with no look at all.
+   */
+  sheet?: string;
+  /**
+   * The theme package's files, on disk, and the key they are served under. The sheet names them
+   * absolutely (`/_theme/<key>/assets/x?v=<sha8>`); a file server ignores the query, so the same
+   * bytes at the same path are all a static tree needs.
+   */
+  themeAssets?: { key: string; root: string };
 }
 
 /** `/about` → `about/index.html`; `/` → `index.html` (§11.1: one directory per path). */
@@ -64,6 +78,23 @@ export function planStatic(options: StaticOptions): TreeFile[] {
   }
   for (const [path, css] of sheets) files.push({ path: path.replace(/^\//, ''), bytes: css });
 
+  const sheet = options.sheet === undefined || options.sheet === '' ? null : options.sheet;
+  if (sheet !== null) files.push({ path: 'theme.css', bytes: sheet });
+  const themeAssets = options.themeAssets;
+  if (themeAssets !== undefined && existsSync(themeAssets.root)) {
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else {
+          const rel = relative(themeAssets.root, full).split(sep).join('/');
+          files.push({ path: `_theme/${themeAssets.key}/${rel}`, bytes: readFileSync(full) });
+        }
+      }
+    };
+    walk(themeAssets.root);
+  }
+
   for (const page of projection.pages) {
     files.push({
       path: pageFile(page.path),
@@ -73,6 +104,20 @@ export function planStatic(options: StaticOptions): TreeFile[] {
         title: page.title,
         bodyHtml: page.bodyHtml,
         bodyCss: page.bodyCss,
+        ...(sheet === null ? {} : { sheetHref: '/theme.css' }),
+        ...(page.seo === null
+          ? {}
+          : {
+              head: pageSeoHead({
+                seo: page.seo,
+                path: page.path,
+                documentTitle: page.title,
+                // The static tree has no chrome record: `og:site_name` stays out rather than
+                // being guessed from the page title.
+                siteName: '',
+                origin: options.origin === undefined ? null : options.origin.replace(/\/$/, ''),
+              }),
+            }),
       }),
     });
   }

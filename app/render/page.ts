@@ -16,6 +16,8 @@ export interface PageRecord {
   template: string;
   bodyHtml: string;
   bodyCss: string;
+  /** `cms_page.seo_json`, raw. Parsed by `parsePageSeo` at the call site. */
+  seoJson: string | null;
   updatedAt: string;
 }
 
@@ -27,6 +29,7 @@ interface Row {
   template: string;
   body_html: string;
   body_css: string;
+  seo_json: string | null;
   updated_at: string;
 }
 
@@ -56,7 +59,7 @@ export function normalisePagePath(rawUrl: string): string | null {
 export function loadPage(db: Database.Database, path: string): PageRecord | null {
   const row = db
     .prepare(
-      `SELECT id, path, title, status, template, body_html, body_css, updated_at
+      `SELECT id, path, title, status, template, body_html, body_css, seo_json, updated_at
          FROM cms_page
         WHERE path = ? AND status = 'published'
         LIMIT 1`,
@@ -71,6 +74,7 @@ export function loadPage(db: Database.Database, path: string): PageRecord | null
     template: row.template,
     bodyHtml: row.body_html,
     bodyCss: row.body_css,
+    seoJson: row.seo_json ?? null,
     updatedAt: row.updated_at,
   };
 }

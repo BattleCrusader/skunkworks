@@ -59,6 +59,14 @@ export interface DocumentInput {
   title: string;
   bodyHtml: string;
   bodyCss: string;
+  /**
+   * The site's own stylesheet, already written into the tree at this path (`/theme.css`). Absent
+   * on a tenant that has no active theme, and the document is then byte-for-byte what it was
+   * before this field existed.
+   */
+  sheetHref?: string | null;
+  /** Search metadata for this page (`cms_page.seo_json`), already composed. Empty by default. */
+  head?: string;
 }
 
 /**
@@ -71,6 +79,7 @@ export interface DocumentInput {
  * gate rather than a cosmetic drift.
  */
 export function renderDocument(input: DocumentInput): string {
+  const sheet = input.sheetHref === undefined || input.sheetHref === null ? '' : `<link rel="stylesheet" href="${escapeHtml(input.sheetHref)}">`;
   const style = input.bodyCss === '' ? '' : `<link rel="stylesheet" href="${pageCssPath(input.bodyCss)}">`;
   return (
     `<!DOCTYPE html>\n` +
@@ -79,6 +88,8 @@ export function renderDocument(input: DocumentInput): string {
     `    <meta charset="utf-8">\n` +
     `    <meta name="viewport" content="width=device-width, initial-scale=1">\n` +
     `    <title>${escapeHtml(input.title)}</title>` +
+    sheet +
+    (input.head === undefined ? '' : input.head) +
     style +
     `\n  </head>\n` +
     `  <body data-page-path="${escapeHtml(input.path)}">\n` +

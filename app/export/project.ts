@@ -56,6 +56,7 @@ import { assetUrl } from '../assets/url.ts';
 import { elements, attr, parseHtml } from '../editor/html.ts';
 import { AppError } from '../errors.ts';
 import { renderStoredBody } from '../render/body.ts';
+import { parsePageSeo, type PageSeo } from '../render/seo.ts';
 
 export type ExportTarget = 'cms' | 'astro' | 'static';
 export const EXPORT_TARGETS: readonly ExportTarget[] = ['cms', 'astro', 'static'];
@@ -94,6 +95,12 @@ export interface ProjectedPage {
   bodyCss: string;
   /** sha256 of `bodyHtml`, so a bundle can state what it shipped. */
   bodySha: string;
+  /**
+   * `cms_page.seo_json`, parsed. `null` when the page carries none, which is what keeps an
+   * export of a tenant that never filled it in byte-identical to the export before this field
+   * existed.
+   */
+  seo: PageSeo | null;
 }
 
 export type AccessClass = 'public' | 'linked-private' | 'gated';
@@ -150,6 +157,7 @@ interface PageRow {
   title: string;
   body_html: string;
   body_css: string;
+  seo_json: string | null;
 }
 
 interface AssetRow {
@@ -242,7 +250,7 @@ export function buildProjection(opts: BuildOptions): BuildResult {
 
   const pageRows = db
     .prepare(
-      `SELECT id, path, slug, title, body_html, body_css
+      `SELECT id, path, slug, title, body_html, body_css, seo_json
          FROM cms_page WHERE status = 'published'`,
     )
     .all() as PageRow[];
@@ -261,6 +269,7 @@ export function buildProjection(opts: BuildOptions): BuildResult {
         bodyHtml,
         bodyCss: row.body_css,
         bodySha: sha256(bodyHtml),
+        seo: parsePageSeo(row.seo_json ?? null),
       });
     } catch (err) {
       if (!(err instanceof AppError)) throw err;

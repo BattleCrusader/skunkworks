@@ -27,6 +27,7 @@ import { buildProjection, type ExportTarget, type Projection, type Refusal } fro
 import { installedPlugins } from '../plugins/install.ts';
 import { packageRootHash } from '../plugins/manifest.ts';
 import { planStatic } from './static.ts';
+import { activeTheme } from '../render/themes.ts';
 import { DiskFullError, freeBytes, hashTree, writeTree, type TreeFile, type TreeHash } from './tree.ts';
 
 export interface ExportRequest {
@@ -159,7 +160,23 @@ export function runExport(request: ExportRequest): ExportResult {
 
   try {
     let files: TreeFile[];
-    if (request.target === 'static') files = planStatic(common);
+    if (request.target === 'static') {
+      // A static tree is the one target that has no server to answer `/theme.css`: the sheet and
+      // the package's own files have to be in the tree, or the deployed site has no look at all.
+      const theme = activeTheme(request.db);
+      files = planStatic({
+        ...common,
+        ...(theme === null ? {} : { sheet: theme.css }),
+        ...(theme === null || theme.assetCount === 0
+          ? {}
+          : {
+              themeAssets: {
+                key: theme.key,
+                root: join(dirname(request.db.name), 'theme-assets', theme.key),
+              },
+            }),
+      });
+    }
     else if (request.target === 'astro') files = planAstro({ ...common, repoRoot: request.repoRoot });
     else {
       if (request.tenant === undefined) throw new Error('a CMS export needs the tenant spec (control-plane facts)');
