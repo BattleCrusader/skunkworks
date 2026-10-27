@@ -67,6 +67,12 @@ export interface DocumentInput {
   sheetHref?: string | null;
   /** Search metadata for this page (`cms_page.seo_json`), already composed. Empty by default. */
   head?: string;
+  /**
+   * A favicon in the tree. Absent means the document is unchanged — and a static tree with no
+   * favicon makes every page load fetch `/favicon.ico` and log a 404, which is the one thing
+   * Lighthouse's best-practices category still counts against this site.
+   */
+  iconHref?: string;
 }
 
 /**
@@ -88,6 +94,7 @@ export function renderDocument(input: DocumentInput): string {
     `    <meta charset="utf-8">\n` +
     `    <meta name="viewport" content="width=device-width, initial-scale=1">\n` +
     `    <title>${escapeHtml(input.title)}</title>` +
+    (input.iconHref === undefined ? '' : `<link rel="icon" href="${escapeHtml(input.iconHref)}" type="image/svg+xml">`) +
     sheet +
     (input.head === undefined ? '' : input.head) +
     style +
