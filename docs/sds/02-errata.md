@@ -4601,8 +4601,11 @@ an operator decision, not a cleanup.
 ## 20. E-59 — every control, pressed: five things the screens were hiding
 
 The operator asked for a browser sweep of **every input and every clickable item**, on the public
-site and on every admin screen. Two scripts do it in real Chrome (Playwright driving the repo's own
-Chromium, `scratch/sweep-inventory.mjs`, `scratch/sweep-actions.mjs`, `scratch/sweep-destructive.mjs`):
+site and on every admin screen. Three scripts do it in real Chrome (Playwright driving the repo's own cached
+Chromium — `npm i --no-save playwright-core` first; the scripts are probes under the gitignored
+`scratch/`, and `npm install` prunes the module, so reinstall before a run):
+`scratch/sweep-inventory.mjs`, `scratch/sweep-actions.mjs`, `scratch/sweep-destructive.mjs`.
+They do this:
 one enumerates and follows every link, presses every non-destructive button and types into every
 field; the second presses the destructive verbs on data it created first. Both log console errors,
 page errors and every non-2xx response per page.
@@ -4643,7 +4646,14 @@ front, so every id cell read `row['6']` — a column that does not exist — and
 array of names now drives both. And a table with no rows rendered a bare header: it now says
 `Nothing here yet. Add the first one.` in a row that spans the table.
 
-**5. Changing the sign-in address needed no password.** The account screen's password form
+**5. Deleting a menu row left a hole in the numbering.** Positions are unique per list; deleting
+the middle of three left `0, 1, 2 → 0, 2`, and every later add appended past the hole — the
+destructive sweep left a two-item footer numbered `0` and `4`. Order was never wrong (the list
+orders by position), but `position` is what "move up" compares and what an operator reads in the
+raw table. A delete now renumbers its own group in two passes: park the survivors above the
+highest position (unique, so no in-place collision), then assign `0..n-1` in display order.
+
+**6. Changing the sign-in address needed no password.** The account screen's password form
 re-verifies the current password; the email form — the *login identity* — verified nothing. A
 borrowed cookie could move the account to an address the borrower reads, then use the reset flow.
 It now asks for the password once, refuses by name (`?e=current`), writes the same audit row as the

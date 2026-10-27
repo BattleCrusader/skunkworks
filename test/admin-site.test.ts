@@ -379,3 +379,62 @@ test('S8l-9. reordering a menu works, and the visibility flash says what actuall
     assert.equal((await post('/admin/t/acme/site/nav/delete', { id: again[label] ?? '' })).status, 303);
   }
 });
+
+/**
+ * S8l-10 (E-59). **Deleting a menu row closes the gap it leaves.**
+ *
+ * Positions are unique per list, and a delete used to leave a hole: three rows went 0,1,2 →
+ * 0,2, and every later add appended past the hole (the sweep found a two-item footer numbered
+ * 0 and 4 after two add/delete cycles). Ordering was never wrong; the numbers were litter, and
+ * `position` is what "move up" compares.
+ */
+test('S8l-10. a deleted menu row leaves no gap in the numbering', async () => {
+  const labels = async (): Promise<string[]> =>
+    [...(await get('/admin/t/acme/site')).body.matchAll(/data-nav-id="(\d+)"><td>([^<]+)</g)]
+      .map((m) => m[2] as string)
+      .filter((label) => ['Alpha', 'Beta', 'Gamma'].includes(label));
+
+  for (const label of ['Alpha', 'Beta', 'Gamma']) {
+    const res = await post('/admin/t/acme/site/nav/add', {
+      location: 'footer',
+      label,
+      href_kind: 'page',
+      href_target: '/pricing',
+    });
+    assert.equal(res.status, 303, res.body);
+  }
+  assert.deepEqual(await labels(), ['Alpha', 'Beta', 'Gamma'], 'the three rows are added in order');
+
+  const idOf = async (label: string): Promise<string> => {
+    const body = (await get('/admin/t/acme/site')).body;
+    for (const m of body.matchAll(/data-nav-id="(\d+)"><td>([^<]+)</g)) if (m[2] === label) return m[1] as string;
+    return '';
+  };
+
+  // Remove the middle one, then check the numbers the database holds for this group.
+  const beta = await idOf('Beta');
+  assert.ok(beta !== '');
+  assert.equal((await post('/admin/t/acme/site/nav/delete', { id: beta })).status, 303);
+
+  const rows = await (async () => {
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(fixture.sitePath('acme'), { readonly: true });
+    try {
+      return db
+        .prepare("SELECT label, position FROM cms_nav WHERE location = 'footer' ORDER BY position")
+        .all() as { label: string; position: number }[];
+    } finally {
+      db.close();
+    }
+  })();
+  assert.deepEqual(
+    rows.map((r) => r.position),
+    rows.map((_r, i) => i),
+    `positions must be 0..${rows.length - 1}, not ${rows.map((r) => r.position).join(',')}`,
+  );
+
+  for (const label of ['Alpha', 'Gamma']) {
+    const id = await idOf(label);
+    assert.equal((await post('/admin/t/acme/site/nav/delete', { id })).status, 303);
+  }
+});

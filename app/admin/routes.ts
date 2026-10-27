@@ -1707,8 +1707,32 @@ ${items}
     }
     const db = this.#siteWrite(tenant.key);
     try {
-      const result = db.prepare(`DELETE FROM cms_nav WHERE id = ?`).run(id);
-      if (result.changes === 0) {
+      const removed = db.transaction(() => {
+        const row = db.prepare('SELECT id, location, parent_id FROM cms_nav WHERE id = ?').get(id) as
+          | { id: number; location: string; parent_id: number | null }
+          | undefined;
+        if (row === undefined) return false;
+        db.prepare('DELETE FROM cms_nav WHERE id = ?').run(id);
+        // Renumber what is left. Deleting the middle of three rows left positions 0 and 2, and
+        // every later add appended past the gap — the sweep found a two-item menu reading 0 and 4
+        // after two add/delete cycles. The order was right; the numbers were litter.
+        //
+        // Two passes because `ux_nav_pos` is unique per group: park the survivors above the
+        // highest position (a band nothing else holds), then assign 0..n-1 in display order.
+        const group = `location = ? AND ifnull(parent_id, 0) = ifnull(?, 0)`;
+        const rest = db
+          .prepare(`SELECT id FROM cms_nav WHERE ${group} ORDER BY position, id`)
+          .all(row.location, row.parent_id) as { id: number }[];
+        const top = db.prepare(`SELECT ifnull(max(position), -1) + 1 AS next FROM cms_nav WHERE ${group}`).get(
+          row.location,
+          row.parent_id,
+        ) as { next: number };
+        db.prepare(`UPDATE cms_nav SET position = position + ? WHERE ${group}`).run(rest.length + top.next, row.location, row.parent_id);
+        const place = db.prepare('UPDATE cms_nav SET position = ? WHERE id = ?');
+        rest.forEach((entry, index) => place.run(index, entry.id));
+        return true;
+      })();
+      if (!removed) {
         this.#seeOther(reply, `${base}?flash=not-found`);
         return;
       }
@@ -1723,9 +1747,10 @@ ${items}
    *
    * `ux_nav_pos` is UNIQUE on `(location, ifnull(parent_id, 0), position)`, so a swap cannot
    * be two UPDATEs: the first one lands on a position the neighbour still holds. The row is
-   * parked on a free position (-1, which the CHECK allows and no neighbour can hold), the
-   * neighbour is moved into the vacated slot, and the parked row takes the neighbour's old
-   * place — one transaction, and a rollback leaves the menu exactly as it was.
+   * parked one past the highest position in the group — free by construction, and legal under
+   * `CHECK (position >= 0)`, which the old parking value of -1 was not (E-59: every move
+   * answered 500). Then the neighbour takes the vacated slot and the parked row takes the
+   * neighbour's old place, in one transaction, so a rollback leaves the menu as it was.
    */
   #siteNavMove(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): void {
     const base = `/admin/t/${tenant.key}/site`;
