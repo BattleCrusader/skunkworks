@@ -1,0 +1,85 @@
+{
+  "id": "jobboard",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "hooks": [],
+  "description": "The job board: adverts an advertiser publishes, the companies behind them, and the applications people send. Owns three tables, two admin screens, a public job page at /jobs/{slug} and a public JSON list at GET /_plugin/jobboard/jobs.",
+  "capabilities": ["store.query", "settings.get"],
+  "tables": [
+    {
+      "name": "p_jobboard_jobboard_company",
+      "export": "rows",
+      "columns": [
+        { "name": "account_id", "type": "INTEGER", "notNull": true, "indexed": true },
+        { "name": "name", "type": "TEXT", "notNull": true },
+        { "name": "url", "type": "TEXT" },
+        { "name": "about", "type": "TEXT" },
+        { "name": "created_at", "type": "TEXT", "notNull": true, "indexed": true }
+      ],
+      "fields": [
+        { "name": "account_id", "label": "Account", "widget": "number", "required": true, "help": "The advertiser's account id. Set by the portal, shown here for support." },
+        { "name": "name", "label": "Company", "widget": "text", "required": true },
+        { "name": "url", "label": "Website", "widget": "text" },
+        { "name": "about", "label": "About", "widget": "markdown", "rows": 8 },
+        { "name": "created_at", "widget": "auto", "default": "now" }
+      ],
+      "list": ["name", "url"]
+    },
+    {
+      "name": "p_jobboard_job",
+      "export": "rows",
+      "columns": [
+        { "name": "company_id", "type": "INTEGER", "notNull": true, "indexed": true },
+        { "name": "title", "type": "TEXT", "notNull": true },
+        { "name": "slug", "type": "TEXT", "notNull": true, "indexed": true },
+        { "name": "summary", "type": "TEXT", "notNull": true },
+        { "name": "body", "type": "TEXT", "notNull": true },
+        { "name": "day_rate_cents", "type": "INTEGER" },
+        { "name": "currency", "type": "TEXT", "notNull": true },
+        { "name": "days_per_week", "type": "INTEGER" },
+        { "name": "location", "type": "TEXT" },
+        { "name": "remote_ok", "type": "INTEGER", "notNull": true },
+        { "name": "status", "type": "TEXT", "notNull": true, "indexed": true },
+        { "name": "published_at", "type": "TEXT", "indexed": true },
+        { "name": "created_at", "type": "TEXT", "notNull": true, "indexed": true }
+      ],
+      "fields": [
+        { "name": "company_id", "label": "Company", "widget": "number", "required": true },
+        { "name": "title", "label": "Role", "widget": "text", "required": true, "placeholder": "Fractional CTO" },
+        { "name": "slug", "label": "Web address", "widget": "slug", "from": "title", "required": true, "help": "Filled from the role. It is the advert's URL under /jobs/." },
+        { "name": "summary", "label": "One line", "widget": "text", "required": true, "help": "The sentence a person reads in the list." },
+        { "name": "body", "label": "The role", "widget": "markdown", "rows": 20, "required": true, "help": "What the work is, what the first three months look like, what you need." },
+        { "name": "day_rate_cents", "label": "Day rate (cents)", "widget": "number", "help": "Leave empty for 'discussed'. Cents, so 120000 is $1,200 a day." },
+        { "name": "currency", "label": "Currency", "widget": "text", "help": "Three letters, upper case — AUD unless the advertiser bills elsewhere." },
+        { "name": "days_per_week", "label": "Days a week", "widget": "number", "help": "1 to 5. Empty means it is negotiable." },
+        { "name": "location", "label": "Location", "widget": "text" },
+        { "name": "remote_ok", "label": "Remote", "widget": "select", "options": ["0", "1"], "help": "1 when the work can be done from anywhere; 0 when it cannot." },
+        { "name": "status", "label": "Visibility", "widget": "select", "options": ["draft", "published", "closed"], "help": "Only a published advert appears on the board.", "required": true },
+        { "name": "published_at", "label": "Published", "widget": "date" },
+        { "name": "created_at", "widget": "auto", "default": "now" }
+      ],
+      "list": ["title", "status", "published_at", "day_rate_cents"]
+    },
+    {
+      "name": "p_jobboard_application",
+      "export": "empty",
+      "columns": [
+        { "name": "job_id", "type": "INTEGER", "notNull": true, "indexed": true },
+        { "name": "account_id", "type": "INTEGER", "notNull": true, "indexed": true },
+        { "name": "cover_note", "type": "TEXT", "notNull": true },
+        { "name": "status", "type": "TEXT", "notNull": true, "indexed": true },
+        { "name": "created_at", "type": "TEXT", "notNull": true, "indexed": true }
+      ],
+      "fields": [
+        { "name": "job_id", "label": "Job", "widget": "number", "required": true },
+        { "name": "account_id", "label": "Applicant", "widget": "number", "required": true },
+        { "name": "cover_note", "label": "What they said", "widget": "textarea", "rows": 10, "required": true },
+        { "name": "status", "label": "State", "widget": "select", "options": ["received", "shortlisted", "declined", "withdrawn"], "help": "Where this application stands.", "required": true },
+        { "name": "created_at", "widget": "auto", "default": "now" }
+      ],
+      "list": ["job_id", "account_id", "status", "created_at"]
+    }
+  ],
+  "settings": [{ "key": "page_size", "type": "int" }],
+  "endpoints": [{ "name": "jobs", "method": "GET" }]
+}
