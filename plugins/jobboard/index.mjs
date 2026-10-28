@@ -44,7 +44,7 @@ export function activate(ctx) {
   // read-only in the admin because replying to a person happens through the portal, where the
   // address lives and the audit row is written.
   ctx.screen({ path: '/jobs', table: 'p_jobboard_job', title: 'Job adverts' });
-  ctx.screen({ path: '/companies', table: 'p_jobboard_jobboard_company', title: 'Companies' });
+  ctx.screen({ path: '/companies', table: 'p_jobboard_company', title: 'Companies' });
   ctx.screen({ path: '/applications', table: 'p_jobboard_application', title: 'Applications' });
 
   // The public board, on a page the host renders from this table. `/{slug}` is the advert's URL.
@@ -81,19 +81,16 @@ export function activate(ctx) {
     // `status`, `slug` and `published_at` are the indexed columns the manifest declares, and the
     // host refuses a filter or an order on anything else (SKW_E_PL_QUERY) — a public endpoint must
     // not be able to make the database sort a column nobody indexed.
-    const where = slug === ''
-      ? [{ column: 'status', equals: 'published' }]
-      : [
-          { column: 'status', equals: 'published' },
-          { column: 'slug', equals: slug },
-        ];
+    const where = [{ column: 'status', op: '=', value: 'published' }];
+    if (slug !== '') where.push({ column: 'slug', op: '=', value: slug });
 
-    const rows = await args.facade.store.read('p_jobboard_job', {
+    const page = await args.facade['store.read']('p_jobboard_job', {
       where,
-      order: [{ column: 'published_at', direction: 'desc' }],
+      order: { column: 'published_at', dir: 'desc' },
       limit,
       offset,
     });
+    const rows = Array.isArray(page?.rows) ? page.rows : [];
 
     return {
       count: rows.length,
@@ -116,7 +113,7 @@ export function activate(ctx) {
 /** The `page_size` setting, floored and capped; an unset or nonsense value falls back. */
 async function settingInt(facade, key, fallback) {
   try {
-    const value = await facade.settings.get(key);
+    const value = await facade['settings.get'](key);
     return clampInt(value, fallback, 1, MAX_PAGE_SIZE);
   } catch {
     return fallback;

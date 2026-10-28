@@ -7,7 +7,7 @@
   "capabilities": ["store.query", "settings.get"],
   "tables": [
     {
-      "name": "p_jobboard_jobboard_company",
+      "name": "p_jobboard_company",
       "export": "rows",
       "columns": [
         { "name": "account_id", "type": "INTEGER", "notNull": true, "indexed": true },
