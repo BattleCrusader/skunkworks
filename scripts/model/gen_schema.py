@@ -36,7 +36,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # sha) and `cms_theme` (an uploaded look, one of which may be active). The blob is why a page's
 # CSS can be a file with a name no one has to remember — and why an export can write exactly the
 # files its documents point at.
-SCHEMA_VERSION = 7
+# S9: v8 adds the board's people — `cms_account` and its roles, tokens, sessions and profile, plus
+# the mail outbox and suppression list. These are the first tables in this file that hold a
+# stranger's data, so every privacy decision that can be a constraint is one (activation requires a
+# verified address and a confirmed OTP; visibility is a closed vocabulary; contact has no column).
+SCHEMA_VERSION = 8
 # E-20 (02-errata §8): the control plane moves to v4 — `audit_seal` is a day segment, not a
 # cumulative snapshot — and `schema/control-r4.sql` is the v3 -> v4 delta.
 CONTROL_VERSION = 4
@@ -532,7 +536,89 @@ SITE = {
  ("revoked_by","INTEGER",None),
  ("revoked_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
 ], checks=[], indexes=[]),
+"cms_account": dict(note="S9: one row per person who is not an operator. Identity lives in the TENANT's file, never in control.db, so a public registration path can never share a table with the fleet's operator accounts — different cookie, different path, different database. Argon2id at the same cost as an operator password; TOTP is NOT NULL because OTP is mandatory here, not an option; `status` starts at pending and the two CHECKs below make 'active' unrepresentable without a verified address and a confirmed second factor.", cols=[
+ ("id","INTEGER","PRIMARY KEY AUTOINCREMENT"),
+ ("email","TEXT","NOT NULL COLLATE NOCASE CHECK(email LIKE '%_@_%.__%')"),
+ ("status","TEXT","NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','active','suspended','closed'))"),
+ ("password_hash","TEXT","NOT NULL CHECK(length(password_hash) BETWEEN 20 AND 400)"),
+ ("totp_secret","TEXT","NOT NULL CHECK(length(totp_secret) BETWEEN 16 AND 128)"),
+ ("totp_confirmed_at","TEXT",None),
+ ("email_verified","INTEGER","NOT NULL DEFAULT 0 CHECK(email_verified IN (0,1))"),
+ ("failed_logins","INTEGER","NOT NULL DEFAULT 0 CHECK(failed_logins >= 0)"),
+ ("locked_until","TEXT",None),
+ ("last_login_at","TEXT",None),
+ ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+ ("updated_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+], checks=[
+ "CHECK(status <> 'active' OR email_verified = 1)",
+ "CHECK(status <> 'active' OR totp_confirmed_at IS NOT NULL)",
+], uniques=[("ux_account_email","email")], indexes=[("ix_account_status","status",False)]),
+"cms_account_role": dict(note="S9: roles are additive grants, never inferred from each other. A person may be an applicant and an advertiser; the PK refuses a duplicate grant, and the closed vocabulary refuses a role the product does not implement.", cols=[
+ ("account_id","INTEGER","NOT NULL REFERENCES cms_account(id) ON DELETE CASCADE"),
+ ("role","TEXT","NOT NULL CHECK(role IN ('applicant','advertiser'))"),
+ ("granted_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+], checks=[], pk="PRIMARY KEY(account_id, role)", indexes=[("ix_role_role","role",False)]),
+"cms_account_token": dict(note="S9: email verification and password reset. Only the sha256 is stored — a database copy cannot be replayed to activate an account. Single use is enforced by the conditional UPDATE that sets consumed_at, not by a check-then-write in a handler.", cols=[
+ ("id","INTEGER","PRIMARY KEY AUTOINCREMENT"),
+ ("account_id","INTEGER","NOT NULL REFERENCES cms_account(id) ON DELETE CASCADE"),
+ ("purpose","TEXT","NOT NULL CHECK(purpose IN ('verify_email','reset_password'))"),
+ ("token_hash","TEXT","NOT NULL CHECK(length(token_hash) = 64)"),
+ ("expires_at","TEXT","NOT NULL"),
+ ("consumed_at","TEXT",None),
+ ("ip_hash","TEXT","NOT NULL CHECK(length(ip_hash) = 64)"),
+ ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+], checks=["CHECK(consumed_at IS NULL OR consumed_at >= created_at)"], uniques=[("ux_account_token_hash","token_hash")], indexes=[("ix_token_account","account_id, purpose",False),("ix_account_token_expiry","expires_at",False)]),
+"cms_account_session": dict(note="S9: a portal session. The id is 32 random hex bytes, not a token with claims; csrf_secret binds the anti-forgery token to THIS session; ip_hash/ua_hash record the shape it was minted for; rotation is a new row naming the old one in rotated_from, so a stolen id that is rotated away is visible in the table rather than merely absent.", cols=[
+ ("id","TEXT","PRIMARY KEY CHECK(length(id) = 64)"),
+ ("account_id","INTEGER","NOT NULL REFERENCES cms_account(id) ON DELETE CASCADE"),
+ ("csrf_secret","TEXT","NOT NULL CHECK(length(csrf_secret) BETWEEN 32 AND 128)"),
+ ("ip_hash","TEXT","NOT NULL CHECK(length(ip_hash) = 64)"),
+ ("ua_hash","TEXT","NOT NULL CHECK(length(ua_hash) = 64)"),
+ ("created_at","TEXT","NOT NULL"),
+ ("last_seen_at","TEXT","NOT NULL"),
+ ("expires_at","TEXT","NOT NULL"),
+ ("rotated_from","TEXT",None),
+ ("revoked_at","TEXT",None),
+], checks=[], indexes=[("ix_account_session_account","account_id",False),("ix_account_session_expiry","expires_at",False)]),
+"cms_profile": dict(note="S9: the applicant's own facts — the most sensitive rows this product holds, which is why contact has NO column here. What an advertiser may see is decided by app/accounts/policy.ts, and that function can only return fields of this table, so the projection type has no place to put an address. `visibility` governs discovery and mail only; an application is a separate, deliberate grant. `notify_new_jobs` defaults OFF: visible is necessary and not sufficient for mail.", cols=[
+ ("account_id","INTEGER","PRIMARY KEY REFERENCES cms_account(id) ON DELETE CASCADE"),
+ ("display_name","TEXT","NOT NULL CHECK(length(display_name) BETWEEN 1 AND 120)"),
+ ("headline","TEXT",None),
+ ("summary","TEXT",None),
+ ("skills_json","TEXT","NOT NULL DEFAULT '[]' CHECK(json_valid(skills_json))"),
+ ("day_rate_cents","INTEGER","CHECK(day_rate_cents IS NULL OR day_rate_cents > 0)"),
+ ("currency","TEXT","NOT NULL DEFAULT 'AUD' CHECK(length(currency) = 3)"),
+ ("availability_days_per_week","INTEGER","CHECK(availability_days_per_week IS NULL OR availability_days_per_week BETWEEN 1 AND 7)"),
+ ("location","TEXT",None),
+ ("timezone","TEXT",None),
+ ("remote_ok","INTEGER","NOT NULL DEFAULT 0 CHECK(remote_ok IN (0,1))"),
+ ("links_json","TEXT","NOT NULL DEFAULT '[]' CHECK(json_valid(links_json))"),
+ ("visibility","TEXT","NOT NULL DEFAULT 'hidden' CHECK(visibility IN ('hidden','discoverable'))"),
+ ("notify_new_jobs","INTEGER","NOT NULL DEFAULT 0 CHECK(notify_new_jobs IN (0,1))"),
+ ("updated_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+], checks=[], indexes=[("ix_profile_discovery","visibility, notify_new_jobs",False)]),
+"cms_mail": dict(note="S9: the outbox. `idempotency_key` is UNIQUE so a retried enqueue cannot send twice; one row is one recipient, so a fan-out never needs a Bcc and a reply cannot disclose the list. `status` is the delivery state a worker owns; a suppressed address is recorded once in cms_mail_suppression and never retried.", cols=[
+ ("id","INTEGER","PRIMARY KEY AUTOINCREMENT"),
+ ("to_email","TEXT","NOT NULL CHECK(to_email LIKE '%_@_%.__%')"),
+ ("template","TEXT","NOT NULL CHECK(length(template) BETWEEN 1 AND 64)"),
+ ("subject","TEXT","NOT NULL CHECK(length(subject) BETWEEN 1 AND 200)"),
+ ("vars_json","TEXT","NOT NULL CHECK(json_valid(vars_json))"),
+ ("status","TEXT","NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','sending','sent','failed','suppressed'))"),
+ ("attempts","INTEGER","NOT NULL DEFAULT 0 CHECK(attempts >= 0)"),
+ ("next_attempt_at","TEXT",None),
+ ("last_error","TEXT",None),
+ ("provider_id","TEXT",None),
+ ("idempotency_key","TEXT","NOT NULL CHECK(length(idempotency_key) BETWEEN 8 AND 200)"),
+ ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+ ("sent_at","TEXT",None),
+], checks=[], uniques=[("ux_mail_idempotency","idempotency_key")], indexes=[("ix_mail_queue","status, next_attempt_at",False),("ix_mail_created","created_at",False)]),
+"cms_mail_suppression": dict(note="S9: addresses the box must never write to again — a hard bounce, a complaint, or the person's own unsubscribe. Checked immediately before the transport call, not only at enqueue, so an opt-out that arrives while a message is queued still holds.", cols=[
+ ("email","TEXT","PRIMARY KEY COLLATE NOCASE CHECK(email LIKE '%_@_%.__%')"),
+ ("reason","TEXT","NOT NULL CHECK(reason IN ('bounce','complaint','unsubscribe','manual'))"),
+ ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+], checks=[], indexes=[]),
 }
+
 
 
 # ---------------------------------------------------------------- triggers

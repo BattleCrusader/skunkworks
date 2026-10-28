@@ -141,6 +141,7 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
   const r5 = join(schemaDir, 'r5-amendments.sql');
   const r6 = join(schemaDir, 'r6-amendments.sql');
   const r7 = join(schemaDir, 'r7-amendments.sql');
+  const r8 = join(schemaDir, 'r8-amendments.sql');
   const target = targetVersion(ddl);
   const rel = join('tenants', siteKey, 'site.db');
   const base = { key: siteKey, path: rel };
@@ -208,6 +209,13 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
       // S8x: a theme is a package, not a stylesheet. One CREATE TABLE, no rebuild: the themes a
       // tenant already has are stylesheets with no assets, which is exactly what their rows say.
       applyDdl(db, r7);
+      at = userVersion(db);
+    }
+    if (at === 7) {
+      // S9: the board's people. Seven CREATE TABLEs and their indexes — identity, the profile a
+      // stranger owns, and the outbox. No rebuild and no backfill: a tenant that has never had a
+      // public account simply has no rows, which is what every tenant is on the day this lands.
+      applyDdl(db, r8);
       at = userVersion(db);
     }
     if (at !== target) {

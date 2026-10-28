@@ -1574,6 +1574,34 @@
       ]
     },
     {
+      "file": "test/accounts-schema.test.ts",
+      "worstIdleMs": 399,
+      "measuredOn": "2026-10-28",
+      "load1m": 7.91,
+      "box": "Francoiss-Mac-mini.local darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "395f353127343e7e623711edb93cf8ad345836af91686403a916aa460f1fdfdf",
+      "runs": [
+        {
+          "ms": 399,
+          "at": "2026-10-28T00:22:57.490Z",
+          "load1mBefore": 7.91,
+          "load1mAfter": 7.91,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 9
+        },
+        {
+          "ms": 175,
+          "at": "2026-10-28T00:22:57.670Z",
+          "load1mBefore": 7.91,
+          "load1mAfter": 7.91,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 9
+        }
+      ]
+    },
+    {
       "file": "test/plugin-shipped-packages.test.ts",
       "worstIdleMs": 380,
       "measuredOn": "2026-10-21",
@@ -1945,5 +1973,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-27T23:48:57.169Z"
+  "updatedAt": "2026-10-28T00:22:58.622Z"
 }

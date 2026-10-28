@@ -12,7 +12,7 @@ skinparam class {
   ArrowColor #444444
 }
 
-title Skunkworks schema v7  (generated from one spec)
+title Skunkworks schema v8  (generated from one spec)
 
 package "control.db  (global, never exported, user_version 4)" {
   entity tenant as "tenant" <<control>> {
@@ -111,7 +111,7 @@ package "control.db  (global, never exported, user_version 4)" {
   }
 }
 
-package "tenants/<key>/site.db  (one file per tenant, user_version 7)" {
+package "tenants/<key>/site.db  (one file per tenant, user_version 8)" {
   entity cms_settings as "cms_settings" <<site>> {
     key : TEXT <<PK>>
     value_json : TEXT <<NN>>
@@ -423,8 +423,90 @@ package "tenants/<key>/site.db  (one file per tenant, user_version 7)" {
     revoked_by : INTEGER
     revoked_at : TEXT <<NN>>
   }
+  entity cms_account as "cms_account" <<site>> {
+    id : INTEGER <<PK>>
+    email : TEXT <<NN>>
+    status : TEXT <<NN>>
+    password_hash : TEXT <<NN>>
+    totp_secret : TEXT <<NN>>
+    totp_confirmed_at : TEXT
+    email_verified : INTEGER <<NN>>
+    failed_logins : INTEGER <<NN>>
+    locked_until : TEXT
+    last_login_at : TEXT
+    created_at : TEXT <<NN>>
+    updated_at : TEXT <<NN>>
+  }
+  entity cms_account_role as "cms_account_role" <<site>> {
+    account_id : INTEGER <<FK>>
+    role : TEXT <<NN>>
+    granted_at : TEXT <<NN>>
+  }
+  entity cms_account_token as "cms_account_token" <<site>> {
+    id : INTEGER <<PK>>
+    account_id : INTEGER <<FK>>
+    purpose : TEXT <<NN>>
+    token_hash : TEXT <<NN>>
+    expires_at : TEXT <<NN>>
+    consumed_at : TEXT
+    ip_hash : TEXT <<NN>>
+    created_at : TEXT <<NN>>
+  }
+  entity cms_account_session as "cms_account_session" <<site>> {
+    id : TEXT <<PK>>
+    account_id : INTEGER <<FK>>
+    csrf_secret : TEXT <<NN>>
+    ip_hash : TEXT <<NN>>
+    ua_hash : TEXT <<NN>>
+    created_at : TEXT <<NN>>
+    last_seen_at : TEXT <<NN>>
+    expires_at : TEXT <<NN>>
+    rotated_from : TEXT
+    revoked_at : TEXT
+  }
+  entity cms_profile as "cms_profile" <<site>> {
+    account_id : INTEGER <<PK>>
+    display_name : TEXT <<NN>>
+    headline : TEXT
+    summary : TEXT
+    skills_json : TEXT <<NN>>
+    day_rate_cents : INTEGER
+    currency : TEXT <<NN>>
+    availability_days_per_week : INTEGER
+    location : TEXT
+    timezone : TEXT
+    remote_ok : INTEGER <<NN>>
+    links_json : TEXT <<NN>>
+    visibility : TEXT <<NN>>
+    notify_new_jobs : INTEGER <<NN>>
+    updated_at : TEXT <<NN>>
+  }
+  entity cms_mail as "cms_mail" <<site>> {
+    id : INTEGER <<PK>>
+    to_email : TEXT <<NN>>
+    template : TEXT <<NN>>
+    subject : TEXT <<NN>>
+    vars_json : TEXT <<NN>>
+    status : TEXT <<NN>>
+    attempts : INTEGER <<NN>>
+    next_attempt_at : TEXT
+    last_error : TEXT
+    provider_id : TEXT
+    idempotency_key : TEXT <<NN>>
+    created_at : TEXT <<NN>>
+    sent_at : TEXT
+  }
+  entity cms_mail_suppression as "cms_mail_suppression" <<site>> {
+    email : TEXT <<PK>>
+    reason : TEXT <<NN>>
+    created_at : TEXT <<NN>>
+  }
 }
 
+cms_account ||--o{ cms_account_role : "account_id"
+cms_account ||--o{ cms_account_session : "account_id"
+cms_account ||--o{ cms_account_token : "account_id"
+cms_account ||--o{ cms_profile : "account_id"
 cms_asset ||--o{ cms_asset : "watermark_asset_id"
 cms_asset ||--o{ cms_asset_alias : "asset_id"
 cms_asset ||--o{ cms_asset_bundle_item : "asset_id"

@@ -87,7 +87,7 @@ test('A1. the DDL a fresh tenant gets carries activation_seq, DEFAULT 0, and the
   assert.match(ddl, /activation_seq INTEGER NOT NULL DEFAULT 0 CHECK\(activation_seq >= 0\)/);
   // The DDL's own version, asserted so this file cannot silently test a database it did not
   // create. It moves with schema/site.sql (v7 since E-54's theme asset table).
-  assert.match(ddl, /PRAGMA user_version = 7;/);
+  assert.match(ddl, /PRAGMA user_version = 8;/);
   const db = new Database(siteDbFile(), { readonly: true });
   try {
     const columns = db.pragma('table_info(cms_plugin_installed)') as { name: string; dflt_value: string | null; notnull: number }[];
@@ -153,6 +153,19 @@ test('A4. a v3 database migrates forward, keeps its rows, and seeds them 0', () 
     v3.exec('DROP TABLE cms_theme_asset');
     v3.exec('DROP TABLE cms_theme');
     v3.exec('DROP TABLE cms_css_blob');
+    // S9 added seven tables; a v3 fixture built from today's DDL has them, and r8 would then fail
+    // on CREATE TABLE rather than converge. Children first, because the FKs are real.
+    for (const table of [
+      'cms_mail_suppression',
+      'cms_mail',
+      'cms_profile',
+      'cms_account_session',
+      'cms_account_token',
+      'cms_account_role',
+      'cms_account',
+    ]) {
+      v3.exec(`DROP TABLE ${table}`);
+    }
     v3.exec('DROP INDEX IF EXISTS ix_cta_theme');
     v3.exec('DROP INDEX IF EXISTS ix_ct_created');
     v3.exec('DROP INDEX IF EXISTS ix_ccb_created');
@@ -179,11 +192,11 @@ test('A4. a v3 database migrates forward, keeps its rows, and seeds them 0', () 
   assert.equal(report.ok, true, report.error);
   assert.equal(report.action, 'migrated');
   assert.equal(report.from, 3);
-  assert.equal(report.to, 7);
+  assert.equal(report.to, 8);
 
   const after = new Database(path, { readonly: true });
   try {
-    assert.equal(Number(after.pragma('user_version', { simple: true })), 7);
+    assert.equal(Number(after.pragma('user_version', { simple: true })), 8);
     const row = after.prepare(`SELECT activation_seq FROM cms_plugin_installed WHERE plugin_id = 'actseq'`).get() as
       | { activation_seq: number }
       | undefined;
