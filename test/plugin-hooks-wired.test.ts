@@ -135,9 +135,13 @@ before(async () => {
   process.env.SKW_HOOK_TRACE = tracePath;
   // `mail.send` is a named refusal when email is off (§4.3). This gate needs the *path* to run
   // to see what the filter returned reach the host's 32 KiB check, so the box is configured
-  // the one way that answers it. No mailer exists in v1; `queued: true` is the whole response.
+  // the one way that answers it. Nothing is sent: the op writes an outbox row, and the drain is
+  // what would talk to the server — this test never starts one.
   fixture.env.SKW_EMAIL_MODE = 'smtp';
   fixture.env.SKW_SMTP_URL = 'smtp://127.0.0.1:2525';
+  // A from address a mail server would accept is a boot requirement in smtp mode: without it every
+  // message fails, and learning that from a queue of failed rows is worse than learning it at boot.
+  fixture.env.SKW_MAIL_FROM = 'no-reply@skw.test';
   contentRoot = join(fixture.dir, 'content');
   pixel = await sharp({ create: { width: 2, height: 2, channels: 4, background: { r: 10, g: 20, b: 30, alpha: 0.5 } } })
     .png()

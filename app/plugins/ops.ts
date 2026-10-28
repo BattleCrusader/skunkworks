@@ -12,7 +12,10 @@
  */
 import type Database from 'better-sqlite3';
 
+import { randomBytes } from 'node:crypto';
+
 import { assetUrl } from '../assets/url.ts';
+import { isTemplate as isCoreTemplate, renderMail } from '../mail/templates.ts';
 import type { HostOp, Manifest, SettingSpec, TableSpec } from './manifest.ts';
 
 export interface HostCall {
@@ -307,9 +310,33 @@ export function hostOp(ctx: HostContext, op: string, args: Record<string, unknow
       if (!EMAIL.test(to)) refuse('SKW_E_PL_MAIL', `to ${JSON.stringify(args.to)} is not an address`);
       const template = typeof args.template === 'string' ? args.template : '';
       if (!MAIL_TEMPLATE.test(template)) refuse('SKW_E_PL_MAIL', `template ${JSON.stringify(args.template)} is not a template name`);
-      const rendered = JSON.stringify(args.vars ?? {});
+      const vars = (args.vars ?? {}) as Record<string, unknown>;
+      const rendered = JSON.stringify(vars);
       if (Buffer.byteLength(rendered) > 32 * 1024) refuse('SKW_E_PL_MAIL', 'vars exceed 32 KiB');
-      return { queued: true, to, template };
+      // A core template's words are the host's, so a name this build does not know is refused here:
+      // that is a bug in the plugin, and it should learn now rather than from a dead letter. A
+      // plugin's own template carries the words in `vars` (or names its subject); the host does not
+      // write a plugin's copy, and the drain is where an unrenderable one becomes visible.
+      let subject = typeof args.subject === 'string' ? args.subject.slice(0, 200) : '';
+      if (isCoreTemplate(template)) {
+        try {
+          subject = renderMail(template, vars).subject;
+        } catch (err) {
+          refuse('SKW_E_PL_MAIL', (err as Error).message.slice(0, 200));
+        }
+      } else if (subject === '') {
+        subject = `Notification from ${ctx.plugin}`;
+      }
+      const now = new Date().toISOString();
+      const info = ctx.db
+        .prepare(
+          `INSERT INTO cms_mail (to_email, template, subject, vars_json, idempotency_key, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(to, template, subject, rendered, `plugin:${ctx.plugin}:${Date.now().toString(36)}:${randomBytes(8).toString('hex')}`, now);
+      // Queued, not sent: the drain owns delivery, retries and suppression, so a plugin is never
+      // told a message went out when it only reached a table.
+      return { queued: true, id: Number(info.lastInsertRowid), to, template };
     }
     default:
       refuse('SKW_E_PL_REJECTED', `${op} is not a host op`);

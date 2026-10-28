@@ -70,6 +70,8 @@ import { DEFAULT_CONTENT_ROOT, UPLOAD_MAX_BYTES } from './assets/store.ts';
 import { Semaphore } from './admin/auth.ts';
 import { Accounts } from './accounts/service.ts';
 import { registerPortal } from './accounts/routes.ts';
+import { NULL_TRANSPORT, Outbox } from './mail/outbox.ts';
+import { smtpTransport } from './mail/transport.ts';
 import { seedSettings } from './download/code.ts';
 import { DownloadPlane, RETRY_ATTEMPTS } from './download/plane.ts';
 import { PluginRuntime } from './plugins/runtime.ts';
@@ -1408,8 +1410,42 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   }, 60_000);
   sweepTimer.unref();
 
+  // --- S9: the outbox drain ----------------------------------------------------------------
+  // With `SKW_EMAIL_MODE=off` there is no transport and nothing is claimed: the rows stay queued
+  // and an operator can read them, which is the honest state of an install that cannot send. With
+  // `smtp`, every tenant's queue is drained here — one tenant's mail server being down must not
+  // stop another tenant's mail, so each is caught on its own.
+  const mailTransport =
+    env.emailMode === 'smtp' && env.smtpUrl !== undefined && env.smtpFrom !== ''
+      ? smtpTransport({ url: env.smtpUrl, from: env.smtpFrom })
+      : NULL_TRANSPORT;
+  const drainOnce = async (): Promise<void> => {
+    if (env.emailMode !== 'smtp') return;
+    for (const tenant of tenants.all()) {
+      let db: Database.Database | null = null;
+      try {
+        db = openAdminWrite(sitePath(tenant.key), env.dbBusyTimeoutMs);
+        const report = await new Outbox(db, mailTransport).drain();
+        if (report.claimed > 0) {
+          process.stdout.write(
+            `mail drain: ${tenant.key} sent=${report.sent} failed=${report.failed} suppressed=${report.suppressed} retry=${report.skipped}\n`,
+          );
+        }
+      } catch (err) {
+        process.stderr.write(`mail drain: ${tenant.key} skipped (${describe(err)})\n`);
+      } finally {
+        db?.close();
+      }
+    }
+  };
+  const mailTimer = setInterval(() => {
+    void drainOnce();
+  }, 30_000);
+  mailTimer.unref();
+
   async function close(): Promise<void> {
     clearInterval(sweepTimer);
+    clearInterval(mailTimer);
     seals.stop();
     // No `plugins.close()`: there is no socket to end and no child to reap. The registry and
     // its closures die with the process, which is the whole shape of D36. The one handle the

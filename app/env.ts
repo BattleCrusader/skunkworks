@@ -37,6 +37,8 @@ export interface Env {
   fleetMode: boolean;
   buildId: string;
   smtpUrl: string | undefined;
+  /** The envelope sender. A mail server rejects a domain it does not own, so this is required. */
+  smtpFrom: string;
   snapshotMaxCombos: number;
   snapshotMaxBytes: number;
   repointMaxRows: number;
@@ -152,6 +154,7 @@ export function loadEnv(
     fleetMode: str(source, 'SKW_FLEET_MODE', '1') !== '0',
     buildId: role === 'app' ? required(source, 'SKW_BUILD_ID') : str(source, 'SKW_BUILD_ID', 'dev'),
     smtpUrl: str(source, 'SKW_SMTP_URL', '') === '' ? undefined : str(source, 'SKW_SMTP_URL', ''),
+    smtpFrom: str(source, 'SKW_MAIL_FROM', ''),
     snapshotMaxCombos: int(source, 'SKW_SNAPSHOT_MAX_COMBOS', 1024),
     snapshotMaxBytes: int(source, 'SKW_SNAPSHOT_MAX_BYTES', 2097152),
     repointMaxRows: int(source, 'SKW_REPOINT_MAX_ROWS', 5000),
@@ -186,6 +189,11 @@ export function loadEnv(
     }
     if (env.emailMode === 'smtp' && env.smtpUrl === undefined) {
       throw new BootRefusal('SKW_SMTP_URL is required when SKW_EMAIL_MODE=smtp (SDS \u00a74.3)');
+    }
+    if (env.emailMode === 'smtp' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(env.smtpFrom)) {
+      // A from address a mail server will not accept is a boot error, not a per-message failure:
+      // every send would fail, and the operator would learn that from a queue of failed rows.
+      throw new BootRefusal('SKW_MAIL_FROM must be a usable address when SKW_EMAIL_MODE=smtp (SDS \u00a74.3)');
     }
   }
 
