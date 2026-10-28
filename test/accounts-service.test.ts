@@ -140,7 +140,9 @@ test('A3 — email proof alone leaves the account pending; the TOTP confirmation
   const h = harness();
   await registered(h);
   const first = h.accounts.verifyEmail(tokenFrom(h), 'tenant-a');
-  assert.deepEqual(first, { ok: true, activated: false, next: 'confirm_totp' });
+  assert.equal(first.ok, true);
+  assert.equal(first.ok === true ? first.activated : null, false, 'the address alone does not activate');
+  assert.equal(first.ok === true ? first.next : '', 'confirm_totp');
 
   const db = h.open();
   const accountId = (db.prepare('SELECT id FROM cms_account').get() as { id: number }).id;
@@ -171,7 +173,10 @@ test('A4 — the order does not matter: confirming TOTP first, then the link, st
     ok: true,
     activated: false,
   });
-  assert.deepEqual(h.accounts.verifyEmail(tokenFrom(h), 'tenant-b'), { ok: true, activated: true, next: 'active' });
+  const second = h.accounts.verifyEmail(tokenFrom(h), 'tenant-b');
+  assert.equal(second.ok, true);
+  assert.equal(second.ok === true ? second.activated : null, true);
+  assert.equal(second.ok === true ? second.next : '', 'active');
 });
 
 test('A5 — a verification link works once, and an expired one never', async () => {

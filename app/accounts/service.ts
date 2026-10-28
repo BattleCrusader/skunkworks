@@ -107,7 +107,13 @@ export type RegisterResult = RegisteredPending | RegisteredExists;
 
 /** The outcome of proving an address. `active` means nothing else is owed. */
 export type VerifyOutcome =
-  | { readonly ok: true; readonly activated: boolean; readonly next: 'confirm_totp' | 'active' }
+  | {
+      readonly ok: true;
+      /** The account the token names — the caller needs it to set the enrolment cookie. */
+      readonly accountId: number;
+      readonly activated: boolean;
+      readonly next: 'confirm_totp' | 'active';
+    }
   | { readonly ok: false; readonly reason: 'unknown' | 'consumed' | 'expired' };
 
 export type SignInResult =
@@ -373,7 +379,7 @@ export class Accounts {
         row.account_id,
       );
       const activated = this.#activateIfProven(db, row.account_id, at);
-      return { ok: true, activated, next: activated ? 'active' : 'confirm_totp' };
+      return { ok: true, accountId: row.account_id, activated, next: activated ? 'active' : 'confirm_totp' };
     } finally {
       db.close();
     }
@@ -581,6 +587,39 @@ export class Accounts {
         tokenHash(token),
       );
       return view;
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * The session's CSRF secret, for the caller that is about to render a form. `null` when the
+   * session is not live — the same answer `authenticate` gives, so a caller that checks one and not
+   * the other cannot get a token for a dead session.
+   */
+  csrfFor(token: string, tenantKey: string, ctx: { readonly ip?: string }): string | null {
+    const atMs = this.#now();
+    const db = this.#deps.openDb(tenantKey);
+    try {
+      const row = db
+        .prepare(
+          `SELECT csrf_secret, ip_hash, last_seen_at, expires_at, revoked_at
+             FROM cms_account_session WHERE id = ?`,
+        )
+        .get(tokenHash(token)) as
+        | {
+            csrf_secret: string;
+            ip_hash: string;
+            last_seen_at: string;
+            expires_at: string;
+            revoked_at: string | null;
+          }
+        | undefined;
+      if (row === undefined || row.revoked_at !== null) return null;
+      if (new Date(row.expires_at).getTime() <= atMs) return null;
+      if (atMs - new Date(row.last_seen_at).getTime() > PORTAL_IDLE_MS) return null;
+      if (row.ip_hash !== this.#ipHash(ctx)) return null;
+      return row.csrf_secret;
     } finally {
       db.close();
     }

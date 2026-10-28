@@ -68,6 +68,8 @@ import { normaliseHost } from './tenancy/normalise-host.ts';
 import { resolveTenant, TENANT_HEADER, type Tenant } from './tenancy/resolve.ts';
 import { DEFAULT_CONTENT_ROOT, UPLOAD_MAX_BYTES } from './assets/store.ts';
 import { Semaphore } from './admin/auth.ts';
+import { Accounts } from './accounts/service.ts';
+import { registerPortal } from './accounts/routes.ts';
 import { seedSettings } from './download/code.ts';
 import { DownloadPlane, RETRY_ATTEMPTS } from './download/plane.ts';
 import { PluginRuntime } from './plugins/runtime.ts';
@@ -497,6 +499,35 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
         throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'tenant database is not writable');
       }
     },
+  });
+
+  // --- S9: the job board's portal — accounts and roles live in the tenant's own file ---------
+  // Core, not a plugin (see `app/accounts/service.ts`), and mounted here rather than in the route
+  // table because the tenant comes from the Host exactly as it does for the download plane.
+  // `exposeVerifyLink` is on only while there is no transport: offline, the page must show the link
+  // and the log records it, or nobody can finish signing up.
+  const accounts = new Accounts({
+    env,
+    argon,
+    exposeVerifyLink: env.emailMode === 'off',
+    log: (line) => {
+      // The verification URL is the one line an operator needs; it goes to the process log, never
+      // to a request log that a tenant could read.
+      app.log.warn(line, 'account');
+    },
+    openDb: (key: string) => {
+      try {
+        return openAdminWrite(sitePath(key), env.dbBusyTimeoutMs);
+      } catch {
+        throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'tenant database is not writable');
+      }
+    },
+  });
+  registerPortal(app, {
+    accounts,
+    env,
+    exposeVerifyLink: env.emailMode === 'off',
+    tenantOf: (req: FastifyRequest) => resolveRequest(req).tenant.key,
   });
 
   /**
