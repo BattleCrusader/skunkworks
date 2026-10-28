@@ -68,6 +68,8 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
+import { projectProfile, type ApplicantProfile } from '../accounts/policy.ts';
+import type { AccountStatus, Role } from '../accounts/service.ts';
 import { extOfMime } from '../assets/farm.ts';
 import { applyPick, mediaChoices, pickAsset } from '../editor/media.ts';
 import { loadRegistry, registryCss } from '../editor/registry.ts';
@@ -168,6 +170,23 @@ import {
 /** `tenant.key`'s CHECK: `^[a-z0-9][a-z0-9-]{0,39}$`. */
 const KEY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const PAGE_ID_RE = /^[0-9]{1,18}$/;
+/** `cms_account.id` is an INTEGER PRIMARY KEY: an id is digits, and never a path segment. */
+const ACCOUNT_ID_RE = /^[0-9]{1,18}$/;
+/** `cms_account.status`'s CHECK, in the column's own order. */
+const ACCOUNT_STATUSES: readonly AccountStatus[] = ['pending', 'active', 'suspended', 'closed'];
+/** What an operator may set. `pending` is the machine's state, not a decision a person makes. */
+const OPERATOR_STATUSES = ['active', 'suspended', 'closed'] as const;
+/** `cms_account_role.role`'s CHECK: a closed vocabulary, and this screen may not widen it. */
+const ACCOUNT_ROLES: readonly Role[] = ['applicant', 'advertiser'];
+const ACCOUNT_STATUS_SET: ReadonlySet<string> = new Set(ACCOUNT_STATUSES);
+const ACCOUNT_ROLE_SET: ReadonlySet<string> = new Set(ACCOUNT_ROLES);
+/** One page of accounts: 25 by default, never more than 100. A screen is not an export. */
+const ACCOUNTS_PAGE_DEFAULT = 25;
+const ACCOUNTS_PAGE_MAX = 100;
+/** An offset this screen will honour. Past the last row is an empty page, not an error. */
+const ACCOUNTS_OFFSET_MAX = 1_000_000;
+/** The last 20 messages the box tried to send this address: enough to answer "did it arrive". */
+const ACCOUNT_MAIL_ROWS = 20;
 
 /**
  * `cms_page.slug`'s CHECK is `^[a-z0-9][a-z0-9-]*$`: a slash is not a slug, so `/blog/post`
@@ -227,6 +246,50 @@ interface MediaRow {
   thumb_sha: string | null;
   thumb_width: number | null;
   thumb_height: number | null;
+}
+
+/**
+ * One account, as this screen reads it. Note what is **not** here: `password_hash` and
+ * `totp_secret` are not selected by any query in this file's account section, so a screen
+ * cannot render one by accident — the type has no field to put it in.
+ */
+interface AccountRow {
+  id: number;
+  email: string;
+  status: AccountStatus;
+  email_verified: number;
+  totp_confirmed_at: string | null;
+  failed_logins: number;
+  locked_until: string | null;
+  last_login_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One profile row, before the policy projects it. */
+interface ProfileRow {
+  display_name: string;
+  headline: string | null;
+  summary: string | null;
+  skills_json: string;
+  day_rate_cents: number | null;
+  currency: string;
+  availability_days_per_week: number | null;
+  location: string | null;
+  timezone: string | null;
+  remote_ok: number;
+  links_json: string;
+  visibility: string;
+  notify_new_jobs: number;
+}
+
+/** A `cms_mail` row: the outbox's own record of what the box tried to send. */
+interface MailRow {
+  id: number;
+  template: string;
+  status: string;
+  created_at: string;
+  last_error: string | null;
 }
 
 function header(req: FastifyRequest, name: string): string | undefined {
@@ -358,6 +421,61 @@ function queryValue(url: string, name: string): string | undefined {
   if (q === -1) return undefined;
   const value = new URLSearchParams(url.slice(q + 1)).get(name);
   return value === null || value === '' ? undefined : value;
+}
+
+/**
+ * A `LIKE` needle with its own wildcards made literal, for the caller's `ESCAPE '\'`.
+ *
+ * The whole point of `?q=` is a substring, so `%` in a search box must find a percent sign
+ * and not every address in the table. A search that passes its needle through as a pattern
+ * is a second SQL surface; this is the same rule `#mediaRows` follows.
+ */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/**
+ * A whole-number query parameter, clamped into `[min, max]`.
+ *
+ * Absent is the fallback; a value that is not a number is refused by name rather than
+ * silently read as zero, because `?limit=twenty` quietly answering the default is a screen
+ * that agrees with a caller who mistyped something.
+ */
+function boundedInt(url: string, name: string, fallback: number, min: number, max: number): number {
+  const raw = queryValue(url, name);
+  if (raw === undefined) return fallback;
+  if (!/^[0-9]{1,12}$/.test(raw)) throw new AppError('SKW_E_PLT_REQUEST_INVALID', `${name} must be a whole number`);
+  return Math.min(max, Math.max(min, Number(raw)));
+}
+
+/**
+ * A `SQLITE_CONSTRAINT*` from the driver. The refusal this screen shows never repeats the
+ * driver's text: a constraint names a table and a column, and the operator needs to know
+ * which proof is missing.
+ */
+function isConstraint(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT');
+}
+
+/** Yes or no — the only two answers a flag column has on a screen. */
+function yesNo(value: boolean): string {
+  return value ? 'yes' : 'no';
+}
+
+/**
+ * A `*_json` column as an array. The column's CHECK already proved it is JSON; this is the
+ * reader, and a value that somehow is not an array degrades to an empty list rather than
+ * turning a support screen into a 500.
+ */
+function jsonArray(value: string): unknown[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 /** The screens the tenant's loaded plugins registered: `href → title`, for the menu and the screen. */
@@ -1046,6 +1164,38 @@ ${items}
       await this.#accountEmail(req, reply, tenant, session);
       return;
     }
+    // S9: the operator's accounts and roles. A read is the screen; every write is origin,
+    // then CSRF, then the handler — the same order the plugin switches use, so a cross-site
+    // form post is refused before a field is read and a token-less one before a row is touched.
+    if (action === 'accounts' && req.method === 'GET') {
+      this.#accountsList(reply, req, tenant, session);
+      return;
+    }
+    if (action.startsWith('accounts/')) {
+      const rest = action.slice('accounts/'.length).split('/');
+      const id = rest[0] ?? '';
+      if (!ACCOUNT_ID_RE.test(id)) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'not an account id');
+      if (rest.length === 1) {
+        this.#requireMethod(req, 'GET');
+        this.#accountDetail(reply, req, tenant, session, Number(id));
+        return;
+      }
+      if (rest.length === 2 && rest[1] === 'status') {
+        this.#requireMethod(req, 'POST');
+        this.#assertOrigin(req);
+        this.#assertCsrf(req, session);
+        this.#accountStatus(req, reply, tenant, session, Number(id));
+        return;
+      }
+      if (rest.length === 2 && rest[1] === 'roles') {
+        this.#requireMethod(req, 'POST');
+        this.#assertOrigin(req);
+        this.#assertCsrf(req, session);
+        this.#accountRoles(req, reply, tenant, session, Number(id));
+        return;
+      }
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
+    }
     if (action === 'totp/enrol' && req.method === 'POST') {
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
@@ -1230,6 +1380,9 @@ ${items}
       { href: `/admin/t/${tenant.key}/tables`, label: 'Tables' },
       { href: `/admin/t/${tenant.key}/sources`, label: 'Data sources' },
       ...(this.#env.schemaEdit === 'on' ? [{ href: `/admin/t/${tenant.key}/builder`, label: 'Table builder' }] : []),
+      // S9: the people the tenant holds. Not a site-owner screen — an operator's — so it lives
+      // in the list under the pages rather than in the app bar beside Pages and Media.
+      { href: `/admin/t/${tenant.key}/accounts`, label: 'Accounts' },
       { href: `/admin/t/${tenant.key}/account`, label: 'Account' },
       { href: `/admin/t/${tenant.key}/session`, label: 'Session' },
     ];
@@ -1307,6 +1460,578 @@ ${items}
     );
   }
 
+
+  // --- S9: the accounts screen — every person this tenant holds ------------
+
+  /**
+   * `GET /admin/t/<key>/accounts` — the account list, and the two filters an operator
+   * actually asks for: a substring of the address, and where the account sits in its
+   * lifecycle.
+   *
+   * Both are **bound parameters**, and the needle is escaped before it becomes a pattern
+   * (`escapeLike`): a search box that passes `%` through as a wildcard is a second SQL
+   * surface, which is the rule §9.3 already set for the media library's search. An unknown
+   * status is refused by name rather than answered with an empty table, because an empty
+   * table reads as "no such account".
+   *
+   * Paging is `limit`/`offset`, clamped and bounded, with the total printed beside the page:
+   * a screen that cannot say how many rows there are is a screen whose operator concludes
+   * there are none. Roles are read for the whole page in one query, not one per row.
+   */
+  #accountsList(reply: FastifyReply, req: FastifyRequest, tenant: Tenant, session: SessionRecord): void {
+    const status = queryValue(req.url, 'status');
+    if (status !== undefined && !ACCOUNT_STATUS_SET.has(status)) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', `status must be one of ${ACCOUNT_STATUSES.join(', ')}`);
+    }
+    const q = queryValue(req.url, 'q');
+    const limit = boundedInt(req.url, 'limit', ACCOUNTS_PAGE_DEFAULT, 1, ACCOUNTS_PAGE_MAX);
+    const offset = boundedInt(req.url, 'offset', 0, 0, ACCOUNTS_OFFSET_MAX);
+
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (status !== undefined) {
+      where.push('a.status = ?');
+      params.push(status);
+    }
+    if (q !== undefined) {
+      where.push("a.email LIKE ? ESCAPE '\\'");
+      params.push(`%${escapeLike(q)}%`);
+    }
+    const filter = where.length === 0 ? '' : ` WHERE ${where.join(' AND ')}`;
+
+    const db = this.#siteDb(tenant.key);
+    let rows: AccountRow[] = [];
+    let total = 0;
+    const held = new Map<number, string[]>();
+    try {
+      total = (db.prepare(`SELECT COUNT(*) AS n FROM cms_account a${filter}`).get(...params) as { n: number }).n;
+      rows = db
+        .prepare(
+          `SELECT a.id, a.email, a.status, a.email_verified, a.totp_confirmed_at, a.failed_logins,
+                  a.last_login_at, a.created_at, a.updated_at
+             FROM cms_account a${filter}
+            ORDER BY a.created_at DESC, a.id DESC
+            LIMIT ? OFFSET ?`,
+        )
+        .all(...params, limit, offset) as AccountRow[];
+      if (rows.length > 0) {
+        const marks = rows.map(() => '?').join(', ');
+        const grants = db
+          .prepare(`SELECT account_id, role FROM cms_account_role WHERE account_id IN (${marks}) ORDER BY role`)
+          .all(...rows.map((row) => row.id)) as { account_id: number; role: string }[];
+        for (const grant of grants) {
+          const list = held.get(grant.account_id) ?? [];
+          list.push(grant.role);
+          held.set(grant.account_id, list);
+        }
+      }
+    } finally {
+      db.close();
+    }
+
+    const flash = queryValue(req.url, 'result');
+    const base = `/admin/t/${encodeURIComponent(tenant.key)}/accounts`;
+    const pageHref = (nextOffset: number): string => {
+      const query = new URLSearchParams();
+      if (q !== undefined) query.set('q', q);
+      if (status !== undefined) query.set('status', status);
+      query.set('limit', String(limit));
+      query.set('offset', String(nextOffset));
+      return `${base}?${query.toString()}`;
+    };
+
+    const statusOptions = ACCOUNT_STATUSES.map(
+      (value) => `<option value="${esc(value)}"${value === status ? ' selected' : ''}>${esc(value)}</option>`,
+    ).join('');
+    const rowHtml =
+      rows.length === 0
+        ? '<tr><td colspan="8">No account matches this filter.</td></tr>'
+        : rows
+            .map((row) => {
+              const roles = held.get(row.id) ?? [];
+              return `<tr data-account="${row.id}"><td><a href="${base}/${row.id}">${esc(row.email)}</a></td><td>${esc(
+                row.status,
+              )}</td><td>${yesNo(row.email_verified === 1)}</td><td>${yesNo(row.totp_confirmed_at !== null)}</td><td>${
+                roles.length === 0 ? '<b>none</b>' : esc(roles.join(', '))
+              }</td><td>${row.failed_logins}</td><td>${esc(row.last_login_at ?? 'never')}</td><td>${esc(row.created_at)}</td></tr>`;
+            })
+            .join('\n');
+
+    const pager =
+      total <= limit && offset === 0
+        ? ''
+        : `<nav class="pager" aria-label="Accounts pages">
+${offset > 0 ? `<a href="${esc(pageHref(Math.max(0, offset - limit)))}" rel="prev">Previous</a>` : ''}
+<span>${rows.length === 0 ? 'no rows' : `${offset + 1}–${offset + rows.length}`} of ${total}</span>
+${offset + limit < total ? `<a href="${esc(pageHref(offset + limit))}" rel="next">Next</a>` : ''}
+</nav>`;
+
+    reply.type('text/html; charset=utf-8').send(
+      page(
+        `Skunkworks — ${tenant.key} — accounts`,
+        `<h1>Accounts — ${esc(tenant.key)}</h1>
+${flash === undefined ? '' : `<p role="status">${esc(flash)}</p>`}
+<p>Every person this tenant holds: applicants and advertisers, and the state each one is in.
+<b>Active</b> is the only status that may sign in or be matched against work; an account that is
+<b>suspended</b> or <b>closed</b> has every session revoked when the status is set.</p>
+<form method="get" action="${base}">
+  <label>Address contains <input type="search" name="q" value="${esc(q ?? '')}" maxlength="200"></label>
+  <label>Status <select name="status"><option value="">any</option>${statusOptions}</select></label>
+  <input type="hidden" name="limit" value="${limit}">
+  <button type="submit">Filter</button>
+</form>
+<table>
+<thead><tr><th>Email</th><th>Status</th><th>Email verified</th><th>Authenticator</th><th>Roles</th><th>Failed sign-ins</th><th>Last sign-in</th><th>Created</th></tr></thead>
+<tbody>
+${rowHtml}
+</tbody>
+</table>
+${pager}`,
+        { tenant, user: this.#actorOf(session), active: 'none' },
+      ),
+    );
+  }
+
+  /**
+   * `GET /admin/t/<key>/accounts/<id>` — one person, as the operator needs them to support
+   * the account: the lifecycle fields, the roles, the profile they filled in, what the outbox
+   * tried to send them, and how many sessions are alive.
+   *
+   * **Contact is shown here and nothing else is invented.** The address is the tenant's own
+   * record of who signed up — the screen is the operator's, on the operator's origin, behind
+   * the operator's session. The *profile* block is rendered from
+   * `app/accounts/policy.ts`'s projection for an `operator` viewer, so a field the policy does
+   * not project cannot appear here however this screen is edited: the projection type has no
+   * contact field, and neither does `cms_profile`.
+   *
+   * `password_hash` and `totp_secret` are not selected by any query below. That is the whole
+   * mechanism: a screen cannot leak a column the row it renders has no key for.
+   */
+  #accountDetail(reply: FastifyReply, req: FastifyRequest, tenant: Tenant, session: SessionRecord, id: number): void {
+    const db = this.#siteDb(tenant.key);
+    try {
+      const data = this.#accountDetailData(db, id);
+      reply
+        .type('text/html; charset=utf-8')
+        .send(this.#accountDetailHtml(tenant, session, data, queryValue(req.url, 'result'), undefined));
+    } finally {
+      db.close();
+    }
+  }
+
+  /** Everything the detail screen draws, in one read. A missing id is the 404 every other admin path uses. */
+  #accountDetailData(
+    db: Database.Database,
+    id: number,
+  ): {
+    account: AccountRow;
+    roles: Role[];
+    profile: ProfileRow | null;
+    mail: MailRow[];
+    sessions: { total: number; live: number };
+  } {
+    const account = db
+      .prepare(
+        `SELECT id, email, status, email_verified, totp_confirmed_at, failed_logins, locked_until,
+                last_login_at, created_at, updated_at
+           FROM cms_account WHERE id = ?`,
+      )
+      .get(id) as AccountRow | undefined;
+    if (account === undefined) throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no such account');
+
+    const roles = (
+      db.prepare('SELECT role FROM cms_account_role WHERE account_id = ? ORDER BY role').all(id) as { role: Role }[]
+    ).map((row) => row.role);
+    const profile =
+      (db
+        .prepare(
+          `SELECT display_name, headline, summary, skills_json, day_rate_cents, currency,
+                  availability_days_per_week, location, timezone, remote_ok, links_json,
+                  visibility, notify_new_jobs
+             FROM cms_profile WHERE account_id = ?`,
+        )
+        .get(id) as ProfileRow | undefined) ?? null;
+    // `to_email` has no COLLATE NOCASE, and an address is one address: the comparison is
+    // case-insensitive here so a row the portal wrote in another case is still this person's.
+    const mail = db
+      .prepare(
+        `SELECT id, template, status, created_at, last_error FROM cms_mail
+          WHERE to_email = ? COLLATE NOCASE
+          ORDER BY created_at DESC, id DESC LIMIT ?`,
+      )
+      .all(account.email, ACCOUNT_MAIL_ROWS) as MailRow[];
+    const sessions = db
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN revoked_at IS NULL AND expires_at > ? THEN 1 ELSE 0 END), 0) AS live
+           FROM cms_account_session WHERE account_id = ?`,
+      )
+      .get(new Date().toISOString(), id) as { total: number; live: number };
+    return { account, roles, profile, mail, sessions };
+  }
+
+  /** The detail screen's markup. One builder, so the refusal panel and the plain read agree. */
+  #accountDetailHtml(
+    tenant: Tenant,
+    session: SessionRecord,
+    data: {
+      account: AccountRow;
+      roles: Role[];
+      profile: ProfileRow | null;
+      mail: MailRow[];
+      sessions: { total: number; live: number };
+    },
+    flash: string | undefined,
+    error: string | undefined,
+  ): string {
+    const { account, roles, profile, mail, sessions } = data;
+    const csrf = this.sessions.csrfToken(session);
+    const base = `/admin/t/${encodeURIComponent(tenant.key)}/accounts/${account.id}`;
+    const field = (label: string, value: string): string => `<dt>${esc(label)}</dt><dd>${value}</dd>`;
+
+    let profileBlock = '<p>No profile row: this account has not filled one in.</p>';
+    if (profile !== null) {
+      const projection = projectProfile({ kind: 'operator' }, this.#profileInput(account, profile));
+      // An `operator` viewer is always in scope for a profile (`policy.ts`'s first branch), so
+      // this null is the type's shape and not a case this screen can reach.
+      profileBlock =
+        projection === null
+          ? '<p>No profile row: this account has not filled one in.</p>'
+          : `<dl>
+${field('Name', esc(projection.displayName))}
+${field('Headline', projection.headline === null ? '—' : esc(projection.headline))}
+${field('Day rate', projection.dayRateCents === null ? '—' : `${esc((projection.dayRateCents / 100).toFixed(2))} ${esc(projection.currency)}`)}
+${field('Availability', projection.availabilityDaysPerWeek === null ? '—' : `${projection.availabilityDaysPerWeek} days a week`)}
+${field('Remote', yesNo(projection.remoteOk))}
+${field('Visibility', esc(profile.visibility))}
+</dl>
+<p class="muted">The block above is the profile policy's projection for an operator. Visibility is the
+applicant's own setting — an input to <code>app/accounts/policy.ts</code>, not an output of it — and no
+contact field is projected, for any viewer.</p>`;
+    }
+
+    const roleItems =
+      roles.length === 0
+        ? '<li><b>none</b> — an account with no role cannot do anything.</li>'
+        : roles
+            .map((role) => {
+              const last = roles.length === 1;
+              const revoke = last
+                ? '<button type="button" disabled title="an account with no role cannot do anything: grant another role first">Revoke</button>'
+                : `<form method="post" action="${esc(base)}/roles">
+  <input type="hidden" name="role" value="${esc(role)}">
+  <input type="hidden" name="op" value="revoke">
+  <input type="hidden" name="csrf" value="${esc(csrf)}">
+  <button type="submit">Revoke</button>
+</form>`;
+              return `<li data-role="${esc(role)}"><b>${esc(role)}</b> ${revoke}</li>`;
+            })
+            .join('\n');
+
+    const grantable = ACCOUNT_ROLES.filter((role) => !roles.includes(role));
+    const grantForms =
+      grantable.length === 0
+        ? '<p>Holds every role this build implements.</p>'
+        : grantable
+            .map(
+              (role) => `<form method="post" action="${esc(base)}/roles">
+  <input type="hidden" name="role" value="${esc(role)}">
+  <input type="hidden" name="op" value="grant">
+  <input type="hidden" name="csrf" value="${esc(csrf)}">
+  <button type="submit">Grant ${esc(role)}</button>
+</form>`,
+            )
+            .join('\n');
+
+    const statusForms = OPERATOR_STATUSES.map(
+      (value) => `<form method="post" action="${esc(base)}/status">
+  <input type="hidden" name="status" value="${esc(value)}">
+  <input type="hidden" name="csrf" value="${esc(csrf)}">
+  <button type="submit"${value === account.status ? ' disabled' : ''}>Set ${esc(value)}</button>
+</form>`,
+    ).join('\n');
+
+    const mailHtml =
+      mail.length === 0
+        ? '<tr><td colspan="4">No message has been queued for this address.</td></tr>'
+        : mail
+            .map(
+              (row) =>
+                `<tr data-mail="${row.id}"><td>${esc(row.template)}</td><td>${esc(row.status)}</td><td>${esc(
+                  row.created_at,
+                )}</td><td>${row.last_error === null ? '' : esc(row.last_error)}</td></tr>`,
+            )
+            .join('\n');
+
+    return page(
+      `Skunkworks — ${tenant.key} — ${account.email}`,
+      `${crumbs([
+        { label: 'Pages', href: `/admin/t/${encodeURIComponent(tenant.key)}/` },
+        { label: 'Accounts', href: `/admin/t/${encodeURIComponent(tenant.key)}/accounts` },
+        { label: account.email },
+      ])}
+<h1>${esc(account.email)}</h1>
+${flash === undefined ? '' : `<p role="status">${esc(flash)}</p>`}
+${error === undefined ? '' : `<div class="notepanel" role="alert" data-account-refusal="1"><div class="notepanel__icon" aria-hidden="true">!</div><div><b>Refused — nothing was changed</b><p>${esc(error)}</p></div></div>`}
+<h2>Account</h2>
+<dl>
+${field('Id', String(account.id))}
+${field('Status', esc(account.status))}
+${field('Email verified', yesNo(account.email_verified === 1))}
+${field('Authenticator confirmed', yesNo(account.totp_confirmed_at !== null))}
+${field('Authenticator confirmed at', account.totp_confirmed_at === null ? '—' : esc(account.totp_confirmed_at))}
+${field('Failed sign-ins', String(account.failed_logins))}
+${field('Locked until', account.locked_until === null ? '—' : esc(account.locked_until))}
+${field('Last sign-in', account.last_login_at === null ? 'never' : esc(account.last_login_at))}
+${field('Created', esc(account.created_at))}
+${field('Updated', esc(account.updated_at))}
+</dl>
+<h2>Status</h2>
+<p>A status is the operator's decision, and it is written with an audit row. <b>Suspending</b> or
+<b>closing</b> revokes every portal session this account holds in the same transaction — a signed-in
+browser keeps working until its cookie is revoked, and a stopped account must not have one.
+<b>Active</b> requires both proofs: an account without a verified address or a confirmed
+authenticator cannot be activated, and this screen says which one is missing rather than letting the
+schema refuse it.</p>
+${statusForms}
+<h2>Roles</h2>
+<p>Roles are additive grants from a closed vocabulary: <code>applicant</code>, <code>advertiser</code>.
+The last role cannot be revoked — an account with no role cannot do anything.</p>
+<ul>
+${roleItems}
+</ul>
+${grantForms}
+<h2>Profile</h2>
+${profileBlock}
+<h2>Mail to this address</h2>
+<p>The last ${ACCOUNT_MAIL_ROWS} rows the outbox holds for this address, newest first. A message that
+failed names the transport's own error; a suppressed address is recorded once and never retried.</p>
+<table>
+<thead><tr><th>Template</th><th>Status</th><th>Queued</th><th>Last error</th></tr></thead>
+<tbody>
+${mailHtml}
+</tbody>
+</table>
+<h2>Sessions</h2>
+<p>${sessions.total} session ${sessions.total === 1 ? 'row' : 'rows'}, ${sessions.live} live (not revoked, not expired) — a suspended or closed account has none.</p>
+<p><a href="/admin/t/${esc(tenant.key)}/accounts">All accounts</a></p>`,
+      { tenant, user: this.#actorOf(session), active: 'none' },
+    );
+  }
+
+  /** The policy's input type, from a `cms_profile` row and the account's status. */
+  #profileInput(account: AccountRow, profile: ProfileRow): ApplicantProfile {
+    return {
+      accountId: account.id,
+      displayName: profile.display_name,
+      headline: profile.headline,
+      summary: profile.summary,
+      skills: jsonArray(profile.skills_json).filter((skill): skill is string => typeof skill === 'string'),
+      dayRateCents: profile.day_rate_cents,
+      currency: profile.currency,
+      availabilityDaysPerWeek: profile.availability_days_per_week,
+      location: profile.location,
+      timezone: profile.timezone,
+      remoteOk: profile.remote_ok === 1,
+      links: jsonArray(profile.links_json).flatMap((item) => {
+        if (typeof item !== 'object' || item === null) return [];
+        const { label, url } = item as { label?: unknown; url?: unknown };
+        return typeof label === 'string' && typeof url === 'string' ? [{ label, url }] : [];
+      }),
+      visibility: profile.visibility === 'discoverable' ? 'discoverable' : 'hidden',
+      notifyNewJobs: profile.notify_new_jobs === 1,
+      status: account.status,
+    };
+  }
+
+  /**
+   * A named refusal, on the screen the operator posted from: `400`, the sentence, and nothing
+   * written. `SKW_E_PLT_REQUEST_INVALID` is `sendError`'s 400, and the body is the screen rather
+   * than a JSON object because the caller is a no-JS form — a person who gets `{"ok":false}` has
+   * no way back to the row they were looking at.
+   */
+  #refuseDetail(
+    reply: FastifyReply,
+    db: Database.Database,
+    tenant: Tenant,
+    session: SessionRecord,
+    id: number,
+    message: string,
+  ): void {
+    const data = this.#accountDetailData(db, id);
+    reply.code(400).type('text/html; charset=utf-8').send(this.#accountDetailHtml(tenant, session, data, undefined, message));
+  }
+
+  /**
+   * `POST /admin/t/<key>/accounts/<id>/status` — the operator's decision, and the sessions it
+   * takes with it.
+   *
+   * Two rules, both enforced here **before** the write, because the schema's two CHECKs answer
+   * a violation with `SQLITE_CONSTRAINT` and a message about a table: activation is refused by
+   * name when either proof is absent, and a suspension or closure revokes every live session in
+   * the same transaction as the status change. A status write that commits without the
+   * revocation would leave a working cookie on a stopped account.
+   */
+  #accountStatus(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord, id: number): void {
+    const target = (fieldsOf(req.body).status ?? '').trim();
+    if (!(OPERATOR_STATUSES as readonly string[]).includes(target)) {
+      throw new AppError(
+        'SKW_E_PLT_REQUEST_INVALID',
+        `status must be one of ${OPERATOR_STATUSES.join(', ')}: pending is what the sign-up flow decides, not the operator`,
+      );
+    }
+
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const row = db
+        .prepare('SELECT id, email, status, email_verified, totp_confirmed_at FROM cms_account WHERE id = ?')
+        .get(id) as
+        | { id: number; email: string; status: AccountStatus; email_verified: number; totp_confirmed_at: string | null }
+        | undefined;
+      if (row === undefined) throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no such account');
+
+      if (target === 'active') {
+        const missing: string[] = [];
+        if (row.email_verified !== 1) missing.push('its email address has not been verified');
+        if (row.totp_confirmed_at === null) missing.push('its authenticator has not been confirmed');
+        if (missing.length > 0) {
+          this.#refuseDetail(
+            reply,
+            db,
+            tenant,
+            session,
+            id,
+            `cannot activate ${row.email}: ${missing.join(' and ')}. An active account must have both proofs, so nothing was changed.`,
+          );
+          return;
+        }
+      }
+
+      const at = new Date().toISOString();
+      let revoked = 0;
+      try {
+        db.transaction(() => {
+          db.prepare('UPDATE cms_account SET status = ?, updated_at = ? WHERE id = ?').run(target, at, id);
+          if (target !== 'active') {
+            revoked = db
+              .prepare('UPDATE cms_account_session SET revoked_at = ? WHERE account_id = ? AND revoked_at IS NULL')
+              .run(at, id).changes;
+          }
+        })();
+      } catch (err) {
+        // Unreachable through this screen — both proofs are checked above — but a constraint
+        // that fires anyway is refused with a sentence, never with the driver's own text.
+        if (isConstraint(err)) {
+          this.#refuseDetail(
+            reply,
+            db,
+            tenant,
+            session,
+            id,
+            `cannot set ${row.email} to ${target}: the schema refused it. An active account must have a verified address and a confirmed authenticator.`,
+          );
+          return;
+        }
+        throw err;
+      }
+
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.#actorOf(session)?.email ?? 'unknown',
+        action: 'admin.account.status',
+        targetKind: 'cms_account',
+        targetId: String(id),
+        after: { from: row.status, to: target, revoked_sessions: revoked },
+        ip: req.socket.remoteAddress ?? '',
+      });
+      const message =
+        target === 'active'
+          ? `${row.email} is active.`
+          : `${row.email} is ${target}; ${revoked === 1 ? '1 session was' : `${revoked} sessions were`} revoked.`;
+      this.#seeOther(reply, `/admin/t/${encodeURIComponent(tenant.key)}/accounts/${id}?result=${encodeURIComponent(message)}`);
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * `POST /admin/t/<key>/accounts/<id>/roles` — one grant or one revocation.
+   *
+   * The vocabulary is `cms_account_role`'s own CHECK, restated here so a role the product does
+   * not implement is refused with a sentence instead of a constraint. Revoking the **last** role
+   * is refused for the same reason it exists: the row would remain and the person could do
+   * nothing anywhere, so the operator is told to grant the other role first.
+   */
+  #accountRoles(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord, id: number): void {
+    const fields = fieldsOf(req.body);
+    const role = (fields.role ?? '').trim();
+    const op = (fields.op ?? '').trim();
+    if (!ACCOUNT_ROLE_SET.has(role)) {
+      throw new AppError(
+        'SKW_E_PLT_REQUEST_INVALID',
+        `role must be one of ${ACCOUNT_ROLES.join(', ')}: this vocabulary is closed, and a role the product does not implement is not a role`,
+      );
+    }
+    if (op !== 'grant' && op !== 'revoke') {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'op must be grant or revoke');
+    }
+
+    const db = this.#siteWrite(tenant.key);
+    const back = `/admin/t/${encodeURIComponent(tenant.key)}/accounts/${id}`;
+    try {
+      const account = db.prepare('SELECT id, email FROM cms_account WHERE id = ?').get(id) as
+        | { id: number; email: string }
+        | undefined;
+      if (account === undefined) throw new AppError('SKW_E_PLT_TENANT_UNKNOWN', 'no such account');
+
+      const held = (
+        db.prepare('SELECT role FROM cms_account_role WHERE account_id = ? ORDER BY role').all(id) as { role: string }[]
+      ).map((row) => row.role);
+
+      if (op === 'grant') {
+        if (held.includes(role)) {
+          this.#seeOther(reply, `${back}?result=${encodeURIComponent(`${account.email} already holds ${role}.`)}`);
+          return;
+        }
+        db.prepare('INSERT INTO cms_account_role (account_id, role) VALUES (?, ?)').run(id, role);
+      } else {
+        if (!held.includes(role)) {
+          this.#seeOther(reply, `${back}?result=${encodeURIComponent(`${account.email} does not hold ${role}.`)}`);
+          return;
+        }
+        if (held.length === 1) {
+          this.#refuseDetail(
+            reply,
+            db,
+            tenant,
+            session,
+            id,
+            `cannot revoke ${role} from ${account.email}: it is the account's last role, and an account with no role cannot do anything. Grant the other role first.`,
+          );
+          return;
+        }
+        db.prepare('DELETE FROM cms_account_role WHERE account_id = ? AND role = ?').run(id, role);
+      }
+
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.#actorOf(session)?.email ?? 'unknown',
+        action: 'admin.account.role',
+        targetKind: 'cms_account',
+        targetId: String(id),
+        after: { op, role, roles: op === 'grant' ? [...held, role].sort() : held.filter((r) => r !== role) },
+        ip: req.socket.remoteAddress ?? '',
+      });
+      this.#seeOther(
+        reply,
+        `${back}?result=${encodeURIComponent(`${op === 'grant' ? 'granted' : 'revoked'} ${role} ${op === 'grant' ? 'to' : 'from'} ${account.email}.`)}`,
+      );
+    } finally {
+      db.close();
+    }
+  }
 
   // --- S8s: themes ---------------------------------------------------------
 
