@@ -1,230 +1,477 @@
+/**
+ * Fractional Works — the copy.
+ *
+ * The site is a job board, not a brochure: companies post fractional roles, applicants build a
+ * profile and apply, and both sides have a portal. Every page here describes that product and
+ * nothing that does not exist. No pricing tier, client name, statistic or testimonial appears in
+ * this file, because none of them is known.
+ *
+ * HTML strings, written as copy and reviewed as copy. The operator's half — settings, page rows,
+ * menus, the enquiry form and the per-page search metadata — is `fractionalworks-site.ts`.
+ *
+ * There is no `<script>`, `<style>` or stylesheet in any body: the look is the `fractional-works`
+ * theme package, and `cms_page.body_html` refuses those elements by CHECK.
+ */
+
+/* ------------------------------------------------------------------------------- home */
+
 export const HOME: string = `
 <section class="fw-hero">
   <div class="fw-hero__grid">
     <div>
-      <h1 class="fw-hero__title">Senior engineering. Two days a week.</h1>
-      <p class="fw-hero__sub">Fractional software engineering for companies that need the capability before they can justify the hire.</p>
+      <h1 class="fw-hero__title">A job board for fractional work.</h1>
+      <p class="fw-hero__sub">Companies post senior roles measured in days per week. Senior people build a profile, say what they charge a day and how many days they have, and apply directly.</p>
       <div class="fw-actions">
-        <a class="fw-btn fw-btn--primary" href="/contact">Tell us what's broken</a>
-        <a class="fw-btn fw-btn--ghost" href="#fractional">What fractional means</a>
+        <a class="fw-btn fw-btn--primary" href="/portal/register?role=advertiser">Post a role</a>
+        <a class="fw-btn fw-btn--ghost" href="/portal/register?role=applicant">Find fractional work</a>
       </div>
     </div>
     <aside class="fw-hero__aside">
       <p class="fw-kicker">Newcastle, New South Wales</p>
-      <p>Senior engineers working remotely with teams across Australia.</p>
-      <div class="fw-diagram"></div>
+      <p>Open to companies and applicants across Australia. An account is confirmed by email and a code from an authenticator app before it can post a role or apply for one.</p>
     </aside>
   </div>
 </section>
 
-<section class="fw-band" id="problem">
-  <p class="fw-num">01 — THE PROBLEM</p>
-  <h2 class="fw-h2">Three problems we get called in to fix.</h2>
-  <p class="fw-lede">Most engagements start with somebody saying one of these sentences in the first five minutes. If one of them is yours, the rest of this page is for you.</p>
-  <div class="fw-problems">
-    <article class="fw-problem">
-      <blockquote class="fw-problem__quote">"The date on the plan is not a date anyone believes."</blockquote>
-      <p>You have a steering committee, a risk register and a vendor who says the hard part is nearly finished. Your best engineer has started asking careful questions about the estimate. Nobody wants to be the person who says the date is wrong.</p>
-      <p class="fw-problem__answer">The project is behind.</p>
-    </article>
-    <article class="fw-problem">
-      <blockquote class="fw-problem__quote">"The same customer has three records and none of them is wrong."</blockquote>
-      <p>Two systems hold the same fact and disagree about it. Someone rebuilds the reconciliation in a spreadsheet every Monday morning. The vendor who built the older system has moved on, and the integration notes are a PDF nobody has opened since 2019.</p>
-      <p class="fw-problem__answer">Nothing talks to anything.</p>
-    </article>
-    <article class="fw-problem">
-      <blockquote class="fw-problem__quote">"We do not need more hands. We need someone who has done this before."</blockquote>
-      <p>You can hire a graduate in a month or a principal engineer in five. The architecture decision is due in three weeks. What is missing is judgement about which problem to solve first, not another person at a keyboard.</p>
-      <p class="fw-problem__answer">We need a senior, not a headcount.</p>
-    </article>
-  </div>
-</section>
-
-<section class="fw-band" id="engagements">
-  <p class="fw-num">02 — WHAT WE DO</p>
-  <h2 class="fw-h2">What we do about them.</h2>
-  <p class="fw-lede">Most engagements are one of these four. Some are two at once: a rescue that turns into an integration, or a build that needs a senior review before it goes live.</p>
+<section class="fw-band" id="what">
+  <p class="fw-num">01 — WHAT FRACTIONAL MEANS</p>
+  <h2 class="fw-h2">Part of a week, at a senior level.</h2>
+  <p class="fw-lede">Fractional work is senior work on part of a week. A role is measured in days per week, not hours or months: one day a week around a decision, two or three days to run a system, five days for a fixed piece of work. The board lists those roles in one place so they can be answered by the people who do the work.</p>
   <div class="fw-cards">
     <article class="fw-card">
       <p class="fw-card__mark">01</p>
-      <h3 class="fw-card__title">Rescue</h3>
-      <p class="fw-card__body">A project that is stalled, failing or six months behind. We read the code, talk to the people who wrote it, and tell you what is actually true. Then we publish a plan with dates we will hold ourselves to.</p>
+      <h3 class="fw-card__title">Days a week</h3>
+      <p class="fw-card__body">A role carries a number of days, from one to five, or leaves it open to agree. The shape of the week is set when the role is posted, not a surprise after the first call.</p>
     </article>
     <article class="fw-card">
       <p class="fw-card__mark">02</p>
-      <h3 class="fw-card__title">Integration</h3>
-      <p class="fw-card__body">Systems that need to talk to each other, including the vendor nobody documented. Identity, payments, legacy databases, three systems that each think they own the customer record. We have done this where downtime was not an option.</p>
+      <h3 class="fw-card__title">A day rate</h3>
+      <p class="fw-card__body">An advertiser sets a day rate on the role; an applicant sets one on their profile. Either side can leave the number empty and discuss it.</p>
     </article>
     <article class="fw-card">
       <p class="fw-card__mark">03</p>
-      <h3 class="fw-card__title">Build</h3>
-      <p class="fw-card__body">An MVP from idea to production in three to six months. Backend, infrastructure, release, and the App Store review if it comes to that. We have taken several products from nothing to production in that window.</p>
+      <h3 class="fw-card__title">Applications, direct</h3>
+      <p class="fw-card__body">An application goes from the applicant's portal to the company that posted the role. There is no agency between them.</p>
     </article>
     <article class="fw-card">
       <p class="fw-card__mark">04</p>
-      <h3 class="fw-card__title">Senior counsel</h3>
-      <p class="fw-card__body">Architecture review, technical due diligence, code review, and mentoring for the engineers you already have. A senior opinion before the budget is committed, not after the rebuild.</p>
+      <h3 class="fw-card__title">No contact details</h3>
+      <p class="fw-card__body">A profile holds no email address, phone number or postal address. An advertiser sees a profile only when that person applies to one of their roles.</p>
     </article>
   </div>
-  <p class="fw-note">Need more than one engineer? We bring additional senior capacity onto engagements when the scope calls for it.</p>
 </section>
 
-<section class="fw-band" id="how">
-  <p class="fw-num">03 — HOW WE WORK</p>
-  <h2 class="fw-h2">Three steps, then the work starts.</h2>
-  <p class="fw-lede">No discovery phase, no pitch, no forty-page proposal. The scoping conversation is the proposal.</p>
+<section class="fw-band" id="roles">
+  <p class="fw-num">02 — LATEST ROLES</p>
+  <h2 class="fw-h2">Roles on the board.</h2>
+  <p class="fw-lede">The newest published adverts, drawn from the board's own feed. Each one opens on its own page with the work as the company wrote it.</p>
+  <div class="fw-cards" data-gjs-type="list" data-source="jobboard/latest-jobs" data-limit="8">
+    <article class="fw-card" data-repeat>
+      <h3 class="fw-card__title"><a data-bind-href-slug="slug" data-bind-title="title" href="/jobs/role">Role title</a></h3>
+      <p class="fw-card__body" data-bind-subtitle="location">Location</p>
+    </article>
+    <p class="fw-note" data-empty>No roles are published yet. <a href="/portal/register?role=applicant">Create an applicant profile</a>, make it discoverable, and you can apply as soon as a role is posted.</p>
+  </div>
+</section>
+
+<section class="fw-band" id="posting">
+  <p class="fw-num">03 — IF YOU ARE POSTING</p>
+  <h2 class="fw-h2">Post a role in three steps.</h2>
   <div class="fw-steps">
     <div class="fw-step">
       <p class="fw-step__n">01</p>
-      <h3 class="fw-step__title">We talk for thirty minutes.</h3>
-      <p>You describe the problem. We ask about users, deadlines, the systems involved and who is available to answer questions. No slides, no invoice.</p>
+      <h3 class="fw-step__title">Create an advertiser account.</h3>
+      <p>Email, password and the name you want shown. Confirm the address, add a code from an authenticator app, and the account is active.</p>
     </div>
     <div class="fw-step">
       <p class="fw-step__n">02</p>
-      <h3 class="fw-step__title">We scope it and quote it.</h3>
-      <p>We write down what will be delivered, what will not, the price and the dates. You get it in writing before any work starts. If the scope is still unclear, we say so and cut it smaller.</p>
+      <h3 class="fw-step__title">Write the role and set the terms.</h3>
+      <p>Title, one line of summary, the work itself, the day rate, the days a week, the location and whether it can be done remotely. The days and the rate are set before the advert is published.</p>
     </div>
     <div class="fw-step">
       <p class="fw-step__n">03</p>
-      <h3 class="fw-step__title">We start, and you get something working every week.</h3>
-      <p>Every week there is a working build, a short demo and a written note: what moved, what is blocked, what it costs to unblock. You never have to ask for a status update.</p>
+      <h3 class="fw-step__title">Read the applications.</h3>
+      <p>Each one arrives in your portal with the applicant's profile and their note. Shortlist or reject it there; the applicant sees the state in their own portal.</p>
     </div>
   </div>
-  <div class="fw-prose">
-    <p>You deal with the senior lead doing the work, not an account manager. Reporting is written, weekly, and short enough to read on a phone. If the scope grows past the days you have bought, we tell you before we spend them: you can approve more time, cut scope, or stop. Invoices go out monthly. Engagements are rolling, and either side can end one with the agreed notice.</p>
+  <p class="fw-note">The detail, including what posting costs: <a href="/for-advertisers">for advertisers</a>.</p>
+</section>
+
+<section class="fw-band" id="applying">
+  <p class="fw-num">04 — IF YOU ARE LOOKING</p>
+  <h2 class="fw-h2">Find work in three steps.</h2>
+  <div class="fw-steps">
+    <div class="fw-step">
+      <p class="fw-step__n">01</p>
+      <h3 class="fw-step__title">Build a profile.</h3>
+      <p>Your name, a headline, a summary, your day rate, the days a week you are available and whether you work remotely. Every field can be changed later.</p>
+    </div>
+    <div class="fw-step">
+      <p class="fw-step__n">02</p>
+      <h3 class="fw-step__title">Choose who can find you.</h3>
+      <p>Discoverable profiles can be matched to new roles and can apply. Hidden profiles are not matched and cannot apply. A new profile starts hidden.</p>
+    </div>
+    <div class="fw-step">
+      <p class="fw-step__n">03</p>
+      <h3 class="fw-step__title">Apply and track it.</h3>
+      <p>Send an application from your portal with the advert's number and a cover note. Your portal lists every application and where it stands.</p>
+    </div>
+  </div>
+  <p class="fw-note">The detail, including what an advertiser sees: <a href="/for-applicants">for applicants</a>.</p>
+</section>
+
+<section class="fw-close" id="start">
+  <p class="fw-num">05 — START HERE</p>
+  <h2 class="fw-h2">Two ways in.</h2>
+  <p>If you have a role to fill, create an advertiser account and post it. If you want the work, create an applicant profile and make it discoverable.</p>
+  <div class="fw-actions">
+    <a class="fw-btn fw-btn--primary" href="/portal/register?role=advertiser">Post a role</a>
+    <a class="fw-btn fw-btn--ghost" href="/portal/register?role=applicant">Find fractional work</a>
+  </div>
+  <p class="fw-note">Already have an account? <a href="/portal/signin">Sign in</a>.</p>
+</section>
+`;
+
+/* --------------------------------------------------------------------- for advertisers */
+
+export const FOR_ADVERTISERS: string = `
+<section class="fw-band">
+  <p class="fw-num">FOR ADVERTISERS</p>
+  <h1 class="fw-h2">Post a role. Read the applications.</h1>
+  <p class="fw-lede">A role on this board is senior work measured in days per week. You write it, set the day rate and the days, and applications arrive in your portal.</p>
+  <div class="fw-actions">
+    <a class="fw-btn fw-btn--primary" href="/portal/register?role=advertiser">Create an advertiser account</a>
+    <a class="fw-btn fw-btn--ghost" href="/portal/signin">Sign in</a>
   </div>
 </section>
 
-<section class="fw-band" id="proof">
-  <p class="fw-num">04 — PROOF</p>
-  <h2 class="fw-h2">What we have actually delivered.</h2>
-  <p class="fw-lede">Client names are withheld under agreement. The detail below is as specific as those agreements allow.</p>
-  <div class="fw-proof">
-    <div class="fw-proof__item">
-      <p class="fw-proof__claim">Twenty-five years of practice in systems that had to stay up.</p>
-      <p class="fw-proof__detail">Our engineers have delivered for government, banking, insurance, aviation and media clients. Different regulators, different change boards, one standard: it runs in production, somebody can support it, and somebody can explain it.</p>
+<section class="fw-band">
+  <p class="fw-num">01 — WHAT POSTING DOES</p>
+  <h2 class="fw-h2">One advert, on the board.</h2>
+  <p class="fw-lede">A published role gets its own address under /jobs and appears in the latest roles on the home page. It stays there until it is closed.</p>
+  <div class="fw-steps">
+    <div class="fw-step">
+      <p class="fw-step__n">01</p>
+      <h3 class="fw-step__title">Create an advertiser account.</h3>
+      <p>Register with your email, a password and the name you want shown. Tick “Advertise a role”. Confirm the address and add a code from an authenticator app; the account is active once both are done.</p>
     </div>
-    <div class="fw-proof__item">
-      <p class="fw-proof__claim">Three identity providers behind one interface. No incidents.</p>
-      <p class="fw-proof__detail">For a federal government agency we designed and built a proxy gateway that joined three separate third-party identity providers into one stable interface. It ran without a production incident, and every release landed on its scheduled date.</p>
+    <div class="fw-step">
+      <p class="fw-step__n">02</p>
+      <h3 class="fw-step__title">Post the role and its terms.</h3>
+      <p>Title, a one-line summary, the work itself, the day rate in your currency, the days a week, the location and whether it can be done remotely. The days and the rate are chosen before the advert goes live.</p>
     </div>
-    <div class="fw-proof__item">
-      <p class="fw-proof__claim">Six months behind. Four months to production.</p>
-      <p class="fw-proof__detail">We joined a programme that was running six months behind schedule. Four months later it was production-ready.</p>
+    <div class="fw-step">
+      <p class="fw-step__n">03</p>
+      <h3 class="fw-step__title">Read the applications.</h3>
+      <p>Each application arrives in your portal with the applicant's profile and the note they wrote. You shortlist or reject it there, and the applicant sees the state of their application in theirs.</p>
     </div>
-    <div class="fw-proof__item">
-      <p class="fw-proof__claim">Over $800,000 saved on a rollout across multiple sites.</p>
-      <p class="fw-proof__detail">A technology rollout across multiple sites, delivered with over $800,000 in savings against the approved cost. It is a measured figure, not an estimate.</p>
-    </div>
-    <div class="fw-proof__item">
-      <p class="fw-proof__claim">Approved to handle classified information.</p>
-      <p class="fw-proof__detail">We authored the compliance documentation that got a system approved to handle confidential and classified information. Writing for an assessor is a different skill from writing for a developer, and most teams do not have it.</p>
-    </div>
-  </div>
-  <p class="fw-note">AWS Certified Cloud Practitioner. Google Cloud Associate Cloud Engineer. Published technical authors. Apps shipped to the Apple App Store.</p>
-  <p class="fw-note">We work in Java, Spring Boot, AWS Lambda, DynamoDB and API Gateway, Python, Kotlin, PostgreSQL, React, Docker and OpenAPI. Current focus: LLM integration, prompt engineering and model implementation.</p>
-</section>
-
-<section class="fw-band" id="fractional">
-  <p class="fw-num">05 — HOW WE'RE STRUCTURED</p>
-  <h2 class="fw-h2">Part-time senior capacity.</h2>
-  <div class="fw-cols">
-    <p>Fractional means part-time senior capacity. You get an engineer who has run systems in production for two or three days a week, on a retainer or a fixed project, for as long as the work needs it. It is not a recruiter, not an agency and not a body shop. There is no placement fee and no shortlist, because we do the work ourselves.</p>
-    <p>We are founder-led and deliberately small. A named senior lead stays on the work from the first call to the final release, and that person is the one you ring. When the scope calls for more than one engineer, additional senior engineers join from an established network, under the same lead and the same standards. They have led teams, hired and mentored developers. There are no layers, no account managers, and no handover to a junior once the contract is signed.</p>
   </div>
 </section>
 
-<section class="fw-band" id="faq">
-  <p class="fw-num">06 — QUESTIONS</p>
-  <h2 class="fw-h2">Questions we get before the first invoice.</h2>
-  <div class="fw-faq">
-    <details class="fw-faq__item"><summary class="fw-faq__q">What does fractional actually mean?</summary><div class="fw-faq__a"><p>Fractional means part-time senior capacity instead of a full-time hire. You buy two or three days a week of an engineer who has run systems in production, for as long as the work needs it. It is not recruitment and it is not an agency. We do the work ourselves and we are accountable for what ships.</p></div></details>
-    <details class="fw-faq__item"><summary class="fw-faq__q">How many days a week is typical?</summary><div class="fw-faq__a"><p>Two to three days a week is the usual shape. Some engagements are one day a week around a single decision, such as an architecture review or due diligence. A rescue can need five days a week for a month. We will tell you which one the work needs before you commit.</p></div></details>
-    <details class="fw-faq__item"><summary class="fw-faq__q">What does it cost?</summary><div class="fw-faq__a"><p>We quote a day rate or a fixed project price before any work starts, and invoice monthly. A typical retainer buys two or three days a week. The number depends on the scope and the length of the engagement, so we do not publish a rate card. The first conversation and the quote are free.</p></div></details>
-    <details class="fw-faq__item"><summary class="fw-faq__q">Who will we actually work with?</summary><div class="fw-faq__a"><p>The senior engineer who scopes the work is the one who does it. You meet that person on the first call, and they stay on the engagement until it ends. If more engineers join, the same lead stays accountable for the delivery, and you are not passed to a delivery manager.</p></div></details>
-    <details class="fw-faq__item"><summary class="fw-faq__q">Can you scale up if the scope grows?</summary><div class="fw-faq__a"><p>Yes. We bring additional senior engineers onto an engagement when the scope calls for it, including teams of three or four for a defined piece of work. They work under the same lead and the same standards. We would rather tell you the scope has outgrown one person than quietly let it slip.</p></div></details>
-    <details class="fw-faq__item"><summary class="fw-faq__q">Can you work inside our existing team and process?</summary><div class="fw-faq__a"><p>Yes. We join your standups, your board, your repository and your review process, and we work to your definition of done. We have done it alongside permanent teams in government, banking and insurance, including environments where change control sets the pace. If your process is the thing slowing the work down, we will say so.</p></div></details>
-    <details class="fw-faq__item"><summary class="fw-faq__q">Do you work with government clients?</summary><div class="fw-faq__a"><p>Yes. We have delivered for a federal government agency, including a gateway that joined three identity providers behind one interface. We have also authored the compliance documentation that got a system approved to handle confidential and classified information. We will tell you upfront what we can sign and what we cannot.</p></div></details>
-    <details class="fw-faq__item"><summary class="fw-faq__q">What's the minimum engagement?</summary><div class="fw-faq__a"><p>A single day of architecture review counts, and so does a nine-month build. We do not do free discovery, so the minimum is one paid day. Most engagements run for three months or longer once they start.</p></div></details>
-    <details class="fw-faq__item"><summary class="fw-faq__q">Do you sign NDAs?</summary><div class="fw-faq__a"><p>Yes. We will sign yours, or supply ours if you do not have one. We usually ask for mutual terms that cover work we already have underway, which is a short conversation rather than a legal negotiation.</p></div></details>
-  </div>
+<section class="fw-band">
+  <p class="fw-num">02 — WHAT IT COSTS</p>
+  <h2 class="fw-h2">Nothing in the product.</h2>
+  <p>There is no checkout, no subscription and no listing fee on this board. An advertiser account, a role and the applications it receives cost nothing here. If a price is introduced it will be stated on this page before a role is posted.</p>
+  <p class="fw-note">The board takes no payment details from anyone: there is no card field on registration, on a role or in the portal.</p>
 </section>
 
-<section class="fw-close" id="contact">
-  <p class="fw-num">07 — TALK TO US</p>
-  <h2 class="fw-h2">Start with the problem.</h2>
-  <p>Send a paragraph about what the system does, what has gone wrong, and the date you are working towards. If you have a scope document or an architecture diagram, attach it. If you do not have either, that is useful information too.</p>
-  <p>We read every enquiry ourselves and reply with questions, not a sales deck. The first call is thirty minutes and costs nothing. We'll tell you honestly whether we're the right fit.</p>
-  <div class="fw-contact">
-    <ul class="fw-contact__list">
-      <li><span>Email</span><a href="mailto:__BUSINESS_EMAIL__">__BUSINESS_EMAIL__</a></li>
-      <li><span>Phone</span>__BUSINESS_PHONE__</li>
-      <li><span>LinkedIn</span><a href="__LINKEDIN_URL__">profile</a></li>
-      <li><span>ABN</span>__ABN__</li>
-    </ul>
-    <div data-skw-form="contact/contact" data-skw-label-name="Name" data-skw-label-email="Email" data-skw-label-company="Company" data-skw-label-message="What's broken?" data-skw-submit="Send it" data-skw-thanks="Thanks — your message is on its way. One of us reads every one of these, and we reply to the address you left."></div>
-    <p class="fw-form__alt">Prefer email? __BUSINESS_EMAIL__</p>
+<section class="fw-band">
+  <p class="fw-num">03 — WHAT AN APPLICATION CARRIES</p>
+  <h2 class="fw-h2">A profile, read-only.</h2>
+  <p class="fw-lede">When someone applies to one of your roles, their profile appears next to the application. It is read-only: name, headline, summary, day rate, availability, remote, location, skills and links.</p>
+  <p>There is no email address, phone number or postal address in that view, and no field on the page that could carry one. If an applicant wants to be contacted, they put the means in their summary or in a link — that is their decision, on their profile.</p>
+  <p>You decide what happens to the application: shortlist it or reject it. The applicant sees that decision in their portal.</p>
+</section>
+
+<section class="fw-band">
+  <p class="fw-num">04 — BEFORE YOU POST</p>
+  <h2 class="fw-h2">What a role needs.</h2>
+  <p class="fw-lede">A role is published only when it has a title, a one-line summary and the work itself. The rest — days, rate, location and remote — is yours to set, and the days and the rate can be left open.</p>
+  <div class="fw-cards">
+    <article class="fw-card">
+      <p class="fw-card__mark">01</p>
+      <h3 class="fw-card__title">The work</h3>
+      <p class="fw-card__body">What it is, what the first three months look like, and what the person needs to have done before.</p>
+    </article>
+    <article class="fw-card">
+      <p class="fw-card__mark">02</p>
+      <h3 class="fw-card__title">The days</h3>
+      <p class="fw-card__body">One to five days a week, or left empty when it is negotiable.</p>
+    </article>
+    <article class="fw-card">
+      <p class="fw-card__mark">03</p>
+      <h3 class="fw-card__title">The rate</h3>
+      <p class="fw-card__body">A day rate in your currency, or left empty and discussed with the applicant.</p>
+    </article>
+    <article class="fw-card">
+      <p class="fw-card__mark">04</p>
+      <h3 class="fw-card__title">The place</h3>
+      <p class="fw-card__body">A location, and whether the work can be done remotely. Both are stated on the advert.</p>
+    </article>
   </div>
 </section>
 `;
+
+/* ---------------------------------------------------------------------- for applicants */
+
+export const FOR_APPLICANTS: string = `
+<section class="fw-band">
+  <p class="fw-num">FOR APPLICANTS</p>
+  <h1 class="fw-h2">Build a profile. Apply directly.</h1>
+  <p class="fw-lede">Your profile is what a company sees when you apply. It states what you do, your day rate, the days a week you have and whether you work remotely. You decide whether it can be found.</p>
+  <div class="fw-actions">
+    <a class="fw-btn fw-btn--primary" href="/portal/register?role=applicant">Create an applicant account</a>
+    <a class="fw-btn fw-btn--ghost" href="/portal/signin">Sign in</a>
+  </div>
+</section>
+
+<section class="fw-band">
+  <p class="fw-num">01 — YOUR PROFILE</p>
+  <h2 class="fw-h2">What it holds, and who writes it.</h2>
+  <div class="fw-cards">
+    <article class="fw-card">
+      <p class="fw-card__mark">01</p>
+      <h3 class="fw-card__title">The work</h3>
+      <p class="fw-card__body">A headline and a summary. Two or three sentences about what you have run and what you want next is enough.</p>
+    </article>
+    <article class="fw-card">
+      <p class="fw-card__mark">02</p>
+      <h3 class="fw-card__title">The terms</h3>
+      <p class="fw-card__body">Your day rate in your currency, the days a week you are available, and whether you work remotely. Leave the rate empty if you would rather discuss it.</p>
+    </article>
+    <article class="fw-card">
+      <p class="fw-card__mark">03</p>
+      <h3 class="fw-card__title">The switch</h3>
+      <p class="fw-card__body">Discoverable or hidden. Discoverable profiles may be matched to new roles and can apply. Hidden profiles are not matched and cannot apply.</p>
+    </article>
+    <article class="fw-card">
+      <p class="fw-card__mark">04</p>
+      <h3 class="fw-card__title">No contact details</h3>
+      <p class="fw-card__body">There is no email address, phone number or postal address on a profile. An advertiser sees it only when you apply to their role.</p>
+    </article>
+  </div>
+</section>
+
+<section class="fw-band" id="discoverability">
+  <p class="fw-num">02 — DISCOVERABILITY</p>
+  <h2 class="fw-h2">Discoverable or hidden.</h2>
+  <p class="fw-lede">One setting with two states, changed on your portal page whenever you want.</p>
+  <div class="fw-cols">
+    <p><strong>Discoverable.</strong> Your profile may be matched against new roles, and you can apply.</p>
+    <p><strong>Hidden.</strong> You are not matched against new roles, and you cannot apply. Your profile stays in your account, unseen by advertisers.</p>
+  </div>
+  <p class="fw-note">A new profile starts hidden, so set it to discoverable before you apply to anything.</p>
+</section>
+
+<section class="fw-band" id="applications">
+  <p class="fw-num">03 — APPLYING</p>
+  <h2 class="fw-h2">One role, one application.</h2>
+  <div class="fw-steps">
+    <div class="fw-step">
+      <p class="fw-step__n">01</p>
+      <h3 class="fw-step__title">Find a role.</h3>
+      <p>Roles are listed on the home page and each has its own page under /jobs, with the work as the company wrote it.</p>
+    </div>
+    <div class="fw-step">
+      <p class="fw-step__n">02</p>
+      <h3 class="fw-step__title">Send the application.</h3>
+      <p>From your portal: the advert's number and a cover note saying what you would bring to that role. The note goes to the company with your profile.</p>
+    </div>
+    <div class="fw-step">
+      <p class="fw-step__n">03</p>
+      <h3 class="fw-step__title">Track it.</h3>
+      <p>Your portal lists every application and its state: submitted, shortlisted or rejected. The same page holds your profile and the discoverability switch.</p>
+    </div>
+  </div>
+  <p class="fw-note">One application per role. A second application for the same advert is refused. If your account will not activate, write to __SUPPORT_EMAIL__.</p>
+</section>
+`;
+
+/* ------------------------------------------------------------------------- how it works */
+
+export const HOW_IT_WORKS: string = `
+<section class="fw-band">
+  <p class="fw-num">HOW IT WORKS</p>
+  <h1 class="fw-h2">Two accounts, one board.</h1>
+  <p class="fw-lede">Advertisers post roles; applicants build a profile and apply. The board carries the advert, the profile and the application between them, and nothing else.</p>
+</section>
+
+<section class="fw-band">
+  <p class="fw-num">01 — IF YOU ARE POSTING</p>
+  <h2 class="fw-h2">From account to applications.</h2>
+  <div class="fw-steps">
+    <div class="fw-step">
+      <p class="fw-step__n">01</p>
+      <h3 class="fw-step__title">Register as an advertiser.</h3>
+      <p>An email address, a password, the name you want shown, and the advertiser role. Confirm the address and add a code from an authenticator app.</p>
+    </div>
+    <div class="fw-step">
+      <p class="fw-step__n">02</p>
+      <h3 class="fw-step__title">Post the role.</h3>
+      <p>The work, the days a week, the day rate, the location and whether it is remote. Only a published role appears on the board.</p>
+    </div>
+    <div class="fw-step">
+      <p class="fw-step__n">03</p>
+      <h3 class="fw-step__title">Read and decide.</h3>
+      <p>Applications land in your portal with the profile and the note. Shortlist or reject each one; the applicant sees the decision in their portal.</p>
+    </div>
+  </div>
+</section>
+
+<section class="fw-band">
+  <p class="fw-num">02 — IF YOU ARE LOOKING</p>
+  <h2 class="fw-h2">From profile to application.</h2>
+  <div class="fw-steps">
+    <div class="fw-step">
+      <p class="fw-step__n">01</p>
+      <h3 class="fw-step__title">Register as an applicant.</h3>
+      <p>An email address, a password and the name you want on your profile. Confirm the address and add a code from an authenticator app.</p>
+    </div>
+    <div class="fw-step">
+      <p class="fw-step__n">02</p>
+      <h3 class="fw-step__title">Write the profile and set it discoverable.</h3>
+      <p>Headline, summary, day rate, days a week available and remote. Discoverable is what lets the board match you to new roles and what lets you apply.</p>
+    </div>
+    <div class="fw-step">
+      <p class="fw-step__n">03</p>
+      <h3 class="fw-step__title">Apply and track.</h3>
+      <p>Send the advert's number and a cover note from your portal. Every application and its state is listed on the same page as your profile.</p>
+    </div>
+  </div>
+</section>
+
+<section class="fw-band">
+  <p class="fw-num">03 — WHAT THE BOARD DOES NOT DO</p>
+  <h2 class="fw-h2">No recruiter, no database.</h2>
+  <div class="fw-cols">
+    <p><strong>No shortlist.</strong> A role is answered by the people who apply to it. There is no search across profiles and no folder of CVs.</p>
+    <p><strong>No contact details.</strong> A profile carries no email address, phone number or postal address. An advertiser sees it only when that person applies.</p>
+    <p><strong>No automatic applications.</strong> Every application is sent by the applicant, to one role, with a note they wrote.</p>
+  </div>
+</section>
+
+<section class="fw-band" id="questions">
+  <p class="fw-num">04 — QUESTIONS</p>
+  <h2 class="fw-h2">Before you start.</h2>
+  <div class="fw-faq">
+    <details class="fw-faq__item"><summary class="fw-faq__q">What does fractional mean here?</summary><div class="fw-faq__a"><p>Part-time senior work, measured in days per week: one day a week around a single decision, two or three days to run a system, five for a fixed piece of work.</p></div></details>
+    <details class="fw-faq__item"><summary class="fw-faq__q">Who can see my profile?</summary><div class="fw-faq__a"><p>An advertiser sees your profile only when you apply to one of their roles. A discoverable profile may also be matched against new roles; a hidden profile is not matched and cannot apply. The board never shows an email address, phone number or postal address.</p></div></details>
+    <details class="fw-faq__item"><summary class="fw-faq__q">Does posting a role cost anything?</summary><div class="fw-faq__a"><p>No. There is no checkout, no subscription and no listing fee on the board. If a price is introduced it will be stated on the advertiser page before a role is posted.</p></div></details>
+    <details class="fw-faq__item"><summary class="fw-faq__q">How do I apply for a role?</summary><div class="fw-faq__a"><p>Create an applicant account, make your profile discoverable, then send an application from your portal: the advert's number and a cover note. Your portal lists the state of every application.</p></div></details>
+    <details class="fw-faq__item"><summary class="fw-faq__q">Are you a recruiter?</summary><div class="fw-faq__a"><p>No. The board lists roles and carries applications between the company that posted the role and the person who applied. There is no shortlist and no placement.</p></div></details>
+    <details class="fw-faq__item"><summary class="fw-faq__q">Where is the board run from?</summary><div class="fw-faq__a"><p>Newcastle, New South Wales. It is open to companies and applicants across Australia.</p></div></details>
+  </div>
+</section>
+`;
+
+/* -------------------------------------------------------------------------------- about */
+
+export const ABOUT: string = `
+<section class="fw-band">
+  <p class="fw-num">ABOUT</p>
+  <h1 class="fw-h2">Who runs this board.</h1>
+  <p class="fw-lede">Fractional Works is a job board for part-time senior work, run from Newcastle, New South Wales.</p>
+  <div class="fw-prose">
+    <p>The board is operated by Fractional Works (ABN __ABN__), from Newcastle, New South Wales. It exists to put fractional roles in one place: companies state the work and the days, and senior people answer directly. It is not a recruitment agency, and it does not represent either side in a negotiation.</p>
+    <p>Profiles carry no contact details. There is no email address, no phone number and no postal address on a profile, and no field on an advertiser's view that could hold one. An advertiser sees a profile only when that person applies to one of their roles. What they see is the profile the applicant wrote: name, headline, summary, day rate, availability, remote, location, skills and links.</p>
+    <p>Applying is the applicant's decision, one advert at a time. Discoverability is a separate decision: a discoverable profile may be matched against new roles and is needed to apply; a hidden one is neither matched nor able to apply. Both are changed in the portal, by the person who owns the profile.</p>
+    <p>If something on the board is wrong — a role that is closed, an application that did not arrive, an account that will not activate — write to __BUSINESS_EMAIL__ and we will look at it.</p>
+  </div>
+  <ul class="fw-contact__list">
+    <li><span>Email</span><a href="mailto:__BUSINESS_EMAIL__">__BUSINESS_EMAIL__</a></li>
+    <li><span>Phone</span>__BUSINESS_PHONE__</li>
+    <li><span>ABN</span>__ABN__</li>
+    <li><span>Where</span>Newcastle, New South Wales</li>
+  </ul>
+</section>
+`;
+
+/* ------------------------------------------------------------------------------ contact */
 
 export const CONTACT: string = `
-<section class="fw-band fw-band--tight">
+<section class="fw-band">
   <p class="fw-num">CONTACT</p>
-  <h1 class="fw-h2">Tell us what's broken.</h1>
-  <p class="fw-lede">Tell us what the system does, what has gone wrong, and the date you are working towards. If you have a diagram, a scope document or an error message, include it.</p>
+  <h1 class="fw-h2">Questions about the board.</h1>
+  <p class="fw-lede">A role, an account, an application, or something that did not work. Tell us which, and what happened.</p>
   <div class="fw-contact">
     <ul class="fw-contact__list">
       <li><span>Email</span><a href="mailto:__BUSINESS_EMAIL__">__BUSINESS_EMAIL__</a></li>
       <li><span>Phone</span>__BUSINESS_PHONE__</li>
-      <li><span>LinkedIn</span><a href="__LINKEDIN_URL__">profile</a></li>
       <li><span>ABN</span>__ABN__</li>
     </ul>
-    <div data-skw-form="contact/contact" data-skw-label-name="Name" data-skw-label-email="Email" data-skw-label-company="Company" data-skw-label-message="What's broken?" data-skw-submit="Send it" data-skw-thanks="Thanks — your message is on its way. One of us reads every one of these, and we reply to the address you left."></div>
+    <div data-skw-form="contact/contact" data-skw-label-name="Name" data-skw-label-email="Email" data-skw-label-company="Company" data-skw-label-message="What's the question?" data-skw-submit="Send it" data-skw-thanks="Thanks — your message is on its way. We reply to the address you left."></div>
     <p class="fw-form__alt">Prefer email? __BUSINESS_EMAIL__</p>
-    <p class="fw-note">One of us reads every one of these. If it is not a fit, we will say so.</p>
+    <p class="fw-note">For a role, include its number. For an account, include the address you registered with.</p>
   </div>
 </section>
 `;
 
-export const CAREERS: string = `
-<section class="fw-band fw-careers">
-  <p class="fw-num">CAREERS</p>
-  <h1 class="fw-h2">We're building a bench.</h1>
-  <p class="fw-lede">A bench of engineers who have already run the systems they are being asked to work on.</p>
-  <div class="fw-prose">
-    <p>We want to hear from senior engineers who have run systems in production, not only built them. People who can hold a whole problem, from the first conversation with a client through to the release and the support after it. People who write plainly, because half the job is explaining a technical decision to someone who has to approve the budget for it.</p>
-    <p>The work is fractional and project-based. Engagements are staffed under one lead, and everyone on them works to the same standard, whether that is two days a week or five. A bench here means engineers we have worked with and can bring onto an engagement, not a folder of CVs.</p>
-    <p>Write to __CAREERS_EMAIL__ with what you have run, what you would rather not run again, and the days you have available.</p>
-  </div>
-</section>
-`;
+/* ---------------------------------------------------------------------------------- faq */
 
-export interface FaqEntry { q: string; a: string }
+export interface FaqEntry {
+  q: string;
+  a: string;
+}
 
+/** The same questions `/how-it-works` renders, so the FAQPage JSON-LD is the page's own text. */
 export const FAQ: FaqEntry[] = [
-  { q: 'What does fractional actually mean?', a: 'Fractional means part-time senior capacity instead of a full-time hire. You buy two or three days a week of an engineer who has run systems in production, for as long as the work needs it. It is not recruitment and it is not an agency. We do the work ourselves and we are accountable for what ships.' },
-  { q: 'How many days a week is typical?', a: 'Two to three days a week is the usual shape. Some engagements are one day a week around a single decision, such as an architecture review or due diligence. A rescue can need five days a week for a month. We will tell you which one the work needs before you commit.' },
-  { q: 'What does it cost?', a: 'We quote a day rate or a fixed project price before any work starts, and invoice monthly. A typical retainer buys two or three days a week. The number depends on the scope and the length of the engagement, so we do not publish a rate card. The first conversation and the quote are free.' },
-  { q: 'Who will we actually work with?', a: 'The senior engineer who scopes the work is the one who does it. You meet that person on the first call, and they stay on the engagement until it ends. If more engineers join, the same lead stays accountable for the delivery, and you are not passed to a delivery manager.' },
-  { q: 'Can you scale up if the scope grows?', a: 'Yes. We bring additional senior engineers onto an engagement when the scope calls for it, including teams of three or four for a defined piece of work. They work under the same lead and the same standards. We would rather tell you the scope has outgrown one person than quietly let it slip.' },
-  { q: 'Can you work inside our existing team and process?', a: 'Yes. We join your standups, your board, your repository and your review process, and we work to your definition of done. We have done it alongside permanent teams in government, banking and insurance, including environments where change control sets the pace. If your process is the thing slowing the work down, we will say so.' },
-  { q: 'Do you work with government clients?', a: 'Yes. We have delivered for a federal government agency, including a gateway that joined three identity providers behind one interface. We have also authored the compliance documentation that got a system approved to handle confidential and classified information. We will tell you upfront what we can sign and what we cannot.' },
-  { q: 'What\'s the minimum engagement?', a: 'A single day of architecture review counts, and so does a nine-month build. We do not do free discovery, so the minimum is one paid day. Most engagements run for three months or longer once they start.' },
-  { q: 'Do you sign NDAs?', a: 'Yes. We will sign yours, or supply ours if you do not have one. We usually ask for mutual terms that cover work we already have underway, which is a short conversation rather than a legal negotiation.' }
+  {
+    q: 'What does fractional mean here?',
+    a: 'Part-time senior work, measured in days per week: one day a week around a single decision, two or three days to run a system, five for a fixed piece of work.',
+  },
+  {
+    q: 'Who can see my profile?',
+    a: 'An advertiser sees your profile only when you apply to one of their roles. A discoverable profile may also be matched against new roles; a hidden profile is not matched and cannot apply. The board never shows an email address, phone number or postal address.',
+  },
+  {
+    q: 'Does posting a role cost anything?',
+    a: 'No. There is no checkout, no subscription and no listing fee on the board. If a price is introduced it will be stated on the advertiser page before a role is posted.',
+  },
+  {
+    q: 'How do I apply for a role?',
+    a: "Create an applicant account, make your profile discoverable, then send an application from your portal: the advert's number and a cover note. Your portal lists the state of every application.",
+  },
+  {
+    q: 'Are you a recruiter?',
+    a: 'No. The board lists roles and carries applications between the company that posted the role and the person who applied. There is no shortlist and no placement.',
+  },
+  {
+    q: 'Where is the board run from?',
+    a: 'Newcastle, New South Wales. It is open to companies and applicants across Australia.',
+  },
 ];
+
+/* --------------------------------------------------------------------------------- meta */
 
 export const META = {
   home: {
-    title: 'Fractional software engineering — Fractional Works',
-    description: 'Fractional software engineering from Newcastle. Senior engineers two or three days a week for rescues, integrations, builds and technical review.'
+    title: 'Fractional work, listed by the day — Fractional Works',
+    description:
+      'A job board for fractional work. Companies post senior roles measured in days per week, with a day rate; applicants build a profile and apply directly.',
+  },
+  advertisers: {
+    title: 'Post a fractional role — Fractional Works',
+    description:
+      'Post a senior role measured in days per week. Set the day rate and the days up front; applications arrive in your portal with the applicant’s profile, read-only.',
+  },
+  applicants: {
+    title: 'Find fractional work — Fractional Works',
+    description:
+      'Build a profile with your day rate, days a week, availability and remote preference. Control whether you are discoverable, apply to roles and track applications.',
+  },
+  how: {
+    title: 'How the board works — Fractional Works',
+    description:
+      'How posting a role and applying for one work on Fractional Works: accounts, advert terms, discoverability, applications and what the board does not do.',
+  },
+  about: {
+    title: 'About — Fractional Works',
+    description:
+      'Fractional Works is a job board for part-time senior work, run from Newcastle, New South Wales. Profiles carry no contact details.',
   },
   contact: {
-    title: 'Talk to us — Fractional Works',
-    description: 'Tell us what\'s broken. Send a paragraph about the system, the deadline and what went wrong, and we will say honestly whether we are the right fit.'
+    title: 'Contact — Fractional Works',
+    description:
+      'Questions about a role, an account or an application? Write to Fractional Works and we will look at it.',
   },
-  careers: {
-    title: 'Careers — Fractional Works',
-    description: 'We are building a bench of senior engineers who have run systems in production. Fractional and project work, staffed under one lead. Write to us.'
-  }
 };
