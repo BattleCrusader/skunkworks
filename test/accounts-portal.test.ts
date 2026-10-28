@@ -60,7 +60,14 @@ async function build(key = `portal-auto-${(nextKey += 1)}`): Promise<Built> {
   app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) =>
     done(null, body),
   );
-  registerPortal(app, { accounts, env: ENV, tenantOf: () => tenant.key, exposeVerifyLink: true });
+  registerPortal(app, {
+    accounts,
+    env: ENV,
+    tenantOf: () => tenant.key,
+    exposeVerifyLink: true,
+    emailMode: 'off',
+    openDb: (k: string) => new Database(tenantPath(k)),
+  });
   await app.ready();
   return { app, db: () => new Database(tenantPath(tenant.key)), tenant };
 }

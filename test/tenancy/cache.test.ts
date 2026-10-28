@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { buildApp, type AppHandle } from '../../app/main.ts';
 import { loadEnv } from '../../app/env.ts';
 import { TenantMap } from '../../app/tenancy/cache.ts';
-import { migrateTenant } from '../../app/db/migrate.ts';
+import { migrateTenant, targetVersion } from '../../app/db/migrate.ts';
 import { REPO, makeFixture, type Fixture, type TenantSpec } from '../helpers/fixture.ts';
 import { call } from '../helpers/http.ts';
 
@@ -107,9 +107,12 @@ test("UPDATE tenant.mode = 'demo' moves the stamp and no longer changes routing 
   assert.equal((await get('mode.test')).status, 200);
 });
 
-test('UPDATE tenant.db_version = 9 is 503 SKW_E_DM_SCHEMA_STALE with Retry-After: 5', async () => {
+// "Newer than this image" is the image's target plus one, read from the shipped DDL: a literal 9
+// here was true only until v9 shipped, and the test then asserted that a current file is stale.
+test('UPDATE tenant.db_version past the image’s target is 503 SKW_E_DM_SCHEMA_STALE with Retry-After: 5', async () => {
   assert.equal((await get('version.test')).status, 200);
-  writer.prepare('UPDATE tenant SET db_version = 9 WHERE id = ?').run(tenantId('versionme'));
+  const ahead = targetVersion(join(REPO, 'schema', 'site.sql')) + 1;
+  writer.prepare('UPDATE tenant SET db_version = ? WHERE id = ?').run(ahead, tenantId('versionme'));
   const res = await get('version.test');
   assert.equal(res.status, 503);
   assert.equal((res.json as { error: { code: string } }).error.code, 'SKW_E_DM_SCHEMA_STALE');

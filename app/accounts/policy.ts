@@ -31,6 +31,84 @@
 /** A profile's discoverability, as the account holder sets it. Default is `hidden`. */
 export type ProfileVisibility = 'hidden' | 'discoverable';
 
+/**
+ * The closed vocabulary, parsed from a form field.
+ *
+ * `null` for anything else — including a plausible third word. There are two states because the
+ * column has two; a form that invented a third would be a form that writes a value the CHECK
+ * refuses, and the person would see `SQLITE_CONSTRAINT` instead of a sentence. Adding a state is a
+ * migration, a change to this union and a decision recorded here — not a string a route accepts.
+ */
+export function parseVisibility(raw: string): ProfileVisibility | null {
+  return raw === 'hidden' || raw === 'discoverable' ? raw : null;
+}
+
+/**
+ * The bounds a profile form enforces, each one either the column's own CHECK or the size of the
+ * screen that renders it. They live here, beside the vocabulary, so the form and the table cannot
+ * disagree about what a display name is.
+ */
+export const PROFILE_LIMITS = Object.freeze({
+  displayName: 120,
+  headline: 200,
+  summary: 4_000,
+  coverNote: 4_000,
+});
+
+/**
+ * What a profile form may change — deliberately not the whole record.
+ *
+ * `skills`, `links`, `currency` and `location` are not fields here because the applicant's form does
+ * not offer them, and a type with no field for a value cannot be talked into writing one. There is
+ * also no `email`, no `phone` and no `address`: `cms_profile` has no such column, and this is the
+ * second place (after the DDL) where that fact is expressed.
+ */
+export interface ProfileEdit {
+  readonly displayName: string;
+  readonly headline: string | null;
+  readonly summary: string | null;
+  readonly dayRateCents: number | null;
+  readonly availabilityDaysPerWeek: number | null;
+  readonly remoteOk: boolean;
+  readonly visibility: ProfileVisibility;
+  readonly notifyNewJobs: boolean;
+}
+
+/**
+ * The refusal, as a sentence, or `null`.
+ *
+ * Every rule below is one the database already enforces; this function exists so the person filling
+ * the form is told *which* field is wrong instead of being handed a constraint name. It is checked
+ * before the write, and the write still goes through the CHECKs — the validator is a courtesy, the
+ * constraint is the control.
+ */
+export function profileEditProblem(edit: ProfileEdit): string | null {
+  if (edit.displayName.trim().length < 1 || edit.displayName.trim().length > PROFILE_LIMITS.displayName) {
+    return `A display name is 1 to ${PROFILE_LIMITS.displayName} characters.`;
+  }
+  if (edit.headline !== null && edit.headline.length > PROFILE_LIMITS.headline) {
+    return `A headline is at most ${PROFILE_LIMITS.headline} characters.`;
+  }
+  if (edit.summary !== null && edit.summary.length > PROFILE_LIMITS.summary) {
+    return `A summary is at most ${PROFILE_LIMITS.summary} characters.`;
+  }
+  if (edit.dayRateCents !== null && (!Number.isInteger(edit.dayRateCents) || edit.dayRateCents <= 0)) {
+    return 'A day rate is a whole number of cents, and more than zero.';
+  }
+  if (
+    edit.availabilityDaysPerWeek !== null &&
+    (!Number.isInteger(edit.availabilityDaysPerWeek) ||
+      edit.availabilityDaysPerWeek < 1 ||
+      edit.availabilityDaysPerWeek > 7)
+  ) {
+    return 'Availability is 1 to 7 days a week.';
+  }
+  // `visibility` and the two booleans are already typed; a caller cannot pass a third state without
+  // changing this file. The one rule worth stating anyway is the one the product promises: opt-in
+  // mail requires a discoverable profile, and `mayNotify` below is where that is decided.
+  return null;
+}
+
 /** The account holder's own record, before projection. Never leaves the server in this shape. */
 export interface ApplicantProfile {
   readonly accountId: number;

@@ -1,7 +1,7 @@
 {
-  "$comment": "Export projection for a tenant site.db, version 2 (schema v3). The unit of reproducibility is this projection, not the file: two VACUUM INTO copies of the same logical content are not byte-identical once any volatile table has a row (scripts/model/verify_claims.py check 16). 'rows' = data travels; 'empty' = the table exists in the bundle and carries no rows; 'filtered' = rows travel subject to the SQL predicate in `filter`. C-5: the completeness rule is a UNION evaluated against the live database, not a set difference over one file — set(sqlite_master) == core_tables (this file) + u_* tables (prefix rule, class rows) + p_<id>_* tables (class from the installed manifest's tables[].export). A table present in the database and absent from all three is a build failure; a plugin table whose manifest declares no export class is refused at install with SKW_E_PL_NO_EXPORT_CLASS.",
+  "$comment": "Export projection for a tenant site.db, version 2 (schema v9). The unit of reproducibility is this projection, not the file: two VACUUM INTO copies of the same logical content are not byte-identical once any volatile table has a row (scripts/model/verify_claims.py check 16). 'rows' = data travels; 'empty' = the table exists in the bundle and carries no rows; 'filtered' = rows travel subject to the SQL predicate in `filter`. C-5: the completeness rule is a UNION evaluated against the live database, not a set difference over one file — set(sqlite_master) == core_tables (this file) + u_* tables (prefix rule, class rows) + p_<id>_* tables (class from the installed manifest's tables[].export). A table present in the database and absent from all three is a build failure; a plugin table whose manifest declares no export class is refused at install with SKW_E_PL_NO_EXPORT_CLASS.",
   "version": 2,
-  "schema_version": 3,
+  "schema_version": 9,
   "applies_to": [
     "cms",
     "astro",
@@ -167,6 +167,10 @@
     "cms_mail_suppression": {
       "mode": "empty",
       "why": "An unsubscribe or bounce list is personal data about a person's choices, and it is meaningless on another box."
+    },
+    "cms_application": {
+      "mode": "empty",
+      "why": "A bundle is a copy of the SITE, never of its people (S9 T11). An application names two strangers' accounts and carries what one of them wrote in confidence to the other; the recipient of a bundle has no reason to receive it and could not read it without the accounts that are also excluded. Empty by policy, not by accident."
     }
   }
 }

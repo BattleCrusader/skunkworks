@@ -24,7 +24,7 @@ function str(vars: Vars, key: string): string {
 }
 
 /** The templates this build can send. A name outside the set is refused, not silently blank. */
-export const TEMPLATES = ['verify_email', 'account_exists', 'job_match'] as const;
+export const TEMPLATES = ['verify_email', 'account_exists', 'job_match', 'application_received'] as const;
 export type Template = (typeof TEMPLATES)[number];
 
 export function isTemplate(name: string): name is Template {
@@ -59,6 +59,32 @@ export function renderMail(template: string, vars: Vars): RenderedMail {
           'If it was not you, nothing has changed and you can ignore this message.',
         ].join('\n'),
       };
+    case 'application_received': {
+      // The one message an application produces, and the only person it goes to is the advertiser
+      // whose advert was applied to. It names the applicant by display name and headline — the two
+      // facts they chose to publish — and nothing else. There is no address, no phone, no rate and
+      // no reply-to: contact happens by answering on the board, which is the product's promise and
+      // is why this template has no var for one.
+      const title = str(vars, 'job_title');
+      const name = str(vars, 'applicant_name');
+      const headline = str(vars, 'applicant_headline');
+      const lines = [
+        `${name === '' ? 'Someone' : name} applied for ${title === '' ? 'your role' : title}.`,
+        '',
+      ];
+      if (headline !== '') lines.push(`Their profile line: ${headline}`, '');
+      lines.push(
+        'Open your applications page on the board to read the whole application, and to shortlist',
+        'or decline it.',
+        '',
+        'You are receiving this because you advertised the role. Their contact details are not in',
+        'this message and are not sent by the board at all — reply through the board instead.',
+      );
+      return {
+        subject: `New application for ${title === '' ? 'your role' : title}`.slice(0, 200),
+        text: lines.join('\n'),
+      };
+    }
     case 'job_match': {
       const title = str(vars, 'job_title');
       const company = str(vars, 'company');

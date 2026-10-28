@@ -142,6 +142,8 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
   const r6 = join(schemaDir, 'r6-amendments.sql');
   const r7 = join(schemaDir, 'r7-amendments.sql');
   const r8 = join(schemaDir, 'r8-amendments.sql');
+  // S9/v9: the application lives in core, because a plugin's EndpointRequest carries no actor.
+  const r9 = join(schemaDir, 'r9-amendments.sql');
   const target = targetVersion(ddl);
   const rel = join('tenants', siteKey, 'site.db');
   const base = { key: siteKey, path: rel };
@@ -216,6 +218,13 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
       // stranger owns, and the outbox. No rebuild and no backfill: a tenant that has never had a
       // public account simply has no rows, which is what every tenant is on the day this lands.
       applyDdl(db, r8);
+      at = userVersion(db);
+    }
+    if (at === 8) {
+      // S9/v9: the act of applying. One CREATE TABLE and its indexes. Core rather than the job
+      // board plugin's, because a plugin request carries no actor and this row is the grant an
+      // advertiser's view of a stranger's profile depends on.
+      applyDdl(db, r9);
       at = userVersion(db);
     }
     if (at !== target) {

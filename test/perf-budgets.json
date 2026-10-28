@@ -382,6 +382,34 @@
       ]
     },
     {
+      "file": "test/accounts-portals.test.ts",
+      "worstIdleMs": 2491,
+      "measuredOn": "2026-10-28",
+      "load1m": 7.96,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "01d407b7668e842529579d168b567c5987cb36ca59d8b161eb99c561f733f844",
+      "runs": [
+        {
+          "ms": 2242,
+          "at": "2026-10-28T06:14:23.717Z",
+          "load1mBefore": 7.96,
+          "load1mAfter": 7.96,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 12
+        },
+        {
+          "ms": 2491,
+          "at": "2026-10-28T06:14:26.209Z",
+          "load1mBefore": 7.96,
+          "load1mAfter": 7.96,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 12
+        }
+      ]
+    },
+    {
       "file": "test/cli-bootstrap.test.ts",
       "worstIdleMs": 2437,
       "measuredOn": "2026-10-21",

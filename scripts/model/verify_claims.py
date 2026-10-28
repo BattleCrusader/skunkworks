@@ -325,7 +325,7 @@ def readonly_attach():
 # Each check below settles a dispute raised in round 2 and is named in
 # docs/debate/r2-data-model.md §5 by number. Nothing here is a proposal that has not run.
 
-SITE_SQL = os.path.join(ROOT, "schema/site.sql")          # the v3 target, regenerated from one spec
+SITE_SQL = os.path.join(ROOT, "schema/site.sql")          # the v9 target, regenerated from one spec
 CONTROL_SQL = os.path.join(ROOT, "schema/control.sql")    # the v4 control plane (E-20)
 V1_SITE = os.path.join(ROOT, "schema/history/v1-baseline.sql")
 V1_CONTROL = os.path.join(ROOT, "schema/history/v1-control-baseline.sql")
@@ -338,6 +338,9 @@ AMENDMENTS5 = os.path.join(ROOT, "schema/r5-amendments.sql")
 AMENDMENTS6 = os.path.join(ROOT, "schema/r6-amendments.sql")
 AMENDMENTS7 = os.path.join(ROOT, "schema/r7-amendments.sql")
 AMENDMENTS8 = os.path.join(ROOT, "schema/r8-amendments.sql")
+# S9/v9: the application is core, so the chain must reach it or check 20 compares a v8 file with a
+# v9 DDL and reports the one table it added as drift.
+AMENDMENTS9 = os.path.join(ROOT, "schema/r9-amendments.sql")
 CONTROL_R2 = os.path.join(ROOT, "schema/control-r2.sql")
 CONTROL_R3 = os.path.join(ROOT, "schema/control-r3.sql")
 CONTROL_R4 = os.path.join(ROOT, "schema/control-r4.sql")
@@ -676,7 +679,13 @@ def export_projection_reproducible():
     ddl = {l.split()[2] for l in open(SITE_SQL) if l.startswith("CREATE TABLE ")}
     assert ddl == set(proj["tables"]), f"unclassified={ddl - set(proj['tables'])} stale={set(proj['tables']) - ddl}"
     assert set(proj["prefix_rules"]) == {"u_", "p_"}, proj["prefix_rules"]
-    assert proj["version"] == 2 and proj["schema_version"] == 3, (proj["version"], proj["schema_version"])
+    # The projection's declared schema version is the generator's, not a literal: a table added to
+    # the DDL must move this number in the same edit, and this assertion is what notices when it
+    # does not (v8 -> v9 added cms_application).
+    sys.path.insert(0, os.path.join(ROOT, "scripts/model"))
+    import gen_schema
+    assert proj["version"] == 2 and proj["schema_version"] == gen_schema.SCHEMA_VERSION, (
+        proj["version"], proj["schema_version"], gen_schema.SCHEMA_VERSION)
 
     c, p = fresh("proj_src.db")
     c.executescript(open(SITE_SQL).read())
@@ -916,16 +925,20 @@ def compare_planes(chain, fresh, label):
 
 
 def migration_chain_converges():
-    """C-6..C-23 + E-3/E-6/E-14 + E-31: v1 -> r2 -> r3 -> r4 lands on exactly the schema site.sql
+    """C-6..C-23 + E-3/E-6/E-14 + E-31: v1 -> r2 -> ... -> r9 lands on exactly the schema site.sql
     generates, on both planes, compared by table text (CHECKs) and trigger body, not by name; a v2
     file with an access code refuses to migrate, and the refusal names its reason."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts/model"))
+    import gen_schema  # the version is the generator's, never a number typed here
+
     chain, _ = fresh("conv_chain.db")
-    for sc in (V1_SITE, AMENDMENTS, AMENDMENTS3, AMENDMENTS4, AMENDMENTS5, AMENDMENTS6, AMENDMENTS7, AMENDMENTS8):
+    for sc in (V1_SITE, AMENDMENTS, AMENDMENTS3, AMENDMENTS4, AMENDMENTS5, AMENDMENTS6, AMENDMENTS7,
+               AMENDMENTS8, AMENDMENTS9):
         apply_chain(chain, sc)
     fresh_db, _ = fresh("conv_fresh.db")
     apply_chain(fresh_db, SITE_SQL)
-    assert chain.execute("PRAGMA user_version").fetchone()[0] == 8
-    assert fresh_db.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert chain.execute("PRAGMA user_version").fetchone()[0] == gen_schema.SCHEMA_VERSION
+    assert fresh_db.execute("PRAGMA user_version").fetchone()[0] == gen_schema.SCHEMA_VERSION
     n_tables, n_triggers = compare_planes(chain, fresh_db, "site.db")
     assert chain.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -1454,7 +1467,7 @@ CHECKS = [
     ("18 an unanchored audit chain proves nothing", audit_chain_needs_an_anchor),
     ("19 delete-guard cost, indexed vs not", asset_guard_cost),
     # ---- R3 (register v3) ----
-    ("20 migration chain v1->v4 converges on site.sql", migration_chain_converges),
+    ("20 migration chain v1->v9 converges on site.sql", migration_chain_converges),
     ("21 selector seek + argon2 verifier (C-6)", selector_lookup_and_argon2),
     ("22 redemption on the v3 tables (C-7)", redemption_on_real_schema),
     ("23 export projection is a union over the live DB (C-5)", projection_union_over_live_db),

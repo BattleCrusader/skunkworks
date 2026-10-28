@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Skunkworks data model — single source of truth. SITE VERSION 5, CONTROL VERSION 4.
+"""Skunkworks data model — single source of truth. SITE VERSION 9, CONTROL VERSION 4.
 
 Emits, from one spec:
   schema/control.sql                        DDL for control.db   (user_version 4)
-  schema/site.sql                           DDL for a tenant site.db (user_version 5)
+  schema/site.sql                           DDL for a tenant site.db (user_version 9)
   docs/debate/diagrams/r1-data-model.puml   the debate-round ER (kept, regenerated at v3)
   docs/sds/diagrams/er-data-model.puml      the SDS ER (same spec, same emitter)
 and renders both PNGs via the local `plantuml` binary.
@@ -40,7 +40,12 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # the mail outbox and suppression list. These are the first tables in this file that hold a
 # stranger's data, so every privacy decision that can be a constraint is one (activation requires a
 # verified address and a confirmed OTP; visibility is a closed vocabulary; contact has no column).
-SCHEMA_VERSION = 8
+# S9/v9 adds `cms_application`: the act of applying, in CORE rather than in the job board plugin.
+# The reason is structural, not stylistic — a plugin's `EndpointRequest` carries no actor, so a
+# plugin cannot answer "may this viewer see this application" or send mail about it. The row names
+# both parties as account ids and takes no foreign key on `job_id`, because a p_* table is dropped
+# by the plugin installer and a core table may not depend on one.
+SCHEMA_VERSION = 9
 # E-20 (02-errata §8): the control plane moves to v4 — `audit_seal` is a day segment, not a
 # cumulative snapshot — and `schema/control-r4.sql` is the v3 -> v4 delta.
 CONTROL_VERSION = 4
@@ -617,6 +622,20 @@ SITE = {
  ("reason","TEXT","NOT NULL CHECK(reason IN ('bounce','complaint','unsubscribe','manual'))"),
  ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
 ], checks=[], indexes=[]),
+"cms_application": dict(note="S9/v9: an application — one applicant's deliberate act of sharing their profile with ONE advert. It lives in core, not in a p_* table, because a plugin's EndpointRequest carries no actor: a package cannot answer 'may this viewer see this row' and cannot send mail about it. `job_id` is the plugin table's row id and is deliberately NOT a foreign key — the installer DROPs every table a manifest declares, so a core table that referenced one would be uninstallable. The two account columns are the two grants; `advertiser_account_id` is derived at apply time from the job's company owner and never from a request field. UNIQUE(job_id, applicant_account_id) is what makes a second application the same application rather than a duplicate, and `applicant <> advertiser` is what stops a person applying to their own advert.", cols=[
+ ("id","INTEGER","PRIMARY KEY AUTOINCREMENT"),
+ ("job_id","INTEGER","NOT NULL CHECK(job_id > 0)"),
+ ("advertiser_account_id","INTEGER","NOT NULL REFERENCES cms_account(id) ON DELETE CASCADE"),
+ ("applicant_account_id","INTEGER","NOT NULL REFERENCES cms_account(id) ON DELETE CASCADE"),
+ ("cover_note","TEXT","CHECK(cover_note IS NULL OR length(cover_note) BETWEEN 1 AND 4000)"),
+ ("status","TEXT","NOT NULL DEFAULT 'submitted' CHECK(status IN ('submitted','withdrawn','shortlisted','rejected'))"),
+ ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+ ("updated_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
+], checks=["CHECK(applicant_account_id <> advertiser_account_id)"], uniques=[("ux_application","job_id, applicant_account_id")], indexes=[
+ ("ix_application_job","job_id, status",False),
+ ("ix_application_advertiser","advertiser_account_id, status",False),
+ ("ix_application_applicant","applicant_account_id, created_at",False),
+]),
 }
 
 

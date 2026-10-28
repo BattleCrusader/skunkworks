@@ -134,10 +134,15 @@ because they join to identity:
   currency, `days_per_week`, `duration_weeks`, `location`, `remote_ok`, `status IN ('draft',
   'published','closed')`, `published_at`, `closes_at`, `created_by`. Publishing is the event that
   triggers the fan-out, once (guarded by `notified_at`).
-- `cms_application` — `job_id`, `account_id`, `cover_note`, `status IN ('submitted','viewed',
-  'shortlisted','declined','withdrawn')`, `created_at`; UNIQUE `(job_id, account_id)` so a double
+- `cms_application` (schema v9, shipped) — `job_id`, `advertiser_account_id`,
+  `applicant_account_id`, `cover_note`, `status IN ('submitted','withdrawn','shortlisted',
+  'rejected')`, `created_at`, `updated_at`; UNIQUE `(job_id, applicant_account_id)` so a double
   submit is the same application, not two emails to the employer. The row **is** the advertiser's
-  grant for `policy.ts` (`shares`).
+  grant for `policy.ts` (`shares`). It is core, not a `p_*` table, because a plugin's
+  `EndpointRequest` carries no actor: a package can neither decide who may see this row nor send
+  mail about it. `job_id` deliberately has **no** foreign key — the advert lives in the job board
+  package's `p_jobboard_job`, and `app/plugins/install.ts` DROPs every table a manifest declares,
+  so a core row must not be able to refuse that DROP.
 
 ---
 
@@ -146,8 +151,10 @@ because they join to identity:
 Host-drawn, like the admin screens and for the same reason (no third-party markup on a tenant's
 origin): `/portal` (sign in), `/portal/applicant` (applications, profile, visibility, notification
 opt-in), `/portal/advertiser` (company, jobs, applicants). Every page is drawn from the session's
-own role; a page a session has no role for is a 404, not a redirect, so the two portals do not
-advertise each other.
+own role: **no session** is a `303` to `/portal/signin` — a bookmark should land on the form, not
+on an error — and a session **without the role the page belongs to** is a `403` that names it
+(`applicant` / `advertiser`), because a person who followed a link is owed the account type the page
+is for rather than a page that cannot work.
 
 Applicant portal, requirement 4: a list of applications with status, withdraw, and the profile with
 **one** switch that governs discovery (`hidden` ⇄ `discoverable`) plus a separate opt-in for

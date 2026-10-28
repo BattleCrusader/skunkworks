@@ -529,6 +529,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     accounts,
     env,
     exposeVerifyLink: env.emailMode === 'off',
+    emailMode: env.emailMode,
+    // The portal's own two pages read `cms_profile` and `cms_application`; the same factory the
+    // account lifecycle uses, so one place decides what a tenant handle is.
+    openDb: (key: string) => {
+      try {
+        return openAdminWrite(sitePath(key), env.dbBusyTimeoutMs);
+      } catch {
+        throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'tenant database is not writable');
+      }
+    },
     tenantOf: (req: FastifyRequest) => resolveRequest(req).tenant.key,
   });
 

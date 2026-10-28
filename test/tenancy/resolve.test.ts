@@ -27,6 +27,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { buildApp, type AppHandle } from '../../app/main.ts';
+import { targetVersion } from '../../app/db/migrate.ts';
 import { loadEnv } from '../../app/env.ts';
 import { EDGE_TOKEN, REPO, makeFixture, type Fixture } from '../helpers/fixture.ts';
 import { call } from '../helpers/http.ts';
@@ -386,9 +387,12 @@ async function bootRetryApp(): Promise<RetryApp> {
   const address = handle.app.server.address();
   const port = typeof address === 'object' && address !== null ? address.port : 0;
 
-  // row 10, `user_version < tenant.db_version`
+  // row 10, `user_version < tenant.db_version` — one past the shipped target, read from the DDL
+  // rather than typed, so shipping a new schema version cannot quietly make this row unreachable.
   const control = new Database(fixture.controlDb);
-  control.prepare("UPDATE tenant SET db_version = 9 WHERE key = 'stale'").run();
+  control
+    .prepare("UPDATE tenant SET db_version = ? WHERE key = 'stale'")
+    .run(targetVersion(join(REPO, 'schema', 'site.sql')) + 1);
   control.close();
 
   // row 10, `SQLITE_BUSY` after busy_timeout: a rollback-journal file with an
