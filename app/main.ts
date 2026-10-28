@@ -35,7 +35,7 @@ import {
   runMigrations,
   targetVersion,
 } from './db/migrate.ts';
-import { loadPage, normalisePagePath, pageMiss } from './render/page.ts';
+import { loadPage, normalisePagePath, pageMiss, type PageRecord } from './render/page.ts';
 import { renderStoredBody } from './render/body.ts';
 import { resolveSourceBlocks } from './render/blocks.ts';
 import sharp from 'sharp';
@@ -70,6 +70,19 @@ import { DEFAULT_CONTENT_ROOT, UPLOAD_MAX_BYTES } from './assets/store.ts';
 import { Semaphore } from './admin/auth.ts';
 import { Accounts } from './accounts/service.ts';
 import { registerPortal } from './accounts/routes.ts';
+import { advertReader } from './accounts/jobs.ts';
+import {
+  JOBS_PAGE_SIZE,
+  JOBS_PATH,
+  isPublicJobsPath,
+  jobDetailBody,
+  jobDetailDescription,
+  jobDetailTitle,
+  jobsListBody,
+  jobsListDescription,
+  jobsListTitle,
+  pageNumber,
+} from './render/public-jobs.ts';
 import { NULL_TRANSPORT, Outbox } from './mail/outbox.ts';
 import { smtpTransport } from './mail/transport.ts';
 import { seedSettings } from './download/code.ts';
@@ -503,6 +516,23 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     },
   });
 
+  /**
+   * Is this path a page a menu entry may name without a `cms_page` row?
+   *
+   * Two sources answer: the core board at `/jobs` (`isPublicJobsPath` — a Fastify route, not a
+   * package page), and a path a loaded package declares (`/blog/<slug>` is a row in the package's
+   * table). The CMS render and the portal's header must ask the same question, so this is one
+   * function, used by both; a second answer would let a "Jobs" link render on a marketing page and
+   * take the portal's header away.
+   */
+  function sitePageExists(tenantKey: string, candidate: string): boolean {
+    if (isPublicJobsPath(candidate)) return true;
+    for (const entry of plugins.registry.plugins(tenantKey)) {
+      if (matchPluginPage([...entry.pages.values()], candidate) !== undefined) return true;
+    }
+    return false;
+  }
+
   // --- S9: the job board's portal — accounts and roles live in the tenant's own file ---------
   // Core, not a plugin (see `app/accounts/service.ts`), and mounted here rather than in the route
   // table because the tenant comes from the Host exactly as it does for the download plane.
@@ -540,6 +570,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       }
     },
     tenantOf: (req: FastifyRequest) => resolveRequest(req).tenant.key,
+    // The header the portal draws is the site's header, and its menu may name `/jobs` (a core
+    // route) or a package page. This is the same predicate the CMS render passes to `loadNav`,
+    // so both draw the same menu or neither.
+    pageExists: sitePageExists,
   });
 
   /**
@@ -590,7 +624,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     let sheet = '';
     const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
     try {
-      const nav = loadNav(db);
+      const nav = loadNav(db, { pageExists: isPublicJobsPath });
       // S8s: the active theme is a row, not the `site.theme_css` string. `?theme=<key>` names an
       // uploaded theme that is *not* active, which is how the preview page shows a look before
       // anyone commits to it — the key is unguessable only in the sense that it is a slug the
@@ -814,6 +848,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
         .prepare(`SELECT path, updated_at FROM cms_page WHERE status = 'published' ORDER BY path`)
         .all() as { path: string; updated_at: string }[];
       for (const page of pages) entries.push({ loc: `${origin}${page.path}`, lastmod: page.updated_at });
+      // The board's list is a core route rather than a `cms_page` row, and a role page is only
+      // crawlable if the index that links it is in the file too.
+      entries.push({ loc: `${origin}${JOBS_PATH}` });
       // A package's detail pages are rows, not `cms_page` rows, so they are enumerated through
       // the package's own declaration: a new package joins the sitemap by declaring a page.
       plugins.enter(ctx.tenant.key);
@@ -1153,6 +1190,46 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       }
     }
     if (stored === null) throw pageMiss();
+    await renderPage(req, reply, ctx, db, stored, {
+      preview: loaded.preview,
+      ...(opts.themeOverride === undefined ? {} : { themeOverride: opts.themeOverride }),
+      ...(opts.noindex === undefined ? {} : { noindex: opts.noindex }),
+    });
+  }
+
+  interface RenderOptions extends ServeOptions {
+    /** O-29: a preview reads a draft and is `noindex`; nothing else about the document differs. */
+    preview: boolean;
+  }
+
+  /**
+   * **One page, one document** — the shell every path shares.
+   *
+   * A `cms_page` row, a package's declared detail page (`/blog/<slug>`) and the board's own two
+   * pages (`/jobs`, `/jobs/<id>`) all arrive here as the same `PageRecord`, and this is the only
+   * function that loads the menus, the chrome, the theme's sheet and the Astro middleware. That is
+   * deliberate: the header, the sticky rules, `theme.css`, `<main>` and the footer are the site's,
+   * and a second renderer that reproduced them would drift the first time the nav changed. The
+   * only difference between the three callers is how the record was produced.
+   *
+   * Everything a page body could carry that needs the request is resolved here: asset URLs (one
+   * `asset.url` dispatch per key, before the render), `data-skw-block` markers, declared forms and
+   * their per-response state, the `content.render.html` and `page.head` filters, and the per-page
+   * search metadata from `seo_json`. A synthesized page supplies its own `seoJson`, so it gets the
+   * same `<meta name="description">` and canonical tag a CMS page gets — not a second code path.
+   */
+  async function renderPage(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    ctx: RequestContext,
+    db: ReturnType<RenderPool['get']>,
+    stored: PageRecord,
+    opts: RenderOptions,
+  ): Promise<void> {
+    // The path the document says it is. For a CMS page that is the row's own path; for a package's
+    // page and the board's, it is the path the route matched — which is the same string the request
+    // was normalised to, so a filter or a canonical cannot disagree with the URL.
+    const path = stored.path;
     // S8l: the menus are read **after** `plugins.sync` below, because a menu entry may point at a
     // path a package serves (`/blog/<slug>`) and only a synced registry knows those. The
     // variables are declared here so the render call after the `finally` still sees them.
@@ -1182,12 +1259,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       // entry pointing at a page that does not exist is a dead link the CMS created itself. A
       // path a loaded package serves counts as a page: `/blog/<slug>` is a row in the package's
       // table, and a header link to it is not a dead link.
-      const pageExists = (candidate: string): boolean => {
-        for (const entry of plugins.registry.plugins(ctx.tenant.key)) {
-          if (matchPluginPage([...entry.pages.values()], candidate) !== undefined) return true;
-        }
-        return false;
-      };
+      const pageExists = (candidate: string): boolean => sitePageExists(ctx.tenant.key, candidate);
       nav = loadNav(db, { pageExists });
       // S8l: the identity bar and footer, from `cms_settings`. `null` when the tenant has set
       // none of it, so a site that has never opened the Site screen renders exactly the bytes
@@ -1285,7 +1357,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     const data = createRenderData(db, {
       tenantKey: ctx.tenant.key,
       cache: sources,
-      audience: loaded.preview ? 'preview' : 'render',
+      audience: opts.preview ? 'preview' : 'render',
       assetUrls,
     });
     const handler = await astroHandler();
@@ -1303,7 +1375,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       tenantKey: ctx.tenant.key,
       path,
       page,
-      preview: loaded.preview,
+      preview: opts.preview,
       data,
       head,
       nav,
@@ -1320,6 +1392,82 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       ms: Date.now() - startedAt,
     });
   }
+
+  // --- S9: the public board -----------------------------------------------------------------
+  //
+  // `GET /jobs` and `GET /jobs/<ref>`, on the tenant's own host, drawn by the site's own shell.
+  //
+  // Why a Fastify route and not a package page: the board's list is not a row in any table (it is
+  // a page of published adverts, with a count, an empty state and pagination), and its detail page
+  // has to state the rate, the days, the location, the remote flag and the posted date — facts the
+  // package's declarative detail page (`/jobs/{slug}`, still served) has no vocabulary for. The
+  // read itself is the portal's: `advertReader` goes through the plugin facade, so no SQL against
+  // `p_*` appears here and a tenant without the package gets an empty board rather than a 500.
+  //
+  // Both routes hand `renderPage` a `PageRecord` and nothing else, which is what makes the header,
+  // the footer and `/theme.css` the marketing pages' own rather than a copy of them.
+  app.get('/jobs', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const page = pageNumber(req.url);
+    if (page === null) throw pageMiss();
+    const db = getSiteDb(ctx.tenant);
+    const reader = advertReader(db, ctx.tenant.key, env.emailMode);
+    const listing = reader.listPublished({ limit: JOBS_PAGE_SIZE, offset: (page - 1) * JOBS_PAGE_SIZE });
+    const total = listing?.total ?? 0;
+    const rows = listing?.rows ?? [];
+    const pages = Math.max(1, Math.ceil(total / JOBS_PAGE_SIZE));
+    // A page past the end names no adverts. 404 rather than an empty page 9 999, so the URL space
+    // the board answers is bounded by the rows it has.
+    if (page > pages) throw pageMiss();
+    const siteName = loadChrome(db).title;
+    const record: PageRecord = {
+      // No `cms_page` row exists: this page is built from adverts, so it has no id and no revision.
+      id: 0,
+      path: JOBS_PATH,
+      title: jobsListTitle(siteName),
+      status: 'published',
+      template: 'page',
+      bodyHtml: jobsListBody(rows, { page, pages, total }),
+      bodyCss: '',
+      seoJson: JSON.stringify({ description: jobsListDescription(total, siteName) }),
+      updatedAt: new Date().toISOString(),
+    };
+    await renderPage(req, reply, ctx, db, record, { preview: false });
+  });
+
+  app.get('/jobs/:ref', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const ref = String((req.params as { ref?: string }).ref ?? '');
+    // A numeric ref is an id; anything else is the slug the home page's block links to. Both
+    // resolve through the same published-only read, so neither can reach a draft.
+    const id = /^[0-9]{1,9}$/.test(ref) ? Number(ref) : null;
+    const db = getSiteDb(ctx.tenant);
+    const reader = advertReader(db, ctx.tenant.key, env.emailMode);
+    const advert = id === null ? reader.publishedBySlug(ref) : reader.published(id);
+    // Unknown, draft, closed and another tenant's advert are one answer here: the site's 404. The
+    // read is scoped to this tenant's file and filtered on `status = 'published'`, so the only way
+    // to tell those cases apart is to already know the row.
+    if (advert === null) throw pageMiss();
+    const siteName = loadChrome(db).title;
+    const origin = originFromHost(req.headers.host);
+    const record: PageRecord = {
+      id: 0,
+      path: `${JOBS_PATH}/${String(advert.id)}`,
+      title: jobDetailTitle(advert, siteName),
+      status: 'published',
+      template: 'page',
+      bodyHtml: jobDetailBody(advert),
+      bodyCss: '',
+      // Both addresses (`/jobs/12` and `/jobs/fractional-cto`) are the same advert, so the id URL
+      // is the canonical one — the address the list and the sitemap name.
+      seoJson: JSON.stringify({
+        description: jobDetailDescription(advert),
+        ...(origin === null ? {} : { canonical: `${origin}${JOBS_PATH}/${String(advert.id)}` }),
+      }),
+      updatedAt: new Date().toISOString(),
+    };
+    await renderPage(req, reply, ctx, db, record, { preview: false });
+  });
 
   app.setNotFoundHandler(async (req, reply) => {
     await serveNotFound(req, reply);

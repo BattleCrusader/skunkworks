@@ -72,6 +72,7 @@ export const HOME: string = `
     </article>
     <p class="fw-note" data-empty>No roles are published yet. <a href="/portal/register?role=applicant">Create an applicant profile</a>, make it discoverable, and you can apply as soon as a role is posted.</p>
   </div>
+  <p class="fw-note"><a href="/jobs">See every role on the board</a> — the whole list, newest first, with each advert's rate, days a week and location.</p>
 </section>
 
 <section class="fw-band" id="posting">

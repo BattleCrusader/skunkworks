@@ -218,6 +218,7 @@ export interface NavItem {
 }
 
 export const HEADER_NAV: NavItem[] = [
+  { label: 'Jobs', href: '/jobs', kind: 'page' },
   { label: 'Find work', href: '/for-applicants', kind: 'page' },
   { label: 'Post a role', href: '/for-advertisers', kind: 'page' },
   { label: 'How it works', href: '/how-it-works', kind: 'page' },
@@ -226,6 +227,7 @@ export const HEADER_NAV: NavItem[] = [
 ];
 
 export const FOOTER_NAV: NavItem[] = [
+  { label: 'Jobs', href: '/jobs', kind: 'page' },
   { label: 'For advertisers', href: '/for-advertisers', kind: 'page' },
   { label: 'For applicants', href: '/for-applicants', kind: 'page' },
   { label: 'How it works', href: '/how-it-works', kind: 'page' },

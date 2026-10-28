@@ -138,6 +138,7 @@ import {
 import { loadNav, navListHtml } from '../render/nav.ts';
 import { sheetVersion, siteSheet } from '../render/theme.ts';
 import { matchPluginPage } from '../render/plugin-pages.ts';
+import { isPublicJobsPath } from '../render/public-jobs.ts';
 import {
   THEME_KEY_SETTING,
   activateTheme,
@@ -3800,6 +3801,9 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
     try {
       return loadNav(db, {
         pageExists: (candidate: string): boolean => {
+          // `/jobs` is a core route, not a `cms_page` row (the same rule the live render applies):
+          // a "Jobs" menu entry must not blank the editor's canvas.
+          if (isPublicJobsPath(candidate)) return true;
           if (plugins === null) return false;
           for (const entry of plugins.registry.plugins(tenantKey)) {
             const declared = [...entry.pages.values()];
