@@ -34,11 +34,11 @@
         { "name": "slug", "type": "TEXT", "notNull": true, "indexed": true },
         { "name": "summary", "type": "TEXT", "notNull": true },
         { "name": "body", "type": "TEXT", "notNull": true },
-        { "name": "day_rate_cents", "type": "INTEGER" },
+        { "name": "hourly_rate_cents", "type": "INTEGER" },
         { "name": "currency", "type": "TEXT", "notNull": true },
         { "name": "days_per_week", "type": "INTEGER" },
         { "name": "location", "type": "TEXT" },
-        { "name": "remote_ok", "type": "INTEGER", "notNull": true },
+        { "name": "work_mode", "type": "TEXT", "notNull": true, "default": "onsite" },
         { "name": "status", "type": "TEXT", "notNull": true, "indexed": true },
         { "name": "published_at", "type": "TEXT", "indexed": true },
         { "name": "created_at", "type": "TEXT", "notNull": true, "indexed": true }
@@ -49,16 +49,16 @@
         { "name": "slug", "label": "Web address", "widget": "slug", "from": "title", "required": true, "help": "Filled from the role. It is the advert's URL under /jobs/." },
         { "name": "summary", "label": "One line", "widget": "text", "required": true, "help": "The sentence a person reads in the list." },
         { "name": "body", "label": "The role", "widget": "markdown", "rows": 20, "required": true, "help": "What the work is, what the first three months look like, what you need." },
-        { "name": "day_rate_cents", "label": "Day rate (cents)", "widget": "number", "help": "Leave empty for 'discussed'. Cents, so 120000 is $1,200 a day." },
+        { "name": "hourly_rate_cents", "label": "Hourly rate (AUD)", "widget": "money", "help": "Dollars an hour, to the cent: 95 or 95.50. Leave empty for 'rate on application'." },
         { "name": "currency", "label": "Currency", "widget": "text", "help": "Three letters, upper case — AUD unless the advertiser bills elsewhere." },
         { "name": "days_per_week", "label": "Days a week", "widget": "number", "help": "1 to 5. Empty means it is negotiable." },
         { "name": "location", "label": "Location", "widget": "text" },
-        { "name": "remote_ok", "label": "Remote", "widget": "select", "options": ["0", "1"], "help": "1 when the work can be done from anywhere; 0 when it cannot." },
+        { "name": "work_mode", "label": "Work arrangement", "widget": "select", "options": ["onsite", "hybrid", "remote"], "required": true, "help": "What the role requires: on-site, hybrid or remote." },
         { "name": "status", "label": "Visibility", "widget": "select", "options": ["draft", "published", "closed"], "help": "Only a published advert appears on the board.", "required": true },
         { "name": "published_at", "label": "Published", "widget": "date" },
         { "name": "created_at", "widget": "auto", "default": "now" }
       ],
-      "list": ["title", "status", "published_at", "day_rate_cents"]
+      "list": ["title", "status", "published_at", "hourly_rate_cents", "work_mode"]
     },
     {
       "name": "p_jobboard_application",

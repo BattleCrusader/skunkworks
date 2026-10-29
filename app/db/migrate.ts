@@ -144,6 +144,13 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
   const r8 = join(schemaDir, 'r8-amendments.sql');
   // S9/v9: the application lives in core, because a plugin's EndpointRequest carries no actor.
   const r9 = join(schemaDir, 'r9-amendments.sql');
+  // v10: the rate is hourly (cents) and the arrangement is a three-word vocabulary. Two ADD
+  // COLUMNs, one backfill, two DROP COLUMNs — no rebuild, so no row moves.
+  const r10 = join(schemaDir, 'r10-amendments.sql');
+  // v11: the arrangement is a SET (the profile) and the advertiser records an OUTCOME beside the
+  // application's status. ADD COLUMN, one backfill, DROP COLUMN on the profile; four ADD COLUMNs on
+  // the application. Still no rebuild, so no row id and no index moves.
+  const r11 = join(schemaDir, 'r11-amendments.sql');
   const target = targetVersion(ddl);
   const rel = join('tenants', siteKey, 'site.db');
   const base = { key: siteKey, path: rel };
@@ -225,6 +232,20 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
       // board plugin's, because a plugin request carries no actor and this row is the grant an
       // advertiser's view of a stranger's profile depends on.
       applyDdl(db, r9);
+      at = userVersion(db);
+    }
+    if (at === 9) {
+      // v10: the rate is hourly and the arrangement has three words. ALTER TABLE twice, backfill
+      // once, DROP twice — the profile keeps every other column, and `ix_profile_discovery`
+      // survives because nothing it names is touched.
+      applyDdl(db, r10);
+      at = userVersion(db);
+    }
+    if (at === 10) {
+      // v11: what an applicant will accept is a set, and what an advertiser concluded is an outcome
+      // beside the status rather than a transition of it. The profile's single word becomes a
+      // one-element array — no answer is lost and none is invented.
+      applyDdl(db, r11);
       at = userVersion(db);
     }
     if (at !== target) {

@@ -137,11 +137,18 @@ test('S9-5 — a profile is hidden and does not subscribe to mail unless the per
     const id = account(handle);
     handle.prepare("INSERT INTO cms_profile (account_id, display_name) VALUES (?, 'Sam')").run(id);
     const row = handle
-      .prepare('SELECT visibility, notify_new_jobs, remote_ok, currency FROM cms_profile WHERE account_id = ?')
-      .get(id) as { visibility: string; notify_new_jobs: number; remote_ok: number; currency: string };
+      .prepare('SELECT visibility, notify_new_jobs, work_mode, hourly_rate_cents, currency FROM cms_profile WHERE account_id = ?')
+      .get(id) as {
+      visibility: string;
+      notify_new_jobs: number;
+      work_mode: string;
+      hourly_rate_cents: number | null;
+      currency: string;
+    };
     assert.equal(row.visibility, 'hidden', 'a new profile is not discoverable');
     assert.equal(row.notify_new_jobs, 0, 'a new profile is not subscribed to job mail');
-    assert.equal(row.remote_ok, 0);
+    assert.equal(row.work_mode, 'onsite', 'a new profile is on-site until the person says otherwise');
+    assert.equal(row.hourly_rate_cents, null, 'a new profile has no rate: "discussed" is the default');
     assert.equal(row.currency, 'AUD');
     assert.throws(
       () => handle.prepare("UPDATE cms_profile SET visibility = 'public' WHERE account_id = ?").run(id),
@@ -150,6 +157,21 @@ test('S9-5 — a profile is hidden and does not subscribe to mail unless the per
     );
     assert.throws(
       () => handle.prepare("UPDATE cms_profile SET notify_new_jobs = 2 WHERE account_id = ?").run(id),
+      /CHECK constraint failed/,
+    );
+    // v10: the work arrangement is a closed three-word vocabulary, and the rate has a ceiling.
+    assert.throws(
+      () => handle.prepare("UPDATE cms_profile SET work_mode = 'sometimes' WHERE account_id = ?").run(id),
+      /CHECK constraint failed/,
+      'the work-mode vocabulary is closed',
+    );
+    assert.throws(
+      () => handle.prepare('UPDATE cms_profile SET hourly_rate_cents = 500001 WHERE account_id = ?').run(id),
+      /CHECK constraint failed/,
+      'past $5,000 an hour the value is a typo, and the column refuses it',
+    );
+    assert.throws(
+      () => handle.prepare('UPDATE cms_profile SET hourly_rate_cents = 0 WHERE account_id = ?').run(id),
       /CHECK constraint failed/,
     );
   } finally {

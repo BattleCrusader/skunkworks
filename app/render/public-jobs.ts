@@ -5,8 +5,9 @@
  *
  * A package can declare a detail page (`ctx.page`), and the job board does — `/jobs/{slug}`, a
  * title and escaped paragraphs. That is enough to prove the pattern works and not enough to be
- * the board: a visitor choosing a role needs the rate, how many days a week, where it is, whether
- * it is remote and when it was posted, and a list needs those same facts in every row. Those are
+ * the board: a visitor choosing a role needs the hourly rate, how many days a week, where it is,
+ * how the work is arranged and when it was posted, and a list needs those same facts in every row.
+ * Those are
  * `p_jobboard_job` columns the package owns, so the host draws them from the same read the portal
  * uses (`app/accounts/jobs.ts`), through the facade, and never from SQL of its own.
  *
@@ -33,10 +34,16 @@
  * "rate on application" / "days to be agreed" — never `null` and never `undefined`. A company row
  * that no longer exists says "Company not stated" rather than printing a number. Nothing here
  * knows an account id, an email address or a name of a person.
+ *
+ * The rate is **hourly** and written in dollars (`$95.50/hour`): the same `money.ts` the applicant's
+ * form and the advert's admin screen use, so a rate cannot be shown in one unit here and stored in
+ * another there. The arrangement is one of three words, never "remote: yes/no".
  */
 import { escapeAttr, escapeText } from '../editor/html.ts';
 
 import type { PublicAdvert } from '../accounts/jobs.ts';
+import { hourlyRate } from '../accounts/money.ts';
+import { workModeLabel } from '../accounts/policy.ts';
 
 /** The board's list. One path, spelled once. */
 export const JOBS_PATH = '/jobs';
@@ -95,33 +102,18 @@ const MONTHS = [
   'December',
 ] as const;
 
-/** The symbols a day rate is written with; anything else keeps its ISO code. */
-const SYMBOLS: Record<string, string> = {
-  AUD: '$',
-  NZD: 'NZ$',
-  USD: 'US$',
-  CAD: 'CA$',
-  GBP: '£',
-  EUR: '€',
-};
-
-/** Thousands separators, without a locale: the same bytes on every box. */
-function grouped(whole: number): string {
-  return String(whole).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+/**
+ * A rate as money: `$95.50/hour`, `$95/hour`, `US$1,200/hour`. `null` is "rate on application" — the
+ * sentence the board uses for an advert whose advertiser left the field empty, which is a fact about
+ * the advert rather than a number to invent.
+ */
+export function formatHourlyRate(cents: number | null, currency: string): string {
+  return hourlyRate(cents, currency) ?? 'rate on application';
 }
 
-/**
- * A day rate as money. `null` is "rate on application" — the sentence the portal uses for a
- * profile's empty rate and the one an advertiser's empty field means.
- */
-export function formatDayRate(cents: number | null, currency: string): string {
-  if (cents === null || !Number.isFinite(cents) || cents <= 0) return 'rate on application';
-  const code = currency.trim().toUpperCase() || 'AUD';
-  const symbol = SYMBOLS[code];
-  const whole = Math.trunc(cents / 100);
-  const fraction = Math.abs(cents % 100);
-  const amount = `${grouped(whole)}${fraction === 0 ? '' : `.${String(fraction).padStart(2, '0')}`}`;
-  return `${symbol === undefined ? `${code} ` : symbol}${amount} a day`;
+/** `On-site`, `Hybrid`, `Remote` — the advert's own column, in the words a person reads. */
+export function formatWorkMode(mode: PublicAdvert['workMode']): string {
+  return workModeLabel(mode);
 }
 
 /** `2 days a week`, `1 day a week`, or `days to be agreed` when the advertiser left it empty. */
@@ -154,8 +146,9 @@ function location(job: PublicAdvert): string {
   return job.location === '' ? 'Location not stated' : job.location;
 }
 
-function remote(job: PublicAdvert): string {
-  return job.remoteOk ? 'Remote: yes' : 'Remote: no';
+/** The arrangement as a listing row states it: one of the three words, labelled for a person. */
+function work(job: PublicAdvert): string {
+  return formatWorkMode(job.workMode);
 }
 
 /* ------------------------------------------------------------------------------------ head */
@@ -177,17 +170,17 @@ export function jobsListDescription(total: number, siteName: string): string {
   const site = siteName.trim();
   const where = site === '' ? 'the board' : site;
   if (total === 0) return `No open roles on ${where} yet. Companies post fractional roles measured in days per week; applicants apply directly.`;
-  return `${String(total)} published fractional ${total === 1 ? 'role' : 'roles'} on ${where}, newest first: day rate, days a week, location and remote.`;
+  return `${String(total)} published fractional ${total === 1 ? 'role' : 'roles'} on ${where}, newest first: hourly rate, days a week, location and work arrangement.`;
 }
 
 /** One advert's meta description: the same facts its page states, in one sentence. */
 export function jobDetailDescription(job: PublicAdvert): string {
   const parts = [
     job.companyName.trim() === '' ? '' : ` at ${company(job)}`,
-    ` — ${formatDayRate(job.dayRateCents, job.currency)}`,
+    ` — ${formatHourlyRate(job.hourlyRateCents, job.currency)}`,
     `, ${formatDays(job.daysPerWeek)}`,
     `, ${location(job)}`,
-    job.remoteOk ? ', remote' : '',
+    `, ${work(job).toLowerCase()}`,
     `, posted ${formatPosted(job.publishedAt)}`,
   ];
   const sentence = `${job.title}${parts.join('')}.`;
@@ -206,10 +199,10 @@ interface ListView {
 function listCard(job: PublicAdvert): string {
   const facts = [
     company(job),
-    formatDayRate(job.dayRateCents, job.currency),
+    formatHourlyRate(job.hourlyRateCents, job.currency),
     formatDays(job.daysPerWeek),
     location(job),
-    remote(job),
+    work(job),
   ].join(' · ');
   const summary =
     job.summary.trim() === '' ? '' : `\n      <p class="fw-card__body">${escapeText(job.summary.trim())}</p>`;
@@ -225,7 +218,7 @@ function emptyBoard(): string {
   return `<section class="fw-band" id="jobs">
   <p class="fw-kicker">Open roles</p>
   <h1 class="fw-h2">No open roles yet.</h1>
-  <p class="fw-lede">Nothing is published on the board today. Companies post fractional roles here as they open them, newest first, and each advert states its day rate, the days a week and where the work is done.</p>
+  <p class="fw-lede">Nothing is published on the board today. Companies post fractional roles here as they open them, newest first, and each advert states its hourly rate, the days a week, how the work is arranged and where it is done.</p>
   <div class="fw-actions">
     <a class="fw-btn fw-btn--primary" href="/portal/register?role=advertiser">Post a role</a>
     <a class="fw-btn fw-btn--ghost" href="/portal/register?role=applicant">Create an applicant profile</a>
@@ -252,7 +245,7 @@ export function jobsListBody(jobs: readonly PublicAdvert[], view: ListView): str
   return `<section class="fw-band" id="jobs">
   <p class="fw-kicker">Open roles</p>
   <h1 class="fw-h2">Roles on the board.</h1>
-  <p class="fw-lede">${escapeText(count)}, newest first. Every one states its day rate, the days a week and where the work is done; the role itself is as the company wrote it.</p>
+  <p class="fw-lede">${escapeText(count)}, newest first. Every one states its hourly rate, the days a week, how the work is arranged and where it is done; the role itself is as the company wrote it.</p>
   <div class="fw-cards">
     ${jobs.map(listCard).join('\n    ')}
   </div>${pager}
@@ -263,10 +256,10 @@ export function jobsListBody(jobs: readonly PublicAdvert[], view: ListView): str
 /** One advert, in full. */
 export function jobDetailBody(job: PublicAdvert): string {
   const facts: [string, string][] = [
-    ['Day rate', formatDayRate(job.dayRateCents, job.currency)],
+    ['Hourly rate', formatHourlyRate(job.hourlyRateCents, job.currency)],
     ['Days a week', formatDays(job.daysPerWeek)],
+    ['Work arrangement', work(job)],
     ['Location', location(job)],
-    ['Remote', job.remoteOk ? 'yes' : 'no'],
     ['Posted', formatPosted(job.publishedAt)],
   ];
   const factCards = facts
@@ -294,9 +287,9 @@ export function jobDetailBody(job: PublicAdvert): string {
 ${paragraphs}
   </div>
   <div class="fw-actions">
-    <a class="fw-btn fw-btn--primary" href="/portal/applicant">Apply</a>
+    <a class="fw-btn fw-btn--primary" href="/portal/jobs/${String(job.id)}/apply">Apply now</a>
     <a class="fw-btn fw-btn--ghost" href="${JOBS_PATH}">All roles</a>
   </div>
-  <p class="fw-note">Already signed in? <a href="/portal/applicant">Apply from your applicant page</a> with advert number ${String(job.id)}, and <a href="/portal/signin?next=/portal/applicant">sign in</a> first if you are not.</p>
+  <p class="fw-note">Apply now opens this role's own application page: one optional note, one button, no numbers to copy. Not signed in? <a href="/portal/signin?next=/portal/jobs/${String(job.id)}/apply">Sign in</a> and the role comes with you.</p>
 </article>`;
 }

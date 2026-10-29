@@ -20,12 +20,12 @@ interface ProfileRow {
   headline: string | null;
   summary: string | null;
   skills_json: string;
-  day_rate_cents: number | null;
+  hourly_rate_cents: number | null;
   currency: string;
   availability_days_per_week: number | null;
   location: string | null;
   timezone: string | null;
-  remote_ok: number;
+  work_mode: string;
   links_json: string;
   visibility: string;
   notify_new_jobs: number;
@@ -61,8 +61,8 @@ function links(raw: string): { label: string; url: string }[] {
 export function loadProfile(db: Database.Database, accountId: number): ApplicantProfile | null {
   const row = db
     .prepare(
-      `SELECT p.account_id, p.display_name, p.headline, p.summary, p.skills_json, p.day_rate_cents,
-              p.currency, p.availability_days_per_week, p.location, p.timezone, p.remote_ok,
+      `SELECT p.account_id, p.display_name, p.headline, p.summary, p.skills_json, p.hourly_rate_cents,
+              p.currency, p.availability_days_per_week, p.location, p.timezone, p.work_mode,
               p.links_json, p.visibility, p.notify_new_jobs, a.status
          FROM cms_profile p JOIN cms_account a ON a.id = p.account_id
         WHERE p.account_id = ?`,
@@ -75,12 +75,14 @@ export function loadProfile(db: Database.Database, accountId: number): Applicant
     headline: row.headline,
     summary: row.summary,
     skills: strings(row.skills_json),
-    dayRateCents: row.day_rate_cents,
+    hourlyRateCents: row.hourly_rate_cents,
     currency: row.currency,
     availabilityDaysPerWeek: row.availability_days_per_week,
     location: row.location,
     timezone: row.timezone,
-    remoteOk: row.remote_ok === 1,
+    // The column's CHECK is the vocabulary; a value outside it cannot be in the row. The cast is
+    // the reader's half of that constraint, and `parseWorkMode` is the writer's.
+    workMode: row.work_mode === 'hybrid' || row.work_mode === 'remote' ? row.work_mode : 'onsite',
     links: links(row.links_json),
     // The column's CHECK is the vocabulary; a value outside it cannot be in the row. The cast is
     // the reader's half of that constraint, and `parseVisibility` is the writer's.
@@ -106,18 +108,19 @@ export function saveProfile(
   return db
     .prepare(
       `UPDATE cms_profile
-          SET display_name = ?, headline = ?, summary = ?, day_rate_cents = ?,
-              availability_days_per_week = ?, remote_ok = ?, visibility = ?, notify_new_jobs = ?,
-              updated_at = ?
+          SET display_name = ?, headline = ?, summary = ?, hourly_rate_cents = ?,
+              availability_days_per_week = ?, location = ?, work_mode = ?, visibility = ?,
+              notify_new_jobs = ?, updated_at = ?
         WHERE account_id = ?`,
     )
     .run(
       edit.displayName.trim(),
       edit.headline,
       edit.summary,
-      edit.dayRateCents,
+      edit.hourlyRateCents,
       edit.availabilityDaysPerWeek,
-      edit.remoteOk ? 1 : 0,
+      edit.location,
+      edit.workMode,
       edit.visibility,
       edit.notifyNewJobs ? 1 : 0,
       new Date(atMs).toISOString(),

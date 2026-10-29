@@ -25,12 +25,12 @@ function profile(over: Partial<ApplicantProfile> = {}): ApplicantProfile {
     headline: 'Staff engineer, payments',
     summary: 'Fifteen years of distributed systems.',
     skills: ['TypeScript', 'Postgres'],
-    dayRateCents: 120_000,
+    hourlyRateCents: 9_550,
     currency: 'AUD',
     availabilityDaysPerWeek: 3,
     location: 'Newcastle, NSW',
     timezone: 'Australia/Sydney',
-    remoteOk: true,
+    workMode: 'hybrid',
     links: [{ label: 'Portfolio', url: 'https://example.test/sam' }],
     visibility: 'discoverable',
     notifyNewJobs: true,
@@ -70,7 +70,8 @@ test('P5 — an application is the grant, and the projection is what the applica
   assert.equal(got?.basis, 'application');
   assert.equal(got?.headline, 'Staff engineer, payments');
   assert.deepEqual(got?.skills, ['TypeScript', 'Postgres']);
-  assert.equal(got?.dayRateCents, 120_000);
+  assert.equal(got?.hourlyRateCents, 9_550);
+  assert.equal(got?.workMode, 'hybrid');
 });
 
 test('P6 — a hidden profile is still visible to the advertiser the applicant applied to', () => {
@@ -112,15 +113,15 @@ test('P9 — no projection carries an address, an id, or an internal flag', () =
     'availabilityDaysPerWeek',
     'basis',
     'currency',
-    'dayRateCents',
     'displayName',
     'headline',
+    'hourlyRateCents',
     'links',
     'location',
-    'remoteOk',
     'skills',
     'summary',
     'timezone',
+    'workMode',
   ]);
 });
 

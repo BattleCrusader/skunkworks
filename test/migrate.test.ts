@@ -47,11 +47,12 @@ test('migrate creates every missing site.db from site.sql and reports per tenant
       assert.equal(t.ok, t.key !== 'broken', `tenant ${t.key}: ${t.error ?? ''}`);
       if (t.key !== 'broken') {
         assert.equal(t.action, 'created');
-        // The chain's target, not a constant of nature: v9 is S9's application (core, because a
-        // plugin request carries no actor); v8 was the board's people (accounts, profiles, outbox);
-        // v7 E-54's theme assets; v6 E-49's stylesheet blobs. What this asserts is that a created
-        // file lands on the version site.sql ships.
-        assert.equal(t.to, 9, `tenant ${t.key} at v9 (S9: the application, in core)`);
+        // The chain's target, not a constant of nature: v10 is the hourly rate and the three-word
+        // work arrangement; v9 was S9's application (core, because a plugin request carries no
+        // actor); v8 the board's people (accounts, profiles, outbox); v7 E-54's theme assets; v6
+        // E-49's stylesheet blobs. What this asserts is that a created file lands on the version
+        // site.sql ships.
+        assert.equal(t.to, 10, `tenant ${t.key} at v10 (hourly rate, work arrangement)`);
       }
     }
     assert.deepEqual(report.migrated.sort(), ['acme', 'beta', 'demo-acme']);
@@ -96,7 +97,7 @@ test('a v1 site.db is migrated through the frozen chain to the shipped version',
     assert.equal(legacy?.ok, true, JSON.stringify(legacy));
     assert.equal(legacy?.action, 'migrated');
     assert.equal(legacy?.from, 1);
-    assert.equal(legacy?.to, 9);
+    assert.equal(legacy?.to, 10);
 
     // The chain has to land on the shipped target shape, not merely on a version number.
     // §4.5 (E-14): the comparison is the table text (CHECKs), the trigger bodies and the

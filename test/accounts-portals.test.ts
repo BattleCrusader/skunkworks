@@ -140,6 +140,8 @@ interface Session {
   readonly cookie: string;
   readonly csrf: string;
   readonly accountId: number;
+  /** Where the sign-in POST sent this account: its own portal, by role. */
+  readonly landed: string;
 }
 
 /**
@@ -174,13 +176,14 @@ async function enterAs(built: Built, email: string, displayName: string, roles: 
   );
   assert.equal(signin.statusCode, 303, signin.body);
   const cookie = String(signin.headers['set-cookie']).split(';')[0] as string;
+  const landed = String(signin.headers.location);
 
   // The token a browser would copy out of a form on the page it lands on.
   const home = await built.app.inject(get('/portal', { cookie }));
   assert.equal(home.statusCode, 200);
   const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(home.body)?.[1];
   assert.ok(csrf !== undefined, 'a signed-in page carries its session CSRF token');
-  return { cookie, csrf, accountId: row.id };
+  return { cookie, csrf, accountId: row.id, landed };
 }
 
 interface Job {
@@ -207,8 +210,9 @@ function addJob(handle: Database.Database, owner: number, title: string, status 
     handle
       .prepare(
         `INSERT INTO p_jobboard_job
-           (company_id, title, slug, summary, body, currency, remote_ok, status, published_at, created_at)
-         VALUES (?, ?, ?, 'one line', 'the role', 'AUD', 1, ?, ?, ?)`,
+           (company_id, title, slug, summary, body, hourly_rate_cents, currency, days_per_week,
+            location, work_mode, status, published_at, created_at)
+         VALUES (?, ?, ?, 'one line', 'the role', 9550, 'AUD', 2, 'Sydney', 'hybrid', ?, ?, ?)`,
       )
       .run(companyId, title, `role-${slugN}`, status, status === 'published' ? NOW : null, NOW).lastInsertRowid,
   );
@@ -242,10 +246,10 @@ test('P1 — an applicant sees their own applications and only theirs', async ()
       post('/portal/applicant/apply', { csrf: session.csrf, job_id: String(jobId), cover_note: note }, { cookie: session.cookie }),
     );
     assert.equal(res.statusCode, 303, res.body);
-    assert.equal(res.headers.location, '/portal/applicant');
+    assert.equal(res.headers.location, `/portal/applicant?applied=${String(jobId)}`, 'the flash names the role it was sent for');
   }
 
-  const page = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
+  const page = await built.app.inject(get("/portal/applicant", { cookie: alice.cookie }));
   assert.equal(page.statusCode, 200);
   assert.match(page.headers['content-type'] as string, /text\/html/);
   assert.equal(page.headers['cache-control'], 'no-store');
@@ -254,7 +258,7 @@ test('P1 — an applicant sees their own applications and only theirs', async ()
   assert.equal(page.body.includes('Fractional Designer'), false, "bob's advert is not in her page");
   assert.equal(page.body.includes('bob@example.test'), false);
   assert.equal(page.body.includes('Bob Chen'), false);
-  assert.match(page.body, /submitted/);
+  assert.match(page.body, /Submitted/, 'the state is written for a person, capitalised');
   assert.match(page.body, /name="csrf" value="[0-9a-f]{64}"/, 'both forms carry the session token');
 
   const own = built.db();
@@ -481,9 +485,9 @@ test('P6 — the profile form writes the eight fields it owns, and refuses a thi
     display_name: 'Alice R. Rivera',
     headline: 'Fractional CTO',
     summary: 'Twenty years of small teams.',
-    day_rate_cents: '120000',
+    hourly_rate: '95.50',
     availability_days_per_week: '3',
-    remote_ok: '1',
+    work_mode: 'hybrid',
     visibility: 'discoverable',
     notify_new_jobs: '1',
   };
@@ -495,7 +499,7 @@ test('P6 — the profile form writes the eight fields it owns, and refuses a thi
   try {
     const row = handle
       .prepare(
-        `SELECT display_name, headline, summary, day_rate_cents, availability_days_per_week, remote_ok,
+        `SELECT display_name, headline, summary, hourly_rate_cents, availability_days_per_week, work_mode,
                 visibility, notify_new_jobs
            FROM cms_profile WHERE account_id = ?`,
       )
@@ -504,9 +508,9 @@ test('P6 — the profile form writes the eight fields it owns, and refuses a thi
       display_name: 'Alice R. Rivera',
       headline: 'Fractional CTO',
       summary: 'Twenty years of small teams.',
-      day_rate_cents: 120000,
+      hourly_rate_cents: 9550,
       availability_days_per_week: 3,
-      remote_ok: 1,
+      work_mode: 'hybrid',
       visibility: 'discoverable',
       notify_new_jobs: 1,
     });
@@ -514,9 +518,9 @@ test('P6 — the profile form writes the eight fields it owns, and refuses a thi
     handle.close();
   }
 
-  const page = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
+  const page = await built.app.inject(get("/portal/applicant", { cookie: alice.cookie }));
   assert.match(page.body, /Alice R\. Rivera/);
-  assert.match(page.body, /1200\.00 AUD a day/);
+  assert.match(page.body, /\$95\.50\/hour/, 'the rate is dollars an hour, not cents a day');
   assert.match(page.body, /3 days a week/);
 
   // There is no third state: `policy.ts` has two, the column has two, and the form refuses the word.
@@ -526,12 +530,12 @@ test('P6 — the profile form writes the eight fields it owns, and refuses a thi
   assert.equal(third.statusCode, 400, third.body);
   assert.match(third.body, /Choose discoverable or hidden/);
 
-  // A number where a number belongs.
+  // A rate is a rate and not prose.
   const notANumber = await built.app.inject(
-    post('/portal/applicant/profile', { ...edit, day_rate_cents: 'twelve hundred' }, { cookie: alice.cookie }),
+    post('/portal/applicant/profile', { ...edit, hourly_rate: 'twelve hundred' }, { cookie: alice.cookie }),
   );
   assert.equal(notANumber.statusCode, 400);
-  assert.match(notANumber.body, /whole number/);
+  assert.match(notANumber.body, /dollars and cents/);
 
   // And the bound the policy owns.
   const tooLong = await built.app.inject(
@@ -539,12 +543,53 @@ test('P6 — the profile form writes the eight fields it owns, and refuses a thi
   );
   assert.equal(tooLong.statusCode, 400);
   assert.match(tooLong.body, /1 to 120 characters/);
+
+  // A street address is refused here, by its own sentence, and nothing is written. The column's
+  // bound and the screening function are the same rule, so a profile can never become a home
+  // address by way of the locality field.
+  const street = await built.app.inject(
+    post('/portal/applicant/profile', { ...edit, location: 'Unit 3, 12 Smith St' }, { cookie: alice.cookie }),
+  );
+  assert.equal(street.statusCode, 400, street.body);
+  assert.match(street.body, /suburb or city only/);
+
+  const check = built.db();
+  try {
+    const before = check
+      .prepare('SELECT location FROM cms_profile WHERE account_id = ?')
+      .get(alice.accountId) as { location: string | null };
+    assert.equal(before.location, null, 'a refused locality must not be stored');
+  } finally {
+    check.close();
+  }
+
+  // A suburb is accepted as typed, and the rate lands in cents.
+  const suburb = await built.app.inject(
+    post('/portal/applicant/profile', { ...edit, location: 'Newcastle NSW' }, { cookie: alice.cookie }),
+  );
+  assert.equal(suburb.statusCode, 303, suburb.body);
+
+  const after = built.db();
+  try {
+    const stored = after
+      .prepare('SELECT location, hourly_rate_cents FROM cms_profile WHERE account_id = ?')
+      .get(alice.accountId) as { location: string | null; hourly_rate_cents: number | null };
+    assert.equal(stored.location, 'Newcastle NSW');
+    assert.equal(stored.hourly_rate_cents, 9550);
+  } finally {
+    after.close();
+  }
+
+  // The input is named for what the person types. `hourly_rate_cents` in the markup was the bug.
+  const markup = await built.app.inject(get("/portal/applicant", { cookie: alice.cookie }));
+  assert.match(markup.body, /name="hourly_rate"/);
+  assert.doesNotMatch(markup.body, /name="hourly_rate_cents"/);
 });
 
 test('P7 — origin and CSRF are refused on the profile write, before anything is read', async () => {
   const built = await build();
   const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
-  const form = { csrf: alice.csrf, display_name: 'Nobody', visibility: 'hidden', notify_new_jobs: '0', remote_ok: '0' };
+  const form = { csrf: alice.csrf, display_name: 'Nobody', visibility: 'hidden', notify_new_jobs: '0', work_mode: 'onsite' };
 
   const noOrigin = await built.app.inject({
     ...post('/portal/applicant/profile', form, { cookie: alice.cookie }),
@@ -683,7 +728,11 @@ test('P10 — no session redirects, and the wrong role is refused by name on bot
   for (const path of ['/portal/applicant', '/portal/advertiser']) {
     const anonymous = await built.app.inject(get(path));
     assert.equal(anonymous.statusCode, 303, `${path} without a session`);
-    assert.equal(anonymous.headers.location, '/portal/signin');
+    assert.equal(
+      anonymous.headers.location,
+      `/portal/signin?next=${encodeURIComponent(path)}`,
+      'the sign-in form is told where the person was going',
+    );
   }
 
   const wrongForApplicant = await built.app.inject(get('/portal/advertiser', { cookie: applicant.cookie }));
@@ -739,7 +788,7 @@ test('P11 — a session and an application do not cross a tenant boundary', asyn
 
   const stolen = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
   assert.equal(stolen.statusCode, 303, "the cookie names its tenant, so another tenant does not receive it");
-  assert.equal(stolen.headers.location, '/portal/signin');
+  assert.equal(stolen.headers.location, '/portal/signin?next=%2Fportal%2Fapplicant');
 
   const forged = await built.app.inject(
     post('/portal/advertiser/application', { csrf: acme.csrf, application_id: String(applicationId), status: 'rejected' }, { cookie: acme.cookie }),
@@ -769,7 +818,398 @@ test('P12 — a tenant without the job board has no adverts, and the portal says
   assert.equal(res.statusCode, 404, res.body);
   assert.match(res.body, /not on this board/);
 
-  const page = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
+  const page = await built.app.inject(get("/portal/applicant", { cookie: alice.cookie }));
   assert.equal(page.statusCode, 200, 'the page still renders: it is the adverts that are absent');
   assert.match(page.body, /You have not applied for anything yet/);
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * S11 — the owner's six corrections, on the same real HTTP surface.
+ *
+ *   S1  sign-in lands on the account's own portal (applicant / advertiser / both with a switch), and
+ *       `?next=` is honoured only when it is a path on this host;
+ *   S2  the rate is entered in DOLLARS and stored in cents, with the four accepted shapes and the
+ *       three refused ones named;
+ *   S3  the arrangement is three words, and a fourth is refused;
+ *   S4  the applicant page no longer asks for an advert id;
+ *   S5  applying starts on the role (`/jobs/<id>/apply`): the confirmation page, the PII screen, the
+ *       flash, "at the top" and the duplicate refusal by name;
+ *   S6  a hidden profile is refused with its reason and writes nothing;
+ *   S7  withdrawing ends the row, is idempotent, and the advertiser sees WITHDRAWN and no longer
+ *       counts it as actionable.
+ * ---------------------------------------------------------------------------------------------- */
+
+/** A second sign-in for an account that already exists, so `?next=` can be exercised. */
+async function signInAgain(
+  built: Built,
+  email: string,
+  extra: Record<string, string> = {},
+): Promise<{ status: number; location: string; cookie: string }> {
+  const handle = built.db();
+  const row = handle.prepare('SELECT id, totp_secret FROM cms_account WHERE email = ?').get(email) as {
+    id: number;
+    totp_secret: string;
+  };
+  handle.close();
+  const res = await built.app.inject(
+    post('/portal/signin', { email, password: PASSWORD, code: totpCode(row.totp_secret, Date.now()), ...extra }),
+  );
+  const cookie = res.headers['set-cookie'] === undefined ? '' : String(res.headers['set-cookie']).split(';')[0] as string;
+  return { status: res.statusCode, location: String(res.headers.location ?? ''), cookie };
+}
+
+test('S1 — sign-in lands on the account’s own portal, and ?next= wins only when it is a local path', async () => {
+  const built = await build();
+  const applicant = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+  assert.equal(applicant.landed, '/portal/applicant', 'an applicant lands on their applications');
+
+  const advertiser = await enterAs(built, 'hiring@acme.test', 'Acme Hiring', ['advertiser']);
+  assert.equal(advertiser.landed, '/portal/advertiser', 'an advertiser lands on the applications they received');
+
+  const both = await enterAs(built, 'both@example.test', 'Both Roles', ['applicant', 'advertiser']);
+  assert.equal(both.landed, '/portal/applicant', 'both roles land on the applicant side');
+
+  // ...with a one-click switch to the advertiser side, on the page they landed on.
+  const page = await built.app.inject(get('/portal/applicant', { cookie: both.cookie }));
+  assert.equal(page.statusCode, 200, page.body);
+  assert.match(page.body, /<a class="portal-button[^"]*" href="\/portal\/advertiser">Switch to advertising<\/a>/);
+
+  // The sign-in form carries the destination through.
+  const form = await built.app.inject(get('/portal/signin?next=%2Fjobs%2F7%2Fapply'));
+  assert.equal(form.statusCode, 200);
+  assert.match(form.body, /<input type="hidden" name="next" value="\/jobs\/7\/apply">/);
+
+  // An explicit local `next` wins over the role's home.
+  const routed = await signInAgain(built, 'alice@example.test', { next: '/jobs/7/apply' });
+  assert.equal(routed.status, 303);
+  assert.equal(routed.location, '/jobs/7/apply');
+
+  // Anything that is not a path on this host is dropped, not echoed: no open redirect.
+  for (const hostile of ['https://evil.test/steal', '//evil.test/steal', '/\\evil.test', 'javascript:alert(1)']) {
+    const res = await signInAgain(built, 'alice@example.test', { next: hostile });
+    assert.equal(res.status, 303, hostile);
+    assert.equal(res.location, '/portal/applicant', `${hostile} must not be a destination`);
+  }
+
+  // A signed-in visitor who asks for the form is sent where they were going instead.
+  const live = await signInAgain(built, 'alice@example.test');
+  const already = await built.app.inject(get('/portal/signin?next=%2Fportal%2Fapplicant', { cookie: live.cookie }));
+  assert.equal(already.statusCode, 303);
+  assert.equal(already.headers.location, '/portal/applicant');
+});
+
+test('S2 — the rate is entered in dollars and stored in cents', async () => {
+  const built = await build();
+  const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+  const base = { csrf: alice.csrf, display_name: 'Alice Rivera', visibility: 'hidden', notify_new_jobs: '0', work_mode: 'onsite' };
+
+  const save = (rate: string) =>
+    built.app.inject(post('/portal/applicant/profile', { ...base, hourly_rate: rate }, { cookie: alice.cookie }));
+  const stored = (): number | null => {
+    const db = built.db();
+    try {
+      return (db.prepare('SELECT hourly_rate_cents FROM cms_profile WHERE account_id = ?').get(alice.accountId) as {
+        hourly_rate_cents: number | null;
+      }).hourly_rate_cents;
+    } finally {
+      db.close();
+    }
+  };
+
+  const accepted: [string, number][] = [
+    ['95', 9500],
+    ['95.5', 9550],
+    ['95.50', 9550],
+    ['0.01', 1],
+  ];
+  for (const [input, cents] of accepted) {
+    const res = await save(input);
+    assert.equal(res.statusCode, 303, `${input}: ${res.body}`);
+    assert.equal(stored(), cents, `${input} dollars must land as ${String(cents)} cents`);
+    const page = await built.app.inject(get("/portal/applicant", { cookie: alice.cookie }));
+    const shown = cents % 100 === 0 ? `$${String(cents / 100)}/hour` : `$${(cents / 100).toFixed(2)}/hour`;
+    assert.match(page.body, new RegExp(shown.replace(/[.$]/g, '\\$&')), `${input} is shown as ${shown}`);
+  }
+
+  const refused: [string, RegExp][] = [
+    ['-1', /negative/],
+    ['95.555', /two decimal places/],
+    ['6000', /at most \$5,000 an hour/],
+  ];
+  for (const [input, why] of refused) {
+    const before = stored();
+    const res = await save(input);
+    assert.equal(res.statusCode, 400, `${input} must be refused: ${res.body}`);
+    assert.match(res.body, why, `${input} is refused for its own reason`);
+    assert.equal(stored(), before, 'a refused rate never reaches the row');
+  }
+
+  // $95 exactly renders without a trailing pair of zeroes; it is a rate, not an invoice line.
+  assert.equal((await save('95')).statusCode, 303);
+  const exact = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
+  assert.match(exact.body, /\$95\/hour/);
+});
+
+test('S3 — the work arrangement is three words, and a fourth is refused', async () => {
+  const built = await build();
+  const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+  const base = { csrf: alice.csrf, display_name: 'Alice Rivera', visibility: 'hidden', notify_new_jobs: '0' };
+  const column = (): string => {
+    const db = built.db();
+    try {
+      return (db.prepare('SELECT work_mode FROM cms_profile WHERE account_id = ?').get(alice.accountId) as {
+        work_mode: string;
+      }).work_mode;
+    } finally {
+      db.close();
+    }
+  };
+
+  for (const mode of ['onsite', 'hybrid', 'remote'] as const) {
+    const res = await built.app.inject(
+      post('/portal/applicant/profile', { ...base, work_mode: mode, hourly_rate_cents: '' }, { cookie: alice.cookie }),
+    );
+    assert.equal(res.statusCode, 303, `${mode}: ${res.body}`);
+    assert.equal(column(), mode);
+  }
+  const page = await built.app.inject(get("/portal/applicant", { cookie: alice.cookie }));
+  assert.match(page.body, /<dt>Work arrangement<\/dt><dd>Remote<\/dd>/);
+  assert.match(page.body, /<input type="radio" name="work_mode" value="remote" checked> Remote/);
+  assert.match(page.body, /<input type="radio" name="work_mode" value="onsite"> On-site/);
+
+  for (const bad of ['sometimes', '', 'REMOTE']) {
+    const before = column();
+    const res = await built.app.inject(
+      post('/portal/applicant/profile', { ...base, work_mode: bad, hourly_rate_cents: '' }, { cookie: alice.cookie }),
+    );
+    assert.equal(res.statusCode, 400, `${JSON.stringify(bad)} must be refused: ${res.body}`);
+    assert.match(res.body, /Choose on-site, hybrid or remote/);
+    assert.equal(column(), before, 'the row is untouched');
+  }
+});
+
+test('S4 — the applicant page has no form that asks for an advert id', async () => {
+  const built = await build();
+  const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+  const page = await built.app.inject(get("/portal/applicant", { cookie: alice.cookie }));
+  assert.equal(page.statusCode, 200, page.body);
+  assert.doesNotMatch(page.body, /name="job_id"/, 'the id-typing form is gone');
+  assert.doesNotMatch(page.body, /Advert number/);
+  assert.doesNotMatch(page.body, /Apply for a role<\/h2>\s*<p class="portal-note">Enter the advert/);
+  // Applying has a door, and it is the board.
+  assert.match(page.body, /href="\/jobs"/);
+  assert.match(page.body, /Apply now/);
+});
+
+test('S5 — applying starts on the role: confirmation page, PII screen, flash, top of the list, duplicate by name', async () => {
+  const built = await build();
+  const acme = await enterAs(built, 'hiring@acme.test', 'Acme Hiring', ['advertiser']);
+  const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+
+  const handle = built.db();
+  const first = addJob(handle, acme.accountId, 'Fractional Designer');
+  const cto = addJob(handle, acme.accountId, 'Fractional CTO');
+  handle.prepare("UPDATE cms_profile SET visibility = 'discoverable' WHERE account_id = ?").run(alice.accountId);
+  handle.close();
+
+  const applyPath = `/portal/jobs/${String(cto.jobId)}/apply`;
+
+  // A signed-out visitor is sent to the sign-in form with this page as `next`.
+  const anonymous = await built.app.inject(get(applyPath));
+  assert.equal(anonymous.statusCode, 303);
+  assert.equal(anonymous.headers.location, `/portal/signin?next=${encodeURIComponent(applyPath)}`);
+
+  // An advertiser account is refused by name.
+  const asAdvertiser = await built.app.inject(get(applyPath, { cookie: acme.cookie }));
+  assert.equal(asAdvertiser.statusCode, 403, asAdvertiser.body);
+  assert.match(asAdvertiser.body, /applicant role required/i);
+
+  // The confirmation page states the role, the company, the hourly rate and the work arrangement.
+  const confirm = await built.app.inject(get(applyPath, { cookie: alice.cookie }));
+  assert.equal(confirm.statusCode, 200, confirm.body);
+  assert.match(confirm.body, /<h1>Apply for Fractional CTO<\/h1>/);
+  assert.match(confirm.body, new RegExp(`Company ${String(acme.accountId)}`), 'the company is named');
+  assert.match(confirm.body, /<dt>Hourly rate<\/dt><dd>\$95\.50\/hour<\/dd>/);
+  assert.match(confirm.body, /<dt>Work arrangement<\/dt><dd>Hybrid<\/dd>/);
+  assert.match(confirm.body, /<textarea id="cover_note" name="cover_note"/);
+  assert.match(confirm.body, /<button class="portal-button" type="submit">Submit application<\/button>/);
+  assert.match(confirm.body, /name="csrf" value="[0-9a-f]{64}"/);
+  assert.match(confirm.body, new RegExp(`action="/portal/jobs/${String(cto.jobId)}/apply"`));
+
+  // A note that carries contact detail is refused, by its own sentence, and writes nothing.
+  const pii = await built.app.inject(
+    post(applyPath, { csrf: alice.csrf, cover_note: 'Email me at alice@example.test' }, { cookie: alice.cookie }),
+  );
+  assert.equal(pii.statusCode, 400, pii.body);
+  assert.match(pii.body, /cannot contain an email address/);
+  assert.match(pii.body, /Nothing was sent|nothing was sent/);
+
+  // An older application, so "at the top" is a fact about order rather than the only row.
+  const older = await built.app.inject(
+    post('/portal/applicant/apply', { csrf: alice.csrf, job_id: String(first.jobId), cover_note: 'Keen.' }, { cookie: alice.cookie }),
+  );
+  assert.equal(older.statusCode, 303, older.body);
+
+  // The real application.
+  const applied = await built.app.inject(
+    post(applyPath, { csrf: alice.csrf, cover_note: 'I have run two platform teams.' }, { cookie: alice.cookie }),
+  );
+  assert.equal(applied.statusCode, 303, applied.body);
+  assert.equal(applied.headers.location, `/portal/applicant?applied=${String(cto.jobId)}`);
+
+  const rows = built.db();
+  try {
+    const all = rows.prepare('SELECT job_id, applicant_account_id, status, cover_note FROM cms_application ORDER BY id').all() as {
+      job_id: number;
+      applicant_account_id: number;
+      status: string;
+      cover_note: string;
+    }[];
+    assert.deepEqual(
+      all.map((row) => [row.job_id, row.applicant_account_id, row.status]),
+      [
+        [first.jobId, alice.accountId, 'submitted'],
+        [cto.jobId, alice.accountId, 'submitted'],
+      ],
+    );
+    assert.equal(all[1]?.cover_note, 'I have run two platform teams.');
+  } finally {
+    rows.close();
+  }
+
+  // The flash names the role, and the row it is about is the first one in the table.
+  const page = await built.app.inject(get(applied.headers.location as string, { cookie: alice.cookie }));
+  assert.equal(page.statusCode, 200, page.body);
+  assert.match(page.body, /portal-banner--success[^>]*>Your application for <strong>Fractional CTO<\/strong> has been sent\./);
+  const ctoAt = page.body.indexOf('Fractional CTO');
+  const designerAt = page.body.indexOf('Fractional Designer');
+  assert.ok(ctoAt !== -1 && designerAt !== -1, 'both applications are on the page');
+  assert.ok(ctoAt < designerAt, 'the role just applied for is at the top of Your applications');
+  assert.match(page.body, /<span class="portal-state">Submitted<\/span>/);
+
+  // A second application for the same advert is refused by name, on the same page, at 409.
+  const duplicate = await built.app.inject(
+    post(applyPath, { csrf: alice.csrf, cover_note: 'Again.' }, { cookie: alice.cookie }),
+  );
+  assert.equal(duplicate.statusCode, 409, duplicate.body);
+  assert.match(duplicate.body, /already applied/);
+  assert.match(duplicate.body, /Nothing was sent/);
+  assert.doesNotMatch(duplicate.body, /SQLITE_CONSTRAINT|constraint failed/, 'no database error is ever printed');
+
+  const count = built.db();
+  try {
+    assert.equal(
+      (count.prepare('SELECT count(*) AS n FROM cms_application').get() as { n: number }).n,
+      2,
+      'two applications, not three',
+    );
+  } finally {
+    count.close();
+  }
+});
+
+test('S6 — a hidden profile is refused when it tries to apply from the role', async () => {
+  const built = await build();
+  const acme = await enterAs(built, 'hiring@acme.test', 'Acme Hiring', ['advertiser']);
+  const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+
+  const handle = built.db();
+  const job = addJob(handle, acme.accountId, 'Fractional CTO');
+  handle.prepare("UPDATE cms_profile SET visibility = 'hidden' WHERE account_id = ?").run(alice.accountId);
+  handle.close();
+
+  const res = await built.app.inject(
+    post(`/portal/jobs/${String(job.jobId)}/apply`, { csrf: alice.csrf, cover_note: 'Keen.' }, { cookie: alice.cookie }),
+  );
+  assert.equal(res.statusCode, 403, res.body);
+  assert.match(res.body, /profile is hidden/);
+  assert.match(res.body, /make it discoverable/);
+  assert.match(res.body, /Nothing was sent/);
+
+  const rows = built.db();
+  try {
+    assert.equal(
+      (rows.prepare('SELECT count(*) AS n FROM cms_application').get() as { n: number }).n,
+      0,
+      'a refused application leaves no row',
+    );
+  } finally {
+    rows.close();
+  }
+});
+
+test('S7 — withdraw ends the row, is idempotent, and the advertiser sees WITHDRAWN and stops counting it', async () => {
+  const built = await build();
+  const acme = await enterAs(built, 'hiring@acme.test', 'Acme Hiring', ['advertiser']);
+  const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+
+  const handle = built.db();
+  const job = addJob(handle, acme.accountId, 'Fractional CTO');
+  handle.prepare("UPDATE cms_profile SET visibility = 'discoverable' WHERE account_id = ?").run(alice.accountId);
+  handle.close();
+
+  const applied = await built.app.inject(
+    post(`/portal/jobs/${String(job.jobId)}/apply`, { csrf: alice.csrf, cover_note: 'Keen.' }, { cookie: alice.cookie }),
+  );
+  assert.equal(applied.statusCode, 303, applied.body);
+
+  const applicationId = (() => {
+    const db = built.db();
+    try {
+      return (db.prepare('SELECT id FROM cms_application').get() as { id: number }).id;
+    } finally {
+      db.close();
+    }
+  })();
+
+  // The advertiser counts it as actionable before the withdrawal.
+  const before = await built.app.inject(get('/portal/advertiser', { cookie: acme.cookie }));
+  assert.match(before.body, /1 awaiting your decision/);
+  assert.doesNotMatch(before.body, /WITHDRAWN/);
+
+  const withdraw = await built.app.inject(
+    post('/portal/applicant/withdraw', { csrf: alice.csrf, application_id: String(applicationId) }, { cookie: alice.cookie }),
+  );
+  assert.equal(withdraw.statusCode, 303, withdraw.body);
+  assert.equal(withdraw.headers.location, '/portal/applicant');
+
+  const status = (): string => {
+    const db = built.db();
+    try {
+      return (db.prepare('SELECT status FROM cms_application WHERE id = ?').get(applicationId) as { status: string }).status;
+    } finally {
+      db.close();
+    }
+  };
+  assert.equal(status(), 'withdrawn', 'the row says what the applicant decided');
+
+  // The applicant's own row reads Withdrawn and offers nothing further.
+  const mine = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
+  assert.match(mine.body, /<span class="portal-state">Withdrawn<\/span>/);
+  assert.match(mine.body, /No further action/);
+  assert.doesNotMatch(mine.body, /action="\/portal\/applicant\/withdraw"/, 'no second withdrawal to press');
+
+  // Twice is the same answer, not an error page.
+  const again = await built.app.inject(
+    post('/portal/applicant/withdraw', { csrf: alice.csrf, application_id: String(applicationId) }, { cookie: alice.cookie }),
+  );
+  assert.equal(again.statusCode, 303, again.body);
+  assert.equal(again.headers.location, '/portal/applicant');
+  assert.equal(status(), 'withdrawn');
+
+  // The advertiser sees WITHDRAWN, and it is not among the actionable rows.
+  const theirs = await built.app.inject(get('/portal/advertiser', { cookie: acme.cookie }));
+  assert.equal(theirs.statusCode, 200, theirs.body);
+  assert.match(theirs.body, /WITHDRAWN/);
+  assert.match(theirs.body, /0 awaiting your decision/);
+  assert.match(theirs.body, /1 withdrawn/);
+  assert.match(theirs.body, /data-awaiting="0"/);
+  assert.doesNotMatch(theirs.body, /value="shortlisted"/, 'a withdrawn application cannot be shortlisted');
+
+  // And the operator's decision route refuses to reopen it, by name.
+  const reopen = await built.app.inject(
+    post('/portal/advertiser/application', { csrf: acme.csrf, application_id: String(applicationId), status: 'shortlisted' }, { cookie: acme.cookie }),
+  );
+  assert.equal(reopen.statusCode, 400, reopen.body);
+  assert.match(reopen.body, /withdrew/);
 });

@@ -328,13 +328,31 @@ export const PORTAL_CSS = String.raw`/*
   cursor: pointer;
 }
 
-/* The sign-out form is one quiet action at the end of the account page. */
+/* The sign-out form is one quiet action, on the account page and in a dashboard's bar. */
 .portal-signout {
   margin: 1.6rem 0 0;
 }
 
+/*
+ * A dashboard's bar, under its heading: the switch to the other side of the board when the account
+ * holds both roles, and the way out. The switch is first because it is what a person came for; the
+ * sign-out is pushed to the far end so it is not the thing a thumb finds first.
+ */
+.portal-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  margin: 0 0 1.6rem;
+}
+
+.portal-bar .portal-signout {
+  margin: 0 0 0 auto;
+}
+
 /* Decision controls inside a table cell: two actions, one row, on a phone they wrap. */
-.portal-decisions {
+.portal-decisions,
+.portal-inline {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
@@ -526,6 +544,15 @@ export const PORTAL_CSS = String.raw`/*
  * block under the date. Only the span needs a box of its own. */
 .portal-state {
   display: inline-block;
+}
+
+/*
+ * A withdrawn application is the one state nobody acts on, on either side of the board. It keeps
+ * the advertiser's table but loses the accent colour: WITHDRAWN is a fact to notice, not a live
+ * application to shortlist.
+ */
+.portal-table .state.portal-state--withdrawn {
+  color: var(--warm, #b4400f);
 }
 
 .portal-table td > .portal-button {

@@ -68,7 +68,8 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
-import { projectProfile, type ApplicantProfile } from '../accounts/policy.ts';
+import { hourlyRate, parseRateDollars, rateInput } from '../accounts/money.ts';
+import { projectProfile, workModeLabel, type ApplicantProfile, type WorkMode } from '../accounts/policy.ts';
 import type { AccountStatus, Role } from '../accounts/service.ts';
 import { extOfMime } from '../assets/farm.ts';
 import { applyPick, mediaChoices, pickAsset } from '../editor/media.ts';
@@ -273,12 +274,12 @@ interface ProfileRow {
   headline: string | null;
   summary: string | null;
   skills_json: string;
-  day_rate_cents: number | null;
+  hourly_rate_cents: number | null;
   currency: string;
   availability_days_per_week: number | null;
   location: string | null;
   timezone: string | null;
-  remote_ok: number;
+  work_mode: string;
   links_json: string;
   visibility: string;
   notify_new_jobs: number;
@@ -1646,8 +1647,8 @@ ${pager}`,
     const profile =
       (db
         .prepare(
-          `SELECT display_name, headline, summary, skills_json, day_rate_cents, currency,
-                  availability_days_per_week, location, timezone, remote_ok, links_json,
+          `SELECT display_name, headline, summary, skills_json, hourly_rate_cents, currency,
+                  availability_days_per_week, location, timezone, work_mode, links_json,
                   visibility, notify_new_jobs
              FROM cms_profile WHERE account_id = ?`,
         )
@@ -1695,15 +1696,16 @@ ${pager}`,
       const projection = projectProfile({ kind: 'operator' }, this.#profileInput(account, profile));
       // An `operator` viewer is always in scope for a profile (`policy.ts`'s first branch), so
       // this null is the type's shape and not a case this screen can reach.
+      const rate = projection === null ? null : hourlyRate(projection.hourlyRateCents, projection.currency);
       profileBlock =
         projection === null
           ? '<p>No profile row: this account has not filled one in.</p>'
           : `<dl>
 ${field('Name', esc(projection.displayName))}
 ${field('Headline', projection.headline === null ? '—' : esc(projection.headline))}
-${field('Day rate', projection.dayRateCents === null ? '—' : `${esc((projection.dayRateCents / 100).toFixed(2))} ${esc(projection.currency)}`)}
+${field('Hourly rate', rate === null ? '—' : esc(rate))}
 ${field('Availability', projection.availabilityDaysPerWeek === null ? '—' : `${projection.availabilityDaysPerWeek} days a week`)}
-${field('Remote', yesNo(projection.remoteOk))}
+${field('Work arrangement', esc(workModeLabel(projection.workMode)))}
 ${field('Visibility', esc(profile.visibility))}
 </dl>
 <p class="muted">The block above is the profile policy's projection for an operator. Visibility is the
@@ -1828,12 +1830,13 @@ ${mailHtml}
       headline: profile.headline,
       summary: profile.summary,
       skills: jsonArray(profile.skills_json).filter((skill): skill is string => typeof skill === 'string'),
-      dayRateCents: profile.day_rate_cents,
+      hourlyRateCents: profile.hourly_rate_cents,
       currency: profile.currency,
       availabilityDaysPerWeek: profile.availability_days_per_week,
       location: profile.location,
       timezone: profile.timezone,
-      remoteOk: profile.remote_ok === 1,
+      // The column's CHECK is the vocabulary; a value outside it cannot be in the row.
+      workMode: (profile.work_mode === 'hybrid' || profile.work_mode === 'remote' ? profile.work_mode : 'onsite') as WorkMode,
       links: jsonArray(profile.links_json).flatMap((item) => {
         if (typeof item !== 'object' || item === null) return [];
         const { label, url } = item as { label?: unknown; url?: unknown };
@@ -4302,6 +4305,16 @@ ${items}
       if (field.default === 'now' && mode === 'insert' && (out[field.name] ?? '') === '') {
         out[field.name] = new Date().toISOString();
       }
+      if (field.widget === 'money') {
+        // Dollars the operator typed → cents the column holds. Empty stays empty: the rate column
+        // allows "not stated", and a cleared box means the rate is discussed.
+        const raw = (out[field.name] ?? '').trim();
+        if (raw !== '') {
+          const parsed = parseRateDollars(raw, field.label ?? field.name);
+          if (parsed.ok === false) throw new AppError('SKW_E_PLT_REQUEST_INVALID', parsed.problem);
+          out[field.name] = String(parsed.cents);
+        }
+      }
       if (field.widget === 'slug' && field.from !== undefined && (out[field.name] ?? '') === '') {
         const derived = (out[field.from] ?? '')
           .toLowerCase()
@@ -4631,6 +4644,13 @@ ${body}
           // arrives empty — so a browser without JavaScript still produces a slug.
           const from = field?.from === undefined ? '' : ` data-slug-from="f_${esc(field.from)}"`;
           return `${label}<input id="f_${esc(c.name)}" name="${esc(c.name)}" type="text" value="${esc(value)}"${placeholder}${required}${described}${from}>${hint}`;
+        }
+        if (widget === 'money') {
+          // Cents are the column's business; dollars are the person's. The row holds 9550 and the
+          // box shows 95.50 — and the write puts it back through `parseRateDollars`, so a typo is a
+          // sentence rather than a rate a hundred times too small.
+          const shown = row === null || row[c.name] === null || row[c.name] === undefined ? '' : rateInput(Number(row[c.name]));
+          return `${label}<input id="f_${esc(c.name)}" name="${esc(c.name)}" type="number" inputmode="decimal" min="0.01" max="5000" step="0.01" value="${esc(shown)}"${required}${described}>${hint}`;
         }
         if (widget === 'number') {
           return `${label}<input id="f_${esc(c.name)}" name="${esc(c.name)}" type="number" step="any" value="${esc(value)}"${required}${described}>${hint}`;

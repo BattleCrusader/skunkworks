@@ -4,7 +4,8 @@
  * What this file proves, in the order the tests appear:
  *
  *   1. the list shows **only published** adverts, newest first, and every row a visitor needs is in
- *      it: title, company, day rate as money, days a week, location, remote, posted date and a link;
+ *      it: title, company, hourly rate as money, days a week, location, work arrangement, posted
+ *      date and a link;
  *   2. a draft and a closed advert are absent from the list *and* their detail URLs are 404s — the
  *      filter is in the query, so guessing an id is not a way in;
  *   3. an unknown id and another tenant's id are both the site's ordinary 404, and one tenant's id
@@ -81,10 +82,10 @@ interface JobSeed {
   readonly slug: string;
   readonly summary?: string;
   readonly body?: string;
-  readonly dayRateCents?: number | null;
+  readonly hourlyRateCents?: number | null;
   readonly daysPerWeek?: number | null;
   readonly location?: string;
-  readonly remoteOk?: boolean;
+  readonly workMode?: 'onsite' | 'hybrid' | 'remote';
   readonly status?: 'draft' | 'published' | 'closed';
   readonly publishedAt?: string | null;
 }
@@ -103,8 +104,8 @@ function seedJob(tenant: string, job: JobSeed): number {
     const row = db
       .prepare(
         `INSERT INTO p_jobboard_job
-           (company_id, title, slug, summary, body, day_rate_cents, currency, days_per_week,
-            location, remote_ok, status, published_at, created_at)
+           (company_id, title, slug, summary, body, hourly_rate_cents, currency, days_per_week,
+            location, work_mode, status, published_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?, 'AUD', ?, ?, ?, ?, ?, '2026-10-01T00:00:00.000Z')`,
       )
       .run(
@@ -113,10 +114,10 @@ function seedJob(tenant: string, job: JobSeed): number {
         job.slug,
         job.summary ?? `${job.title}, in one line.`,
         job.body ?? `${job.title} — the work, as the company wrote it.\n\nThe first three months.`,
-        job.dayRateCents === undefined ? 120_000 : job.dayRateCents,
+        job.hourlyRateCents === undefined ? 9_550 : job.hourlyRateCents,
         job.daysPerWeek === undefined ? 2 : job.daysPerWeek,
         job.location ?? 'Sydney',
-        job.remoteOk === false ? 0 : 1,
+        job.workMode ?? 'hybrid',
         job.status ?? 'published',
         job.publishedAt === undefined ? '2026-10-20T00:00:00.000Z' : job.publishedAt,
       );
@@ -194,10 +195,10 @@ test('PJ-1. the list shows the published advert with every fact a visitor needs'
     title: 'Fractional CTO',
     slug: 'fractional-cto',
     summary: 'Two days a week to own the platform.',
-    dayRateCents: 120_000,
+    hourlyRateCents: 9_550,
     daysPerWeek: 2,
     location: 'Sydney',
-    remoteOk: true,
+    workMode: 'hybrid',
     publishedAt: '2026-10-20T00:00:00.000Z',
   });
   const res = await get('/jobs');
@@ -205,10 +206,12 @@ test('PJ-1. the list shows the published advert with every fact a visitor needs'
   assert.match(res.body, /<h1 class="fw-h2">Roles on the board\.<\/h1>/);
   assert.match(res.body, /Fractional CTO/, 'the role title');
   assert.match(res.body, /Northwind/, 'the company name');
-  assert.match(res.body, /\$1,200 a day/, 'the day rate, as money');
+  assert.match(res.body, /\$95\.50\/hour/, 'the hourly rate, as money');
   assert.match(res.body, /2 days a week/, 'the days a week');
   assert.match(res.body, /Sydney/, 'the location');
-  assert.match(res.body, /Remote: yes/, 'the remote flag');
+  assert.match(res.body, /Hybrid/, 'the work arrangement, in words');
+  assert.doesNotMatch(res.body, /Remote: (yes|no)/, 'there is no yes/no remote flag any more');
+  assert.doesNotMatch(res.body, /a day\b/, 'nothing on the board is priced by the day');
   assert.match(res.body, /Posted 20 October 2026/, 'the posted date');
   assert.match(res.body, new RegExp(`href="/jobs/${String(ctoId)}"`), "a link to the advert's own page");
   assert.match(res.body, /Two days a week to own the platform\./, 'the one-line summary');
@@ -281,15 +284,27 @@ test('PJ-6. the detail page carries the advert, its Apply call to action, and it
   assert.match(res.body, /<p>Fractional CTO — the work, as the company wrote it\.<\/p>/, 'the first paragraph of the body');
   assert.match(res.body, /<p>The first three months\.<\/p>/, 'the body is rendered as paragraphs');
   assert.match(res.body, /Northwind/, 'the company');
-  assert.match(res.body, /\$1,200 a day/, 'the day rate');
+  assert.match(res.body, /\$95\.50\/hour/, 'the hourly rate');
   assert.match(res.body, /2 days a week/, 'the days a week');
   assert.match(res.body, /Sydney/, 'the location');
+  assert.match(res.body, /<p class="fw-card__mark">Work arrangement<\/p>\s*<p class="fw-card__body">Hybrid<\/p>/, 'the work arrangement is a fact card');
   assert.match(res.body, /Posted<\/p>\s*<p class="fw-card__body">20 October 2026<\/p>/, 'the posted date');
-  // The Apply call to action: the portal for a signed-in applicant, and the sign-in form (with the
-  // way back) for everyone else. The portal cookie is scoped to `/portal`, so this page cannot see
-  // it — which is why both doors are named rather than guessed.
-  assert.match(res.body, /<a class="fw-btn fw-btn--primary" href="\/portal\/applicant">Apply<\/a>/);
-  assert.match(res.body, /href="\/portal\/signin\?next=\/portal\/applicant"/);
+  // The Apply call to action is the role's own application page. This page cannot know whether the
+  // visitor holds a session (`/portal` cookies are scoped, and the board is public), so the button
+  // names the one address both visitors can use: `/jobs/<id>/apply`, which sends a signed-out
+  // visitor to the sign-in form with that page as `next` and comes back with the advert in hand.
+  // The button points at the portal-scoped path, because the session cookie is `Path=/portal` —
+  // `/jobs/<id>/apply` would arrive without a session and bounce a signed-in applicant to sign-in.
+  assert.match(
+    res.body,
+    new RegExp(`<a class="fw-btn fw-btn--primary" href="/portal/jobs/${String(ctoId)}/apply">Apply now</a>`),
+  );
+  assert.match(
+    res.body,
+    new RegExp(`href="/portal/signin\\?next=/portal/jobs/${String(ctoId)}/apply"`),
+  );
+  assert.doesNotMatch(res.body, /Apply from your applicant page/, 'the advert-number copy is gone');
+  assert.doesNotMatch(res.body, /advert number/i);
 });
 
 test('PJ-7. the slug address the home page links to is the same advert', async () => {

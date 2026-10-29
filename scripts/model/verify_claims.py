@@ -325,7 +325,7 @@ def readonly_attach():
 # Each check below settles a dispute raised in round 2 and is named in
 # docs/debate/r2-data-model.md §5 by number. Nothing here is a proposal that has not run.
 
-SITE_SQL = os.path.join(ROOT, "schema/site.sql")          # the v9 target, regenerated from one spec
+SITE_SQL = os.path.join(ROOT, "schema/site.sql")          # the shipped target, regenerated from one spec
 CONTROL_SQL = os.path.join(ROOT, "schema/control.sql")    # the v4 control plane (E-20)
 V1_SITE = os.path.join(ROOT, "schema/history/v1-baseline.sql")
 V1_CONTROL = os.path.join(ROOT, "schema/history/v1-control-baseline.sql")
@@ -341,6 +341,13 @@ AMENDMENTS8 = os.path.join(ROOT, "schema/r8-amendments.sql")
 # S9/v9: the application is core, so the chain must reach it or check 20 compares a v8 file with a
 # v9 DDL and reports the one table it added as drift.
 AMENDMENTS9 = os.path.join(ROOT, "schema/r9-amendments.sql")
+# v10 alters `cms_profile` in place (hourly rate, work mode). Without it the chain would stop at v9
+# and check 20 would compare two different tables' texts.
+AMENDMENTS10 = os.path.join(ROOT, "schema/r10-amendments.sql")
+# v11 alters both tables the board's people own: `cms_profile` gains the arrangement SET (and loses
+# the single word), `cms_application` gains the advertiser's outcome group. The chain has to apply it
+# or check 20 compares a v10 file against a v11 DDL and reports the difference as drift.
+AMENDMENTS11 = os.path.join(ROOT, "schema/r11-amendments.sql")
 CONTROL_R2 = os.path.join(ROOT, "schema/control-r2.sql")
 CONTROL_R3 = os.path.join(ROOT, "schema/control-r3.sql")
 CONTROL_R4 = os.path.join(ROOT, "schema/control-r4.sql")
@@ -925,7 +932,7 @@ def compare_planes(chain, fresh, label):
 
 
 def migration_chain_converges():
-    """C-6..C-23 + E-3/E-6/E-14 + E-31: v1 -> r2 -> ... -> r9 lands on exactly the schema site.sql
+    """C-6..C-23 + E-3/E-6/E-14 + E-31: v1 -> r2 -> ... -> r11 lands on exactly the schema site.sql
     generates, on both planes, compared by table text (CHECKs) and trigger body, not by name; a v2
     file with an access code refuses to migrate, and the refusal names its reason."""
     sys.path.insert(0, os.path.join(ROOT, "scripts/model"))
@@ -933,7 +940,7 @@ def migration_chain_converges():
 
     chain, _ = fresh("conv_chain.db")
     for sc in (V1_SITE, AMENDMENTS, AMENDMENTS3, AMENDMENTS4, AMENDMENTS5, AMENDMENTS6, AMENDMENTS7,
-               AMENDMENTS8, AMENDMENTS9):
+               AMENDMENTS8, AMENDMENTS9, AMENDMENTS10, AMENDMENTS11):
         apply_chain(chain, sc)
     fresh_db, _ = fresh("conv_fresh.db")
     apply_chain(fresh_db, SITE_SQL)
@@ -1467,7 +1474,7 @@ CHECKS = [
     ("18 an unanchored audit chain proves nothing", audit_chain_needs_an_anchor),
     ("19 delete-guard cost, indexed vs not", asset_guard_cost),
     # ---- R3 (register v3) ----
-    ("20 migration chain v1->v9 converges on site.sql", migration_chain_converges),
+    ("20 migration chain v1->v11 converges on site.sql", migration_chain_converges),
     ("21 selector seek + argon2 verifier (C-6)", selector_lookup_and_argon2),
     ("22 redemption on the v3 tables (C-7)", redemption_on_real_schema),
     ("23 export projection is a union over the live DB (C-5)", projection_union_over_live_db),

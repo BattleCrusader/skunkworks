@@ -130,10 +130,12 @@ because they join to identity:
   `approved_by`, `approved_at`. Only `approved` companies may post.
 - `cms_company_member` — `(company_id, account_id)` PK, `role IN ('owner','poster')`. Membership is
   the only way an advertiser account reaches a company.
-- `cms_job` — `company_id`, title, slug, summary, description, `skills_json`, `day_rate_cents`,
-  currency, `days_per_week`, `duration_weeks`, `location`, `remote_ok`, `status IN ('draft',
-  'published','closed')`, `published_at`, `closes_at`, `created_by`. Publishing is the event that
-  triggers the fan-out, once (guarded by `notified_at`).
+- `cms_job` — `company_id`, title, slug, summary, description, `skills_json`, `hourly_rate_cents`,
+  currency, `days_per_week`, `duration_weeks`, `location`, `work_mode IN ('onsite','hybrid',
+  'remote')`, `status IN ('draft', 'published','closed')`, `published_at`, `closes_at`,
+  `created_by`. Publishing is the event that triggers the fan-out, once (guarded by
+  `notified_at`). Shipping shape v10: the board package's `p_jobboard_job` carries
+  `hourly_rate_cents` and `work_mode`, the same two facts in the same units as `cms_profile`.
 - `cms_application` (schema v9, shipped) — `job_id`, `advertiser_account_id`,
   `applicant_account_id`, `cover_note`, `status IN ('submitted','withdrawn','shortlisted',
   'rejected')`, `created_at`, `updated_at`; UNIQUE `(job_id, applicant_account_id)` so a double

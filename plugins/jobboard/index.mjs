@@ -62,7 +62,7 @@ export function activate(ctx) {
     name: 'latest-jobs',
     label: 'Job board: latest roles',
     table: 'p_jobboard_job',
-    columns: ['title', 'location', 'day_rate_cents', 'slug'],
+    columns: ['title', 'location', 'hourly_rate_cents', 'slug'],
     labelColumn: 'title',
     limit: 8,
     orderBy: 'published_at',
@@ -99,11 +99,15 @@ export function activate(ctx) {
         title: row.title,
         summary: row.summary,
         company: row.company_id,
-        dayRateCents: row.day_rate_cents,
+        hourlyRateCents: row.hourly_rate_cents,
         currency: row.currency,
         daysPerWeek: row.days_per_week,
         location: row.location,
-        remoteOk: row.remote_ok === 1,
+        // v10: the arrangement is a three-word vocabulary on the advert as well as the profile.
+        // The column is the manifest's (no CHECK is expressible in the grammar, so the default and
+        // the select's options are the control); a row holding anything else reads as 'onsite',
+        // which is what the column defaults to.
+        workMode: row.work_mode === 'hybrid' || row.work_mode === 'remote' ? row.work_mode : 'onsite',
         publishedAt: row.published_at,
       })),
     };

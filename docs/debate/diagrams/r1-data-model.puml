@@ -12,7 +12,7 @@ skinparam class {
   ArrowColor #444444
 }
 
-title Skunkworks schema v9  (generated from one spec)
+title Skunkworks schema v11  (generated from one spec)
 
 package "control.db  (global, never exported, user_version 4)" {
   entity tenant as "tenant" <<control>> {
@@ -111,7 +111,7 @@ package "control.db  (global, never exported, user_version 4)" {
   }
 }
 
-package "tenants/<key>/site.db  (one file per tenant, user_version 9)" {
+package "tenants/<key>/site.db  (one file per tenant, user_version 11)" {
   entity cms_settings as "cms_settings" <<site>> {
     key : TEXT <<PK>>
     value_json : TEXT <<NN>>
@@ -470,12 +470,12 @@ package "tenants/<key>/site.db  (one file per tenant, user_version 9)" {
     headline : TEXT
     summary : TEXT
     skills_json : TEXT <<NN>>
-    day_rate_cents : INTEGER
+    hourly_rate_cents : INTEGER
     currency : TEXT <<NN>>
     availability_days_per_week : INTEGER
     location : TEXT
     timezone : TEXT
-    remote_ok : INTEGER <<NN>>
+    work_modes_json : TEXT <<NN>>
     links_json : TEXT <<NN>>
     visibility : TEXT <<NN>>
     notify_new_jobs : INTEGER <<NN>>
@@ -508,6 +508,10 @@ package "tenants/<key>/site.db  (one file per tenant, user_version 9)" {
     applicant_account_id : INTEGER <<FK>>
     cover_note : TEXT
     status : TEXT <<NN>>
+    outcome : TEXT
+    outcome_note : TEXT
+    outcome_at : TEXT
+    outcome_by_account_id : INTEGER <<FK>>
     created_at : TEXT <<NN>>
     updated_at : TEXT <<NN>>
   }
@@ -518,6 +522,7 @@ cms_account ||--o{ cms_account_session : "account_id"
 cms_account ||--o{ cms_account_token : "account_id"
 cms_account ||--o{ cms_application : "advertiser_account_id"
 cms_account ||--o{ cms_application : "applicant_account_id"
+cms_account ||--o{ cms_application : "outcome_by_account_id"
 cms_account ||--o{ cms_profile : "account_id"
 cms_asset ||--o{ cms_asset : "watermark_asset_id"
 cms_asset ||--o{ cms_asset_alias : "asset_id"

@@ -677,3 +677,121 @@ test('S8k-4. a row on a package screen can be edited and deleted from that scree
   })();
   assert.equal(gone, undefined, 'the row is gone');
 });
+
+/**
+ * S11g — a money field is **dollars in the form, cents in the column**.
+ *
+ * The job board's advert stores `hourly_rate_cents`, because a rate that is a float is a rate that
+ * rounds. A person types `95.50`, not `9550`, so the field declares `widget: "money"` and the host
+ * divides on the way in and multiplies on the way out. This test walks the real install, the real
+ * screen and the real row, because a widget that is only right in its renderer is a widget that
+ * writes the wrong number.
+ */
+test('S11g-1. the advert form takes dollars and the row holds cents', async () => {
+  const JOBBOARD = join(REPO, 'plugins', 'jobboard');
+  const installed = skwctl([
+    'plugin',
+    'install',
+    JOBBOARD,
+    '--tenant',
+    'acme',
+    '--allow-unsigned',
+    '--test-report',
+    reportFor(JOBBOARD),
+    '--runner-digest',
+    RUNNER_DIGEST,
+  ]);
+  assert.equal(installed.status, 0, `jobboard install failed: ${installed.stderr}${installed.stdout}`);
+  const enabled = await post('/admin/t/acme/plugins/enable', { plugin: 'jobboard' });
+  assert.equal(enabled.status, 303, enabled.body);
+
+  // A company row, written straight into the package's table: fixture data, not app code.
+  const seeded = (() => {
+    const db = new Database(fixture.sitePath('acme'));
+    try {
+      db.prepare('INSERT INTO p_jobboard_company (account_id, name, created_at) VALUES (0, ?, ?)').run(
+        'Northwind',
+        '2026-11-01T00:00:00.000Z',
+      );
+      return (db.prepare('SELECT id FROM p_jobboard_company WHERE name = ?').get('Northwind') as { id: number }).id;
+    } finally {
+      db.close();
+    }
+  })();
+
+  const form = await get('/admin/t/acme/jobs/new');
+  assert.equal(form.status, 200, form.body);
+  assert.match(form.body, /<label for="f_hourly_rate_cents">Hourly rate \(AUD\)/);
+  assert.match(form.body, /id="f_hourly_rate_cents"[^>]*type="number"[^>]*step="0\.01"/, 'dollars and cents, not whole cents');
+  assert.doesNotMatch(form.body, /Day rate/, 'the day rate is gone from the form');
+  assert.match(form.body, /<label for="f_work_mode">Work arrangement/);
+  assert.match(
+    form.body,
+    /<select id="f_work_mode" name="work_mode"[^>]*><option value="onsite"[^>]*>onsite<\/option><option value="hybrid"[^>]*>hybrid<\/option><option value="remote"[^>]*>remote<\/option>/,
+    'the three arrangements, and only three',
+  );
+
+  const write = (rate: string, mode = 'hybrid') =>
+    post('/admin/t/acme/jobs', {
+      company_id: String(seeded),
+      title: `Fractional CTO ${rate}`,
+      slug: '',
+      summary: 'Two days a week to own the platform.',
+      body: 'The work, as the company wrote it.',
+      hourly_rate_cents: rate,
+      currency: 'AUD',
+      days_per_week: '2',
+      location: 'Sydney',
+      work_mode: mode,
+      status: 'published',
+      published_at: '2026-11-01',
+      created_at: '',
+    });
+
+  const created = await write('95.50');
+  assert.equal(created.status, 303, created.body);
+
+  const row = (() => {
+    const db = new Database(fixture.sitePath('acme'));
+    try {
+      return db
+        .prepare(
+          `SELECT id, hourly_rate_cents, work_mode, currency FROM p_jobboard_job
+            WHERE title = 'Fractional CTO 95.50'`,
+        )
+        .get() as { id: number; hourly_rate_cents: number; work_mode: string; currency: string } | undefined;
+    } finally {
+      db.close();
+    }
+  })();
+  assert.ok(row !== undefined, 'the screen wrote no advert');
+  assert.equal(row.hourly_rate_cents, 9550, '95.50 dollars is 9550 cents in the column');
+  assert.equal(row.work_mode, 'hybrid');
+  assert.equal(row.currency, 'AUD');
+
+  // The edit form shows the rate back in dollars — 95.50, not 9550.
+  const edit = await get(`/admin/t/acme/jobs/${String(row.id)}`);
+  assert.equal(edit.status, 200, edit.body);
+  assert.match(edit.body, /id="f_hourly_rate_cents"[^>]*value="95\.50"/);
+  assert.match(edit.body, /<option value="hybrid" selected>hybrid<\/option>/);
+
+  // A third decimal place and a value past the ceiling are sentences, not rows.
+  for (const [rate, why] of [
+    ['9.555', /two decimal places/],
+    ['6000', /at most \$5,000 an hour/],
+    ['-95', /cannot be negative/],
+  ] as [string, RegExp][]) {
+    const refused = await write(rate, 'remote');
+    assert.equal(refused.status, 400, `${rate}: ${refused.body}`);
+    assert.match(refused.body, why);
+  }
+  const count = (() => {
+    const db = new Database(fixture.sitePath('acme'));
+    try {
+      return (db.prepare('SELECT count(*) AS n FROM p_jobboard_job').get() as { n: number }).n;
+    } finally {
+      db.close();
+    }
+  })();
+  assert.equal(count, 1, 'a refused rate never reaches the table');
+});

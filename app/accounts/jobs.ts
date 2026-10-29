@@ -28,6 +28,7 @@ import type Database from 'better-sqlite3';
 
 import { installedPlugins } from '../plugins/install.ts';
 import { hostOp, type HostContext } from '../plugins/ops.ts';
+import type { WorkMode } from './policy.ts';
 
 /** The package id the portal reads. One constant, so a rename is one edit and a loud one. */
 export const JOBBOARD_PLUGIN = 'jobboard';
@@ -42,8 +43,10 @@ export interface JobFact {
 
 /**
  * One advert as a visitor may read it: the published row plus the name of the company that posted
- * it. `dayRateCents`/`daysPerWeek` are `null` when the advertiser left them empty ("discussed"),
- * which is a fact about the advert rather than a missing value to invent.
+ * it. `hourlyRateCents`/`daysPerWeek` are `null` when the advertiser left them empty ("rate on
+ * application"), which is a fact about the advert rather than a missing value to invent.
+ * `workMode` is the advert's own column, defaulting to `onsite` because that is what the column
+ * defaults to — an advert is never left without an answer to the question.
  */
 export interface PublicAdvert {
   readonly id: number;
@@ -53,11 +56,11 @@ export interface PublicAdvert {
   readonly body: string;
   /** `''` when the company row is gone; the renderer says "company not stated" rather than guess. */
   readonly companyName: string;
-  readonly dayRateCents: number | null;
+  readonly hourlyRateCents: number | null;
   readonly currency: string;
   readonly daysPerWeek: number | null;
   readonly location: string;
-  readonly remoteOk: boolean;
+  readonly workMode: WorkMode;
   /** The date the advert went live, `YYYY-MM-DD…`; `null` for a published row never given one. */
   readonly publishedAt: string | null;
 }
@@ -153,11 +156,13 @@ function advertOf(row: Row, companyName: string): PublicAdvert | null {
     summary: str(row, 'summary'),
     body: str(row, 'body'),
     companyName,
-    dayRateCents: intOrNull(row, 'day_rate_cents'),
+    hourlyRateCents: intOrNull(row, 'hourly_rate_cents'),
     currency: currency === '' ? 'AUD' : currency,
     daysPerWeek: intOrNull(row, 'days_per_week'),
     location: str(row, 'location').trim(),
-    remoteOk: row['remote_ok'] === 1,
+    // The manifest declares the column; a row written before v10, or by an operator's hand, may
+    // hold a word outside the vocabulary, and `onsite` is the one the column itself defaults to.
+    workMode: row['work_mode'] === 'hybrid' || row['work_mode'] === 'remote' ? row['work_mode'] : 'onsite',
     publishedAt: publishedAt === '' ? null : publishedAt,
   };
 }

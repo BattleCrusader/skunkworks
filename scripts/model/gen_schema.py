@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Skunkworks data model — single source of truth. SITE VERSION 9, CONTROL VERSION 4.
+"""Skunkworks data model — single source of truth. SITE VERSION 10, CONTROL VERSION 4.
 
 Emits, from one spec:
   schema/control.sql                        DDL for control.db   (user_version 4)
@@ -45,7 +45,19 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # plugin cannot answer "may this viewer see this application" or send mail about it. The row names
 # both parties as account ids and takes no foreign key on `job_id`, because a p_* table is dropped
 # by the plugin installer and a core table may not depend on one.
-SCHEMA_VERSION = 9
+# v10 replaces two profile columns the product got wrong: `day_rate_cents` becomes
+# `hourly_rate_cents` (the work is bought by the hour, and the money is still exact cents) and
+# `remote_ok INTEGER` becomes `work_mode TEXT` with three states, because a flag cannot say
+# "hybrid". The job board's advert moves with it (plugins/jobboard/plugin.json), so the board and
+# the profile speak the same two facts in the same units.
+# v11 corrects two more, both from the owner. `cms_profile.work_mode` becomes
+# `work_modes_json`: what an applicant will accept is a SET (on-site AND hybrid AND remote is a
+# normal answer), and one column holding one word could not say so — the form's radio group was the
+# visible symptom of the model's mistake. The advert keeps its own single `work_mode`, because a
+# role has one arrangement. And `cms_application` grows an `outcome_*` group: the advertiser's
+# decision, recorded beside the applicant's lifecycle `status` rather than replacing it, because
+# "they withdrew" and "we are not proceeding" are two different facts about one row.
+SCHEMA_VERSION = 11
 # E-20 (02-errata §8): the control plane moves to v4 — `audit_seal` is a day segment, not a
 # cumulative snapshot — and `schema/control-r4.sql` is the v3 -> v4 delta.
 CONTROL_VERSION = 4
@@ -585,18 +597,18 @@ SITE = {
  ("rotated_from","TEXT",None),
  ("revoked_at","TEXT",None),
 ], checks=[], indexes=[("ix_account_session_account","account_id",False),("ix_account_session_expiry","expires_at",False)]),
-"cms_profile": dict(note="S9: the applicant's own facts — the most sensitive rows this product holds, which is why contact has NO column here. What an advertiser may see is decided by app/accounts/policy.ts, and that function can only return fields of this table, so the projection type has no place to put an address. `visibility` governs discovery and mail only; an application is a separate, deliberate grant. `notify_new_jobs` defaults OFF: visible is necessary and not sufficient for mail.", cols=[
+"cms_profile": dict(note="S9: the applicant's own facts — the most sensitive rows this product holds, which is why contact has NO column here. What an advertiser may see is decided by app/accounts/policy.ts, and that function can only return fields of this table, so the projection type has no place to put an address. `visibility` governs discovery and mail only; an application is a separate, deliberate grant. `notify_new_jobs` defaults OFF: visible is necessary and not sufficient for mail. v10: the rate is HOURLY and stored in cents (`hourly_rate_cents`), because the work is bought by the hour and a day is a length nobody states. v11: the arrangement is a SET (`work_modes_json`), because a person may accept on-site AND hybrid AND remote, and the single-word column this replaces could only say one of them; the empty array is the shape a new row starts in and the form refuses it, so a profile that has been saved always names at least one arrangement.", cols=[
  ("account_id","INTEGER","PRIMARY KEY REFERENCES cms_account(id) ON DELETE CASCADE"),
  ("display_name","TEXT","NOT NULL CHECK(length(display_name) BETWEEN 1 AND 120)"),
  ("headline","TEXT",None),
  ("summary","TEXT",None),
  ("skills_json","TEXT","NOT NULL DEFAULT '[]' CHECK(json_valid(skills_json))"),
- ("day_rate_cents","INTEGER","CHECK(day_rate_cents IS NULL OR day_rate_cents > 0)"),
+ ("hourly_rate_cents","INTEGER","CHECK(hourly_rate_cents IS NULL OR (hourly_rate_cents > 0 AND hourly_rate_cents <= 500000))"),
  ("currency","TEXT","NOT NULL DEFAULT 'AUD' CHECK(length(currency) = 3)"),
  ("availability_days_per_week","INTEGER","CHECK(availability_days_per_week IS NULL OR availability_days_per_week BETWEEN 1 AND 7)"),
  ("location","TEXT",None),
  ("timezone","TEXT",None),
- ("remote_ok","INTEGER","NOT NULL DEFAULT 0 CHECK(remote_ok IN (0,1))"),
+ ("work_modes_json","TEXT","NOT NULL DEFAULT '[]' CHECK(json_valid(work_modes_json))"),
  ("links_json","TEXT","NOT NULL DEFAULT '[]' CHECK(json_valid(links_json))"),
  ("visibility","TEXT","NOT NULL DEFAULT 'hidden' CHECK(visibility IN ('hidden','discoverable'))"),
  ("notify_new_jobs","INTEGER","NOT NULL DEFAULT 0 CHECK(notify_new_jobs IN (0,1))"),
@@ -622,13 +634,17 @@ SITE = {
  ("reason","TEXT","NOT NULL CHECK(reason IN ('bounce','complaint','unsubscribe','manual'))"),
  ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
 ], checks=[], indexes=[]),
-"cms_application": dict(note="S9/v9: an application — one applicant's deliberate act of sharing their profile with ONE advert. It lives in core, not in a p_* table, because a plugin's EndpointRequest carries no actor: a package cannot answer 'may this viewer see this row' and cannot send mail about it. `job_id` is the plugin table's row id and is deliberately NOT a foreign key — the installer DROPs every table a manifest declares, so a core table that referenced one would be uninstallable. The two account columns are the two grants; `advertiser_account_id` is derived at apply time from the job's company owner and never from a request field. UNIQUE(job_id, applicant_account_id) is what makes a second application the same application rather than a duplicate, and `applicant <> advertiser` is what stops a person applying to their own advert.", cols=[
+"cms_application": dict(note="S9/v9: an application — one applicant's deliberate act of sharing their profile with ONE advert. It lives in core, not in a p_* table, because a plugin's EndpointRequest carries no actor: a package cannot answer 'may this viewer see this row' and cannot send mail about it. `job_id` is the plugin table's row id and is deliberately NOT a foreign key — the installer DROPs every table a manifest declares, so a core table that referenced one would be uninstallable. The two account columns are the two grants; `advertiser_account_id` is derived at apply time from the job's company owner and never from a request field. UNIQUE(job_id, applicant_account_id) is what makes a second application the same application rather than a duplicate, and `applicant <> advertiser` is what stops a person applying to their own advert. v11: the `outcome_*` group is the ADVERTISER'S DECISION, recorded beside the applicant's lifecycle `status` rather than as a transition of it — 'submitted'/'withdrawn' say where the application is, `outcome` says what the company concluded, and a row can be `submitted` with an outcome of 'shortlisted' because the applicant never withdrew. `outcome_note` is free text from the advertiser and is screened by app/accounts/pii.ts before it is written, because a note the applicant reads is a note that must not carry contact detail; `outcome_by_account_id` names who recorded it.", cols=[
  ("id","INTEGER","PRIMARY KEY AUTOINCREMENT"),
  ("job_id","INTEGER","NOT NULL CHECK(job_id > 0)"),
  ("advertiser_account_id","INTEGER","NOT NULL REFERENCES cms_account(id) ON DELETE CASCADE"),
  ("applicant_account_id","INTEGER","NOT NULL REFERENCES cms_account(id) ON DELETE CASCADE"),
  ("cover_note","TEXT","CHECK(cover_note IS NULL OR length(cover_note) BETWEEN 1 AND 4000)"),
  ("status","TEXT","NOT NULL DEFAULT 'submitted' CHECK(status IN ('submitted','withdrawn','shortlisted','rejected'))"),
+ ("outcome","TEXT","CHECK(outcome IS NULL OR outcome IN ('shortlisted','interview','offer','rejected'))"),
+ ("outcome_note","TEXT","CHECK(outcome_note IS NULL OR length(outcome_note) BETWEEN 1 AND 500)"),
+ ("outcome_at","TEXT",None),
+ ("outcome_by_account_id","INTEGER","REFERENCES cms_account(id)"),
  ("created_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
  ("updated_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
 ], checks=["CHECK(applicant_account_id <> advertiser_account_id)"], uniques=[("ux_application","job_id, applicant_account_id")], indexes=[

@@ -27,9 +27,88 @@
  * `public` exists as a viewer so that "is there an anonymous profile page?" is answered here,
  * once, with `null`. There is not: profile pages are authenticated and scoped.
  */
+import { RATE_MAX_CENTS } from './money.ts';
 
 /** A profile's discoverability, as the account holder sets it. Default is `hidden`. */
 export type ProfileVisibility = 'hidden' | 'discoverable';
+
+/**
+ * How the work is arranged — the same three words on both sides of the board.
+ *
+ * A profile states what the applicant will accept; an advert states what the role requires. One
+ * vocabulary, one parser, one set of labels, because "remote: yes" and "hybrid" are answers to the
+ * same question and a board where the two sides use different words for it is a board that cannot
+ * match anything.
+ *
+ * **The shapes differ, deliberately.** An advert has ONE arrangement — a role is one job, and a
+ * set there would describe a job nobody is offering. An applicant has a SET: a person may accept
+ * on-site AND hybrid AND remote, in any combination, and a model that forces one word makes them
+ * answer a question they were not asked. `WorkMode` is one word; `WorkModes` is the profile's set.
+ */
+export type WorkMode = 'onsite' | 'hybrid' | 'remote';
+
+/** An applicant's answer: a non-empty set of `WorkMode`, each value at most once. */
+export type WorkModes = readonly WorkMode[];
+
+/** The closed vocabulary, in the order the form draws it. The CHECK on both columns says the same. */
+export const WORK_MODES: readonly WorkMode[] = ['onsite', 'hybrid', 'remote'];
+
+/** What a person reads, on a checkbox, a listing row or a detail page. */
+export const WORK_MODE_LABELS: Readonly<Record<WorkMode, string>> = {
+  onsite: 'On-site',
+  hybrid: 'Hybrid',
+  remote: 'Remote',
+};
+
+/** The label for a value read from a row, or from a column whose CHECK the value cannot escape. */
+export function workModeLabel(mode: WorkMode): string {
+  return WORK_MODE_LABELS[mode];
+}
+
+/**
+ * The label for a set, in the vocabulary's own order: `'Hybrid, Remote'`.
+ *
+ * The order is `WORK_MODES`, not the order the person ticked the boxes, so the same set reads the
+ * same way on their profile, on an advertiser's row and in an admin screen — a set has no first
+ * element, and a page that took the JSON's order would show the same person differently on two
+ * screens. `''` for an empty set, which only an unsaved row can have: the form refuses to write one.
+ */
+export function workModesLabel(modes: WorkModes): string {
+  return WORK_MODES.filter((mode) => modes.includes(mode)).map(workModeLabel).join(', ');
+}
+
+/**
+ * The closed vocabulary, parsed from a form field.
+ *
+ * `null` for anything else — including a plausible fourth word: a form that invented one would
+ * write a value the column's CHECK refuses, and the person would read `SQLITE_CONSTRAINT` instead
+ * of a sentence.
+ */
+export function parseWorkMode(raw: string): WorkMode | null {
+  return raw === 'onsite' || raw === 'hybrid' || raw === 'remote' ? raw : null;
+}
+
+/**
+ * A set, parsed from the repeated value of a checkbox group.
+ *
+ * Checkboxes post one value per ticked box, in the browser's order, and the same box twice is
+ * possible (a duplicated control, a scripted post): duplicates are **collapsed**, and the answer
+ * comes back in `WORK_MODES` order so a set has one representation. `null` if any value is outside
+ * the vocabulary — the whole post is refused rather than silently dropping the word, because a form
+ * that posts `remote` and `sometimes` has a bug the person should be told about, not a set that
+ * quietly lost a tick. An empty input is `[]`: "nothing chosen" is a state the validator names
+ * (`profileEditProblem`), not a parse failure.
+ */
+export function parseWorkModes(raw: readonly string[]): WorkMode[] | null {
+  const chosen = new Set<WorkMode>();
+  for (const value of raw) {
+    const mode = parseWorkMode(value.trim());
+    if (mode === null) return null;
+    chosen.add(mode);
+  }
+  return WORK_MODES.filter((mode) => chosen.has(mode));
+}
+
 
 /**
  * The closed vocabulary, parsed from a form field.
@@ -67,9 +146,22 @@ export interface ProfileEdit {
   readonly displayName: string;
   readonly headline: string | null;
   readonly summary: string | null;
-  readonly dayRateCents: number | null;
+  /**
+   * The rate, in cents, as `money.ts` parsed it from the dollars the form showed. `null` is "not
+   * stated", which the columns allow and the page renders as "discussed".
+   */
+  readonly hourlyRateCents: number | null;
   readonly availabilityDaysPerWeek: number | null;
-  readonly remoteOk: boolean;
+  /**
+   * Suburb or city only — never a street address. `normaliseSuburbCity` is the bound, and the
+   * column's CHECK is the control behind it. `null` is "not stated".
+   */
+  readonly location: string | null;
+  /**
+   * What the applicant will accept — a set: on-site, hybrid, remote, or any combination. Empty is
+   * refused by `profileEditProblem`, so a saved profile always names at least one arrangement.
+   */
+  readonly workModes: WorkModes;
   readonly visibility: ProfileVisibility;
   readonly notifyNewJobs: boolean;
 }
@@ -92,8 +184,11 @@ export function profileEditProblem(edit: ProfileEdit): string | null {
   if (edit.summary !== null && edit.summary.length > PROFILE_LIMITS.summary) {
     return `A summary is at most ${PROFILE_LIMITS.summary} characters.`;
   }
-  if (edit.dayRateCents !== null && (!Number.isInteger(edit.dayRateCents) || edit.dayRateCents <= 0)) {
-    return 'A day rate is a whole number of cents, and more than zero.';
+  if (
+    edit.hourlyRateCents !== null &&
+    (!Number.isInteger(edit.hourlyRateCents) || edit.hourlyRateCents <= 0 || edit.hourlyRateCents > RATE_MAX_CENTS)
+  ) {
+    return 'An hourly rate is a whole number of cents, more than zero and at most $5,000 an hour.';
   }
   if (
     edit.availabilityDaysPerWeek !== null &&
@@ -102,6 +197,14 @@ export function profileEditProblem(edit: ProfileEdit): string | null {
       edit.availabilityDaysPerWeek > 7)
   ) {
     return 'Availability is 1 to 7 days a week.';
+  }
+  // The set's own two rules, in the order a person meets them. Empty first, because "nothing
+  // ticked" is the mistake a form with three boxes actually invites; the vocabulary check behind it
+  // is the reader's half of the column's CHECK, and a caller that got past `parseWorkModes` cannot
+  // reach it.
+  if (edit.workModes.length === 0) return 'Choose at least one work arrangement.';
+  for (const mode of edit.workModes) {
+    if (!WORK_MODES.includes(mode)) return 'A work arrangement is on-site, hybrid or remote.';
   }
   // `visibility` and the two booleans are already typed; a caller cannot pass a third state without
   // changing this file. The one rule worth stating anyway is the one the product promises: opt-in
@@ -116,12 +219,14 @@ export interface ApplicantProfile {
   readonly headline: string | null;
   readonly summary: string | null;
   readonly skills: readonly string[];
-  readonly dayRateCents: number | null;
+  /** The rate in cents, or `null` for "not stated". */
+  readonly hourlyRateCents: number | null;
   readonly currency: string;
   readonly availabilityDaysPerWeek: number | null;
   readonly location: string | null;
   readonly timezone: string | null;
-  readonly remoteOk: boolean;
+  /** What this person will accept — a set, possibly empty only for a row never saved by the form. */
+  readonly workModes: WorkModes;
   /** `{label, url}` pairs the applicant supplied (portfolio, repository, writing). */
   readonly links: readonly { readonly label: string; readonly url: string }[];
   readonly visibility: ProfileVisibility;
@@ -157,12 +262,19 @@ export interface ProfileProjection {
   readonly headline: string | null;
   readonly summary: string | null;
   readonly skills: readonly string[];
-  readonly dayRateCents: number | null;
+  /** The rate in cents, or `null` for "not stated". */
+  readonly hourlyRateCents: number | null;
   readonly currency: string;
   readonly availabilityDaysPerWeek: number | null;
   readonly location: string | null;
   readonly timezone: string | null;
-  readonly remoteOk: boolean;
+  /**
+   * The arrangement SET, as the applicant chose it. A projection without this would leave the
+   * advertiser page and the admin screen with no honest way to say what the person accepts — an
+   * advertiser-facing view that showed one word would be showing a different person from the one
+   * the applicant described.
+   */
+  readonly workModes: WorkModes;
   readonly links: readonly { readonly label: string; readonly url: string }[];
   /** Which of the applicant's choices produced this view — rendered as a note, never as data. */
   readonly basis: 'self' | 'operator' | 'application' | 'discoverable';
@@ -209,12 +321,12 @@ function view(profile: ApplicantProfile, basis: ProfileProjection['basis']): Pro
     headline: profile.headline,
     summary: profile.summary,
     skills: [...profile.skills],
-    dayRateCents: profile.dayRateCents,
+    hourlyRateCents: profile.hourlyRateCents,
     currency: profile.currency,
     availabilityDaysPerWeek: profile.availabilityDaysPerWeek,
     location: profile.location,
     timezone: profile.timezone,
-    remoteOk: profile.remoteOk,
+    workModes: [...profile.workModes],
     links: profile.links.map((l) => ({ label: l.label, url: l.url })),
     basis,
   };

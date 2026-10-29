@@ -28,7 +28,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { CSRF_HEADER, cookieAttrs, cookieValue } from '../admin/session.ts';
 import { escapeHtml } from '../admin/ui/html.ts';
 import { normaliseHost } from '../tenancy/normalise-host.ts';
-import { AppError } from '../errors.ts';
+import { AppError, HTTP } from '../errors.ts';
 import type { Env } from '../env.ts';
 import { chromeHtml, loadChrome, logoUrl as chromeLogoUrl } from '../render/chrome.ts';
 import { loadNav, navListHtml } from '../render/nav.ts';
@@ -41,15 +41,25 @@ import {
   applicationsForApplicant,
   applyForJob,
   setApplicationStatus,
+  withdrawApplication,
   type AdvertiserApplication,
+  type ApplyOutcome,
   type ApplyRefusal,
   type AdvertiserStatus,
   type ApplicantApplication,
+  type ApplicationStatus,
 } from './applications.ts';
+import { advertReader, type PublicAdvert } from './jobs.ts';
+import { hourlyRate, parseRateDollars, rateInput } from './money.ts';
+import { normaliseSuburbCity, screenFreeText } from './pii.ts';
 import {
   PROFILE_LIMITS,
   parseVisibility,
+  parseWorkMode,
   profileEditProblem,
+  WORK_MODES,
+  WORK_MODE_LABELS,
+  workModeLabel,
   type ApplicantProfile,
   type ProfileEdit,
 } from './policy.ts';
@@ -138,11 +148,11 @@ function csrfField(csrf: string): string {
 }
 
 /**
- * Cents as money, the one way this product writes a rate. `null` is "discussed" — a person who left
- * the field empty has said something, and rendering `0.00` would say the opposite.
+ * A rate as money, the one way this product writes one. `null` is "discussed" — a person who left
+ * the field empty has said something, and rendering `$0.00/hour` would say the opposite.
  */
 function money(cents: number | null, currency: string): string {
-  return cents === null ? 'discussed' : `${(cents / 100).toFixed(2)} ${currency} a day`;
+  return hourlyRate(cents, currency) ?? 'discussed';
 }
 
 function days(n: number | null): string {
@@ -151,6 +161,59 @@ function days(n: number | null): string {
 
 function yesNo(value: boolean): string {
   return value ? 'yes' : 'no';
+}
+
+/** `Submitted`, `Withdrawn`, … — what a person reads in their own table. */
+function stateWord(status: ApplicationStatus | string): string {
+  return status === '' ? '' : status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+/**
+ * The state as the advertiser's table shows it. `withdrawn` is the one state that is theirs to
+ * notice rather than to act on, so it is written in the case that stops a reader: `WITHDRAWN`.
+ */
+function stateCell(status: ApplicationStatus): string {
+  return status === 'withdrawn'
+    ? '<div class="state portal-state--withdrawn">WITHDRAWN</div>'
+    : `<div class="state">${escapeHtml(status)}</div>`;
+}
+
+/**
+ * A post-sign-in destination, or `null` when it is not one of this host's own paths.
+ *
+ * `?next=` is a visitor's string, and a redirect that echoes it is the classic open redirect: a
+ * `https://evil.test` target turns this sign-in form into a convincing phishing page, and a
+ * `//evil.test` one does the same with two characters. Only an absolute **path** on this origin is
+ * accepted — one leading slash, no scheme, no host, no backslash (some parsers read `\` as `/`), no
+ * control characters — and the answer is re-derived from the parsed URL so what is redirected to is
+ * the path and query, not the string that was typed.
+ */
+function localPath(raw: string): string | null {
+  const value = raw.trim();
+  if (!value.startsWith('/') || value.startsWith('//')) return null;
+  if (value.includes('\\') || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  try {
+    const url = new URL(value, 'https://portal.invalid');
+    if (url.origin !== 'https://portal.invalid') return null;
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where a signed-in account belongs: its own portal, not a landing page that asks it to click again.
+ *
+ * An applicant goes to their applications; an advertiser to the applications they received. An
+ * account holding **both** roles lands on the applicant side — the page that carries the work and
+ * the switch — because a person with both roles is usually applying, and the advertiser side is one
+ * click away from there (`portalBar`). `/portal` stays as the account page (account type, sign out)
+ * for a session that holds neither role; it is no longer where a sign-in lands.
+ */
+function homeFor(roles: readonly Role[]): string {
+  if (roles.includes('applicant')) return '/portal/applicant';
+  if (roles.includes('advertiser')) return '/portal/advertiser';
+  return '/portal';
 }
 
 /** The form's boolean: a checkbox, a select, or a client that sent `true`. */
@@ -176,6 +239,11 @@ function selected(when: boolean): string {
   return when ? ' selected' : '';
 }
 
+/** The same, for a radio: one of the three arrangements is the one this profile holds. */
+function checked(when: boolean): string {
+  return when ? ' checked' : '';
+}
+
 type ParsedEdit = { readonly ok: true; readonly edit: ProfileEdit } | { readonly ok: false; readonly problem: string };
 
 /**
@@ -189,8 +257,19 @@ type ParsedEdit = { readonly ok: true; readonly edit: ProfileEdit } | { readonly
 function profileEditFrom(fields: Fields): ParsedEdit {
   const visibility = parseVisibility(field(fields, 'visibility'));
   if (visibility === null) return { ok: false, problem: 'Choose discoverable or hidden.' };
-  const rate = optionalInt(field(fields, 'day_rate_cents'), 'The day rate');
+  // Dollars in, cents out: the form asks for an hourly rate and the column holds cents. The field
+  // is named `hourly_rate`, not `hourly_rate_cents` — the person types 95.50, and the HTML should
+  // not tell them otherwise.
+  const rate = parseRateDollars(field(fields, 'hourly_rate'), 'The hourly rate');
   if (rate.ok === false) return rate;
+  // The locality is capped at suburb/city by the same function that decides what counts as a
+  // street address: an address typed here is refused, not silently stored.
+  const locality = normaliseSuburbCity(field(fields, 'location'));
+  if (locality.ok === false) {
+    return { ok: false, problem: `Location: ${locality.reason === 'street' ? 'use the suburb or city only — no street address' : locality.reason === 'digits' ? 'use the suburb or city, not a number' : 'that is too long for a suburb or city'}.` };
+  }
+  const workMode = parseWorkMode(field(fields, 'work_mode'));
+  if (workMode === null) return { ok: false, problem: 'Choose on-site, hybrid or remote.' };
   const availability = optionalInt(field(fields, 'availability_days_per_week'), 'Availability');
   if (availability.ok === false) return availability;
   const headline = field(fields, 'headline').trim();
@@ -199,9 +278,10 @@ function profileEditFrom(fields: Fields): ParsedEdit {
     displayName: field(fields, 'display_name'),
     headline: headline === '' ? null : headline,
     summary: summary === '' ? null : summary,
-    dayRateCents: rate.value,
+    hourlyRateCents: rate.cents,
     availabilityDaysPerWeek: availability.value,
-    remoteOk: truthy(field(fields, 'remote_ok')),
+    location: locality.value === '' ? null : locality.value,
+    workMode,
     visibility,
     // Off unless the box says otherwise: the column defaults to 0 and `mayNotify` requires it.
     notifyNewJobs: truthy(field(fields, 'notify_new_jobs')),
@@ -231,14 +311,66 @@ const WIDTH_CLASS: Record<PortalWidth, string> = {
 };
 
 /**
+ * The bar under a portal heading: the way to the other side of the board when the account holds
+ * both roles, and the way out. Both sit on the page a person is already reading, so neither is a
+ * guess about where they came from — and the switch is one click, which is the whole point of
+ * landing a two-role account on the applicant side.
+ */
+function portalBar(csrf: string, other: { readonly href: string; readonly label: string } | null): string {
+  const switchLink =
+    other === null
+      ? ''
+      : `<a class="portal-button portal-button--quiet portal-button--small" href="${escapeHtml(other.href)}">${escapeHtml(other.label)}</a>`;
+  return `<div class="portal-bar">
+  ${switchLink}
+  <form class="portal-signout" method="post" action="/portal/signout">
+    ${csrfField(csrf)}
+    <button class="portal-button portal-button--quiet portal-button--small" type="submit">Sign out</button>
+  </form>
+</div>`;
+}
+
+/** The three arrangements, as radios: what this applicant will accept. */
+function workModeRadios(current: ProfileEdit['workMode']): string {
+  const options = WORK_MODES.map(
+    (mode) =>
+      `<label class="portal-check"><input type="radio" name="work_mode" value="${mode}"${checked(current === mode)}> ${escapeHtml(WORK_MODE_LABELS[mode])}</label>`,
+  ).join('\n    ');
+  return `<fieldset class="portal-fieldset">
+    <legend>Work arrangement you will accept</legend>
+    ${options}
+  </fieldset>`;
+}
+
+/** One application row's action cell: a withdraw form, or the sentence a withdrawn row earns. */
+function withdrawCell(row: ApplicantApplication, csrf: string): string {
+  if (row.status === 'withdrawn') return '<span class="portal-note">No further action</span>';
+  return `<form class="portal-inline" method="post" action="/portal/applicant/withdraw">
+  <input type="hidden" name="application_id" value="${row.id}">
+  ${csrfField(csrf)}
+  <button class="portal-button portal-button--quiet portal-button--small" type="submit">Withdraw</button>
+</form>`;
+}
+
+/**
  * `GET /portal/applicant` — the applicant's own record and their own rows, on one page.
  *
  * The page is a form and a table. It renders **no** value it did not read from this account's own
  * rows: `cms_profile` for the summary and `cms_application WHERE applicant_account_id = ?` for the
- * list. The CSRF token is the session's, so the two forms below cannot be posted from another
- * origin even with the cookie attached.
+ * list. The CSRF token is the session's, so every form below cannot be posted from another origin
+ * even with the cookie attached.
+ *
+ * There is no "apply" form here. An application names an advert, and an advert is a page: the
+ * person applies from the role itself (`/jobs/<id>/apply`), where the thing they are applying for
+ * is in front of them. Asking a person to type an id was asking them to remember a number the
+ * board could carry for them.
  */
-function applicantPage(profile: ApplicantProfile, applications: readonly ApplicantApplication[], csrf: string): string {
+function applicantPage(
+  profile: ApplicantProfile,
+  applications: readonly ApplicantApplication[],
+  csrf: string,
+  opts: { readonly alsoAdvertises: boolean; readonly flash: string | null },
+): string {
   const skills = profile.skills.length === 0
     ? '<li>none listed</li>'
     : profile.skills.map((skill) => `<li>${escapeHtml(skill)}</li>`).join('');
@@ -254,8 +386,9 @@ function applicantPage(profile: ApplicantProfile, applications: readonly Applica
     .map(
       (row) =>
         `<tr><td data-label="Role">${row.jobTitle === null ? `#${row.jobId}` : `${escapeHtml(row.jobTitle)} <small>#${row.jobId}</small>`}</td>` +
-        `<td data-label="State"><span class="portal-state">${escapeHtml(row.status)}</span></td>` +
-        `<td data-label="Sent">${day(row.createdAt)}</td></tr>`,
+        `<td data-label="State"><span class="portal-state">${escapeHtml(stateWord(row.status))}</span></td>` +
+        `<td data-label="Sent">${day(row.createdAt)}</td>` +
+        `<td data-label="Action">${withdrawCell(row, csrf)}</td></tr>`,
     )
     .join('\n');
 
@@ -266,27 +399,32 @@ function applicantPage(profile: ApplicantProfile, applications: readonly Applica
       ? '<p class="portal-empty">You have not applied for anything yet.</p>'
       : `<div class="portal-table-scroll">
 <table class="portal-table">
-  <thead><tr><th scope="col">Role</th><th scope="col">State</th><th scope="col">Sent</th></tr></thead>
+  <thead><tr><th scope="col">Role</th><th scope="col">State</th><th scope="col">Sent</th><th scope="col">Action</th></tr></thead>
   <tbody>${rows}</tbody>
 </table>
 </div>`;
 
+  const flash =
+    opts.flash === null
+      ? ''
+      : `<p class="portal-banner portal-banner--success" role="status">${opts.flash}</p>\n`;
+
   return `<div class="portal-intro">
   <p class="portal-eyebrow">Applicant</p>
   <h1>Your applications</h1>
-  <p class="portal-lede">Signed in as <strong>${escapeHtml(profile.displayName)}</strong>. <a href="/portal">Your account</a></p>
+  <p class="portal-lede">Signed in as <strong>${escapeHtml(profile.displayName)}</strong>.</p>
 </div>
-
-<section>
+${portalBar(csrf, opts.alsoAdvertises ? { href: '/portal/advertiser', label: 'Switch to advertising' } : null)}
+${flash}<section>
 <h2>Your profile</h2>
 <p class="portal-note">Advertisers never see your email address, your phone number or any postal address — the board has no column for one. They see the fields below, and only when you apply to their advert or your profile is discoverable.</p>
 <dl class="portal-profile">
   <dt>Name</dt><dd>${escapeHtml(profile.displayName)}</dd>
   <dt>Headline</dt><dd>${profile.headline === null ? '—' : escapeHtml(profile.headline)}</dd>
   <dt>Summary</dt><dd>${profile.summary === null ? '—' : escapeHtml(profile.summary)}</dd>
-  <dt>Day rate</dt><dd>${money(profile.dayRateCents, profile.currency)}</dd>
+  <dt>Hourly rate</dt><dd>${money(profile.hourlyRateCents, profile.currency)}</dd>
   <dt>Availability</dt><dd>${days(profile.availabilityDaysPerWeek)}</dd>
-  <dt>Remote</dt><dd>${yesNo(profile.remoteOk)}</dd>
+  <dt>Work arrangement</dt><dd>${escapeHtml(workModeLabel(profile.workMode))}</dd>
   <dt>Discoverability</dt><dd>${escapeHtml(profile.visibility)}</dd>
   <dt>Emailed about new roles</dt><dd>${yesNo(profile.notifyNewJobs)}</dd>
   <dt>Skills</dt><dd><ul>${skills}</ul></dd>
@@ -311,20 +449,20 @@ function applicantPage(profile: ApplicantProfile, applications: readonly Applica
     <textarea id="summary" name="summary" rows="6" maxlength="${PROFILE_LIMITS.summary}">${escapeHtml(profile.summary ?? '')}</textarea>
   </div>
   <div class="portal-field">
-    <label for="day_rate_cents">Day rate in cents (leave empty for “discussed”)</label>
-    <input id="day_rate_cents" name="day_rate_cents" type="number" min="1" step="1" value="${profile.dayRateCents === null ? '' : String(profile.dayRateCents)}">
+    <label for="hourly_rate">Hourly rate (${escapeHtml(profile.currency)})</label>
+    <input id="hourly_rate" name="hourly_rate" type="number" inputmode="decimal" min="0.01" max="5000" step="0.01" value="${rateInput(profile.hourlyRateCents)}">
+    <p class="portal-hint">Dollars an hour — 95 or 95.50. Leave it empty for “discussed”.</p>
   </div>
   <div class="portal-field">
     <label for="availability_days_per_week">Days a week you are available</label>
     <input id="availability_days_per_week" name="availability_days_per_week" type="number" min="1" max="7" step="1" value="${profile.availabilityDaysPerWeek === null ? '' : String(profile.availabilityDaysPerWeek)}">
   </div>
   <div class="portal-field">
-    <label for="remote_ok">Work remotely</label>
-    <select id="remote_ok" name="remote_ok">
-      <option value="1"${selected(profile.remoteOk)}>yes</option>
-      <option value="0"${selected(!profile.remoteOk)}>no</option>
-    </select>
+    <label for="location">Suburb or city</label>
+    <input id="location" name="location" value="${profile.location === null ? '' : escapeHtml(profile.location)}" maxlength="80" placeholder="Newcastle NSW" aria-describedby="location-help">
+    <p class="portal-note" id="location-help">Suburb or city only — no street address. This is shown to advertisers as a locality, never as a place to find you.</p>
   </div>
+  ${workModeRadios(profile.workMode)}
   <div class="portal-field">
     <label for="visibility">Discoverability</label>
     <select id="visibility" name="visibility">
@@ -346,23 +484,7 @@ function applicantPage(profile: ApplicantProfile, applications: readonly Applica
 <section>
 <h2>Your applications</h2>
 ${applicationsBlock}
-</section>
-
-<section>
-<h2>Apply for a role</h2>
-<p class="portal-note">Enter the advert's number. It is the <code>id</code> of the role on this board — an application names the advert, and the board resolves the advertiser from it, so there is nothing here to type about who should receive it.</p>
-<form class="portal-form portal-card" method="post" action="/portal/applicant/apply">
-  ${csrfField(csrf)}
-  <div class="portal-field">
-    <label for="job_id">Advert number</label>
-    <input id="job_id" name="job_id" type="number" min="1" step="1" required>
-  </div>
-  <div class="portal-field">
-    <label for="cover_note">What you would bring to it</label>
-    <textarea id="cover_note" name="cover_note" rows="6" maxlength="${PROFILE_LIMITS.coverNote}"></textarea>
-  </div>
-  <div class="portal-actions"><button class="portal-button" type="submit">Send application</button></div>
-</form>
+<p class="portal-note">Applying starts on the role itself: open it on the <a href="/jobs">board</a> and press “Apply now”. The advert comes with you, so there is nothing to copy and no id to type.</p>
 </section>`;
 }
 
@@ -373,8 +495,23 @@ ${applicationsBlock}
  * at all. The name and the rate below are the applicant's own choices; the “why you can see this”
  * line is the projection's `basis`, rendered as a note rather than as data. A row whose profile is
  * unavailable shows the application and no person: the board does not fall back to the account.
+ *
+ * A **withdrawn** row stays on the page and says `WITHDRAWN` in the state it was received in: an
+ * advertiser who shortlisted somebody and then saw them withdraw needs to see that it happened, not
+ * watch the row disappear. What it never does is count: the line above the table counts the rows
+ * still awaiting a decision, and a withdrawn application is not one of them — nor can it be decided
+ * (`withdrawApplication` ends it, and `setApplicationStatus` refuses to reopen it).
  */
-function advertiserPage(displayName: string, applications: readonly AdvertiserApplication[], csrf: string): string {
+function advertiserPage(
+  displayName: string,
+  applications: readonly AdvertiserApplication[],
+  csrf: string,
+  opts: { readonly alsoApplies: boolean },
+): string {
+  // The actionable count is derived here, from the same array the table is drawn from, so a row
+  // cannot be counted as actionable and rendered as ended (or the reverse).
+  const awaiting = applications.filter((row) => row.status === 'submitted').length;
+  const withdrawn = applications.filter((row) => row.status === 'withdrawn').length;
   const rows = applications
     .map((row) => {
       const profile = row.profile;
@@ -386,7 +523,7 @@ function advertiserPage(displayName: string, applications: readonly AdvertiserAp
         : `<strong>${escapeHtml(profile.displayName)}</strong>` +
           (profile.headline === null ? '' : `<div>${escapeHtml(profile.headline)}</div>`) +
           (profile.summary === null ? '' : `<div class="summary">${escapeHtml(profile.summary)}</div>`) +
-          `<div>${money(profile.dayRateCents, profile.currency)} · ${days(profile.availabilityDaysPerWeek)} · remote: ${yesNo(profile.remoteOk)}</div>` +
+          `<div>${money(profile.hourlyRateCents, profile.currency)} · ${days(profile.availabilityDaysPerWeek)} · work: ${escapeHtml(workModeLabel(profile.workMode))}</div>` +
           (profile.location === null ? '' : `<div>${escapeHtml(profile.location)}</div>`) +
           (profile.skills.length === 0 ? '' : `<div>skills: ${profile.skills.map((s) => escapeHtml(s)).join(', ')}</div>`) +
           // A link is a string the applicant typed: rendered as text, never as an `href`.
@@ -408,7 +545,7 @@ function advertiserPage(displayName: string, applications: readonly AdvertiserAp
       return `<tr><td data-label="Role">${row.jobTitle === null ? `#${row.jobId}` : `${escapeHtml(row.jobTitle)} <small>#${row.jobId}</small>`}</td>` +
         `<td data-label="Applicant">${who}</td>` +
         `<td data-label="What they said">${note}</td>` +
-        `<td data-label="Received">${day(row.createdAt)}<div class="state">${escapeHtml(row.status)}</div></td>` +
+        `<td data-label="Received">${day(row.createdAt)}${stateCell(row.status)}</td>` +
         `<td data-label="Decision">${decision}</td></tr>`;
     })
     .join('\n');
@@ -423,13 +560,105 @@ function advertiserPage(displayName: string, applications: readonly AdvertiserAp
 </table>
 </div>`;
 
+  const counts =
+    applications.length === 0
+      ? ''
+      : `<p class="portal-note" data-awaiting="${awaiting}" data-withdrawn="${withdrawn}">${awaiting} awaiting your decision · ${withdrawn} withdrawn. A withdrawn application is closed: it is not counted above and cannot be shortlisted or rejected.</p>\n`;
+
   return `<div class="portal-intro">
   <p class="portal-eyebrow">Advertiser</p>
   <h1>Applications to your roles</h1>
-  <p class="portal-lede">Signed in as <strong>${escapeHtml(displayName)}</strong>. <a href="/portal">Your account</a></p>
+  <p class="portal-lede">Signed in as <strong>${escapeHtml(displayName)}</strong>.</p>
 </div>
+${portalBar(csrf, opts.alsoApplies ? { href: '/portal/applicant', label: 'Switch to applying' } : null)}
 <p class="portal-note">Applicants are shown as they chose to be seen. The board never sends you an email address, a phone number or a postal address, and there is no field on this page that could carry one.</p>
-${applicationsBlock}`;
+${counts}${applicationsBlock}`;
+}
+
+/** An id from a query string or a path, or `null` — never `NaN`, never a coercion of prose. */
+function numericId(raw: unknown): number | null {
+  const text = String(raw ?? '').trim();
+  if (!/^\d{1,9}$/.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+/**
+ * The success banner's sentence, from `?applied=<jobId>`.
+ *
+ * The id is the flash's only state: no session field, no cookie, nothing to clear. It names the
+ * role when the advert can still be read and says the plain thing when it cannot — a role closed
+ * between the application and the redirect is still an application that was sent.
+ */
+function appliedFlash(jobId: number | null, title: string | null): string | null {
+  if (jobId === null) return null;
+  return title === null
+    ? 'Your application has been sent.'
+    : `Your application for <strong>${escapeHtml(title)}</strong> has been sent.`;
+}
+
+/**
+ * The refusal a cover note earns, or `null`. The note itself is what a stranger wrote; the reason
+ * is a category, and the sentence names what must not be in it. `screenFreeText` returns the value
+ * unchanged when it passes, which is the only way this can be a screen rather than an editor.
+ */
+function coverNoteRefusal(note: string): string | null {
+  if (note === '') return null;
+  const screened = screenFreeText(note);
+  if (screened.ok) return null;
+  const what =
+    screened.reason === 'email'
+      ? 'an email address'
+      : screened.reason === 'phone'
+        ? 'a phone number'
+        : screened.reason === 'address'
+          ? 'a postal address'
+          : 'a tax file number, a bank account or another sensitive number';
+  return `A cover note cannot contain ${what}: the advertiser never receives contact details here, and nothing was sent.`;
+}
+
+/**
+ * `GET /jobs/<id>/apply` — the confirmation page, as the site's own document.
+ *
+ * It states the four facts a person needs before they press the button — the role, the company, the
+ * hourly rate and the work arrangement — because those are the four the advert is judged on, and
+ * asking somebody to confirm an application to a numbered row they cannot see is not a
+ * confirmation. One optional note, one button, no JavaScript: a textarea and a POST.
+ */
+function applyPageBody(state: {
+  readonly advert: PublicAdvert;
+  readonly csrf: string;
+  readonly note: string;
+  readonly problem: string | null;
+}): string {
+  const { advert } = state;
+  const rate = hourlyRate(advert.hourlyRateCents, advert.currency) ?? 'rate on application';
+  const company = advert.companyName.trim() === '' ? 'Company not stated' : advert.companyName.trim();
+  const banner =
+    state.problem === null ? '' : `<p class="portal-banner portal-banner--error" role="alert">${escapeHtml(state.problem)}</p>\n`;
+  return `<div class="portal-intro">
+  <p class="portal-eyebrow">Apply</p>
+  <h1>Apply for ${escapeHtml(advert.title)}</h1>
+  <p class="portal-lede">Your profile goes with this application, and only to this company. Nothing is sent until you press the button.</p>
+</div>
+${banner}<div class="portal-panel">
+<dl class="portal-profile">
+  <dt>Role</dt><dd>${escapeHtml(advert.title)}</dd>
+  <dt>Company</dt><dd>${escapeHtml(company)}</dd>
+  <dt>Hourly rate</dt><dd>${escapeHtml(rate)}</dd>
+  <dt>Work arrangement</dt><dd>${escapeHtml(workModeLabel(advert.workMode))}</dd>
+</dl>
+</div>
+<form class="portal-form portal-card" method="post" action="/portal/jobs/${String(advert.id)}/apply">
+  ${csrfField(state.csrf)}
+  <div class="portal-field">
+    <label for="cover_note">What you would bring to it (optional)</label>
+    <textarea id="cover_note" name="cover_note" rows="8" maxlength="${PROFILE_LIMITS.coverNote}">${escapeHtml(state.note)}</textarea>
+    <p class="portal-hint">Free text, in your own words. Leave out your email address, your phone number and any postal address — the advertiser never receives them here.</p>
+  </div>
+  <div class="portal-actions"><button class="portal-button" type="submit">Submit application</button></div>
+</form>
+<p class="portal-aside"><a href="/jobs/${String(advert.id)}">Back to the role</a> · <a href="/portal/applicant">Your applications</a></p>`;
 }
 
 /**
@@ -627,6 +856,87 @@ ${chrome === null ? '' : chrome.footer}
   }
 
   /**
+   * The applicant gate on **applying**, which is narrower than "signed in" and has its own sentence.
+   *
+   * An advertiser account is refused by name: `applicant role required`. A person holding both roles
+   * passes, because an account that advertises and also applies is exactly the account the additive
+   * role model exists for.
+   */
+  #assertApplicantRole(view: SelfView): void {
+    if (!view.roles.includes('applicant')) {
+      throw new AppError('SKW_E_SEC_FORBIDDEN', 'applicant role required — this account cannot apply for a role');
+    }
+  }
+
+  /**
+   * The same refusal as a page, for a GET. A 403 with JSON would be correct and useless: whoever
+   * followed the link is told which account type the page belongs to, and where to go next.
+   */
+  #refuseApplicantForApply(req: FastifyRequest, reply: FastifyReply, tenantKey: string, view: SelfView): void {
+    const mine = view.roles.length === 0 ? 'no account type' : view.roles.map((r) => escapeHtml(r)).join(', ');
+    reply
+      .code(403)
+      .type('text/html; charset=utf-8')
+      .header('cache-control', 'no-store')
+      .send(
+        this.#page(
+          req,
+          tenantKey,
+          'Applicant role required',
+          `<div class="portal-intro">
+  <p class="portal-eyebrow">Applicant only</p>
+  <h1>Applicant role required</h1>
+  <p class="portal-lede">You are signed in as <strong>${escapeHtml(view.displayName)}</strong>, and your account is: ${mine}.</p>
+</div>
+<div class="portal-panel">
+  <p>An applicant role is required to apply for a role. An advertiser account advertises its own roles; it does not apply to other companies'.</p>
+  <p class="portal-aside"><a href="/portal/advertiser">Your roles</a> · <a href="/jobs">The board</a></p>
+</div>`,
+          'auth',
+        ),
+      );
+  }
+
+  /** The advert behind a `/jobs/<ref>` path — an id or a slug, published only. `null` is a 404. */
+  #publishedAdvert(tenantKey: string, ref: string): PublicAdvert | null {
+    const id = numericId(ref);
+    return this.#db(tenantKey, (db) => {
+      const reader = advertReader(db, tenantKey, this.#deps.emailMode);
+      return id === null ? reader.publishedBySlug(ref) : reader.published(id);
+    });
+  }
+
+  /** One application, through the one function that writes them. */
+  #apply(db: Database.Database, tenantKey: string, accountId: number, jobId: number, note: string): ApplyOutcome {
+    return applyForJob(
+      { db, tenant: tenantKey, emailMode: this.#deps.emailMode },
+      { applicantAccountId: accountId, jobId, coverNote: note === '' ? null : note },
+    );
+  }
+
+  /** The confirmation page, at whatever status the refusal or the read earned. */
+  #sendApplyPage(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    tenantKey: string,
+    advert: PublicAdvert,
+    state: { readonly status: number; readonly problem: string | null; readonly note: string },
+  ): void {
+    reply
+      .code(state.status)
+      .type('text/html; charset=utf-8')
+      .header('cache-control', 'no-store')
+      .send(
+        this.#page(
+          req,
+          tenantKey,
+          `Apply — ${advert.title}`,
+          applyPageBody({ advert, csrf: this.#csrf(req, tenantKey), note: state.note, problem: state.problem }),
+        ),
+      );
+  }
+
+  /**
    * The role gate on a GET, as a page a person can read. A 403 with JSON would be correct and
    * useless: whoever followed the link is told which account type the page belongs to, and where to
    * go next. The status is still 403, so nothing downstream treats it as a page.
@@ -746,7 +1056,7 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
         );
     });
 
-    // --- S9/v9: the applicant's page and the two writes behind it -------------------------------
+    // --- S9/v9: the applicant's page and the writes behind it -----------------------------------
     // No session is a redirect, not a refusal: a person who bookmarked the page while signed in
     // should land on the sign-in form, not on an error. A session without the role is a refusal
     // that names it — the two answers are different and the difference is the person's.
@@ -754,7 +1064,7 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
       const tenantKey = this.#tenant(req);
       const view = this.#view(req, tenantKey);
       if (view === null) {
-        reply.code(303).header('location', '/portal/signin').send();
+        reply.code(303).header('location', '/portal/signin?next=%2Fportal%2Fapplicant').send();
         return;
       }
       if (!view.roles.includes('applicant')) {
@@ -762,12 +1072,14 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
         return;
       }
       const csrf = this.#csrf(req, tenantKey);
+      const appliedId = numericId((req.query as { applied?: unknown }).applied);
       const data = this.#db(tenantKey, (db) => ({
         profile: loadProfile(db, view.accountId),
         applications: applicationsForApplicant(
           { db, tenant: tenantKey, emailMode: this.#deps.emailMode },
           view.accountId,
         ),
+        appliedTitle: appliedId === null ? null : advertReader(db, tenantKey, this.#deps.emailMode).job(appliedId)?.title ?? null,
       }));
       if (data.profile === null) {
         // Registration writes the profile, so this is a half-created account rather than a normal
@@ -799,7 +1111,18 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
         .code(200)
         .type('text/html; charset=utf-8')
         .header('cache-control', 'no-store')
-        .send(this.#page(req, tenantKey, 'Your applications', applicantPage(data.profile, data.applications, csrf), 'wide'));
+        .send(
+          this.#page(
+            req,
+            tenantKey,
+            'Your applications',
+            applicantPage(data.profile, data.applications, csrf, {
+              alsoAdvertises: view.roles.includes('advertiser'),
+              flash: appliedFlash(appliedId, data.appliedTitle),
+            }),
+            'wide',
+          ),
+        );
     });
 
     app.post('/portal/applicant/profile', async (req: FastifyRequest, reply: FastifyReply) => {
@@ -820,6 +1143,12 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
       reply.code(303).header('location', '/portal/applicant').send();
     });
 
+    /**
+     * `POST /portal/applicant/apply` — the advert's id in a body, for a client that already holds
+     * one. The page no longer offers this form (applying starts on the role, `/jobs/<id>/apply`),
+     * but the write path stays: it is the same act, through the same function, with the same named
+     * refusals, and a bookmark or a script from before the change keeps working.
+     */
     app.post('/portal/applicant/apply', async (req: FastifyRequest, reply: FastifyReply) => {
       this.#assertOrigin(req);
       const tenantKey = this.#tenant(req);
@@ -829,20 +1158,125 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
         return;
       }
       this.#assertSessionCsrf(req, tenantKey);
-      this.#assertRole(view, 'applicant');
+      this.#assertApplicantRole(view);
       const fields = fieldsOf(req.body);
       const jobId = optionalInt(field(fields, 'job_id'), 'The advert number');
       if (jobId.ok === false) throw new AppError('SKW_E_PLT_REQUEST_INVALID', jobId.problem);
       if (jobId.value === null) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'An advert number is required.');
       const note = field(fields, 'cover_note').trim();
+      const refusedNote = coverNoteRefusal(note);
+      if (refusedNote !== null) throw new AppError('SKW_E_PLT_REQUEST_INVALID', refusedNote);
+      const outcome = this.#db(tenantKey, (db) => this.#apply(db, tenantKey, view.accountId, jobId.value as number, note));
+      if (outcome.ok === false) throw applyRefusal(outcome);
+      reply.code(303).header('location', `/portal/applicant?applied=${String(jobId.value as number)}`).send();
+    });
+
+    /**
+     * `POST /portal/applicant/withdraw` — the applicant takes their own application back.
+     *
+     * The same three gates as every other portal write: origin, the session's CSRF, the role. The
+     * answer is a redirect either way, so a second click (or a reloaded POST) is not an error page:
+     * `withdrawApplication` is idempotent, and the row it already ended is still ended.
+     */
+    app.post('/portal/applicant/withdraw', async (req: FastifyRequest, reply: FastifyReply) => {
+      this.#assertOrigin(req);
+      const tenantKey = this.#tenant(req);
+      const view = this.#view(req, tenantKey);
+      if (view === null) {
+        reply.code(303).header('location', '/portal/signin').send();
+        return;
+      }
+      this.#assertSessionCsrf(req, tenantKey);
+      this.#assertApplicantRole(view);
+      const applicationId = optionalInt(field(fieldsOf(req.body), 'application_id'), 'The application number');
+      if (applicationId.ok === false) throw new AppError('SKW_E_PLT_REQUEST_INVALID', applicationId.problem);
+      if (applicationId.value === null) {
+        throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'An application number is required.');
+      }
       const outcome = this.#db(tenantKey, (db) =>
-        applyForJob(
+        withdrawApplication(
           { db, tenant: tenantKey, emailMode: this.#deps.emailMode },
-          { applicantAccountId: view.accountId, jobId: jobId.value as number, coverNote: note === '' ? null : note },
+          { applicationId: applicationId.value as number, applicantAccountId: view.accountId },
         ),
       );
-      if (outcome.ok === false) throw applyRefusal(outcome);
+      if (outcome.ok === false) throw new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'no such application for this account');
       reply.code(303).header('location', '/portal/applicant').send();
+    });
+
+    // --- v10: applying starts on the role -------------------------------------------------------
+    //
+    // `/jobs/<id>/apply` is the advert's own application page. It lives here, in the portal, and
+    // not in the public board's renderer, because everything it does needs a session: the CSRF
+    // token it carries, the account it names on the row, and the profile the policy checks before
+    // a stranger's name is disclosed. The public page's button is a plain link to this path; a
+    // signed-out visitor is sent to the sign-in form with this page as `next`, and comes back to
+    // it — the advert comes with them, so there is no id to copy.
+    // The session cookie is scoped to Path=/portal, deliberately: a job page is public and must
+    // not receive a credential. So the apply flow lives under /portal, where the cookie is sent —
+    // otherwise a signed-in applicant arrives at /jobs/<id>/apply with no session and is asked to
+    // sign in again. `/jobs/<id>/apply` stays as a 303 to here so old links keep working.
+    app.get('/jobs/:ref/apply', async (req: FastifyRequest, reply: FastifyReply) => {
+      const ref = String((req.params as { ref?: string }).ref ?? '');
+      reply.code(303).header('location', `/portal/jobs/${encodeURIComponent(ref)}/apply`).send();
+    });
+
+    app.get('/portal/jobs/:ref/apply', async (req: FastifyRequest, reply: FastifyReply) => {
+      const tenantKey = this.#tenant(req);
+      const ref = String((req.params as { ref?: string }).ref ?? '');
+      const view = this.#view(req, tenantKey);
+      if (view === null) {
+        reply.code(303).header('location', `/portal/signin?next=${encodeURIComponent(`/portal/jobs/${ref}/apply`)}`).send();
+        return;
+      }
+      if (!view.roles.includes('applicant')) {
+        this.#refuseApplicantForApply(req, reply, tenantKey, view);
+        return;
+      }
+      const advert = this.#publishedAdvert(tenantKey, ref);
+      if (advert === null) throw new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'that advert is not on this board');
+      this.#sendApplyPage(req, reply, tenantKey, advert, { status: 200, problem: null, note: '' });
+    });
+
+    app.post('/jobs/:ref/apply', async (req: FastifyRequest, reply: FastifyReply) => {
+      const ref = String((req.params as { ref?: string }).ref ?? '');
+      reply.code(307).header('location', `/portal/jobs/${encodeURIComponent(ref)}/apply`).send();
+    });
+
+    app.post('/portal/jobs/:ref/apply', async (req: FastifyRequest, reply: FastifyReply) => {
+      this.#assertOrigin(req);
+      const tenantKey = this.#tenant(req);
+      const ref = String((req.params as { ref?: string }).ref ?? '');
+      const view = this.#view(req, tenantKey);
+      if (view === null) {
+        reply.code(303).header('location', `/portal/signin?next=${encodeURIComponent(`/portal/jobs/${ref}/apply`)}`).send();
+        return;
+      }
+      this.#assertSessionCsrf(req, tenantKey);
+      this.#assertApplicantRole(view);
+      const advert = this.#publishedAdvert(tenantKey, ref);
+      if (advert === null) throw new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'that advert is not on this board');
+      const note = field(fieldsOf(req.body), 'cover_note').trim();
+      // A cover note is free text a stranger wrote, so it is screened before it can reach a row:
+      // the advertiser never receives an address through this door either.
+      const refusedNote = coverNoteRefusal(note);
+      if (refusedNote !== null) {
+        this.#sendApplyPage(req, reply, tenantKey, advert, { status: 400, problem: refusedNote, note });
+        return;
+      }
+      const outcome = this.#db(tenantKey, (db) => this.#apply(db, tenantKey, view.accountId, advert.id, note));
+      if (outcome.ok === false) {
+        // The refusal is a page, not a stack of JSON: the person is standing on the confirmation
+        // form, and the sentence tells them whether to fix something or stop. `duplicate` is a 409
+        // and says which application it means; no constraint name is ever printed.
+        const error = applyRefusal(outcome);
+        this.#sendApplyPage(req, reply, tenantKey, advert, {
+          status: HTTP[error.code] ?? 400,
+          problem: `${error.message}. Nothing was sent.`,
+          note,
+        });
+        return;
+      }
+      reply.code(303).header('location', `/portal/applicant?applied=${String(advert.id)}`).send();
     });
 
     // --- S9/v9: the advertiser's page -----------------------------------------------------------
@@ -850,7 +1284,7 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
       const tenantKey = this.#tenant(req);
       const view = this.#view(req, tenantKey);
       if (view === null) {
-        reply.code(303).header('location', '/portal/signin').send();
+        reply.code(303).header('location', '/portal/signin?next=%2Fportal%2Fadvertiser').send();
         return;
       }
       if (!view.roles.includes('advertiser')) {
@@ -865,7 +1299,15 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
         .code(200)
         .type('text/html; charset=utf-8')
         .header('cache-control', 'no-store')
-        .send(this.#page(req, tenantKey, 'Applications to your roles', advertiserPage(view.displayName, applications, csrf), 'wide'));
+        .send(
+          this.#page(
+            req,
+            tenantKey,
+            'Applications to your roles',
+            advertiserPage(view.displayName, applications, csrf, { alsoApplies: view.roles.includes('applicant') }),
+            'wide',
+          ),
+        );
     });
 
     app.post('/portal/advertiser/application', async (req: FastifyRequest, reply: FastifyReply) => {
@@ -1157,6 +1599,17 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
 
     app.get('/portal/signin', async (req: FastifyRequest, reply: FastifyReply) => {
       const tenantKey = this.#tenant(req);
+      // `?next=` rides through the form, so a person who was sent here from a role keeps the role.
+      // Only a local path survives `localPath`; anything else is dropped rather than echoed.
+      const next = localPath(String((req.query as { next?: unknown }).next ?? ''));
+      const view = this.#view(req, tenantKey);
+      // Someone already signed in does not need the form: the destination they asked for, or their
+      // own portal. This is also what makes a stale "sign in" link in a bookmark harmless.
+      if (view !== null) {
+        reply.code(303).header('location', next ?? homeFor(view.roles)).send();
+        return;
+      }
+      const carry = next === null ? '' : `\n  <input type="hidden" name="next" value="${escapeHtml(next)}">`;
       reply
         .code(200)
         .type('text/html; charset=utf-8')
@@ -1171,7 +1624,7 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
   <h1>Sign in</h1>
   <p class="portal-lede">Your password and the six-digit code from your authenticator app.</p>
 </div>
-<form class="portal-form portal-card" method="post" action="/portal/signin">
+<form class="portal-form portal-card" method="post" action="/portal/signin">${carry}
   <div class="portal-field">
     <label for="email">Email</label>
     <input id="email" name="email" type="email" autocomplete="email" required>
@@ -1197,6 +1650,9 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
       this.#assertOrigin(req);
       const tenantKey = this.#tenant(req);
       const fields = fieldsOf(req.body);
+      // Where this sign-in should land, validated once: a local path survives, anything else is
+      // dropped and the account's own portal is used instead.
+      const next = localPath(field(fields, 'next'));
       const result = await this.#deps.accounts.signIn(
         { email: field(fields, 'email'), password: field(fields, 'password'), code: field(fields, 'code') },
         tenantKey,
@@ -1223,6 +1679,7 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
   <h1>Sign in</h1>
 </div>
 <form class="portal-form portal-card" method="post" action="/portal/signin">
+  ${next === null ? '' : `<input type="hidden" name="next" value="${escapeHtml(next)}">`}
   <p class="portal-banner portal-banner--error" role="alert">${escapeHtml(message)}</p>
   <div class="portal-field">
     <label for="email">Email</label>
@@ -1245,7 +1702,9 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
         return;
       }
       this.#setSession(reply, tenantKey, result.session);
-      reply.code(303).header('location', '/portal').send();
+      // Straight to the account's own portal. An explicit same-origin `next` wins over the default,
+      // because the person asked for a destination and the role's home is only the fallback.
+      reply.code(303).header('location', next ?? homeFor(result.account.roles)).send();
     });
 
     app.post('/portal/signout', async (req: FastifyRequest, reply: FastifyReply) => {

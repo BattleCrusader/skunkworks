@@ -94,9 +94,9 @@ try {
   const job = db
     .prepare(
       `INSERT INTO p_jobboard_job
-         (company_id, title, slug, summary, body, day_rate_cents, currency, days_per_week,
-          location, remote_ok, status, published_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'AUD', ?, ?, 1, 'published', ?, ?)`,
+         (company_id, title, slug, summary, body, hourly_rate_cents, currency, days_per_week,
+          location, work_mode, status, published_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'AUD', ?, ?, 'hybrid', 'published', ?, ?)`,
     )
     .run(
       companyId,
@@ -104,9 +104,10 @@ try {
       DEMO.slug,
       DEMO.summary,
       DEMO.body,
-      120_000,
+      // $95.50 an hour, which is what a fractional CTO's two days a week works out to.
+      9_550,
       2,
-      'Sydney — two days on site',
+      'Sydney',
       now,
       now,
     );

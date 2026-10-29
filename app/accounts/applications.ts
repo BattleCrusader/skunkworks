@@ -94,6 +94,10 @@ export type StatusOutcome =
   | { readonly ok: true; readonly status: AdvertiserStatus }
   | { readonly ok: false; readonly reason: 'not_found' | 'withdrawn' };
 
+export type WithdrawOutcome =
+  | { readonly ok: true; readonly status: 'withdrawn' }
+  | { readonly ok: false; readonly reason: 'not_found' };
+
 interface ApplicationRow {
   id: number;
   job_id: number;
@@ -290,6 +294,39 @@ function enqueueApplicationMail(
     `application:${mail.applicationId}`,
     mail.at,
   );
+}
+
+/**
+ * `POST /portal/applicant/withdraw` — the applicant takes their own application back.
+ *
+ * The scope is in both statements: `applicant_account_id = ?` on the read and on the write, so an
+ * application belonging to somebody else is not one this account can name, let alone change.
+ *
+ * **Idempotent by design.** A second click, a reloaded POST or two tabs racing are all the same
+ * answer: the row says `withdrawn`, and it said so already. Only a row that does not exist for this
+ * applicant is a refusal, and then only by name (`not_found` → 404). An applicant may withdraw a
+ * row that was shortlisted or rejected — it is their application — and what they cannot do is
+ * un-withdraw it.
+ */
+export function withdrawApplication(
+  deps: ApplicationDeps,
+  input: { readonly applicationId: number; readonly applicantAccountId: number },
+): WithdrawOutcome {
+  const row = deps.db
+    .prepare('SELECT status FROM cms_application WHERE id = ? AND applicant_account_id = ?')
+    .get(input.applicationId, input.applicantAccountId) as { status: string } | undefined;
+  if (row === undefined) return { ok: false, reason: 'not_found' };
+  if (statusOf(row.status) === 'withdrawn') return { ok: true, status: 'withdrawn' };
+
+  // `status <> 'withdrawn'` in the WHERE clause, not only in the read above: two requests can both
+  // pass the read, and the second must not write a row the first already ended.
+  deps.db
+    .prepare(
+      `UPDATE cms_application SET status = 'withdrawn', updated_at = ?
+        WHERE id = ? AND applicant_account_id = ? AND status <> 'withdrawn'`,
+    )
+    .run(new Date(at(deps)).toISOString(), input.applicationId, input.applicantAccountId);
+  return { ok: true, status: 'withdrawn' };
 }
 
 /**

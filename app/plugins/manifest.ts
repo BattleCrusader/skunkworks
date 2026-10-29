@@ -119,7 +119,25 @@ export interface ColumnSpec {
  * Declarative, as §13.3.1 requires: a field names a **widget** the host already knows how to
  * draw, never markup. The host renders it; the package supplies no HTML.
  */
-export const WIDGETS = ['text', 'textarea', 'markdown', 'select', 'number', 'date', 'slug', 'hidden', 'auto'] as const;
+export const WIDGETS = [
+  'text',
+  'textarea',
+  'markdown',
+  'select',
+  'number',
+  /**
+   * v10: **dollars in the form, cents in the column.** The only money this product stores is an
+   * hourly rate, and a person types `95.50`, not `9550` — a package that declared a cents column
+   * with a `number` widget would ship a form that silently divided every rate by a hundred. The
+   * host divides on the way in and multiplies on the way out (`app/admin/routes.ts`), through the
+   * same parser the applicant's profile form uses (`app/accounts/money.ts`).
+   */
+  'money',
+  'date',
+  'slug',
+  'hidden',
+  'auto',
+] as const;
 export type Widget = (typeof WIDGETS)[number];
 
 export interface FieldSpec {

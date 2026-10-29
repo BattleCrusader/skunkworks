@@ -1,7 +1,7 @@
 {
-  "$comment": "Export projection for a tenant site.db, version 2 (schema v9). The unit of reproducibility is this projection, not the file: two VACUUM INTO copies of the same logical content are not byte-identical once any volatile table has a row (scripts/model/verify_claims.py check 16). 'rows' = data travels; 'empty' = the table exists in the bundle and carries no rows; 'filtered' = rows travel subject to the SQL predicate in `filter`. C-5: the completeness rule is a UNION evaluated against the live database, not a set difference over one file — set(sqlite_master) == core_tables (this file) + u_* tables (prefix rule, class rows) + p_<id>_* tables (class from the installed manifest's tables[].export). A table present in the database and absent from all three is a build failure; a plugin table whose manifest declares no export class is refused at install with SKW_E_PL_NO_EXPORT_CLASS.",
+  "$comment": "Export projection for a tenant site.db, version 2 (schema v11). The unit of reproducibility is this projection, not the file: two VACUUM INTO copies of the same logical content are not byte-identical once any volatile table has a row (scripts/model/verify_claims.py check 16). 'rows' = data travels; 'empty' = the table exists in the bundle and carries no rows; 'filtered' = rows travel subject to the SQL predicate in `filter`. C-5: the completeness rule is a UNION evaluated against the live database, not a set difference over one file — set(sqlite_master) == core_tables (this file) + u_* tables (prefix rule, class rows) + p_<id>_* tables (class from the installed manifest's tables[].export). A table present in the database and absent from all three is a build failure; a plugin table whose manifest declares no export class is refused at install with SKW_E_PL_NO_EXPORT_CLASS.",
   "version": 2,
-  "schema_version": 9,
+  "schema_version": 11,
   "applies_to": [
     "cms",
     "astro",

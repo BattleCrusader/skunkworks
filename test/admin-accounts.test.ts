@@ -84,8 +84,8 @@ function seedAccount(seed: SeedAccount): number {
     for (const role of seed.roles ?? ['applicant']) grant.run(id, role);
     if (seed.profile === true) {
       db.prepare(
-        `INSERT INTO cms_profile (account_id, display_name, headline, day_rate_cents, availability_days_per_week, remote_ok, visibility)
-         VALUES (?, 'Sam Rivers', 'Fractional CTO', 120000, 3, 1, 'discoverable')`,
+        `INSERT INTO cms_profile (account_id, display_name, headline, hourly_rate_cents, availability_days_per_week, work_mode, visibility)
+         VALUES (?, 'Sam Rivers', 'Fractional CTO', 9550, 3, 'hybrid', 'discoverable')`,
       ).run(id);
     }
     return id;
@@ -293,8 +293,9 @@ test('S9-5. the detail screen shows the profile, the outbox and the live-session
   // The profile, through the policy's projection.
   assert.match(res.body, /Sam Rivers/);
   assert.match(res.body, /Fractional CTO/);
-  assert.match(res.body, /1200\.00 AUD/);
+  assert.match(res.body, /\$95\.50\/hour/, 'the rate is shown as the money a person reads');
   assert.match(res.body, /3 days a week/);
+  assert.match(res.body, /Work arrangement<\/dt><dd>Hybrid/, 'the three-word vocabulary, not a yes/no flag');
   assert.match(res.body, /Visibility<\/dt><dd>discoverable/);
 
   // The outbox: both rows, the failure's own sentence included.

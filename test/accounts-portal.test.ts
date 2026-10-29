@@ -250,7 +250,8 @@ test('H8 — signing in sets a per-tenant portal cookie, and /portal reads it', 
     post('/portal/signin', { email: 'sam@example.test', password: PASSWORD, code: totpCode(secret, Date.now()) }),
   );
   assert.equal(signin.statusCode, 303);
-  assert.equal(signin.headers.location, '/portal');
+  // v10: the sign-in lands on the account's own portal, not on a landing page with a second link.
+  assert.equal(signin.headers.location, '/portal/applicant');
   const setCookie = String(signin.headers['set-cookie']);
   assert.match(setCookie, /^__Secure-sk-portal-portal-auto-\d+=[0-9a-f]{64}; /);
   assert.match(setCookie, /HttpOnly; Secure; SameSite=Strict; Path=\/portal/);
