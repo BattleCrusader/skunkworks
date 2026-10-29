@@ -86,8 +86,8 @@ test('A1. the DDL a fresh tenant gets carries activation_seq, DEFAULT 0, and the
   const ddl = readFileSync(join(SCHEMA, 'site.sql'), 'utf8');
   assert.match(ddl, /activation_seq INTEGER NOT NULL DEFAULT 0 CHECK\(activation_seq >= 0\)/);
   // The DDL's own version, asserted so this file cannot silently test a database it did not
-  // create. It moves with schema/site.sql (v10 since the hourly rate and work arrangement).
-  assert.match(ddl, /PRAGMA user_version = 10;/);
+  // create. It moves with schema/site.sql (v11 since the arrangement set and the outcome group).
+  assert.match(ddl, /PRAGMA user_version = 11;/);
   const db = new Database(siteDbFile(), { readonly: true });
   try {
     const columns = db.pragma('table_info(cms_plugin_installed)') as { name: string; dflt_value: string | null; notnull: number }[];
@@ -195,11 +195,11 @@ test('A4. a v3 database migrates forward, keeps its rows, and seeds them 0', () 
   assert.equal(report.ok, true, report.error);
   assert.equal(report.action, 'migrated');
   assert.equal(report.from, 3);
-  assert.equal(report.to, 10);
+  assert.equal(report.to, 11);
 
   const after = new Database(path, { readonly: true });
   try {
-    assert.equal(Number(after.pragma('user_version', { simple: true })), 10);
+    assert.equal(Number(after.pragma('user_version', { simple: true })), 11);
     const row = after.prepare(`SELECT activation_seq FROM cms_plugin_installed WHERE plugin_id = 'actseq'`).get() as
       | { activation_seq: number }
       | undefined;

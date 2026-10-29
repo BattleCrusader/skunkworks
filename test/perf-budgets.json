@@ -297,6 +297,34 @@
       ]
     },
     {
+      "file": "test/accounts-portals.test.ts",
+      "worstIdleMs": 3792,
+      "measuredOn": "2026-10-29",
+      "load1m": 6.29,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "a37f7d85832d27ce851c46748ae2863a182acbfb9e65a569b1d5ff39afbf8b83",
+      "runs": [
+        {
+          "ms": 3727,
+          "at": "2026-10-29T10:27:30.752Z",
+          "load1mBefore": 6.49,
+          "load1mAfter": 6.29,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 25
+        },
+        {
+          "ms": 3792,
+          "at": "2026-10-29T10:27:34.545Z",
+          "load1mBefore": 6.29,
+          "load1mAfter": 6.51,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 25
+        }
+      ]
+    },
+    {
       "file": "test/farm.test.ts",
       "worstIdleMs": 3351,
       "measuredOn": "2026-10-21",
@@ -359,36 +387,6 @@
           "idle": true,
           "exitCode": 0,
           "tests": 4
-        }
-      ]
-    },
-    {
-      "file": "test/accounts-portals.test.ts",
-      "worstIdleMs": 2775,
-      "measuredOn": "2026-10-29",
-      "load1m": 6.15,
-      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
-      "sha256": "b6e1ac56bf1d91ba62c419f151426711452ece6d962a61c26f58af9bcfa2e89f",
-      "runs": [
-        {
-          "ms": 2775,
-          "at": "2026-10-29T10:11:10.429Z",
-          "load1mBefore": 6.15,
-          "load1mAfter": 5.9,
-          "idle": true,
-          "exitCode": 1,
-          "tests": 19,
-          "failed": true
-        },
-        {
-          "ms": 2644,
-          "at": "2026-10-29T10:11:13.074Z",
-          "load1mBefore": 5.9,
-          "load1mAfter": 5.75,
-          "idle": true,
-          "exitCode": 1,
-          "tests": 19,
-          "failed": true
         }
       ]
     },
@@ -2254,5 +2252,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-29T10:11:13.460Z"
+  "updatedAt": "2026-10-29T10:27:34.909Z"
 }

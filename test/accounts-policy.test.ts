@@ -30,7 +30,7 @@ function profile(over: Partial<ApplicantProfile> = {}): ApplicantProfile {
     availabilityDaysPerWeek: 3,
     location: 'Newcastle, NSW',
     timezone: 'Australia/Sydney',
-    workMode: 'hybrid',
+    workModes: ['hybrid'],
     links: [{ label: 'Portfolio', url: 'https://example.test/sam' }],
     visibility: 'discoverable',
     notifyNewJobs: true,
@@ -71,7 +71,7 @@ test('P5 — an application is the grant, and the projection is what the applica
   assert.equal(got?.headline, 'Staff engineer, payments');
   assert.deepEqual(got?.skills, ['TypeScript', 'Postgres']);
   assert.equal(got?.hourlyRateCents, 9_550);
-  assert.equal(got?.workMode, 'hybrid');
+  assert.deepEqual(got?.workModes, ['hybrid']);
 });
 
 test('P6 — a hidden profile is still visible to the advertiser the applicant applied to', () => {
@@ -121,7 +121,7 @@ test('P9 — no projection carries an address, an id, or an internal flag', () =
     'skills',
     'summary',
     'timezone',
-    'workMode',
+    'workModes',
   ]);
 });
 

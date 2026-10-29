@@ -36,6 +36,7 @@ import type Database from 'better-sqlite3';
 
 import type { ProfileProjection } from './policy.ts';
 import { PROFILE_LIMITS, projectProfile } from './policy.ts';
+import { screenFreeText } from './pii.ts';
 import { loadProfile } from './profile.ts';
 import { advertReader, type AdvertReader } from './jobs.ts';
 
@@ -45,6 +46,41 @@ export type ApplicationStatus = 'submitted' | 'withdrawn' | 'shortlisted' | 'rej
 /** What an advertiser may set. `submitted` is the applicant's state and `withdrawn` theirs to keep. */
 export const ADVERTISER_STATUSES = ['shortlisted', 'rejected'] as const;
 export type AdvertiserStatus = (typeof ADVERTISER_STATUSES)[number];
+
+/**
+ * `cms_application.outcome`'s CHECK, in the column's order — the advertiser's **decision record**.
+ *
+ * **An outcome is not a status.** `status` is where the application is in the applicant's
+ * lifecycle (`submitted`, or `withdrawn` because they took it back); `outcome` is what the company
+ * concluded (shortlisted, interview requested, offer made, not successful). They are independent
+ * facts about one row: a row can be `submitted` and carry `shortlisted`, and a withdrawn row is
+ * over whatever the company had concluded. Writing an outcome never touches `status`, and
+ * `setApplicationStatus` never touches an outcome — folding the two together would lose the
+ * difference between "they walked away" and "we said no".
+ */
+export const OUTCOMES = ['shortlisted', 'interview', 'offer', 'rejected'] as const;
+export type ApplicationOutcome = (typeof OUTCOMES)[number];
+
+/** What the applicant reads, in the words the decision means rather than the column's slug. */
+export const OUTCOME_LABELS: Readonly<Record<ApplicationOutcome, string>> = {
+  shortlisted: 'Shortlisted',
+  interview: 'Interview requested',
+  offer: 'Offer made',
+  rejected: 'Not successful',
+};
+
+/**
+ * The sentence an applicant's page shows for a row. `null` is "no decision yet", which is the state
+ * every application starts in; a withdrawn row reads "Not applicable" because the company's view of
+ * it no longer means anything — and that is said by the page, not stored, so withdrawing does not
+ * rewrite a decision an advertiser made.
+ */
+export function outcomeLabel(outcome: ApplicationOutcome | null): string {
+  return outcome === null ? 'Not decided yet' : OUTCOME_LABELS[outcome];
+}
+
+/** The column's own bound. The CHECK is the control; this is the sentence a form can show first. */
+export const OUTCOME_NOTE_MAX = 500;
 
 /** One page of a portal list. A portal screen is not an export, and a person's inbox is not a feed. */
 export const APPLICATIONS_PAGE = 100;
@@ -63,6 +99,13 @@ export interface ApplicantApplication {
   /** The advert's title when the plugin can answer, `null` when it cannot. Never invented. */
   readonly jobTitle: string | null;
   readonly status: ApplicationStatus;
+  /**
+   * The company's decision record, beside the status rather than inside it. `null` is "not decided
+   * yet" and the page says so in words; a withdrawn row is shown as "Not applicable".
+   */
+  readonly outcome: ApplicationOutcome | null;
+  readonly outcomeNote: string | null;
+  readonly outcomeAt: string | null;
   readonly createdAt: string;
 }
 
@@ -71,6 +114,9 @@ export interface AdvertiserApplication {
   readonly jobId: number;
   readonly jobTitle: string | null;
   readonly status: ApplicationStatus;
+  readonly outcome: ApplicationOutcome | null;
+  readonly outcomeNote: string | null;
+  readonly outcomeAt: string | null;
   readonly createdAt: string;
   readonly coverNote: string | null;
   /** `null` when the applicant's profile is gone or its owner is not active — the row still shows. */
@@ -103,6 +149,9 @@ interface ApplicationRow {
   job_id: number;
   applicant_account_id: number;
   status: string;
+  outcome: string | null;
+  outcome_note: string | null;
+  outcome_at: string | null;
   cover_note: string | null;
   created_at: string;
 }
@@ -120,6 +169,11 @@ function statusOf(raw: string): ApplicationStatus {
   return raw === 'withdrawn' || raw === 'shortlisted' || raw === 'rejected' ? raw : 'submitted';
 }
 
+/** `null` for "no decision" and for anything the column's CHECK would refuse. */
+function outcomeOf(raw: string | null): ApplicationOutcome | null {
+  return raw === 'shortlisted' || raw === 'interview' || raw === 'offer' || raw === 'rejected' ? raw : null;
+}
+
 /**
  * The applicant's own rows. `applicant_account_id = ?` is the entire authorisation, and it is in the
  * SQL rather than in a filter afterwards: a list that is fetched and then filtered is a list that
@@ -130,7 +184,8 @@ function statusOf(raw: string): ApplicationStatus {
 export function applicationsForApplicant(deps: ApplicationDeps, accountId: number): ApplicantApplication[] {
   const rows = deps.db
     .prepare(
-      `SELECT id, job_id, applicant_account_id, status, cover_note, created_at
+      `SELECT id, job_id, applicant_account_id, status, outcome, outcome_note, outcome_at,
+              cover_note, created_at
          FROM cms_application
         WHERE applicant_account_id = ?
         ORDER BY created_at DESC, id DESC
@@ -143,6 +198,9 @@ export function applicationsForApplicant(deps: ApplicationDeps, accountId: numbe
     jobId: row.job_id,
     jobTitle: jobs.job(row.job_id)?.title ?? null,
     status: statusOf(row.status),
+    outcome: outcomeOf(row.outcome),
+    outcomeNote: row.outcome_note,
+    outcomeAt: row.outcome_at,
     createdAt: row.created_at,
   }));
 }
@@ -157,7 +215,8 @@ export function applicationsForApplicant(deps: ApplicationDeps, accountId: numbe
 export function applicationsForAdvertiser(deps: ApplicationDeps, accountId: number): AdvertiserApplication[] {
   const rows = deps.db
     .prepare(
-      `SELECT id, job_id, applicant_account_id, status, cover_note, created_at
+      `SELECT id, job_id, applicant_account_id, status, outcome, outcome_note, outcome_at,
+              cover_note, created_at
          FROM cms_application
         WHERE advertiser_account_id = ?
         ORDER BY created_at DESC, id DESC
@@ -182,6 +241,9 @@ export function applicationsForAdvertiser(deps: ApplicationDeps, accountId: numb
       jobId: row.job_id,
       jobTitle: job.title,
       status: statusOf(row.status),
+      outcome: outcomeOf(row.outcome),
+      outcomeNote: row.outcome_note,
+      outcomeAt: row.outcome_at,
       createdAt: row.created_at,
       coverNote: row.cover_note,
       profile: projection,
@@ -354,4 +416,94 @@ export function setApplicationStatus(
     )
     .run(input.status, new Date(at(deps)).toISOString(), input.applicationId, input.advertiserAccountId).changes;
   return changed === 1 ? { ok: true, status: input.status } : { ok: false, reason: 'withdrawn' };
+}
+
+export type OutcomeRefusal =
+  | 'not_found'
+  | 'withdrawn'
+  | 'unknown_outcome'
+  | 'note_too_long'
+  | 'note_email'
+  | 'note_phone'
+  | 'note_address'
+  | 'note_sensitive';
+
+export type OutcomeResult =
+  | { readonly ok: true; readonly outcome: ApplicationOutcome; readonly note: string | null }
+  | { readonly ok: false; readonly reason: OutcomeRefusal };
+
+/**
+ * `POST /portal/advertiser/outcome` — the company records what it concluded about one application.
+ *
+ * **This never writes `status`.** An outcome is an advisory record stored beside the applicant's
+ * lifecycle: a submitted row can carry `shortlisted` while still being `submitted`, and a withdrawn
+ * row is over whatever the company concluded. The two columns are written by different functions
+ * and read by different screens, so neither can quietly become the other.
+ *
+ * The scope is in the read *and* in the write: `advertiser_account_id = ?` in both statements, so a
+ * row that changed hands between them cannot be written. `withdrawn` is refused by name rather than
+ * overwritten — the applicant ended the conversation, and a decision recorded after that would be a
+ * decision nobody is waiting for.
+ *
+ * The note is free text the **applicant will read**, so it is screened by `screenFreeText` before it
+ * can reach a row and bounded at the column's 500 characters. A refused note is a refusal, not a
+ * silent strip: the advertiser is told which kind of detail must come out, and nothing is written.
+ */
+export function recordOutcome(
+  deps: ApplicationDeps,
+  input: {
+    readonly applicationId: number;
+    readonly advertiserAccountId: number;
+    readonly outcome: string;
+    readonly note: string | null;
+  },
+): OutcomeResult {
+  const row = deps.db
+    .prepare('SELECT status FROM cms_application WHERE id = ? AND advertiser_account_id = ?')
+    .get(input.applicationId, input.advertiserAccountId) as { status: string } | undefined;
+  if (row === undefined) return { ok: false, reason: 'not_found' };
+  if (statusOf(row.status) === 'withdrawn') return { ok: false, reason: 'withdrawn' };
+  if (!(OUTCOMES as readonly string[]).includes(input.outcome)) return { ok: false, reason: 'unknown_outcome' };
+
+  const trimmed = input.note === null ? '' : input.note.trim();
+  if (trimmed.length > OUTCOME_NOTE_MAX) return { ok: false, reason: 'note_too_long' };
+  if (trimmed !== '') {
+    const screened = screenFreeText(trimmed);
+    if (!screened.ok) {
+      return {
+        ok: false,
+        reason:
+          screened.reason === 'email'
+            ? 'note_email'
+            : screened.reason === 'phone'
+              ? 'note_phone'
+              : screened.reason === 'address'
+                ? 'note_address'
+                : 'note_sensitive',
+      };
+    }
+  }
+  const note = trimmed === '' ? null : trimmed;
+  const iso = new Date(at(deps)).toISOString();
+
+  // `status` is absent from this statement on purpose: an outcome is a record beside the lifecycle,
+  // never a transition of it. `status <> 'withdrawn'` keeps the read's refusal honest under a race.
+  const changed = deps.db
+    .prepare(
+      `UPDATE cms_application
+          SET outcome = ?, outcome_note = ?, outcome_at = ?, outcome_by_account_id = ?, updated_at = ?
+        WHERE id = ? AND advertiser_account_id = ? AND status <> 'withdrawn'`,
+    )
+    .run(
+      input.outcome,
+      note,
+      iso,
+      input.advertiserAccountId,
+      iso,
+      input.applicationId,
+      input.advertiserAccountId,
+    ).changes;
+  return changed === 1
+    ? { ok: true, outcome: input.outcome as ApplicationOutcome, note }
+    : { ok: false, reason: 'withdrawn' };
 }

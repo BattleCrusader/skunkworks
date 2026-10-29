@@ -137,17 +137,19 @@ test('S9-5 — a profile is hidden and does not subscribe to mail unless the per
     const id = account(handle);
     handle.prepare("INSERT INTO cms_profile (account_id, display_name) VALUES (?, 'Sam')").run(id);
     const row = handle
-      .prepare('SELECT visibility, notify_new_jobs, work_mode, hourly_rate_cents, currency FROM cms_profile WHERE account_id = ?')
+      .prepare('SELECT visibility, notify_new_jobs, work_modes_json, hourly_rate_cents, currency FROM cms_profile WHERE account_id = ?')
       .get(id) as {
       visibility: string;
       notify_new_jobs: number;
-      work_mode: string;
+      work_modes_json: string;
       hourly_rate_cents: number | null;
       currency: string;
     };
     assert.equal(row.visibility, 'hidden', 'a new profile is not discoverable');
     assert.equal(row.notify_new_jobs, 0, 'a new profile is not subscribed to job mail');
-    assert.equal(row.work_mode, 'onsite', 'a new profile is on-site until the person says otherwise');
+    // v11: the arrangement is a SET, and the shape a new row starts in is the empty one — the form
+    // refuses it, so a profile that has been saved always names at least one arrangement.
+    assert.equal(row.work_modes_json, '[]', 'a new profile has chosen no arrangement yet');
     assert.equal(row.hourly_rate_cents, null, 'a new profile has no rate: "discussed" is the default');
     assert.equal(row.currency, 'AUD');
     assert.throws(
@@ -159,11 +161,20 @@ test('S9-5 — a profile is hidden and does not subscribe to mail unless the per
       () => handle.prepare("UPDATE cms_profile SET notify_new_jobs = 2 WHERE account_id = ?").run(id),
       /CHECK constraint failed/,
     );
-    // v10: the work arrangement is a closed three-word vocabulary, and the rate has a ceiling.
+    // v11: the column holds JSON, and the rate has a ceiling. The vocabulary itself is
+    // `policy.ts`'s (`parseWorkModes`), because a CHECK cannot be a join; what the column enforces
+    // is that the value is a JSON document, which is why the writer is the only way in.
     assert.throws(
-      () => handle.prepare("UPDATE cms_profile SET work_mode = 'sometimes' WHERE account_id = ?").run(id),
+      () => handle.prepare("UPDATE cms_profile SET work_modes_json = 'sometimes' WHERE account_id = ?").run(id),
       /CHECK constraint failed/,
-      'the work-mode vocabulary is closed',
+      'a non-JSON arrangement set is refused',
+    );
+    assert.equal(
+      handle
+        .prepare("UPDATE cms_profile SET work_modes_json = '[\"hybrid\",\"remote\"]' WHERE account_id = ?")
+        .run(id).changes,
+      1,
+      'a set of the three words is what the column is for',
     );
     assert.throws(
       () => handle.prepare('UPDATE cms_profile SET hourly_rate_cents = 500001 WHERE account_id = ?').run(id),

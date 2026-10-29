@@ -40,6 +40,11 @@ import {
   applicationsForAdvertiser,
   applicationsForApplicant,
   applyForJob,
+  OUTCOMES,
+  OUTCOME_LABELS,
+  OUTCOME_NOTE_MAX,
+  outcomeLabel,
+  recordOutcome,
   setApplicationStatus,
   withdrawApplication,
   type AdvertiserApplication,
@@ -48,6 +53,7 @@ import {
   type AdvertiserStatus,
   type ApplicantApplication,
   type ApplicationStatus,
+  type OutcomeRefusal,
 } from './applications.ts';
 import { advertReader, type PublicAdvert } from './jobs.ts';
 import { hourlyRate, parseRateDollars, rateInput } from './money.ts';
@@ -55,13 +61,15 @@ import { normaliseSuburbCity, screenFreeText } from './pii.ts';
 import {
   PROFILE_LIMITS,
   parseVisibility,
-  parseWorkMode,
+  parseWorkModes,
   profileEditProblem,
   WORK_MODES,
   WORK_MODE_LABELS,
   workModeLabel,
+  workModesLabel,
   type ApplicantProfile,
   type ProfileEdit,
+  type WorkModes,
 } from './policy.ts';
 import { loadProfile, saveProfile } from './profile.ts';
 
@@ -179,6 +187,20 @@ function stateCell(status: ApplicationStatus): string {
 }
 
 /**
+ * The advert's title as the way to the advert.
+ *
+ * `/jobs/<id>` is the public board's own path — the role page, not a portal view of it — so a click
+ * leaves the applicant's own table for the thing the row is about. A row whose advert can no longer
+ * be read still links by its number, because the application happened either way.
+ */
+function roleLink(jobId: number, title: string | null): string {
+  const href = `/jobs/${String(jobId)}`;
+  return title === null
+    ? `<a href="${href}">#${String(jobId)}</a>`
+    : `<a href="${href}">${escapeHtml(title)}</a> <small>#${String(jobId)}</small>`;
+}
+
+/**
  * A post-sign-in destination, or `null` when it is not one of this host's own paths.
  *
  * `?next=` is a visitor's string, and a redirect that echoes it is the classic open redirect: a
@@ -268,8 +290,12 @@ function profileEditFrom(fields: Fields): ParsedEdit {
   if (locality.ok === false) {
     return { ok: false, problem: `Location: ${locality.reason === 'street' ? 'use the suburb or city only — no street address' : locality.reason === 'digits' ? 'use the suburb or city, not a number' : 'that is too long for a suburb or city'}.` };
   }
-  const workMode = parseWorkMode(field(fields, 'work_mode'));
-  if (workMode === null) return { ok: false, problem: 'Choose on-site, hybrid or remote.' };
+  // The arrangement is a SET: checkboxes post one value per ticked box under the same name, and
+  // `parseWorkModes` collapses duplicates, refuses a word outside the vocabulary and returns the
+  // set in `WORK_MODES` order. An empty post is `[]`, which `profileEditProblem` refuses below with
+  // the sentence the person sees.
+  const workModes = parseWorkModes(fields.work_modes ?? []);
+  if (workModes === null) return { ok: false, problem: 'A work arrangement is on-site, hybrid or remote.' };
   const availability = optionalInt(field(fields, 'availability_days_per_week'), 'Availability');
   if (availability.ok === false) return availability;
   const headline = field(fields, 'headline').trim();
@@ -281,7 +307,7 @@ function profileEditFrom(fields: Fields): ParsedEdit {
     hourlyRateCents: rate.cents,
     availabilityDaysPerWeek: availability.value,
     location: locality.value === '' ? null : locality.value,
-    workMode,
+    workModes,
     visibility,
     // Off unless the box says otherwise: the column defaults to 0 and `mayNotify` requires it.
     notifyNewJobs: truthy(field(fields, 'notify_new_jobs')),
@@ -330,14 +356,21 @@ function portalBar(csrf: string, other: { readonly href: string; readonly label:
 </div>`;
 }
 
-/** The three arrangements, as radios: what this applicant will accept. */
-function workModeRadios(current: ProfileEdit['workMode']): string {
+/**
+ * The three arrangements, as **checkboxes**: what this applicant will accept, any combination.
+ *
+ * A checkbox group posts one `work_modes` value per ticked box — the same name repeated — which is
+ * what makes the set expressible without JavaScript. `checked` marks the boxes this profile already
+ * holds, and the legend says "at least one", because the validator refuses an empty set and the form
+ * should say so before the post rather than after it.
+ */
+function workModeCheckboxes(current: WorkModes): string {
   const options = WORK_MODES.map(
     (mode) =>
-      `<label class="portal-check"><input type="radio" name="work_mode" value="${mode}"${checked(current === mode)}> ${escapeHtml(WORK_MODE_LABELS[mode])}</label>`,
+      `<label class="portal-check"><input type="checkbox" name="work_modes" value="${mode}"${checked(current.includes(mode))}> ${escapeHtml(WORK_MODE_LABELS[mode])}</label>`,
   ).join('\n    ');
   return `<fieldset class="portal-fieldset">
-    <legend>Work arrangement you will accept</legend>
+    <legend>Work arrangements you will accept (at least one)</legend>
     ${options}
   </fieldset>`;
 }
@@ -349,6 +382,55 @@ function withdrawCell(row: ApplicantApplication, csrf: string): string {
   <input type="hidden" name="application_id" value="${row.id}">
   ${csrfField(csrf)}
   <button class="portal-button portal-button--quiet portal-button--small" type="submit">Withdraw</button>
+</form>`;
+}
+
+/**
+ * The applicant's Outcome cell: the company's decision in words, or the sentence that says there is
+ * none yet.
+ *
+ * A withdrawn row reads `Not applicable` — not because a stored outcome was erased, but because a
+ * decision about an application that no longer exists is not a fact about this person's week. The
+ * advertiser's record stays in the row; the applicant's page simply stops reporting it.
+ */
+function applicantOutcomeCell(row: ApplicantApplication): string {
+  if (row.status === 'withdrawn') return '<span class="portal-note">Not applicable</span>';
+  const words = `<span class="portal-state">${escapeHtml(outcomeLabel(row.outcome))}</span>`;
+  if (row.outcomeNote === null) return words;
+  return `${words}<div class="portal-note">${escapeHtml(row.outcomeNote)}</div>`;
+}
+
+/**
+ * The advertiser's Outcome cell: what has been recorded, and the form that records or replaces it.
+ *
+ * A withdrawn application has **no controls**: the applicant ended the conversation, and a decision
+ * recorded afterwards would be a decision nobody is waiting for. The words stay, because a pipeline
+ * that forgets what was concluded the day before a withdrawal is a pipeline that lies.
+ *
+ * The form carries the session's CSRF token like every other writing form here, and the note is
+ * bounded in the markup at the column's own 500 so the browser refuses an over-long note before the
+ * POST does.
+ */
+function advertiserOutcomeCell(row: AdvertiserApplication, csrf: string): string {
+  if (row.status === 'withdrawn') {
+    const was = row.outcome === null ? '' : ` The last outcome recorded was ${outcomeLabel(row.outcome)}.`;
+    return `<span class="portal-note">Not applicable — withdrawn by the applicant.${escapeHtml(was)}</span>`;
+  }
+  const recorded =
+    row.outcome === null
+      ? '<div class="portal-note">Not decided yet</div>'
+      : `<div class="state">${escapeHtml(outcomeLabel(row.outcome))}</div>` +
+        (row.outcomeAt === null ? '' : `<div class="portal-note">recorded ${day(row.outcomeAt)}</div>`) +
+        (row.outcomeNote === null ? '' : `<div class="summary">${escapeHtml(row.outcomeNote)}</div>`);
+  const options = OUTCOMES.map(
+    (outcome) => `<option value="${outcome}"${selected(row.outcome === outcome)}>${escapeHtml(OUTCOME_LABELS[outcome])}</option>`,
+  ).join('');
+  return `${recorded}<form class="portal-outcome" method="post" action="/portal/advertiser/outcome">
+  <input type="hidden" name="application_id" value="${row.id}">
+  ${csrfField(csrf)}
+  <select name="outcome" aria-label="Outcome for this application">${options}</select>
+  <input name="outcome_note" maxlength="${OUTCOME_NOTE_MAX}" placeholder="Note for the applicant (optional)" aria-label="Outcome note">
+  <button class="portal-button portal-button--quiet portal-button--small" type="submit">Record outcome</button>
 </form>`;
 }
 
@@ -385,8 +467,9 @@ function applicantPage(
   const rows = applications
     .map(
       (row) =>
-        `<tr><td data-label="Role">${row.jobTitle === null ? `#${row.jobId}` : `${escapeHtml(row.jobTitle)} <small>#${row.jobId}</small>`}</td>` +
+        `<tr><td data-label="Role">${roleLink(row.jobId, row.jobTitle)}</td>` +
         `<td data-label="State"><span class="portal-state">${escapeHtml(stateWord(row.status))}</span></td>` +
+        `<td data-label="Outcome">${applicantOutcomeCell(row)}</td>` +
         `<td data-label="Sent">${day(row.createdAt)}</td>` +
         `<td data-label="Action">${withdrawCell(row, csrf)}</td></tr>`,
     )
@@ -399,7 +482,7 @@ function applicantPage(
       ? '<p class="portal-empty">You have not applied for anything yet.</p>'
       : `<div class="portal-table-scroll">
 <table class="portal-table">
-  <thead><tr><th scope="col">Role</th><th scope="col">State</th><th scope="col">Sent</th><th scope="col">Action</th></tr></thead>
+  <thead><tr><th scope="col">Role</th><th scope="col">State</th><th scope="col">Outcome</th><th scope="col">Sent</th><th scope="col">Action</th></tr></thead>
   <tbody>${rows}</tbody>
 </table>
 </div>`;
@@ -424,7 +507,7 @@ ${flash}<section>
   <dt>Summary</dt><dd>${profile.summary === null ? '—' : escapeHtml(profile.summary)}</dd>
   <dt>Hourly rate</dt><dd>${money(profile.hourlyRateCents, profile.currency)}</dd>
   <dt>Availability</dt><dd>${days(profile.availabilityDaysPerWeek)}</dd>
-  <dt>Work arrangement</dt><dd>${escapeHtml(workModeLabel(profile.workMode))}</dd>
+  <dt>Work arrangements</dt><dd>${escapeHtml(workModesLabel(profile.workModes))}</dd>
   <dt>Discoverability</dt><dd>${escapeHtml(profile.visibility)}</dd>
   <dt>Emailed about new roles</dt><dd>${yesNo(profile.notifyNewJobs)}</dd>
   <dt>Skills</dt><dd><ul>${skills}</ul></dd>
@@ -462,7 +545,7 @@ ${flash}<section>
     <input id="location" name="location" value="${profile.location === null ? '' : escapeHtml(profile.location)}" maxlength="80" placeholder="Newcastle NSW" aria-describedby="location-help">
     <p class="portal-note" id="location-help">Suburb or city only — no street address. This is shown to advertisers as a locality, never as a place to find you.</p>
   </div>
-  ${workModeRadios(profile.workMode)}
+  ${workModeCheckboxes(profile.workModes)}
   <div class="portal-field">
     <label for="visibility">Discoverability</label>
     <select id="visibility" name="visibility">
@@ -523,7 +606,7 @@ function advertiserPage(
         : `<strong>${escapeHtml(profile.displayName)}</strong>` +
           (profile.headline === null ? '' : `<div>${escapeHtml(profile.headline)}</div>`) +
           (profile.summary === null ? '' : `<div class="summary">${escapeHtml(profile.summary)}</div>`) +
-          `<div>${money(profile.hourlyRateCents, profile.currency)} · ${days(profile.availabilityDaysPerWeek)} · work: ${escapeHtml(workModeLabel(profile.workMode))}</div>` +
+          `<div>${money(profile.hourlyRateCents, profile.currency)} · ${days(profile.availabilityDaysPerWeek)} · work: ${escapeHtml(workModesLabel(profile.workModes))}</div>` +
           (profile.location === null ? '' : `<div>${escapeHtml(profile.location)}</div>`) +
           (profile.skills.length === 0 ? '' : `<div>skills: ${profile.skills.map((s) => escapeHtml(s)).join(', ')}</div>`) +
           // A link is a string the applicant typed: rendered as text, never as an `href`.
@@ -542,10 +625,11 @@ function advertiserPage(
              <button class="portal-button portal-button--quiet portal-button--small" type="submit" name="status" value="shortlisted">Shortlist</button>
              <button class="portal-button portal-button--danger portal-button--small" type="submit" name="status" value="rejected">Reject</button>
            </form>`;
-      return `<tr><td data-label="Role">${row.jobTitle === null ? `#${row.jobId}` : `${escapeHtml(row.jobTitle)} <small>#${row.jobId}</small>`}</td>` +
+      return `<tr><td data-label="Role">${roleLink(row.jobId, row.jobTitle)}</td>` +
         `<td data-label="Applicant">${who}</td>` +
         `<td data-label="What they said">${note}</td>` +
         `<td data-label="Received">${day(row.createdAt)}${stateCell(row.status)}</td>` +
+        `<td data-label="Outcome">${advertiserOutcomeCell(row, csrf)}</td>` +
         `<td data-label="Decision">${decision}</td></tr>`;
     })
     .join('\n');
@@ -555,7 +639,7 @@ function advertiserPage(
       ? '<p class="portal-empty">No applications yet. When someone applies to one of your roles it appears here.</p>'
       : `<div class="portal-table-scroll">
 <table class="portal-table">
-  <thead><tr><th scope="col">Role</th><th scope="col">Applicant</th><th scope="col">What they said</th><th scope="col">Received</th><th scope="col">Decision</th></tr></thead>
+  <thead><tr><th scope="col">Role</th><th scope="col">Applicant</th><th scope="col">What they said</th><th scope="col">Received</th><th scope="col">Outcome</th><th scope="col">Decision</th></tr></thead>
   <tbody>${rows}</tbody>
 </table>
 </div>`;
@@ -572,6 +656,7 @@ function advertiserPage(
 </div>
 ${portalBar(csrf, opts.alsoApplies ? { href: '/portal/applicant', label: 'Switch to applying' } : null)}
 <p class="portal-note">Applicants are shown as they chose to be seen. The board never sends you an email address, a phone number or a postal address, and there is no field on this page that could carry one.</p>
+<p class="portal-note">An <strong>outcome</strong> is your own record of what you concluded. It is shown to the applicant beside the application's state and never changes that state: shortlisting an application does not move it out of “submitted”, and only the applicant can withdraw it.</p>
 ${counts}${applicationsBlock}`;
 }
 
@@ -615,6 +700,47 @@ function coverNoteRefusal(note: string): string | null {
           ? 'a postal address'
           : 'a tax file number, a bank account or another sensitive number';
   return `A cover note cannot contain ${what}: the advertiser never receives contact details here, and nothing was sent.`;
+}
+
+/**
+ * The refusal an outcome earns, as a sentence. `not_found` and `withdrawn` are answered by their own
+ * status codes; the rest are 400s whose sentence names the one thing that must change. A refused note
+ * never reaches the row, so the applicant's page never has to hold a number it should not.
+ */
+function outcomeRefusal(reason: OutcomeRefusal): AppError {
+  switch (reason) {
+    case 'not_found':
+      return new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'no such application for this account');
+    case 'withdrawn':
+      return new AppError(
+        'SKW_E_PLT_REQUEST_INVALID',
+        'the applicant withdrew this application; an outcome is not yours to record on it',
+      );
+    case 'unknown_outcome':
+      return new AppError('SKW_E_PLT_REQUEST_INVALID', 'An outcome is shortlisted, interview, offer or rejected.');
+    case 'note_too_long':
+      return new AppError('SKW_E_PLT_REQUEST_INVALID', `An outcome note is at most ${OUTCOME_NOTE_MAX} characters.`);
+    case 'note_email':
+      return new AppError(
+        'SKW_E_PLT_REQUEST_INVALID',
+        'An outcome note cannot contain an email address: the applicant reads this note, and the board never carries contact detail.',
+      );
+    case 'note_phone':
+      return new AppError(
+        'SKW_E_PLT_REQUEST_INVALID',
+        'An outcome note cannot contain a phone number: the applicant reads this note, and the board never carries contact detail.',
+      );
+    case 'note_address':
+      return new AppError(
+        'SKW_E_PLT_REQUEST_INVALID',
+        'An outcome note cannot contain a postal address: the applicant reads this note, and the board never carries contact detail.',
+      );
+    case 'note_sensitive':
+      return new AppError(
+        'SKW_E_PLT_REQUEST_INVALID',
+        'An outcome note cannot contain a tax file number, a bank account, a health or other sensitive detail.',
+      );
+  }
 }
 
 /**
@@ -1347,6 +1473,50 @@ ${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your a
           ? new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'no such application for this account')
           : new AppError('SKW_E_PLT_REQUEST_INVALID', 'the applicant withdrew this application; it cannot be reopened');
       }
+      reply.code(303).header('location', '/portal/advertiser').send();
+    });
+
+    /**
+     * `POST /portal/advertiser/outcome` — the company records what it concluded about one application.
+     *
+     * The same three gates as every other portal write — origin, the session's CSRF, the advertiser
+     * role — and then `recordOutcome`, which scopes the row to this account in its read *and* its
+     * write, refuses a withdrawn row by name, and screens the note before it can reach the column.
+     *
+     * **It does not touch `status`.** An outcome is an advisory record stored beside the applicant's
+     * lifecycle; the decision buttons above are a different write with a different meaning, and this
+     * route has no way to become that one.
+     */
+    app.post('/portal/advertiser/outcome', async (req: FastifyRequest, reply: FastifyReply) => {
+      this.#assertOrigin(req);
+      const tenantKey = this.#tenant(req);
+      const view = this.#view(req, tenantKey);
+      if (view === null) {
+        reply.code(303).header('location', '/portal/signin').send();
+        return;
+      }
+      this.#assertSessionCsrf(req, tenantKey);
+      this.#assertRole(view, 'advertiser');
+      const fields = fieldsOf(req.body);
+      const applicationId = optionalInt(field(fields, 'application_id'), 'The application number');
+      if (applicationId.ok === false) throw new AppError('SKW_E_PLT_REQUEST_INVALID', applicationId.problem);
+      if (applicationId.value === null) {
+        throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'An application number is required.');
+      }
+      // The note is screened inside `recordOutcome`: the function that writes the column is the
+      // function that enforces what may be in it, so a second caller cannot forget.
+      const result = this.#db(tenantKey, (db) =>
+        recordOutcome(
+          { db, tenant: tenantKey, emailMode: this.#deps.emailMode },
+          {
+            applicationId: applicationId.value as number,
+            advertiserAccountId: view.accountId,
+            outcome: field(fields, 'outcome'),
+            note: field(fields, 'outcome_note'),
+          },
+        ),
+      );
+      if (result.ok === false) throw outcomeRefusal(result.reason);
       reply.code(303).header('location', '/portal/advertiser').send();
     });
 

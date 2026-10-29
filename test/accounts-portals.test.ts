@@ -31,6 +31,7 @@ import { after, test } from 'node:test';
 
 import { Accounts, type Role } from '../app/accounts/service.ts';
 import { registerPortal } from '../app/accounts/routes.ts';
+import { migrateTenant } from '../app/db/migrate.ts';
 import { Semaphore, totpCode } from '../app/admin/auth.ts';
 import { parseManifest, tableStatements } from '../app/plugins/manifest.ts';
 import { renderMail } from '../app/mail/templates.ts';
@@ -487,7 +488,7 @@ test('P6 — the profile form writes the eight fields it owns, and refuses a thi
     summary: 'Twenty years of small teams.',
     hourly_rate: '95.50',
     availability_days_per_week: '3',
-    work_mode: 'hybrid',
+    work_modes: ['hybrid'],
     visibility: 'discoverable',
     notify_new_jobs: '1',
   };
@@ -499,7 +500,7 @@ test('P6 — the profile form writes the eight fields it owns, and refuses a thi
   try {
     const row = handle
       .prepare(
-        `SELECT display_name, headline, summary, hourly_rate_cents, availability_days_per_week, work_mode,
+        `SELECT display_name, headline, summary, hourly_rate_cents, availability_days_per_week, work_modes_json,
                 visibility, notify_new_jobs
            FROM cms_profile WHERE account_id = ?`,
       )
@@ -510,7 +511,7 @@ test('P6 — the profile form writes the eight fields it owns, and refuses a thi
       summary: 'Twenty years of small teams.',
       hourly_rate_cents: 9550,
       availability_days_per_week: 3,
-      work_mode: 'hybrid',
+      work_modes_json: '["hybrid"]',
       visibility: 'discoverable',
       notify_new_jobs: 1,
     });
@@ -589,7 +590,7 @@ test('P6 — the profile form writes the eight fields it owns, and refuses a thi
 test('P7 — origin and CSRF are refused on the profile write, before anything is read', async () => {
   const built = await build();
   const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
-  const form = { csrf: alice.csrf, display_name: 'Nobody', visibility: 'hidden', notify_new_jobs: '0', work_mode: 'onsite' };
+  const form = { csrf: alice.csrf, display_name: 'Nobody', visibility: 'hidden', notify_new_jobs: '0', work_modes: ['onsite'] };
 
   const noOrigin = await built.app.inject({
     ...post('/portal/applicant/profile', form, { cookie: alice.cookie }),
@@ -901,7 +902,7 @@ test('S1 — sign-in lands on the account’s own portal, and ?next= wins only w
 test('S2 — the rate is entered in dollars and stored in cents', async () => {
   const built = await build();
   const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
-  const base = { csrf: alice.csrf, display_name: 'Alice Rivera', visibility: 'hidden', notify_new_jobs: '0', work_mode: 'onsite' };
+  const base = { csrf: alice.csrf, display_name: 'Alice Rivera', visibility: 'hidden', notify_new_jobs: '0', work_modes: ['onsite'] };
 
   const save = (rate: string) =>
     built.app.inject(post('/portal/applicant/profile', { ...base, hourly_rate: rate }, { cookie: alice.cookie }));
@@ -950,42 +951,71 @@ test('S2 — the rate is entered in dollars and stored in cents', async () => {
   assert.match(exact.body, /\$95\/hour/);
 });
 
-test('S3 — the work arrangement is three words, and a fourth is refused', async () => {
+test('S3 — the work arrangement is a SET: all seven combinations accepted, an empty or foreign one refused by name', async () => {
   const built = await build();
   const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
   const base = { csrf: alice.csrf, display_name: 'Alice Rivera', visibility: 'hidden', notify_new_jobs: '0' };
   const column = (): string => {
     const db = built.db();
     try {
-      return (db.prepare('SELECT work_mode FROM cms_profile WHERE account_id = ?').get(alice.accountId) as {
-        work_mode: string;
-      }).work_mode;
+      return (db.prepare('SELECT work_modes_json FROM cms_profile WHERE account_id = ?').get(alice.accountId) as {
+        work_modes_json: string;
+      }).work_modes_json;
     } finally {
       db.close();
     }
   };
 
-  for (const mode of ['onsite', 'hybrid', 'remote'] as const) {
+  // The seven non-empty subsets of the three words, each posted as the repeated field a checkbox
+  // group sends. Every one is a person's real answer, and none of them is a subset of another
+  // screen's idea of the question.
+  const combinations: [readonly string[], string][] = [
+    [['onsite'], '["onsite"]'],
+    [['hybrid'], '["hybrid"]'],
+    [['remote'], '["remote"]'],
+    [['onsite', 'hybrid'], '["onsite","hybrid"]'],
+    [['onsite', 'remote'], '["onsite","remote"]'],
+    [['hybrid', 'remote'], '["hybrid","remote"]'],
+    [['onsite', 'hybrid', 'remote'], '["onsite","hybrid","remote"]'],
+  ];
+  for (const [modes, stored] of combinations) {
     const res = await built.app.inject(
-      post('/portal/applicant/profile', { ...base, work_mode: mode, hourly_rate_cents: '' }, { cookie: alice.cookie }),
+      post('/portal/applicant/profile', { ...base, work_modes: [...modes] }, { cookie: alice.cookie }),
     );
-    assert.equal(res.statusCode, 303, `${mode}: ${res.body}`);
-    assert.equal(column(), mode);
+    assert.equal(res.statusCode, 303, `${modes.join('+')}: ${res.body}`);
+    assert.equal(column(), stored, `${modes.join('+')} must be stored as ${stored}`);
   }
-  const page = await built.app.inject(get("/portal/applicant", { cookie: alice.cookie }));
-  assert.match(page.body, /<dt>Work arrangement<\/dt><dd>Remote<\/dd>/);
-  assert.match(page.body, /<input type="radio" name="work_mode" value="remote" checked> Remote/);
-  assert.match(page.body, /<input type="radio" name="work_mode" value="onsite"> On-site/);
 
-  for (const bad of ['sometimes', '', 'REMOTE']) {
-    const before = column();
-    const res = await built.app.inject(
-      post('/portal/applicant/profile', { ...base, work_mode: bad, hourly_rate_cents: '' }, { cookie: alice.cookie }),
-    );
-    assert.equal(res.statusCode, 400, `${JSON.stringify(bad)} must be refused: ${res.body}`);
-    assert.match(res.body, /Choose on-site, hybrid or remote/);
-    assert.equal(column(), before, 'the row is untouched');
-  }
+  // The set is stored in `WORK_MODES` order whatever order the browser posted, and a repeated
+  // value is collapsed — a set has one representation, or two pages disagree about one person.
+  const shuffled = await built.app.inject(
+    post('/portal/applicant/profile', { ...base, work_modes: ['remote', 'hybrid', 'remote'] }, { cookie: alice.cookie }),
+  );
+  assert.equal(shuffled.statusCode, 303, shuffled.body);
+  assert.equal(column(), '["hybrid","remote"]', 'duplicates collapse and the order is the vocabulary\'s');
+
+  // The page reads the set as words, in that order, and the form draws checkboxes — not radios.
+  const page = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
+  assert.match(page.body, /<dt>Work arrangements<\/dt><dd>Hybrid, Remote<\/dd>/);
+  assert.match(page.body, /<input type="checkbox" name="work_modes" value="hybrid" checked> Hybrid/);
+  assert.match(page.body, /<input type="checkbox" name="work_modes" value="remote" checked> Remote/);
+  assert.match(page.body, /<input type="checkbox" name="work_modes" value="onsite"> On-site/);
+  assert.doesNotMatch(page.body, /type="radio" name="work_mode"/, 'the single-choice control is gone');
+
+  // Nothing ticked is refused in the sentence the person is owed, and nothing is written.
+  const before = column();
+  const empty = await built.app.inject(post('/portal/applicant/profile', { ...base, work_modes: [] }, { cookie: alice.cookie }));
+  assert.equal(empty.statusCode, 400, empty.body);
+  assert.match(empty.body, /Choose at least one work arrangement\./);
+  assert.equal(column(), before, 'a refused empty set must not blank the row');
+
+  // A fourth word is refused too — the whole post, rather than a set that quietly lost a tick.
+  const unknown = await built.app.inject(
+    post('/portal/applicant/profile', { ...base, work_modes: ['hybrid', 'sometimes'] }, { cookie: alice.cookie }),
+  );
+  assert.equal(unknown.statusCode, 400, unknown.body);
+  assert.match(unknown.body, /on-site, hybrid or remote/);
+  assert.equal(column(), before, 'a refused word must not rewrite the row');
 });
 
 test('S4 — the applicant page has no form that asks for an advert id', async () => {
@@ -1212,4 +1242,371 @@ test('S7 — withdraw ends the row, is idempotent, and the advertiser sees WITHD
   );
   assert.equal(reopen.statusCode, 400, reopen.body);
   assert.match(reopen.body, /withdrew/);
+});
+
+
+/* ------------------------------------------------------------------------------------------------
+ * S12 — schema v11: the arrangement as a set on screen, the role a row is about as a link, and the
+ * advertiser's outcome as a record that is not the application's state.
+ *
+ *   S8  every application row, on both portals, links its role to `/jobs/<id>`;
+ *   S9  the advertiser records an outcome and the applicant reads the words — plus the note;
+ *   S10 a note carrying an email or a phone number is refused, and nothing is written;
+ *   S11 a withdrawn application has no outcome controls, and reads "Not applicable";
+ *   S12 status and outcome are independent facts about one row;
+ *   S13 the migration turns an existing single arrangement into a one-element set, and drops the column.
+ * ---------------------------------------------------------------------------------------------- */
+
+test('S8 — an application row links its role to /jobs/<id> on both portals', async () => {
+  const built = await build();
+  const acme = await enterAs(built, 'hiring@acme.test', 'Acme Hiring', ['advertiser']);
+  const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+
+  const handle = built.db();
+  const job = addJob(handle, acme.accountId, 'Fractional CTO');
+  handle.prepare("UPDATE cms_profile SET visibility = 'discoverable' WHERE account_id = ?").run(alice.accountId);
+  handle.close();
+
+  const applied = await built.app.inject(
+    post('/portal/applicant/apply', { csrf: alice.csrf, job_id: String(job.jobId), cover_note: 'Keen.' }, { cookie: alice.cookie }),
+  );
+  assert.equal(applied.statusCode, 303, applied.body);
+
+  // The applicant's own row: the title is the link, and the link is the public role page.
+  const mine = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
+  assert.equal(mine.statusCode, 200, mine.body);
+  assert.match(
+    mine.body,
+    new RegExp(`<a href="/jobs/${String(job.jobId)}">Fractional CTO</a>`),
+    'the applicant can open the role they applied for',
+  );
+
+  // The advertiser's row: the same path for the same advert, reached from the other side.
+  const theirs = await built.app.inject(get('/portal/advertiser', { cookie: acme.cookie }));
+  assert.equal(theirs.statusCode, 200, theirs.body);
+  assert.match(
+    theirs.body,
+    new RegExp(`<a href="/jobs/${String(job.jobId)}">Fractional CTO</a>`),
+    'the advertiser can open the role the application is for',
+  );
+
+  // Not a portal path dressed up as a public one: the href is exactly the board's own route.
+  assert.doesNotMatch(mine.body, new RegExp(`href="/portal/jobs/${String(job.jobId)}"`));
+});
+
+/** The one application this tenant holds, by id — the row both portals are reading. */
+function onlyApplication(built: Built): { id: number } {
+  const db = built.db();
+  try {
+    return db.prepare('SELECT id FROM cms_application ORDER BY id DESC LIMIT 1').get() as { id: number };
+  } finally {
+    db.close();
+  }
+}
+
+/** Apply `alice` to one advert owned by `acme`, and hand back the row id. */
+async function applyOnce(built: Built, acme: Session, alice: Session, title = 'Fractional CTO'): Promise<{ id: number; jobId: number }> {
+  const handle = built.db();
+  const job = addJob(handle, acme.accountId, title);
+  handle.prepare("UPDATE cms_profile SET visibility = 'discoverable' WHERE account_id = ?").run(alice.accountId);
+  handle.close();
+  const res = await built.app.inject(
+    post('/portal/applicant/apply', { csrf: alice.csrf, job_id: String(job.jobId), cover_note: 'Keen.' }, { cookie: alice.cookie }),
+  );
+  assert.equal(res.statusCode, 303, res.body);
+  return { id: onlyApplication(built).id, jobId: job.jobId };
+}
+
+test('S9 — the advertiser records each outcome, and the applicant reads it in words', async () => {
+  const built = await build();
+  const acme = await enterAs(built, 'hiring@acme.test', 'Acme Hiring', ['advertiser']);
+  const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+  const { id } = await applyOnce(built, acme, alice);
+
+  // Before anything is recorded: both sides say so, in words rather than by an empty cell.
+  const beforeApplicant = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
+  assert.match(beforeApplicant.body, /<th scope="col">Outcome<\/th>/, 'the applicant has an Outcome column');
+  assert.match(beforeApplicant.body, /Not decided yet/);
+
+  const words: [string, string][] = [
+    ['shortlisted', 'Shortlisted'],
+    ['interview', 'Interview requested'],
+    ['offer', 'Offer made'],
+    ['rejected', 'Not successful'],
+  ];
+  for (const [value, sentence] of words) {
+    const res = await built.app.inject(
+      post(
+        '/portal/advertiser/outcome',
+        { csrf: acme.csrf, application_id: String(id), outcome: value, outcome_note: `Recorded as ${value}.` },
+        { cookie: acme.cookie },
+      ),
+    );
+    assert.equal(res.statusCode, 303, `${value}: ${res.body}`);
+    assert.equal(res.headers.location, '/portal/advertiser');
+
+    const theirs = await built.app.inject(get('/portal/advertiser', { cookie: acme.cookie }));
+    assert.match(theirs.body, new RegExp(sentence), `the advertiser reads ${sentence}`);
+    assert.match(theirs.body, /recorded \d{4}-\d{2}-\d{2}/, 'and when it was recorded');
+    assert.match(theirs.body, new RegExp(`Recorded as ${value}\\.`), 'and the note they wrote');
+
+    const mine = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
+    assert.match(mine.body, new RegExp(sentence), `the applicant reads ${sentence}`);
+    assert.match(mine.body, new RegExp(`Recorded as ${value}\\.`), 'and the note with it');
+
+    const db = built.db();
+    try {
+      const row = db
+        .prepare('SELECT outcome, outcome_note, outcome_at, outcome_by_account_id, status FROM cms_application WHERE id = ?')
+        .get(id) as {
+        outcome: string;
+        outcome_note: string;
+        outcome_at: string;
+        outcome_by_account_id: number;
+        status: string;
+      };
+      assert.equal(row.outcome, value);
+      assert.equal(row.outcome_note, `Recorded as ${value}.`);
+      assert.match(row.outcome_at, /^\d{4}-\d{2}-\d{2}T/, 'the record carries a timestamp');
+      assert.equal(row.outcome_by_account_id, acme.accountId, 'and names who recorded it');
+      assert.equal(row.status, 'submitted', 'recording an outcome is not a status transition');
+    } finally {
+      db.close();
+    }
+  }
+
+  // A note is optional: an outcome on its own is a complete record.
+  const bare = await built.app.inject(
+    post('/portal/advertiser/outcome', { csrf: acme.csrf, application_id: String(id), outcome: 'shortlisted', outcome_note: '' }, { cookie: acme.cookie }),
+  );
+  assert.equal(bare.statusCode, 303, bare.body);
+  const db = built.db();
+  try {
+    assert.equal(
+      (db.prepare('SELECT outcome_note FROM cms_application WHERE id = ?').get(id) as { outcome_note: string | null }).outcome_note,
+      null,
+      'an empty note is stored as NULL, not as an empty string the column would also refuse',
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('S10 — an outcome note carrying contact detail is refused, and nothing is written', async () => {
+  const built = await build();
+  const acme = await enterAs(built, 'hiring@acme.test', 'Acme Hiring', ['advertiser']);
+  const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+  const { id } = await applyOnce(built, acme, alice);
+
+  const note = () => {
+    const db = built.db();
+    try {
+      return (db.prepare('SELECT outcome, outcome_note FROM cms_application WHERE id = ?').get(id) as {
+        outcome: string | null;
+        outcome_note: string | null;
+      });
+    } finally {
+      db.close();
+    }
+  };
+
+  const email = await built.app.inject(
+    post(
+      '/portal/advertiser/outcome',
+      { csrf: acme.csrf, application_id: String(id), outcome: 'interview', outcome_note: 'Write to me at hiring@acme.test' },
+      { cookie: acme.cookie },
+    ),
+  );
+  assert.equal(email.statusCode, 400, email.body);
+  assert.match(email.body, /cannot contain an email address/);
+  assert.deepEqual(note(), { outcome: null, outcome_note: null }, 'a refused note leaves the row alone');
+
+  const phone = await built.app.inject(
+    post(
+      '/portal/advertiser/outcome',
+      { csrf: acme.csrf, application_id: String(id), outcome: 'interview', outcome_note: 'Call 0412 345 678 to arrange a time.' },
+      { cookie: acme.cookie },
+    ),
+  );
+  assert.equal(phone.statusCode, 400, phone.body);
+  assert.match(phone.body, /cannot contain a phone number/);
+  assert.deepEqual(note(), { outcome: null, outcome_note: null });
+
+  // The screen is not a topical filter: an ordinary sentence about interview logistics passes.
+  const fine = await built.app.inject(
+    post(
+      '/portal/advertiser/outcome',
+      { csrf: acme.csrf, application_id: String(id), outcome: 'interview', outcome_note: 'We would like to meet on Thursday afternoon.' },
+      { cookie: acme.cookie },
+    ),
+  );
+  assert.equal(fine.statusCode, 303, fine.body);
+  assert.equal(note().outcome, 'interview');
+
+  // The gates every other portal write obeys, on this route too.
+  const noToken = await built.app.inject(
+    post('/portal/advertiser/outcome', { application_id: String(id), outcome: 'offer' }, { cookie: acme.cookie }),
+  );
+  assert.equal(noToken.statusCode, 403);
+  assert.match(noToken.body, /csrf token/);
+
+  const noOrigin = await built.app.inject({
+    ...post('/portal/advertiser/outcome', { csrf: acme.csrf, application_id: String(id), outcome: 'offer' }, { cookie: acme.cookie }),
+    headers: { host: HOST, 'content-type': 'application/x-www-form-urlencoded', cookie: acme.cookie },
+  });
+  assert.equal(noOrigin.statusCode, 403);
+  assert.match(noOrigin.body, /SKW_E_SEC_CSRF/);
+
+  const asApplicant = await built.app.inject(
+    post('/portal/advertiser/outcome', { csrf: alice.csrf, application_id: String(id), outcome: 'offer' }, { cookie: alice.cookie }),
+  );
+  assert.equal(asApplicant.statusCode, 403);
+  assert.match(asApplicant.body, /advertiser/);
+  assert.equal(note().outcome, 'interview', 'a refused post changed nothing');
+});
+
+test('S11 — a withdrawn application has no outcome controls, and reads Not applicable', async () => {
+  const built = await build();
+  const acme = await enterAs(built, 'hiring@acme.test', 'Acme Hiring', ['advertiser']);
+  const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+  const { id } = await applyOnce(built, acme, alice);
+
+  // A decision recorded before the withdrawal stays in the row and is still named to the advertiser.
+  const recorded = await built.app.inject(
+    post('/portal/advertiser/outcome', { csrf: acme.csrf, application_id: String(id), outcome: 'shortlisted' }, { cookie: acme.cookie }),
+  );
+  assert.equal(recorded.statusCode, 303, recorded.body);
+
+  const withdraw = await built.app.inject(
+    post('/portal/applicant/withdraw', { csrf: alice.csrf, application_id: String(id) }, { cookie: alice.cookie }),
+  );
+  assert.equal(withdraw.statusCode, 303, withdraw.body);
+
+  const theirs = await built.app.inject(get('/portal/advertiser', { cookie: acme.cookie }));
+  assert.equal(theirs.statusCode, 200, theirs.body);
+  assert.match(theirs.body, /Not applicable — withdrawn by the applicant/);
+  assert.match(theirs.body, /The last outcome recorded was Shortlisted/, 'the decision is not erased by a withdrawal');
+  assert.doesNotMatch(theirs.body, /action="\/portal\/advertiser\/outcome"/, 'no controls on a withdrawn row');
+  assert.doesNotMatch(theirs.body, />Record outcome</, 'and no button to press');
+
+  const mine = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
+  assert.match(mine.body, /<span class="portal-state">Withdrawn<\/span>/);
+  assert.match(mine.body, /Not applicable/);
+
+  // And the write itself refuses: the form is gone, and so is the route's willingness.
+  const late = await built.app.inject(
+    post('/portal/advertiser/outcome', { csrf: acme.csrf, application_id: String(id), outcome: 'offer' }, { cookie: acme.cookie }),
+  );
+  assert.equal(late.statusCode, 400, late.body);
+  assert.match(late.body, /withdrew this application/);
+
+  const db = built.db();
+  try {
+    const row = db.prepare('SELECT outcome FROM cms_application WHERE id = ?').get(id) as { outcome: string };
+    assert.equal(row.outcome, 'shortlisted', 'a refused late outcome did not overwrite the record');
+  } finally {
+    db.close();
+  }
+});
+
+test('S12 — status and outcome are independent facts about one application', async () => {
+  const built = await build();
+  const acme = await enterAs(built, 'hiring@acme.test', 'Acme Hiring', ['advertiser']);
+  const alice = await enterAs(built, 'alice@example.test', 'Alice Rivera', ['applicant']);
+  const { id } = await applyOnce(built, acme, alice);
+
+  const row = (): { status: string; outcome: string | null } => {
+    const db = built.db();
+    try {
+      return db.prepare('SELECT status, outcome FROM cms_application WHERE id = ?').get(id) as {
+        status: string;
+        outcome: string | null;
+      };
+    } finally {
+      db.close();
+    }
+  };
+
+  // An outcome does not move the status.
+  const offer = await built.app.inject(
+    post('/portal/advertiser/outcome', { csrf: acme.csrf, application_id: String(id), outcome: 'offer' }, { cookie: acme.cookie }),
+  );
+  assert.equal(offer.statusCode, 303, offer.body);
+  assert.deepEqual(row(), { status: 'submitted', outcome: 'offer' }, 'a submitted row can carry an outcome');
+
+  // A status write does not erase the outcome.
+  const shortlist = await built.app.inject(
+    post('/portal/advertiser/application', { csrf: acme.csrf, application_id: String(id), status: 'shortlisted' }, { cookie: acme.cookie }),
+  );
+  assert.equal(shortlist.statusCode, 303, shortlist.body);
+  assert.deepEqual(row(), { status: 'shortlisted', outcome: 'offer' }, 'the decision and the record coexist');
+
+  // The applicant reads both, in two different cells, in their own vocabularies.
+  const mine = await built.app.inject(get('/portal/applicant', { cookie: alice.cookie }));
+  assert.match(mine.body, /<td data-label="State"><span class="portal-state">Shortlisted<\/span><\/td>/);
+  assert.match(mine.body, /<td data-label="Outcome"><span class="portal-state">Offer made<\/span><\/td>/);
+
+  // Rejecting the application afterwards leaves the recorded outcome where it was — an outcome is
+  // a record of what was concluded, not a second copy of the status.
+  const reject = await built.app.inject(
+    post('/portal/advertiser/application', { csrf: acme.csrf, application_id: String(id), status: 'rejected' }, { cookie: acme.cookie }),
+  );
+  assert.equal(reject.statusCode, 303, reject.body);
+  assert.deepEqual(row(), { status: 'rejected', outcome: 'offer' });
+});
+
+test('S13 — the migration turns an existing single arrangement into a one-element set, and drops the column', () => {
+  const dir = join(root, 'v10');
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, 'site.db');
+  const db = new Database(path);
+  try {
+    // A v10 file, built by undoing exactly what r11 does: the set column did not exist, the single
+    // word did, and neither did the application's outcome group. The version said 10.
+    db.exec(readFileSync(join(SCHEMA, 'site.sql'), 'utf8'));
+    db.exec('ALTER TABLE cms_profile DROP COLUMN work_modes_json');
+    db.exec(
+      "ALTER TABLE cms_profile ADD COLUMN work_mode TEXT NOT NULL DEFAULT 'onsite' CHECK(work_mode IN ('onsite','hybrid','remote'))",
+    );
+    for (const column of ['outcome_by_account_id', 'outcome_at', 'outcome_note', 'outcome']) {
+      db.exec(`ALTER TABLE cms_application DROP COLUMN ${column}`);
+    }
+    const accountId = Number(
+      db
+        .prepare(
+          `INSERT INTO cms_account (email, status, password_hash, totp_secret, totp_confirmed_at, email_verified, failed_logins)
+           VALUES ('legacy@example.test', 'active', ?, ?, '2026-10-01T00:00:00.000Z', 1, 0)`,
+        )
+        .run('x'.repeat(64), 'y'.repeat(32)).lastInsertRowid,
+    );
+    db.prepare("INSERT INTO cms_profile (account_id, display_name, work_mode) VALUES (?, 'Legacy Person', 'remote')").run(accountId);
+    db.pragma('user_version = 10');
+  } finally {
+    db.close();
+  }
+
+  const report = migrateTenant(path, 'v10', SCHEMA);
+  assert.equal(report.ok, true, report.error);
+  assert.equal(report.action, 'migrated');
+  assert.equal(report.from, 10);
+  assert.equal(report.to, 11);
+
+  const after = new Database(path, { readonly: true });
+  try {
+    assert.equal(Number(after.pragma('user_version', { simple: true })), 11);
+    assert.equal(
+      (after.prepare('PRAGMA table_info(cms_profile)').all() as { name: string }[]).some((c) => c.name === 'work_mode'),
+      false,
+      'the single-word column is gone',
+    );
+    const row = after
+      .prepare('SELECT display_name, work_modes_json FROM cms_profile')
+      .get() as { display_name: string; work_modes_json: string };
+    assert.equal(row.display_name, 'Legacy Person', 'the person survived the migration');
+    // The honest translation: one word in, one-element set out. Nothing invented, nothing lost.
+    assert.equal(row.work_modes_json, '["remote"]');
+    assert.equal(after.pragma('integrity_check', { simple: true }), 'ok');
+  } finally {
+    after.close();
+  }
 });

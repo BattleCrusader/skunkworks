@@ -69,7 +69,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
 import { hourlyRate, parseRateDollars, rateInput } from '../accounts/money.ts';
-import { projectProfile, workModeLabel, type ApplicantProfile, type WorkMode } from '../accounts/policy.ts';
+import { projectProfile, workModesLabel, WORK_MODES, type ApplicantProfile, type WorkMode } from '../accounts/policy.ts';
 import type { AccountStatus, Role } from '../accounts/service.ts';
 import { extOfMime } from '../assets/farm.ts';
 import { applyPick, mediaChoices, pickAsset } from '../editor/media.ts';
@@ -279,7 +279,7 @@ interface ProfileRow {
   availability_days_per_week: number | null;
   location: string | null;
   timezone: string | null;
-  work_mode: string;
+  work_modes_json: string;
   links_json: string;
   visibility: string;
   notify_new_jobs: number;
@@ -1648,7 +1648,7 @@ ${pager}`,
       (db
         .prepare(
           `SELECT display_name, headline, summary, skills_json, hourly_rate_cents, currency,
-                  availability_days_per_week, location, timezone, work_mode, links_json,
+                  availability_days_per_week, location, timezone, work_modes_json, links_json,
                   visibility, notify_new_jobs
              FROM cms_profile WHERE account_id = ?`,
         )
@@ -1705,7 +1705,7 @@ ${field('Name', esc(projection.displayName))}
 ${field('Headline', projection.headline === null ? '—' : esc(projection.headline))}
 ${field('Hourly rate', rate === null ? '—' : esc(rate))}
 ${field('Availability', projection.availabilityDaysPerWeek === null ? '—' : `${projection.availabilityDaysPerWeek} days a week`)}
-${field('Work arrangement', esc(workModeLabel(projection.workMode)))}
+${field('Work arrangements', esc(workModesLabel(projection.workModes)))}
 ${field('Visibility', esc(profile.visibility))}
 </dl>
 <p class="muted">The block above is the profile policy's projection for an operator. Visibility is the
@@ -1835,8 +1835,11 @@ ${mailHtml}
       availabilityDaysPerWeek: profile.availability_days_per_week,
       location: profile.location,
       timezone: profile.timezone,
-      // The column's CHECK is the vocabulary; a value outside it cannot be in the row.
-      workMode: (profile.work_mode === 'hybrid' || profile.work_mode === 'remote' ? profile.work_mode : 'onsite') as WorkMode,
+      // The column's CHECK is JSON validity and the vocabulary is `policy.ts`'s. A row that names a
+      // word outside it is read as the words it does name, in `WORK_MODES` order, deduplicated —
+      // the same reading `app/accounts/profile.ts` makes, so the operator's screen and the
+      // applicant's own page cannot show one person's arrangements in two different orders.
+      workModes: WORK_MODES.filter((mode) => jsonArray(profile.work_modes_json).includes(mode)),
       links: jsonArray(profile.links_json).flatMap((item) => {
         if (typeof item !== 'object' || item === null) return [];
         const { label, url } = item as { label?: unknown; url?: unknown };

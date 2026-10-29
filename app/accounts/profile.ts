@@ -12,7 +12,8 @@
  */
 import type Database from 'better-sqlite3';
 
-import type { AccountStatus, ApplicantProfile, ProfileEdit } from './policy.ts';
+import type { AccountStatus, ApplicantProfile, ProfileEdit, WorkMode, WorkModes } from './policy.ts';
+import { WORK_MODES } from './policy.ts';
 
 interface ProfileRow {
   account_id: number;
@@ -25,7 +26,7 @@ interface ProfileRow {
   availability_days_per_week: number | null;
   location: string | null;
   timezone: string | null;
-  work_mode: string;
+  work_modes_json: string;
   links_json: string;
   visibility: string;
   notify_new_jobs: number;
@@ -40,6 +41,30 @@ function strings(raw: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * The arrangement set, read from its JSON column.
+ *
+ * Three refusals, all silent because none of them can be a row the form wrote: not JSON, not an
+ * array, or a word outside the vocabulary. A row from before v11 has `'[]'` — the ALTER's default —
+ * which is the set "nothing chosen", and the form is where that gets answered. The result is in
+ * `WORK_MODES` order and deduplicated, so a hand-edited row cannot make two pages disagree about
+ * how the same person reads.
+ */
+function workModes(raw: string): WorkMode[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const chosen = new Set<WorkMode>();
+  for (const value of parsed) {
+    if (value === 'onsite' || value === 'hybrid' || value === 'remote') chosen.add(value);
+  }
+  return WORK_MODES.filter((mode) => chosen.has(mode)) as WorkMode[];
 }
 
 function links(raw: string): { label: string; url: string }[] {
@@ -62,7 +87,7 @@ export function loadProfile(db: Database.Database, accountId: number): Applicant
   const row = db
     .prepare(
       `SELECT p.account_id, p.display_name, p.headline, p.summary, p.skills_json, p.hourly_rate_cents,
-              p.currency, p.availability_days_per_week, p.location, p.timezone, p.work_mode,
+              p.currency, p.availability_days_per_week, p.location, p.timezone, p.work_modes_json,
               p.links_json, p.visibility, p.notify_new_jobs, a.status
          FROM cms_profile p JOIN cms_account a ON a.id = p.account_id
         WHERE p.account_id = ?`,
@@ -80,9 +105,9 @@ export function loadProfile(db: Database.Database, accountId: number): Applicant
     availabilityDaysPerWeek: row.availability_days_per_week,
     location: row.location,
     timezone: row.timezone,
-    // The column's CHECK is the vocabulary; a value outside it cannot be in the row. The cast is
-    // the reader's half of that constraint, and `parseWorkMode` is the writer's.
-    workMode: row.work_mode === 'hybrid' || row.work_mode === 'remote' ? row.work_mode : 'onsite',
+    // The column's CHECK is JSON validity and the vocabulary is `policy.ts`'s; this reader is the
+    // second half, and a value outside the three words is dropped rather than rendered.
+    workModes: workModes(row.work_modes_json) as WorkModes,
     links: links(row.links_json),
     // The column's CHECK is the vocabulary; a value outside it cannot be in the row. The cast is
     // the reader's half of that constraint, and `parseVisibility` is the writer's.
@@ -93,11 +118,13 @@ export function loadProfile(db: Database.Database, accountId: number): Applicant
 }
 
 /**
- * Write the eight fields the applicant's form owns. Returns the number of rows the write touched,
- * so a caller can tell "saved" from "there is no profile for this account" instead of assuming.
+ * Write the fields the applicant's form owns. Returns the number of rows the write touched, so a
+ * caller can tell "saved" from "there is no profile for this account" instead of assuming.
  *
  * `skills`, `links`, `location`, `timezone` and `currency` are not in this statement: a form that
- * does not offer them must not be able to blank them by omission.
+ * does not offer them must not be able to blank them by omission. The arrangement is written as
+ * JSON in `WORK_MODES` order, because `parseWorkModes` already normalised it and storing the order
+ * the browser sent would make two identical sets different bytes.
  */
 export function saveProfile(
   db: Database.Database,
@@ -109,7 +136,7 @@ export function saveProfile(
     .prepare(
       `UPDATE cms_profile
           SET display_name = ?, headline = ?, summary = ?, hourly_rate_cents = ?,
-              availability_days_per_week = ?, location = ?, work_mode = ?, visibility = ?,
+              availability_days_per_week = ?, location = ?, work_modes_json = ?, visibility = ?,
               notify_new_jobs = ?, updated_at = ?
         WHERE account_id = ?`,
     )
@@ -120,7 +147,7 @@ export function saveProfile(
       edit.hourlyRateCents,
       edit.availabilityDaysPerWeek,
       edit.location,
-      edit.workMode,
+      JSON.stringify(edit.workModes),
       edit.visibility,
       edit.notifyNewJobs ? 1 : 0,
       new Date(atMs).toISOString(),
