@@ -30,6 +30,9 @@ import { escapeHtml } from '../admin/ui/html.ts';
 import { normaliseHost } from '../tenancy/normalise-host.ts';
 import { AppError } from '../errors.ts';
 import type { Env } from '../env.ts';
+import { chromeHtml, loadChrome, logoUrl as chromeLogoUrl } from '../render/chrome.ts';
+import { loadNav, navListHtml } from '../render/nav.ts';
+import { PORTAL_CSS } from './portal-css.ts';
 import type { Accounts, Role, SelfView } from './service.ts';
 import { PASSWORD_MIN } from './service.ts';
 import {
@@ -82,6 +85,15 @@ export interface PortalDeps {
    * Passed as a function rather than a value so the router never invents a tenant of its own.
    */
   tenantOf(req: FastifyRequest): string;
+  /**
+   * Whether a path is served by a loaded package rather than a `cms_page` row.
+   *
+   * The header's menu is the site's menu, and a tenant may point it at `/jobs` — a row in the job
+   * board's own table, which `cms_page` has never heard of. The CMS render path passes exactly this
+   * predicate to `loadNav`; the portal must pass the same one or its header would refuse a link the
+   * marketing pages happily draw. Optional because a test harness has no plugin runtime.
+   */
+  pageExists?(tenantKey: string, path: string): boolean;
   /** Off when real SMTP is configured; on offline, so the page can show the operator's link. */
   exposeVerifyLink?: boolean;
 }
@@ -203,19 +215,20 @@ function day(iso: string): string {
   return escapeHtml(iso.slice(0, 10));
 }
 
-/** The page shell. `theme.css` is the site's own stylesheet and is allowed by `style-src 'self'`. */
-function page(title: string, body: string): string {
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)}</title>
-<link rel="stylesheet" href="/theme.css">
-</head>
-<body class="portal">
-<main class="portal-main">
-${body}
-</main>
-</body></html>`;
-}
+/**
+ * How wide a portal page's content column is.
+ *
+ * `auth` is a sign-in/register card, `regular` is the account page, `wide` is a dashboard with a
+ * table in it. The shell (header, footer, `<main>`) is the site's; only the column inside it
+ * changes, which is what keeps a portal page looking like a page of this website.
+ */
+type PortalWidth = 'auth' | 'regular' | 'wide';
+
+const WIDTH_CLASS: Record<PortalWidth, string> = {
+  auth: 'portal-container portal-container--auth',
+  regular: 'portal-container',
+  wide: 'portal-container portal-container--wide',
+};
 
 /**
  * `GET /portal/applicant` — the applicant's own record and their own rows, on one page.
@@ -237,22 +250,37 @@ function applicantPage(profile: ApplicantProfile, applications: readonly Applica
         .map((link) => `<li>${escapeHtml(link.label)} — ${escapeHtml(link.url)}</li>`)
         .join('');
 
-  const rows = applications.length === 0
-    ? '<tr><td colspan="3">You have not applied for anything yet.</td></tr>'
-    : applications
-        .map(
-          (row) =>
-            `<tr><td>${row.jobTitle === null ? `#${row.jobId}` : `${escapeHtml(row.jobTitle)} <small>#${row.jobId}</small>`}</td>` +
-            `<td>${escapeHtml(row.status)}</td><td>${day(row.createdAt)}</td></tr>`,
-        )
-        .join('\n');
+  const rows = applications
+    .map(
+      (row) =>
+        `<tr><td data-label="Role">${row.jobTitle === null ? `#${row.jobId}` : `${escapeHtml(row.jobTitle)} <small>#${row.jobId}</small>`}</td>` +
+        `<td data-label="State"><span class="portal-state">${escapeHtml(row.status)}</span></td>` +
+        `<td data-label="Sent">${day(row.createdAt)}</td></tr>`,
+    )
+    .join('\n');
 
-  return `<h1>Your applications</h1>
-<p>Signed in as <strong>${escapeHtml(profile.displayName)}</strong>. <a href="/portal">Your account</a></p>
+  // An empty table is a header row over nothing. A person with no applications gets a sentence
+  // instead — the same sentence the page has always carried, in a box that reads as an answer.
+  const applicationsBlock =
+    applications.length === 0
+      ? '<p class="portal-empty">You have not applied for anything yet.</p>'
+      : `<div class="portal-table-scroll">
+<table class="portal-table">
+  <thead><tr><th scope="col">Role</th><th scope="col">State</th><th scope="col">Sent</th></tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+</div>`;
 
+  return `<div class="portal-intro">
+  <p class="portal-eyebrow">Applicant</p>
+  <h1>Your applications</h1>
+  <p class="portal-lede">Signed in as <strong>${escapeHtml(profile.displayName)}</strong>. <a href="/portal">Your account</a></p>
+</div>
+
+<section>
 <h2>Your profile</h2>
-<p class="note">Advertisers never see your email address, your phone number or any postal address — the board has no column for one. They see the fields below, and only when you apply to their advert or your profile is discoverable.</p>
-<dl class="profile">
+<p class="portal-note">Advertisers never see your email address, your phone number or any postal address — the board has no column for one. They see the fields below, and only when you apply to their advert or your profile is discoverable.</p>
+<dl class="portal-profile">
   <dt>Name</dt><dd>${escapeHtml(profile.displayName)}</dd>
   <dt>Headline</dt><dd>${profile.headline === null ? '—' : escapeHtml(profile.headline)}</dd>
   <dt>Summary</dt><dd>${profile.summary === null ? '—' : escapeHtml(profile.summary)}</dd>
@@ -264,54 +292,78 @@ function applicantPage(profile: ApplicantProfile, applications: readonly Applica
   <dt>Skills</dt><dd><ul>${skills}</ul></dd>
   <dt>Links</dt><dd><ul>${links}</ul></dd>
 </dl>
+</section>
 
+<section>
 <h2>Edit your profile</h2>
-<form method="post" action="/portal/applicant/profile">
+<form class="portal-form portal-card" method="post" action="/portal/applicant/profile">
   ${csrfField(csrf)}
-  <p><label for="display_name">Name shown on your profile</label>
-     <input id="display_name" name="display_name" value="${escapeHtml(profile.displayName)}" maxlength="${PROFILE_LIMITS.displayName}" required></p>
-  <p><label for="headline">Headline</label>
-     <input id="headline" name="headline" value="${escapeHtml(profile.headline ?? '')}" maxlength="${PROFILE_LIMITS.headline}"></p>
-  <p><label for="summary">Summary</label>
-     <textarea id="summary" name="summary" rows="6" maxlength="${PROFILE_LIMITS.summary}">${escapeHtml(profile.summary ?? '')}</textarea></p>
-  <p><label for="day_rate_cents">Day rate in cents (leave empty for “discussed”)</label>
-     <input id="day_rate_cents" name="day_rate_cents" type="number" min="1" step="1" value="${profile.dayRateCents === null ? '' : String(profile.dayRateCents)}"></p>
-  <p><label for="availability_days_per_week">Days a week you are available</label>
-     <input id="availability_days_per_week" name="availability_days_per_week" type="number" min="1" max="7" step="1" value="${profile.availabilityDaysPerWeek === null ? '' : String(profile.availabilityDaysPerWeek)}"></p>
-  <p><label for="remote_ok">Work remotely</label>
-     <select id="remote_ok" name="remote_ok">
-       <option value="1"${selected(profile.remoteOk)}>yes</option>
-       <option value="0"${selected(!profile.remoteOk)}>no</option>
-     </select></p>
-  <p><label for="visibility">Discoverability</label>
-     <select id="visibility" name="visibility">
-       <option value="discoverable"${selected(profile.visibility === 'discoverable')}>discoverable — my profile may be matched against new roles</option>
-       <option value="hidden"${selected(profile.visibility === 'hidden')}>hidden — not matched, and I cannot apply</option>
-     </select></p>
-  <p><label for="notify_new_jobs">Email me when a matching role is posted</label>
-     <select id="notify_new_jobs" name="notify_new_jobs">
-       <option value="1"${selected(profile.notifyNewJobs)}>yes</option>
-       <option value="0"${selected(!profile.notifyNewJobs)}>no</option>
-     </select></p>
-  <button type="submit">Save profile</button>
+  <div class="portal-field">
+    <label for="display_name">Name shown on your profile</label>
+    <input id="display_name" name="display_name" value="${escapeHtml(profile.displayName)}" maxlength="${PROFILE_LIMITS.displayName}" required>
+  </div>
+  <div class="portal-field">
+    <label for="headline">Headline</label>
+    <input id="headline" name="headline" value="${escapeHtml(profile.headline ?? '')}" maxlength="${PROFILE_LIMITS.headline}">
+  </div>
+  <div class="portal-field">
+    <label for="summary">Summary</label>
+    <textarea id="summary" name="summary" rows="6" maxlength="${PROFILE_LIMITS.summary}">${escapeHtml(profile.summary ?? '')}</textarea>
+  </div>
+  <div class="portal-field">
+    <label for="day_rate_cents">Day rate in cents (leave empty for “discussed”)</label>
+    <input id="day_rate_cents" name="day_rate_cents" type="number" min="1" step="1" value="${profile.dayRateCents === null ? '' : String(profile.dayRateCents)}">
+  </div>
+  <div class="portal-field">
+    <label for="availability_days_per_week">Days a week you are available</label>
+    <input id="availability_days_per_week" name="availability_days_per_week" type="number" min="1" max="7" step="1" value="${profile.availabilityDaysPerWeek === null ? '' : String(profile.availabilityDaysPerWeek)}">
+  </div>
+  <div class="portal-field">
+    <label for="remote_ok">Work remotely</label>
+    <select id="remote_ok" name="remote_ok">
+      <option value="1"${selected(profile.remoteOk)}>yes</option>
+      <option value="0"${selected(!profile.remoteOk)}>no</option>
+    </select>
+  </div>
+  <div class="portal-field">
+    <label for="visibility">Discoverability</label>
+    <select id="visibility" name="visibility">
+      <option value="discoverable"${selected(profile.visibility === 'discoverable')}>discoverable — my profile may be matched against new roles</option>
+      <option value="hidden"${selected(profile.visibility === 'hidden')}>hidden — not matched, and I cannot apply</option>
+    </select>
+  </div>
+  <div class="portal-field">
+    <label for="notify_new_jobs">Email me when a matching role is posted</label>
+    <select id="notify_new_jobs" name="notify_new_jobs">
+      <option value="1"${selected(profile.notifyNewJobs)}>yes</option>
+      <option value="0"${selected(!profile.notifyNewJobs)}>no</option>
+    </select>
+  </div>
+  <div class="portal-actions"><button class="portal-button" type="submit">Save profile</button></div>
 </form>
+</section>
 
+<section>
 <h2>Your applications</h2>
-<table class="applications">
-  <thead><tr><th>Role</th><th>State</th><th>Sent</th></tr></thead>
-  <tbody>${rows}</tbody>
-</table>
+${applicationsBlock}
+</section>
 
+<section>
 <h2>Apply for a role</h2>
-<p class="note">Enter the advert's number. It is the <code>id</code> of the role on this board — an application names the advert, and the board resolves the advertiser from it, so there is nothing here to type about who should receive it.</p>
-<form method="post" action="/portal/applicant/apply">
+<p class="portal-note">Enter the advert's number. It is the <code>id</code> of the role on this board — an application names the advert, and the board resolves the advertiser from it, so there is nothing here to type about who should receive it.</p>
+<form class="portal-form portal-card" method="post" action="/portal/applicant/apply">
   ${csrfField(csrf)}
-  <p><label for="job_id">Advert number</label>
-     <input id="job_id" name="job_id" type="number" min="1" step="1" required></p>
-  <p><label for="cover_note">What you would bring to it</label>
-     <textarea id="cover_note" name="cover_note" rows="6" maxlength="${PROFILE_LIMITS.coverNote}"></textarea></p>
-  <button type="submit">Send application</button>
-</form>`;
+  <div class="portal-field">
+    <label for="job_id">Advert number</label>
+    <input id="job_id" name="job_id" type="number" min="1" step="1" required>
+  </div>
+  <div class="portal-field">
+    <label for="cover_note">What you would bring to it</label>
+    <textarea id="cover_note" name="cover_note" rows="6" maxlength="${PROFILE_LIMITS.coverNote}"></textarea>
+  </div>
+  <div class="portal-actions"><button class="portal-button" type="submit">Send application</button></div>
+</form>
+</section>`;
 }
 
 /**
@@ -323,50 +375,61 @@ function applicantPage(profile: ApplicantProfile, applications: readonly Applica
  * unavailable shows the application and no person: the board does not fall back to the account.
  */
 function advertiserPage(displayName: string, applications: readonly AdvertiserApplication[], csrf: string): string {
-  const rows = applications.length === 0
-    ? '<tr><td colspan="5">No applications yet. When someone applies to one of your roles it appears here.</td></tr>'
-    : applications
-        .map((row) => {
-          const profile = row.profile;
-          // The note says *why* this viewer may see the profile, and it is read off the projection
-          // (`basis`) rather than asserted here: if the policy ever answers an advertiser for a
-          // different reason, this line follows it instead of lying about it.
-          const who = profile === null
-            ? '<span class="note">This applicant\'s profile is not available.</span>'
-            : `<strong>${escapeHtml(profile.displayName)}</strong>` +
-              (profile.headline === null ? '' : `<div>${escapeHtml(profile.headline)}</div>`) +
-              (profile.summary === null ? '' : `<div class="summary">${escapeHtml(profile.summary)}</div>`) +
-              `<div>${money(profile.dayRateCents, profile.currency)} · ${days(profile.availabilityDaysPerWeek)} · remote: ${yesNo(profile.remoteOk)}</div>` +
-              (profile.location === null ? '' : `<div>${escapeHtml(profile.location)}</div>`) +
-              (profile.skills.length === 0 ? '' : `<div>skills: ${profile.skills.map((s) => escapeHtml(s)).join(', ')}</div>`) +
-              // A link is a string the applicant typed: rendered as text, never as an `href`.
-              (profile.links.length === 0
-                ? ''
-                : `<div>links: ${profile.links.map((l) => `${escapeHtml(l.label)} — ${escapeHtml(l.url)}`).join('; ')}</div>`) +
-              `<div class="basis">${escapeHtml(
-                profile.basis === 'application' ? 'visible because they applied to this role' : `visible as ${profile.basis}`,
-              )}</div>`;
-          const note = row.coverNote === null ? '<span class="note">no note</span>' : escapeHtml(row.coverNote);
-          const decision = row.status === 'withdrawn'
-            ? '<span class="note">withdrawn by the applicant</span>'
-            : `<form method="post" action="/portal/advertiser/application">
-                 <input type="hidden" name="application_id" value="${row.id}">
-                 ${csrfField(csrf)}
-                 <button type="submit" name="status" value="shortlisted">Shortlist</button>
-                 <button type="submit" name="status" value="rejected">Reject</button>
-               </form>`;
-          return `<tr><td>${row.jobTitle === null ? `#${row.jobId}` : `${escapeHtml(row.jobTitle)} <small>#${row.jobId}</small>`}</td>` +
-            `<td>${who}</td><td>${note}</td><td>${day(row.createdAt)}<div class="state">${escapeHtml(row.status)}</div></td><td>${decision}</td></tr>`;
-        })
-        .join('\n');
+  const rows = applications
+    .map((row) => {
+      const profile = row.profile;
+      // The note says *why* this viewer may see the profile, and it is read off the projection
+      // (`basis`) rather than asserted here: if the policy ever answers an advertiser for a
+      // different reason, this line follows it instead of lying about it.
+      const who = profile === null
+        ? '<span class="portal-note">This applicant\'s profile is not available.</span>'
+        : `<strong>${escapeHtml(profile.displayName)}</strong>` +
+          (profile.headline === null ? '' : `<div>${escapeHtml(profile.headline)}</div>`) +
+          (profile.summary === null ? '' : `<div class="summary">${escapeHtml(profile.summary)}</div>`) +
+          `<div>${money(profile.dayRateCents, profile.currency)} · ${days(profile.availabilityDaysPerWeek)} · remote: ${yesNo(profile.remoteOk)}</div>` +
+          (profile.location === null ? '' : `<div>${escapeHtml(profile.location)}</div>`) +
+          (profile.skills.length === 0 ? '' : `<div>skills: ${profile.skills.map((s) => escapeHtml(s)).join(', ')}</div>`) +
+          // A link is a string the applicant typed: rendered as text, never as an `href`.
+          (profile.links.length === 0
+            ? ''
+            : `<div>links: ${profile.links.map((l) => `${escapeHtml(l.label)} — ${escapeHtml(l.url)}`).join('; ')}</div>`) +
+          `<div class="basis">${escapeHtml(
+            profile.basis === 'application' ? 'visible because they applied to this role' : `visible as ${profile.basis}`,
+          )}</div>`;
+      const note = row.coverNote === null ? '<span class="portal-note">no note</span>' : escapeHtml(row.coverNote);
+      const decision = row.status === 'withdrawn'
+        ? '<span class="portal-note">withdrawn by the applicant</span>'
+        : `<form class="portal-decisions" method="post" action="/portal/advertiser/application">
+             <input type="hidden" name="application_id" value="${row.id}">
+             ${csrfField(csrf)}
+             <button class="portal-button portal-button--quiet portal-button--small" type="submit" name="status" value="shortlisted">Shortlist</button>
+             <button class="portal-button portal-button--danger portal-button--small" type="submit" name="status" value="rejected">Reject</button>
+           </form>`;
+      return `<tr><td data-label="Role">${row.jobTitle === null ? `#${row.jobId}` : `${escapeHtml(row.jobTitle)} <small>#${row.jobId}</small>`}</td>` +
+        `<td data-label="Applicant">${who}</td>` +
+        `<td data-label="What they said">${note}</td>` +
+        `<td data-label="Received">${day(row.createdAt)}<div class="state">${escapeHtml(row.status)}</div></td>` +
+        `<td data-label="Decision">${decision}</td></tr>`;
+    })
+    .join('\n');
 
-  return `<h1>Applications to your roles</h1>
-<p>Signed in as <strong>${escapeHtml(displayName)}</strong>. <a href="/portal">Your account</a></p>
-<p class="note">Applicants are shown as they chose to be seen. The board never sends you an email address, a phone number or a postal address, and there is no field on this page that could carry one.</p>
-<table class="applications">
-  <thead><tr><th>Role</th><th>Applicant</th><th>What they said</th><th>Received</th><th>Decision</th></tr></thead>
+  const applicationsBlock =
+    applications.length === 0
+      ? '<p class="portal-empty">No applications yet. When someone applies to one of your roles it appears here.</p>'
+      : `<div class="portal-table-scroll">
+<table class="portal-table">
+  <thead><tr><th scope="col">Role</th><th scope="col">Applicant</th><th scope="col">What they said</th><th scope="col">Received</th><th scope="col">Decision</th></tr></thead>
   <tbody>${rows}</tbody>
-</table>`;
+</table>
+</div>`;
+
+  return `<div class="portal-intro">
+  <p class="portal-eyebrow">Advertiser</p>
+  <h1>Applications to your roles</h1>
+  <p class="portal-lede">Signed in as <strong>${escapeHtml(displayName)}</strong>. <a href="/portal">Your account</a></p>
+</div>
+<p class="portal-note">Applicants are shown as they chose to be seen. The board never sends you an email address, a phone number or a postal address, and there is no field on this page that could carry one.</p>
+${applicationsBlock}`;
 }
 
 /**
@@ -467,6 +530,74 @@ class Portal {
   }
 
   /**
+   * The site's header and footer for this tenant, or `null` when the tenant has set neither an
+   * identity nor a menu.
+   *
+   * `chromeHtml` is not a second renderer: it is the function the editor's canvas already draws
+   * the live shell with, from the same `SiteChrome` and the same `NavTree` that `page.astro` reads
+   * for a CMS page. Reusing it is what keeps the portal's header byte-identical to a marketing
+   * page's (asserted in `test/portal-presentation.test.ts`) instead of a fourth copy of the bar
+   * that drifts the first time someone changes the shell.
+   *
+   * A read failure renders the page without its header rather than turning the sign-in form into
+   * a 500: the portal is the only way into an account, and a broken menu row is not a reason to
+   * lock everyone out. The CMS page keeps its own refusal — it has no such duty to a signed-out
+   * visitor.
+   */
+  #chromeParts(tenantKey: string): { header: string; footer: string } | null {
+    let db: Database.Database | null = null;
+    try {
+      db = this.#deps.openDb(tenantKey);
+      const chrome = loadChrome(db);
+      // The same predicate the CMS page hands `loadNav`: a menu entry may name a path a loaded
+      // package serves, and refusing it here would drop the whole header on a site that has one.
+      const pageExists = this.#deps.pageExists;
+      const nav = loadNav(db, pageExists === undefined ? {} : { pageExists: (path) => pageExists(tenantKey, path) });
+      return chromeHtml(chrome, nav, chromeLogoUrl(db, chrome), navListHtml);
+    } catch {
+      return null;
+    } finally {
+      db?.close();
+    }
+  }
+
+  /**
+   * The portal document: the site's chrome around the portal's own column.
+   *
+   * `/theme.css` is linked first so the tenant's palette, faces and spacing arrive before the
+   * portal's rules; `/portal.css` second so a portal rule wins at equal specificity. Both are
+   * first-party files because the policy is `style-src 'self'` — there is no inline `<style>` and
+   * no third-party request on the page.
+   */
+  #page(req: FastifyRequest, tenantKey: string, title: string, body: string, width: PortalWidth = 'regular'): string {
+    const chrome = this.#chromeParts(tenantKey);
+    let path = '/portal';
+    try {
+      path = new URL(req.url, 'http://portal.invalid').pathname;
+    } catch {
+      path = '/portal';
+    }
+    return `<!doctype html>
+<html lang="en" data-tenant="${escapeHtml(tenantKey)}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<link rel="stylesheet" href="/theme.css">
+<link rel="stylesheet" href="/portal.css">
+</head>
+<body class="portal" data-page-path="${escapeHtml(path)}">
+${chrome === null ? '' : chrome.header}
+<main class="portal-main">
+<div class="${WIDTH_CLASS[width]}">
+${body}
+</div>
+</main>
+${chrome === null ? '' : chrome.footer}
+</body></html>`;
+  }
+
+  /**
    * The CSRF half of the discipline, on a POST: the session's own secret must come back in the body
    * or the header. `null` (no live session) is the same refusal as a wrong token — a caller with a
    * dead cookie learns nothing from the difference.
@@ -500,18 +631,24 @@ class Portal {
    * useless: whoever followed the link is told which account type the page belongs to, and where to
    * go next. The status is still 403, so nothing downstream treats it as a page.
    */
-  #refuseRole(reply: FastifyReply, view: SelfView, role: Role): void {
+  #refuseRole(req: FastifyRequest, reply: FastifyReply, tenantKey: string, view: SelfView, role: Role): void {
     const mine = view.roles.length === 0 ? 'no account type' : view.roles.map((r) => escapeHtml(r)).join(', ');
     reply
       .code(403)
       .type('text/html; charset=utf-8')
       .header('cache-control', 'no-store')
       .send(
-        page(
+        this.#page(
+          req,
+          tenantKey,
           `This page is for ${role} accounts`,
-          `<h1>This page is for ${role} accounts</h1>
-<p>You are signed in as <strong>${escapeHtml(view.displayName)}</strong>, and your account is: ${mine}.</p>
-<p><a href="/portal">Back to your account</a></p>`,
+          `<div class="portal-intro">
+  <p class="portal-eyebrow">${escapeHtml(role)} only</p>
+  <h1>This page is for ${role} accounts</h1>
+  <p class="portal-lede">You are signed in as <strong>${escapeHtml(view.displayName)}</strong>, and your account is: ${mine}.</p>
+</div>
+<p class="portal-aside"><a href="/portal">Back to your account</a></p>`,
+          'auth',
         ),
       );
   }
@@ -557,6 +694,22 @@ class Portal {
   }
 
   register(app: FastifyInstance): void {
+    /**
+     * `GET /portal.css` — the portal's own stylesheet, first-party so the policy allows it.
+     *
+     * The Host is resolved even though the bytes are the same for every tenant: a request to a
+     * host this instance does not serve gets the same refusal it gets for any other path, rather
+     * than a 200 that says "there is a site here". The sheet names no tenant and carries no data;
+     * a day is a fine cache life for a file that changes only when the image does.
+     */
+    app.get('/portal.css', async (req: FastifyRequest, reply: FastifyReply) => {
+      this.#tenant(req);
+      reply
+        .header('cache-control', 'public, max-age=86400')
+        .type('text/css; charset=utf-8')
+        .send(PORTAL_CSS);
+    });
+
     app.get('/portal', async (req: FastifyRequest, reply: FastifyReply) => {
       const tenantKey = this.#tenant(req);
       const view = this.#view(req, tenantKey);
@@ -571,16 +724,23 @@ class Portal {
         .type('text/html; charset=utf-8')
         .header('cache-control', 'no-store')
         .send(
-          page(
+          this.#page(
+            req,
+            tenantKey,
             'Your account',
-            `<h1>Your account</h1>
-<p>Signed in as <strong>${escapeHtml(view.email)}</strong>.</p>
-<p>Account type: ${view.roles.map((r) => `<span class="role">${escapeHtml(r)}</span>`).join(', ')}</p>
-${view.roles.includes('applicant') ? '<p><a href="/portal/applicant">Your applications and profile</a></p>' : ''}
-${view.roles.includes('advertiser') ? '<p><a href="/portal/advertiser">Your company and adverts</a></p>' : ''}
-<form method="post" action="/portal/signout">
+            `<div class="portal-intro">
+  <p class="portal-eyebrow">Your account</p>
+  <h1>Your account</h1>
+  <p class="portal-lede">Signed in as <strong>${escapeHtml(view.email)}</strong>.</p>
+</div>
+<div class="portal-panel">
+  <p>Account type: ${view.roles.length === 0 ? '<span class="portal-role">none</span>' : view.roles.map((r) => `<span class="portal-role">${escapeHtml(r)}</span>`).join(' ')}</p>
+  <ul class="portal-links">
+${view.roles.includes('applicant') ? '    <li><a href="/portal/applicant">Your applications and profile</a></li>\n' : ''}${view.roles.includes('advertiser') ? '    <li><a href="/portal/advertiser">Your company and adverts</a></li>\n' : ''}  </ul>
+</div>
+<form class="portal-signout" method="post" action="/portal/signout">
   <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
-  <button type="submit">Sign out</button>
+  <div class="portal-actions"><button class="portal-button portal-button--quiet" type="submit">Sign out</button></div>
 </form>`,
           ),
         );
@@ -598,7 +758,7 @@ ${view.roles.includes('advertiser') ? '<p><a href="/portal/advertiser">Your comp
         return;
       }
       if (!view.roles.includes('applicant')) {
-        this.#refuseRole(reply, view, 'applicant');
+        this.#refuseRole(req, reply, tenantKey, view, 'applicant');
         return;
       }
       const csrf = this.#csrf(req, tenantKey);
@@ -618,10 +778,19 @@ ${view.roles.includes('advertiser') ? '<p><a href="/portal/advertiser">Your comp
           .type('text/html; charset=utf-8')
           .header('cache-control', 'no-store')
           .send(
-            page(
+            this.#page(
+              req,
+              tenantKey,
               'No profile yet',
-              `<h1>No profile yet</h1>
-<p>This account has no profile row, so there is nothing to show or edit. Ask the site operator to finish the account.</p>`,
+              `<div class="portal-intro">
+  <p class="portal-eyebrow">Applicant</p>
+  <h1>No profile yet</h1>
+</div>
+<div class="portal-panel">
+  <p>This account has no profile row, so there is nothing to show or edit. Ask the site operator to finish the account.</p>
+  <p class="portal-aside"><a href="/portal">Back to your account</a></p>
+</div>`,
+              'auth',
             ),
           );
         return;
@@ -630,7 +799,7 @@ ${view.roles.includes('advertiser') ? '<p><a href="/portal/advertiser">Your comp
         .code(200)
         .type('text/html; charset=utf-8')
         .header('cache-control', 'no-store')
-        .send(page('Your applications', applicantPage(data.profile, data.applications, csrf)));
+        .send(this.#page(req, tenantKey, 'Your applications', applicantPage(data.profile, data.applications, csrf), 'wide'));
     });
 
     app.post('/portal/applicant/profile', async (req: FastifyRequest, reply: FastifyReply) => {
@@ -685,7 +854,7 @@ ${view.roles.includes('advertiser') ? '<p><a href="/portal/advertiser">Your comp
         return;
       }
       if (!view.roles.includes('advertiser')) {
-        this.#refuseRole(reply, view, 'advertiser');
+        this.#refuseRole(req, reply, tenantKey, view, 'advertiser');
         return;
       }
       const csrf = this.#csrf(req, tenantKey);
@@ -696,7 +865,7 @@ ${view.roles.includes('advertiser') ? '<p><a href="/portal/advertiser">Your comp
         .code(200)
         .type('text/html; charset=utf-8')
         .header('cache-control', 'no-store')
-        .send(page('Applications to your roles', advertiserPage(view.displayName, applications, csrf)));
+        .send(this.#page(req, tenantKey, 'Applications to your roles', advertiserPage(view.displayName, applications, csrf), 'wide'));
     });
 
     app.post('/portal/advertiser/application', async (req: FastifyRequest, reply: FastifyReply) => {
@@ -740,29 +909,43 @@ ${view.roles.includes('advertiser') ? '<p><a href="/portal/advertiser">Your comp
     });
 
     app.get('/portal/register', async (req: FastifyRequest, reply: FastifyReply) => {
+      const tenantKey = this.#tenant(req);
       reply
         .code(200)
         .type('text/html; charset=utf-8')
         .header('cache-control', 'no-store')
         .send(
-          page(
+          this.#page(
+            req,
+            tenantKey,
             'Create an account',
-            `<h1>Create an account</h1>
-<form method="post" action="/portal/register">
-  <p><label for="email">Email</label>
-     <input id="email" name="email" type="email" autocomplete="email" required></p>
-  <p><label for="display">Name shown on your profile</label>
-     <input id="display" name="display_name" autocomplete="name" maxlength="120" required></p>
-  <p><label for="password">Password (at least ${PASSWORD_MIN} characters)</label>
-     <input id="password" name="password" type="password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required></p>
-  <fieldset>
+            `<div class="portal-intro">
+  <p class="portal-eyebrow">New account</p>
+  <h1>Create an account</h1>
+  <p class="portal-lede">One account for both sides of the board: find fractional work, advertise a role, or both.</p>
+</div>
+<form class="portal-form portal-card" method="post" action="/portal/register">
+  <div class="portal-field">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="email" required>
+  </div>
+  <div class="portal-field">
+    <label for="display">Name shown on your profile</label>
+    <input id="display" name="display_name" autocomplete="name" maxlength="120" required>
+  </div>
+  <div class="portal-field">
+    <label for="password">Password (at least ${PASSWORD_MIN} characters)</label>
+    <input id="password" name="password" type="password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>
+  </div>
+  <fieldset class="portal-fieldset">
     <legend>What do you want to do?</legend>
-    <label><input type="checkbox" name="role" value="applicant"> Find fractional work</label>
-    <label><input type="checkbox" name="role" value="advertiser"> Advertise a role</label>
+    <label class="portal-check"><input type="checkbox" name="role" value="applicant"> Find fractional work</label>
+    <label class="portal-check"><input type="checkbox" name="role" value="advertiser"> Advertise a role</label>
   </fieldset>
-  <button type="submit">Create account</button>
+  <div class="portal-actions"><button class="portal-button" type="submit">Create account</button></div>
 </form>
-<p>Already have one? <a href="/portal/signin">Sign in</a>.</p>`,
+<p class="portal-aside">Already have one? <a href="/portal/signin">Sign in</a>.</p>`,
+            'auth',
           ),
         );
     });
@@ -788,11 +971,19 @@ ${view.roles.includes('advertiser') ? '<p><a href="/portal/advertiser">Your comp
           .type('text/html; charset=utf-8')
           .header('cache-control', 'no-store')
           .send(
-            page(
+            this.#page(
+              req,
+              tenantKey,
               'Check your email',
-              `<h1>That address already has an account</h1>
-<p>We have emailed ${escapeHtml(email)} a reminder of how to get in. If it does not arrive, sign in and use “forgot password”.</p>
-<p><a href="/portal/signin">Sign in</a></p>`,
+              `<div class="portal-intro">
+  <p class="portal-eyebrow">New account</p>
+  <h1>That address already has an account</h1>
+</div>
+<div class="portal-panel">
+  <p>We have emailed ${escapeHtml(email)} a reminder of how to get in. If it does not arrive, sign in and use “forgot password”.</p>
+  <div class="portal-actions"><a class="portal-button portal-button--quiet" href="/portal/signin">Sign in</a></div>
+</div>`,
+              'auth',
             ),
           );
         return;
@@ -800,23 +991,39 @@ ${view.roles.includes('advertiser') ? '<p><a href="/portal/advertiser">Your comp
 
       // The secret is shown exactly once, here. There is no second chance to see it, and the
       // account cannot become active until a code from it has been entered.
+      // What the customer reads: the link goes to their inbox, and the account stays shut until
+      // they act on it. The URL is deliberately not printed on the page — a page that shows it
+      // turns "prove you own that address" into "click this". The one exception is a box with no
+      // mail transport, where printing it is the only way to finish a local sign-up, and the
+      // block says so in as many words.
+      const checkEmail =
+        '<p>We have sent a confirmation link to the address you gave us. <strong>Check your email</strong> and open that link — you will not be able to log in until your email address is confirmed.</p>';
       const link =
         result.verifyUrl === undefined
-          ? '<p>We have emailed you a link to confirm your address.</p>'
-          : `<p>Confirm your address: <a href="${escapeHtml(result.verifyUrl)}">${escapeHtml(result.verifyUrl)}</a></p>`;
+          ? checkEmail
+          : `${checkEmail}
+  <p class="portal-note portal-note--dev">Development only: this box has no mail transport configured, so here is the link that would have been emailed — <a href="${escapeHtml(result.verifyUrl)}">${escapeHtml(result.verifyUrl)}</a></p>`;
       reply
         .code(200)
         .type('text/html; charset=utf-8')
         .header('cache-control', 'no-store')
         .send(
-          page(
+          this.#page(
+            req,
+            tenantKey,
             'Set up your authenticator',
-            `<h1>Set up your authenticator</h1>
-<p>Add this account to an authenticator app (1Password, Authy, Google Authenticator). Type the key in by hand if you cannot scan.</p>
-<p class="totp-secret"><code>${escapeHtml(result.totpGrouped)}</code></p>
-<p><a href="${escapeHtml(result.otpauthUri)}">Open in your authenticator app</a></p>
-${link}
-<p>Your account stays inactive until you have confirmed the email and entered a code from the app.</p>`,
+            `<div class="portal-intro">
+  <p class="portal-eyebrow">Two-factor</p>
+  <h1>Set up your authenticator</h1>
+  <p class="portal-lede">Add this account to an authenticator app (1Password, Authy, Google Authenticator). Type the key in by hand if you cannot scan.</p>
+</div>
+<div class="portal-panel">
+  <p class="portal-totp"><code>${escapeHtml(result.totpGrouped)}</code></p>
+  <p><a href="${escapeHtml(result.otpauthUri)}">Open in your authenticator app</a></p>
+  ${link}
+  <p class="portal-note">Your account stays inactive until you have confirmed the email and entered a code from the app.</p>
+</div>`,
+            'auth',
           ),
         );
     });
@@ -836,7 +1043,22 @@ ${link}
           .code(400)
           .type('text/html; charset=utf-8')
           .header('cache-control', 'no-store')
-          .send(page('Link not valid', `<h1>Link not valid</h1><p>${escapeHtml(why)}</p>`));
+          .send(
+            this.#page(
+              req,
+              tenantKey,
+              'Link not valid',
+              `<div class="portal-intro">
+  <p class="portal-eyebrow">Email confirmation</p>
+  <h1>Link not valid</h1>
+</div>
+<div class="portal-panel">
+  <p class="portal-banner portal-banner--error">${escapeHtml(why)}</p>
+  <p class="portal-aside"><a href="/portal/signin">Sign in</a> and ask for a new link.</p>
+</div>`,
+              'auth',
+            ),
+          );
         return;
       }
       if (outcome.next === 'active') {
@@ -845,7 +1067,22 @@ ${link}
           .code(200)
           .type('text/html; charset=utf-8')
           .header('cache-control', 'no-store')
-          .send(page('Address confirmed', `<h1>Address confirmed</h1><p><a href="/portal/signin">Sign in</a></p>`));
+          .send(
+            this.#page(
+              req,
+              tenantKey,
+              'Address confirmed',
+              `<div class="portal-intro">
+  <p class="portal-eyebrow">Email confirmation</p>
+  <h1>Address confirmed</h1>
+</div>
+<div class="portal-panel">
+  <p class="portal-banner portal-banner--success">Your email address is confirmed. Sign in to continue.</p>
+  <div class="portal-actions"><a class="portal-button" href="/portal/signin">Sign in</a></div>
+</div>`,
+              'auth',
+            ),
+          );
         return;
       }
       // Address proved, TOTP still owed: the person is not signed in, and the enrolment cookie is
@@ -856,15 +1093,24 @@ ${link}
         .type('text/html; charset=utf-8')
         .header('cache-control', 'no-store')
         .send(
-          page(
+          this.#page(
+            req,
+            tenantKey,
             'Enter a code',
-            `<h1>One more step</h1>
-<p>Enter the six-digit code from your authenticator app.</p>
-<form method="post" action="/portal/enrol">
-  <p><label for="code">Code</label>
-     <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></p>
-  <button type="submit">Confirm</button>
+            `<div class="portal-intro">
+  <p class="portal-eyebrow">Two-factor</p>
+  <h1>One more step</h1>
+  <p class="portal-lede">Enter the six-digit code from your authenticator app.</p>
+</div>
+<form class="portal-form portal-card" method="post" action="/portal/enrol">
+  <div class="portal-field">
+    <label for="code">Code</label>
+    <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+    <p class="portal-hint">Six digits, and they change every thirty seconds.</p>
+  </div>
+  <div class="portal-actions"><button class="portal-button" type="submit">Confirm</button></div>
 </form>`,
+            'auth',
           ),
         );
     });
@@ -884,14 +1130,23 @@ ${link}
           .type('text/html; charset=utf-8')
           .header('cache-control', 'no-store')
           .send(
-            page(
+            this.#page(
+              req,
+              tenantKey,
               'Wrong code',
-              `<h1>That code is not right</h1>
-<form method="post" action="/portal/enrol">
-  <p><label for="code">Code</label>
-     <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></p>
-  <button type="submit">Try again</button>
+              `<div class="portal-intro">
+  <p class="portal-eyebrow">Two-factor</p>
+  <h1>That code is not right</h1>
+</div>
+<form class="portal-form portal-card" method="post" action="/portal/enrol">
+  <div class="portal-field">
+    <label for="code">Code</label>
+    <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" aria-invalid="true" required>
+    <p class="portal-error" role="alert">Check the six digits in your authenticator app and try again.</p>
+  </div>
+  <div class="portal-actions"><button class="portal-button" type="submit">Try again</button></div>
 </form>`,
+              'auth',
             ),
           );
         return;
@@ -901,24 +1156,39 @@ ${link}
     });
 
     app.get('/portal/signin', async (req: FastifyRequest, reply: FastifyReply) => {
+      const tenantKey = this.#tenant(req);
       reply
         .code(200)
         .type('text/html; charset=utf-8')
         .header('cache-control', 'no-store')
         .send(
-          page(
+          this.#page(
+            req,
+            tenantKey,
             'Sign in',
-            `<h1>Sign in</h1>
-<form method="post" action="/portal/signin">
-  <p><label for="email">Email</label>
-     <input id="email" name="email" type="email" autocomplete="email" required></p>
-  <p><label for="password">Password</label>
-     <input id="password" name="password" type="password" autocomplete="current-password" required></p>
-  <p><label for="code">Authenticator code</label>
-     <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></p>
-  <button type="submit">Sign in</button>
+            `<div class="portal-intro">
+  <p class="portal-eyebrow">Your account</p>
+  <h1>Sign in</h1>
+  <p class="portal-lede">Your password and the six-digit code from your authenticator app.</p>
+</div>
+<form class="portal-form portal-card" method="post" action="/portal/signin">
+  <div class="portal-field">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="email" required>
+  </div>
+  <div class="portal-field">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+  </div>
+  <div class="portal-field">
+    <label for="code">Authenticator code</label>
+    <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+    <p class="portal-hint">Six digits from the app you set up when you registered.</p>
+  </div>
+  <div class="portal-actions"><button class="portal-button" type="submit">Sign in</button></div>
 </form>
-<p><a href="/portal/register">Create an account</a></p>`,
+<p class="portal-aside">New here? <a href="/portal/register">Create an account</a>.</p>`,
+            'auth',
           ),
         );
     });
@@ -944,20 +1214,32 @@ ${link}
           .type('text/html; charset=utf-8')
           .header('cache-control', 'no-store')
           .send(
-            page(
+            this.#page(
+              req,
+              tenantKey,
               'Sign in',
-              `<h1>Sign in</h1>
-<p role="alert">${escapeHtml(message)}</p>
-<form method="post" action="/portal/signin">
-  <p><label for="email">Email</label>
-     <input id="email" name="email" type="email" autocomplete="email" required></p>
-  <p><label for="password">Password</label>
-     <input id="password" name="password" type="password" autocomplete="current-password" required></p>
-  <p><label for="code">Authenticator code</label>
-     <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></p>
-  <button type="submit">Sign in</button>
+              `<div class="portal-intro">
+  <p class="portal-eyebrow">Your account</p>
+  <h1>Sign in</h1>
+</div>
+<form class="portal-form portal-card" method="post" action="/portal/signin">
+  <p class="portal-banner portal-banner--error" role="alert">${escapeHtml(message)}</p>
+  <div class="portal-field">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="email" required>
+  </div>
+  <div class="portal-field">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+  </div>
+  <div class="portal-field">
+    <label for="code">Authenticator code</label>
+    <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+  </div>
+  <div class="portal-actions"><button class="portal-button" type="submit">Sign in</button></div>
 </form>
-<p><a href="/portal/register">Create an account</a></p>`,
+<p class="portal-aside">New here? <a href="/portal/register">Create an account</a>.</p>`,
+              'auth',
             ),
           );
         return;
