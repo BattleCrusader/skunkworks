@@ -855,12 +855,12 @@ before a byte is written, so a tampered bundle refuses and leaves nothing behind
       // `skwctl site import --nginx` (or the next deploy) when it is not.
       let nginxNote = 'The host rows are written. Regenerate the edge config to route them.';
       try {
-        regenerateAppConf({
-          dataDir: this.#env.dataDir,
-          out: join(findProjectRoot(), 'nginx', 'conf.d', '10-app.conf'),
-          demosHost: 'demos.invalid',
-        });
-        nginxNote = 'nginx/conf.d/10-app.conf regenerated — reload the edge to serve the new hosts.';
+        // Into the box's own data directory, never into a tracked file: the deployment copies it
+        // into place. (Learned the hard way — a test run wrote the checkout's nginx conf.)
+        const out = join(this.#env.dataDir, 'nginx', 'conf.d', '10-app.conf');
+        mkdirSync(dirname(out), { recursive: true });
+        regenerateAppConf({ dataDir: this.#env.dataDir, out, demosHost: 'demos.invalid' });
+        nginxNote = `Edge config written to ${out} — copy it into the edge and reload.`;
       } catch {
         nginxNote = 'Host rows written; the edge config could not be written from here — run `skwctl site import … --nginx` or the next deploy.';
       }
