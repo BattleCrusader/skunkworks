@@ -24,7 +24,8 @@ import { join } from 'node:path';
 
 import { pageCssPath } from './document.ts';
 import { renderNotes } from './notes.ts';
-import { assetFile, type Projection } from './project.ts';
+import { assetFile, variantFile, type Projection } from './project.ts';
+import { variantLinkName } from '../assets/farm.ts';
 import { filterLockfile, readSourceLock, resolvedVersion } from './lockfile.ts';
 import { mediaFile } from './static.ts';
 import type { TreeFile } from './tree.ts';
@@ -222,6 +223,14 @@ export function planAstro(options: AstroOptions): TreeFile[] {
 
   for (const asset of projection.referenced) {
     files.push({ path: `public/${mediaFile(asset.url)}`, bytes: readFileSync(assetFile(options.contentRoot, asset)) });
+    // `srcset` names `/media/<key>@<label>.<fmt>`; the Astro project serves `public/` at
+    // the site root, so the rendition belongs beside the original.
+    for (const variant of asset.variants) {
+      files.push({
+        path: `public/media/${variantLinkName(asset.key, variant.label, variant.format)}`,
+        bytes: readFileSync(variantFile(options.contentRoot, variant)),
+      });
+    }
   }
 
   // §10.5 (C-12, S4c): the CSP line, byte-identical to the static tree's and the bundle's.

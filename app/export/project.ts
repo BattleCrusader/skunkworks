@@ -105,6 +105,16 @@ export interface ProjectedPage {
 
 export type AccessClass = 'public' | 'linked-private' | 'gated';
 
+export interface ProjectedVariant {
+  label: string;
+  format: string;
+  sha256: string;
+  /** `content/media/<hh>/<sha>.<ext>` — a rendition's own bytes (`cms_asset_variant`). */
+  storagePath: string;
+  width: number;
+  height: number;
+}
+
 export interface ProjectedAsset {
   key: string;
   kind: string;
@@ -119,6 +129,16 @@ export interface ProjectedAsset {
   width: number | null;
   height: number | null;
   alt: string;
+  /**
+   * The renditions, ordered by `label, format` — the same rows `srcset` is built from.
+   *
+   * They are here because an asset is not one file. The farm publishes a symlink per
+   * rendition and `site.asset()` advertises each one in `srcset`, so a tree that ships
+   * only `storagePath` ships URLs that 404 the moment a page uses `srcset`. That is not
+   * hypothetical: the first bundle this code cut carried `cms_asset_variant` rows whose
+   * files were absent, and nothing noticed because no page referenced the asset.
+   */
+  variants: readonly ProjectedVariant[];
 }
 
 export interface Projection {
@@ -174,6 +194,16 @@ interface AssetRow {
   alt_text: string | null;
 }
 
+interface VariantRow {
+  asset_id: number;
+  label: string;
+  format: string;
+  sha256: string;
+  storage_path: string;
+  width: number;
+  height: number;
+}
+
 interface LinkRow {
   asset_id: number;
   owner_kind: string;
@@ -189,7 +219,7 @@ function byString(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-export function toAsset(row: AssetRow): ProjectedAsset {
+export function toAsset(row: AssetRow, variants: readonly VariantRow[] = []): ProjectedAsset {
   const ext = EXT_BY_MIME[row.mime];
   // The exporter may not invent an extension for a mime outside the closed set: the
   // generated column would not have produced one either, and the farm would refuse it.
@@ -211,7 +241,20 @@ export function toAsset(row: AssetRow): ProjectedAsset {
     width: row.width,
     height: row.height,
     alt: row.alt_text ?? '',
+    variants: variants.map((variant) => ({
+      label: variant.label,
+      format: variant.format,
+      sha256: variant.sha256,
+      storagePath: variant.storage_path,
+      width: variant.width,
+      height: variant.height,
+    })),
   };
+}
+
+/** `content/media/…` → `<contentRoot>/media/…` for one rendition. */
+export function variantFile(contentRoot: string, variant: ProjectedVariant): string {
+  return join(contentRoot, variant.storagePath.replace(/^content\//, ''));
 }
 
 /** `content/media/…` → `<contentRoot>/media/…`, and whether the bytes are there. */
@@ -293,10 +336,23 @@ export function buildProjection(opts: BuildOptions): BuildResult {
     }
   }
 
+  const variantRows = db
+    .prepare(
+      `SELECT asset_id, label, format, sha256, storage_path, width, height
+         FROM cms_asset_variant ORDER BY asset_id, label, format`,
+    )
+    .all() as VariantRow[];
+  const variantsByAsset = new Map<number, VariantRow[]>();
+  for (const variant of variantRows) {
+    const list = variantsByAsset.get(variant.asset_id);
+    if (list === undefined) variantsByAsset.set(variant.asset_id, [variant]);
+    else list.push(variant);
+  }
+
   const allAssets = (db.prepare(
     `SELECT id, key, kind, mime, sha256, bytes, access_class, storage_path, width, height, alt_text
        FROM cms_asset`,
-  ).all() as AssetRow[]).map(toAsset);
+  ).all() as AssetRow[]).map((row) => toAsset(row, variantsByAsset.get(row.id) ?? []));
   allAssets.sort((a, b) => byString(a.key, b.key));
   const byKey = new Map(allAssets.map((a) => [a.key, a]));
   const library = allAssets.filter((a) => a.accessClass !== 'gated');
@@ -417,13 +473,26 @@ export function buildProjection(opts: BuildOptions): BuildResult {
   // ship only what a page names.
   const carried = opts.target === 'cms' ? [...library, ...gated] : referenced;
   for (const asset of carried) {
-    if (existsSync(assetFile(opts.contentRoot, asset))) continue;
-    refusals.push(
-      refusal('SKW_E_EXP_ASSET_UNRESOLVED', 'an asset row has no bytes on disk', {
-        key: asset.key,
-        path: asset.storagePath,
-      }),
-    );
+    if (!existsSync(assetFile(opts.contentRoot, asset))) {
+      refusals.push(
+        refusal('SKW_E_EXP_ASSET_UNRESOLVED', 'an asset row has no bytes on disk', {
+          key: asset.key,
+          path: asset.storagePath,
+        }),
+      );
+    }
+    // The renditions are files too, and a tree that ships the row but not the bytes is a
+    // 404 the export itself caused. `srcset` advertises every one of them.
+    for (const variant of asset.variants) {
+      if (existsSync(variantFile(opts.contentRoot, variant))) continue;
+      refusals.push(
+        refusal('SKW_E_EXP_ASSET_UNRESOLVED', 'a rendition named in cms_asset_variant has no bytes on disk', {
+          key: asset.key,
+          variant: `${variant.label}.${variant.format}`,
+          path: variant.storagePath,
+        }),
+      );
+    }
   }
 
   // A page that referenced a key with no row is already refused above (renderStoredBody

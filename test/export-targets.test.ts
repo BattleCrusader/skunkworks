@@ -56,6 +56,22 @@ before(async () => {
   };
   asset('work/one', 'image/jpeg', 'image', 'public');
   asset('team/studio', 'image/jpeg', 'image', 'public');
+  // A rendition is a file the `srcset` advertises, so every tree must carry it. The first
+  // bundle cut here shipped `cms_asset_variant` rows with no bytes (found 2026-10-29): the
+  // planner copied `cms_asset.storage_path` only, and nothing noticed because no fixture
+  // page had a rendition and no page referenced the asset that did.
+  const oneId = (db.prepare("SELECT id FROM cms_asset WHERE key = 'work/one'").get() as { id: number }).id;
+  const variant = (label: string, format: string, width: number): string => {
+    const sha = SHA(`variant:${label}:${format}`);
+    const path = `content/media/${sha.slice(0, 2)}/${sha}.${format}`;
+    db.prepare(
+      `INSERT INTO cms_asset_variant (asset_id, label, format, width, height, bytes, sha256, storage_path)
+       VALUES (?, ?, ?, ?, ?, 3, ?, ?)`,
+    ).run(oneId, label, format, width, Math.round((width * 2) / 3), sha, path);
+    return path;
+  };
+  variant('thumb', 'webp', 320);
+  variant('md', 'avif', 768);
   // E-60: a theme is a package — a stylesheet row plus files beside the tenant. The bundle
   // used to ship the rows without the bytes, so an exported themed site 404'd every
   // `/_theme/…` URL and rendered a font nobody had.
@@ -103,6 +119,24 @@ before(async () => {
     const file = join(fixture.dir, row.storage_path);
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, `bytes:${row.key}`);
+  }
+  // …and real bytes for every rendition, at the path its row names.
+  const variantRows = (() => {
+    const read = new Database(fixture.sitePath('acme'), { readonly: true });
+    try {
+      return read.prepare('SELECT label, format, storage_path FROM cms_asset_variant').all() as {
+        label: string;
+        format: string;
+        storage_path: string;
+      }[];
+    } finally {
+      read.close();
+    }
+  })();
+  for (const row of variantRows) {
+    const file = join(fixture.dir, row.storage_path);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `variant:${row.label}:${row.format}`);
   }
 
   work = mkdtempSync(join(tmpdir(), 'skw-s4b-targets-'));
@@ -315,6 +349,110 @@ test('T3 — the CMS bundle verifies, boots against its own site.db, and serves 
 });
 
 // --- 4. bundle hygiene ----------------------------------------------------------------
+
+test('T4a — every storage_path the bundled site.db names has a file in the bundle, renditions included', () => {
+  // The check that was missing when the first bundle carried `cms_asset_variant` rows with
+  // no bytes. It reads the *bundled* database, not the fixture, so it fails for any path
+  // the projection decided to keep and the planner forgot to copy.
+  const db = new Database(join(trees.cms, 'data', 'site.db'), { readonly: true });
+  const named: { table: string; path: string }[] = [];
+  try {
+    for (const row of db.prepare('SELECT key, storage_path FROM cms_asset').all() as {
+      key: string;
+      storage_path: string;
+    }[]) {
+      named.push({ table: `cms_asset(${row.key})`, path: row.storage_path });
+    }
+    for (const row of db.prepare('SELECT label, format, storage_path FROM cms_asset_variant').all() as {
+      label: string;
+      format: string;
+      storage_path: string;
+    }[]) {
+      named.push({ table: `cms_asset_variant(${row.label}.${row.format})`, path: row.storage_path });
+    }
+    for (const row of db
+      .prepare('SELECT a.path FROM cms_theme_asset a ORDER BY a.path')
+      .all() as { path: string }[]) {
+      named.push({ table: `cms_theme_asset(${row.path})`, path: `data/tenants/acme/theme-assets/acme-kit/${row.path}` });
+    }
+  } finally {
+    db.close();
+  }
+
+  assert.ok(named.length >= 4, `expected the library, its renditions and the theme asset; got ${named.length}`);
+  for (const entry of named) {
+    assert.ok(
+      existsSync(join(trees.cms, entry.path)),
+      `${entry.table} names ${entry.path}, and the bundle does not carry it`,
+    );
+  }
+
+  // The three trees agree on which renditions exist: the same files, at each target's URL.
+  for (const [label, format] of [
+    ['thumb', 'webp'],
+    ['md', 'avif'],
+  ] as const) {
+    assert.ok(
+      existsSync(join(trees.static, 'media', 'work', `one@${label}.${format}`)),
+      `static tree has no mediaset candidate work/one@${label}.${format}`,
+    );
+    assert.ok(
+      existsSync(join(trees.astro, 'public', 'media', 'work', `one@${label}.${format}`)),
+      `astro tree has no mediaset candidate work/one@${label}.${format}`,
+    );
+  }
+});
+
+test('T4b — a rendition row whose bytes are gone refuses the export, naming the rendition', () => {
+  // Same shape as the missing-asset refusal: refuse by name rather than ship a link that
+  // 404s. Removed from the fixture, restored afterwards so later tests see a whole library.
+  const row = (() => {
+    const db = openAdminWrite(fixture.sitePath('acme'));
+    try {
+      return db
+        .prepare("SELECT storage_path FROM cms_asset_variant WHERE label = 'md' AND format = 'avif'")
+        .get() as { storage_path: string };
+    } finally {
+      db.close();
+    }
+  })();
+  const file = join(fixture.dir, row.storage_path);
+  const bytes = readFileSync(file);
+  rmSync(file);
+  try {
+    const out = join(work, 'refused-cms');
+    const db2 = openAdminWrite(fixture.sitePath('acme'));
+    const result = runExport({
+      target: 'cms',
+      db: db2,
+      tenantKey: 'acme',
+      out,
+      exportNow: NOW,
+      contentRoot: join(fixture.dir, 'content'),
+      repoRoot: REPO,
+      tmpDir: work,
+      origin: 'https://acme.test',
+      tenant: {
+        key: 'acme',
+        mode: 'production',
+        status: 'active',
+        displayName: 'Acme',
+        dbVersion: 3,
+        hosts: [{ host: 'acme.test', kind: 'primary', isPrimary: 1, certState: 'issued' }],
+      },
+    });
+    db2.close();
+    assert.equal(result.ok, false, 'a missing rendition must refuse the export');
+    if (result.ok) return;
+    const refusal = result.refusals.find((r) => r.code === 'SKW_E_EXP_ASSET_UNRESOLVED');
+    assert.ok(refusal !== undefined, `expected SKW_E_EXP_ASSET_UNRESOLVED, got ${JSON.stringify(result.refusals)}`);
+    assert.equal(refusal.exit, 21, 'a missing asset is exit 21, not 1');
+    assert.equal((refusal.detail as { variant?: string }).variant, 'md.avif', 'the refusal must name the rendition');
+    assert.equal(existsSync(out), false, 'a refused export writes no tree at all');
+  } finally {
+    writeFileSync(file, bytes);
+  }
+});
 
 test('T4 — the bundle carries no control.db, no -wal/-shm, no sources, no protected tree, and no farm link to a gated asset', () => {
   const all: string[] = [];

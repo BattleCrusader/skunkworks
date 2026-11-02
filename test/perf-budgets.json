@@ -223,29 +223,29 @@
     },
     {
       "file": "test/export-targets.test.ts",
-      "worstIdleMs": 4971,
-      "measuredOn": "2026-10-27",
-      "load1m": 7.61,
+      "worstIdleMs": 4681,
+      "measuredOn": "2026-11-03",
+      "load1m": 7.4,
       "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
-      "sha256": "dba930785c5da825c3f0a345e188d5aef3c2d0e78f97790e08b83f48015c9579",
+      "sha256": "4f1eec69da69587e2b83c5133fefe9c05164fcefdde4da8f35afb45d0b01fa19",
       "runs": [
         {
-          "ms": 3167,
-          "at": "2026-10-27T09:46:19.524Z",
-          "load1mBefore": 7.87,
-          "load1mAfter": 8.44,
+          "ms": 3636,
+          "at": "2026-11-02T22:06:27.370Z",
+          "load1mBefore": 7,
+          "load1mAfter": 7.4,
           "idle": true,
           "exitCode": 0,
-          "tests": 5
+          "tests": 7
         },
         {
-          "ms": 4971,
-          "at": "2026-10-27T09:46:34.792Z",
-          "load1mBefore": 7.61,
-          "load1mAfter": 8.68,
+          "ms": 4681,
+          "at": "2026-11-02T22:06:32.052Z",
+          "load1mBefore": 7.4,
+          "load1mAfter": 7.4,
           "idle": true,
           "exitCode": 0,
-          "tests": 5
+          "tests": 7
         }
       ]
     },
@@ -2252,5 +2252,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-10-29T10:27:34.909Z"
+  "updatedAt": "2026-11-02T22:06:33.392Z"
 }

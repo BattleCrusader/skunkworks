@@ -22,7 +22,8 @@ import type { TreeFile } from './tree.ts';
 import { pageCssPath, renderDocument } from './document.ts';
 import { pageSeoHead } from '../render/seo.ts';
 import { renderNotes } from './notes.ts';
-import { assetFile, type Projection } from './project.ts';
+import { assetFile, variantFile, type Projection } from './project.ts';
+import { variantLinkName } from '../assets/farm.ts';
 import { CSP_CONF_FILE, cspConf } from '../render/csp.ts';
 
 export interface StaticOptions {
@@ -131,6 +132,14 @@ export function planStatic(options: StaticOptions): TreeFile[] {
 
   for (const asset of projection.referenced) {
     files.push({ path: mediaFile(asset.url), bytes: readFileSync(assetFile(options.contentRoot, asset)) });
+    // `srcset` names `/media/<key>@<label>.<fmt>`, so a static tree without the renditions
+    // answers its own markup with 404s. Same directory, the farm's own link name.
+    for (const variant of asset.variants) {
+      files.push({
+        path: `media/${variantLinkName(asset.key, variant.label, variant.format)}`,
+        bytes: readFileSync(variantFile(options.contentRoot, variant)),
+      });
+    }
   }
 
   // §10.5 (C-12, S4c): the CSP this tree must be served with. One line, the same bytes as

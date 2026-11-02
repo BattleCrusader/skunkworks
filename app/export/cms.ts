@@ -39,7 +39,7 @@ import { generateAppConf } from '../../tools/nginx_gen.ts';
 import { renderNotes } from './notes.ts';
 import { cspConf } from '../render/csp.ts';
 import { themeAssetsRoot } from '../render/themes.ts';
-import { assetFile, symlinkTarget, type Projection } from './project.ts';
+import { assetFile, symlinkTarget, variantFile, type Projection } from './project.ts';
 import type { TreeFile } from './tree.ts';
 
 export interface HostSpec {
@@ -422,6 +422,13 @@ export function planCms(options: CmsOptions): CmsPlan {
   // the link-absence test is what proves it.
   for (const asset of [...projection.library, ...projection.gated]) {
     files.push({ path: asset.storagePath, bytes: readFileSync(assetFile(options.contentRoot, asset)) });
+    // A rendition is a file in its own right (`cms_asset_variant.storage_path`), and the
+    // bundled `site.db` keeps those rows — so a bundle without the bytes ships links the
+    // farm will publish and nginx will 404. `buildProjection` has already refused any
+    // rendition whose file is missing, so this loop only copies.
+    for (const variant of asset.variants) {
+      files.push({ path: variant.storagePath, bytes: readFileSync(variantFile(options.contentRoot, variant)) });
+    }
   }
   for (const asset of projection.library) {
     const link = symlinkTarget(asset);
