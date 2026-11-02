@@ -77,9 +77,11 @@ test('the codes S1 raises are all mapped, and the four E-4 additions are part of
   // dead `href` (app/render/nav.ts).
   const total = Object.values(codes.areas).reduce((n, names) => n + names.length, 0);
   // 86 at S5 closeout (+NAV_TARGET_MISSING/HREF_REFUSED); 87 with S8o's SKW_E_SEC_FORBIDDEN
-  // (a valid session whose role may not install a package). The count is the lock: a code that
-  // appears in neither this file nor the app's map makes one of the two mirrors wrong.
-  assert.equal(total, 87, `the taxonomy holds ${total} codes, expected 87 (S5 closeout 86 + S8o FORBIDDEN)`);
+  // (a valid session whose role may not install a package); 95 with S13's eight theme-package
+  // codes (a package that disagrees with itself is refused by name, before a byte is stored).
+  // The count is the lock: a code that appears in neither this file nor the app's map makes one
+  // of the two mirrors wrong.
+  assert.equal(total, 95, `the taxonomy holds ${total} codes, expected 95 (87 + S13's 8 theme codes)`);
   for (const code of ['SKW_E_RT_PAGE_NOT_FOUND', 'SKW_E_PLT_INTERNAL', 'SKW_E_PLT_REQUEST_INVALID', 'SKW_E_PLT_BODY_TOO_LARGE']) {
     assert.equal(codes.retry_after?.[code], undefined, `${code} must not carry Retry-After`);
   }
