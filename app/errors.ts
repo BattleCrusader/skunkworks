@@ -146,6 +146,16 @@ export const HTTP: Record<string, number> = {
   // naming a key with no row or no bytes. Both are refusals by name, never a skipped page.
   SKW_E_EXP_BODY_UNNORMALISABLE: 409,
   SKW_E_EXP_ASSET_UNRESOLVED: 409,
+  // Theme packages (docs/sds/04-theme-packages.md §2): a package that disagrees with
+  // itself is refused by name, before a byte reaches a library or a tenant.
+  SKW_E_EXP_THEME_SCHEMA: 422,
+  SKW_E_EXP_THEME_DIGEST: 409,
+  SKW_E_EXP_THEME_PATH: 422,
+  SKW_E_EXP_THEME_REF: 422,
+  SKW_E_EXP_THEME_LIMIT: 413,
+  SKW_E_EXP_THEME_KEY: 422,
+  SKW_E_EXP_THEME_CSS: 422,
+  SKW_E_EXP_THEME_EXTRA: 422,
   // S4c: a second export of one tenant while the first holds the tenant's export lock.
   SKW_E_EXP_WRITER_ACTIVE: 409,
   // S4c: a `cms_plugin_installed` row whose package the bundle does not carry.
