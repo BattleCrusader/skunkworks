@@ -320,6 +320,17 @@ export interface UploadThemeInput {
   assets?: readonly ThemeAsset[];
   /** Absolute directory for the tenant's theme files. Required when `assets` is non-empty. */
   assetsRoot?: string;
+  /**
+   * The key this theme must be stored under, when the caller already owns one.
+   *
+   * An upload has only a name, so the key is derived from it ("Fractional Works" →
+   * `fractional-works`). A *package* carries its key, and a package that changes key when it
+   * crosses a box is no longer the same theme: its stylesheet already points at
+   * `/_theme/<key>/…` URLs and every exported manifest names it. So a package install passes the
+   * key it carries, and a collision with different bytes is refused rather than silently
+   * re-keyed — the caller decides `--replace`, not this function.
+   */
+  key?: string;
 }
 
 /**
@@ -340,10 +351,30 @@ export function uploadTheme(db: Database.Database, input: UploadThemeInput): The
     throw new AppError('SKW_E_PL_INTERNAL', 'a theme package needs somewhere to put its files');
   }
   const name = input.name.trim().slice(0, 120) || 'Untitled theme';
-  const key = themeKeyFrom(name, (candidate) => {
+  const key = input.key ?? themeKeyFrom(name, (candidate) => {
     const hit = db.prepare(`SELECT 1 FROM cms_theme WHERE theme_key = ?`).get(candidate);
     return hit !== undefined;
   });
+  if (input.key !== undefined) {
+    // The caller owns the key, so this function may not invent or adapt one: a theme stored under
+    // a second key would be the same look twice, with the stylesheet pointing at the first.
+    if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(input.key)) {
+      throw new AppError('SKW_E_EXP_THEME_KEY', `"${input.key}" is not a theme key`, { key: input.key });
+    }
+    const existing = db.prepare(`SELECT css_sha256 FROM cms_theme WHERE theme_key = ?`).get(input.key) as
+      | { css_sha256: string }
+      | undefined;
+    if (existing !== undefined) {
+      const incoming = sha256(rewriteAssetUrls(input.css, key, assets));
+      if (existing.css_sha256 !== incoming) {
+        throw new AppError('SKW_E_EXP_THEME_DIGEST', `theme ${input.key} already exists with different bytes`, {
+          key: input.key,
+          existing: existing.css_sha256,
+          incoming,
+        });
+      }
+    }
+  }
 
   // The sheet is stored *after* the rewrite, so the blob is the exact bytes the browser gets and
   // its sha is therefore its name. The key has to exist before the rewrite, which is why it is

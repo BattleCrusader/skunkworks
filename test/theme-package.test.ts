@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import { AppError } from '../app/errors.ts';
 import { rewriteAssetUrls } from '../app/render/theme-bundle.ts';
 import {
+  THEME_MANIFEST_FILE,
   THEME_PACKAGE_SCHEMA,
   THEME_SHEET_FILE,
   absolutiseCss,
@@ -70,7 +71,9 @@ test('T1 — the package is the three files a person would unzip, with a manifes
   );
   assert.equal(pkg.manifest.schema, THEME_PACKAGE_SCHEMA);
   assert.equal(pkg.manifest.key, 'acme-kit');
-  assert.equal(pkg.manifest.css.sha256, sha256Of(pkg.files[1].bytes));
+  const sheet = pkg.files.find((file) => file.path === THEME_SHEET_FILE);
+  assert.ok(sheet !== undefined, 'the package has no theme.css');
+  assert.equal(pkg.manifest.css.sha256, sha256Of(sheet.bytes));
   assert.deepEqual(
     pkg.manifest.assets.map((asset) => asset.path),
     ['assets/face.woff2', 'assets/hero.svg'],
@@ -152,7 +155,9 @@ test('T6 — a path that climbs out of the package is refused before anything is
 
 test('T7 — an unknown schema is its own refusal, not a parse error', () => {
   const written = build();
-  const manifest = JSON.parse(written.files[0].bytes.toString('utf8')) as Record<string, unknown>;
+  const manifestFile = written.files.find((file) => file.path === THEME_MANIFEST_FILE);
+  assert.ok(manifestFile !== undefined, 'the package has no theme.json');
+  const manifest = JSON.parse(manifestFile.bytes.toString('utf8')) as Record<string, unknown>;
   manifest.schema = 'skunkworks/theme/v2';
   const files = written.files.map((file, index) =>
     index === 0 ? { path: file.path, bytes: Buffer.from(JSON.stringify(manifest), 'utf8') } : file,
