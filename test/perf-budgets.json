@@ -570,6 +570,34 @@
       ]
     },
     {
+      "file": "test/cli-theme.test.ts",
+      "worstIdleMs": 1644,
+      "measuredOn": "2026-11-03",
+      "load1m": 7.46,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "d96fc10fb5e7803be57921c53b9e7f51fcfd89b1b535b84413603d196d44ea09",
+      "runs": [
+        {
+          "ms": 1612,
+          "at": "2026-11-02T23:23:04.960Z",
+          "load1mBefore": 7.46,
+          "load1mAfter": 7.46,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 5
+        },
+        {
+          "ms": 1644,
+          "at": "2026-11-02T23:23:06.605Z",
+          "load1mBefore": 7.46,
+          "load1mAfter": 7.75,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 5
+        }
+      ]
+    },
+    {
       "file": "test/form-component.test.ts",
       "worstIdleMs": 1644,
       "measuredOn": "2026-10-21",
@@ -604,6 +632,34 @@
           "idle": true,
           "exitCode": 0,
           "tests": 1
+        }
+      ]
+    },
+    {
+      "file": "test/fleet-import.test.ts",
+      "worstIdleMs": 1597,
+      "measuredOn": "2026-11-03",
+      "load1m": 7.75,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "ac044be7fe09d3ec665d814ee223c177260e5d526469d14007409b23712cc43c",
+      "runs": [
+        {
+          "ms": 1597,
+          "at": "2026-11-02T23:23:08.794Z",
+          "load1mBefore": 7.75,
+          "load1mAfter": 7.75,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 4
+        },
+        {
+          "ms": 792,
+          "at": "2026-11-02T23:23:09.588Z",
+          "load1mBefore": 7.75,
+          "load1mAfter": 7.75,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 4
         }
       ]
     },
@@ -740,6 +796,34 @@
       ]
     },
     {
+      "file": "test/admin-export.test.ts",
+      "worstIdleMs": 1121,
+      "measuredOn": "2026-11-03",
+      "load1m": 7.64,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "d320faabcae5340670e1328fa9b4abb193d3a55732838ed403e66f60e6ff94e7",
+      "runs": [
+        {
+          "ms": 1121,
+          "at": "2026-11-02T23:22:51.056Z",
+          "load1mBefore": 7.64,
+          "load1mAfter": 8.47,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 4
+        },
+        {
+          "ms": 982,
+          "at": "2026-11-02T23:23:02.317Z",
+          "load1mBefore": 7.46,
+          "load1mAfter": 7.46,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 4
+        }
+      ]
+    },
+    {
       "file": "test/site-delivery.test.ts",
       "worstIdleMs": 1119,
       "measuredOn": "2026-10-22",
@@ -810,6 +894,34 @@
           "idle": true,
           "exitCode": 0,
           "tests": 11
+        }
+      ]
+    },
+    {
+      "file": "test/theme-library.test.ts",
+      "worstIdleMs": 1031,
+      "measuredOn": "2026-11-03",
+      "load1m": 7.9,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "88ffad71d58e66369eb776d0181a05894b9d7b5366674bfcc955a3089eeb7cd7",
+      "runs": [
+        {
+          "ms": 1031,
+          "at": "2026-11-02T23:23:57.067Z",
+          "load1mBefore": 7.9,
+          "load1mAfter": 7.9,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 9
+        },
+        {
+          "ms": 570,
+          "at": "2026-11-02T23:23:57.642Z",
+          "load1mBefore": 7.9,
+          "load1mAfter": 7.9,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 9
         }
       ]
     },
@@ -2014,6 +2126,34 @@
       ]
     },
     {
+      "file": "test/theme-package.test.ts",
+      "worstIdleMs": 276,
+      "measuredOn": "2026-11-03",
+      "load1m": 7.9,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "6dc5958ba76a1730c2c02628db648cc7ff81beba39e6f0692bbcea64dc067a68",
+      "runs": [
+        {
+          "ms": 240,
+          "at": "2026-11-02T23:23:59.311Z",
+          "load1mBefore": 7.9,
+          "load1mAfter": 7.9,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 16
+        },
+        {
+          "ms": 276,
+          "at": "2026-11-02T23:23:59.589Z",
+          "load1mBefore": 7.9,
+          "load1mAfter": 7.9,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 16
+        }
+      ]
+    },
+    {
       "file": "test/compose.test.ts",
       "worstIdleMs": 274,
       "measuredOn": "2026-10-21",
@@ -2280,5 +2420,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-11-02T22:47:47.436Z"
+  "updatedAt": "2026-11-02T23:24:00.013Z"
 }
