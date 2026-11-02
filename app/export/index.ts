@@ -18,9 +18,11 @@
  * apart would differ in a way the report would have to explain.
  */
 import type Database from 'better-sqlite3';
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 
+import { archiveFormatOf, buildArchive, type ArchiveFormat } from './archive.ts';
 import { planAstro } from './astro.ts';
 import { planCms, type PluginPackage, type TenantSpec } from './cms.ts';
 import { buildProjection, type ExportTarget, type Projection, type Refusal } from './project.ts';
@@ -28,7 +30,7 @@ import { installedPlugins } from '../plugins/install.ts';
 import { packageRootHash } from '../plugins/manifest.ts';
 import { planStatic } from './static.ts';
 import { activeTheme } from '../render/themes.ts';
-import { DiskFullError, freeBytes, hashTree, writeTree, type TreeFile, type TreeHash } from './tree.ts';
+import { DiskFullError, freeBytes, hashTree, isNoSpace, writeTree, type TreeFile, type TreeHash } from './tree.ts';
 
 export interface ExportRequest {
   target: ExportTarget;
@@ -50,10 +52,26 @@ export interface ExportRequest {
   tenant?: TenantSpec;
   adminHost?: string;
   demosHost?: string;
+  /**
+   * S12: one file for the whole tree, `.zip` or `.tar.gz`.
+   *
+   * The tree is still written — the archive is an **addition**, and the summary names both, so
+   * an operator can install from the directory or hand the file to a client without ever
+   * wondering which of the two is the export.
+   */
+  archive?: string;
 }
 
+/** What the archive at `path` will be, or a named refusal when the extension says nothing. */
+export type ArchiveResult = {
+  path: string;
+  format: ArchiveFormat;
+  bytes: number;
+  sha256: string;
+};
+
 export type ExportResult =
-  | { ok: true; target: ExportTarget; out: string; projection: Projection; tree: TreeHash }
+  | { ok: true; target: ExportTarget; out: string; projection: Projection; tree: TreeHash; archive?: ArchiveResult }
   | { ok: false; target: ExportTarget; refusals: Refusal[] };
 
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
@@ -87,6 +105,47 @@ export function runExport(request: ExportRequest): ExportResult {
     // reads as non-determinism afterwards (a stale page nobody regenerated).
     if (readdirSync(request.out).length > 0) {
       throw new Error(`export destination is not empty: ${request.out}`);
+    }
+  }
+
+  // --- S12: the archive is decided before anything is written ----------------------
+  // An extension this writer does not know is a free parameter (§11.3 exit 22), and it is
+  // checked here so a refusal leaves no tree. The two accepted spellings are named in the
+  // message: a caller who guessed `.tgz` learns the one that works instead of guessing again.
+  const archiveFormat = request.archive === undefined ? null : archiveFormatOf(request.archive);
+  if (request.archive !== undefined && archiveFormat === null) {
+    return {
+      ok: false,
+      target: request.target,
+      refusals: [
+        {
+          code: 'SKW_E_EXP_ARCHIVE_FORMAT',
+          message: `--archive must end in .zip or .tar.gz (got ${JSON.stringify(request.archive)})`,
+          detail: { archive: request.archive, accepted: ['.zip', '.tar.gz'] },
+          exit: 22,
+        },
+      ],
+    };
+  }
+  if (request.archive !== undefined) {
+    // The archive inside the tree would be listed by nobody, hashed by `hashTree` only on the
+    // next run, and carried into an installation — the one file in a bundle that is not part
+    // of the bundle. Refuse rather than write a tree that describes itself incorrectly.
+    const outRoot = resolve(request.out);
+    const archivePath = resolve(request.archive);
+    if (archivePath === outRoot || archivePath.startsWith(`${outRoot}${sep}`)) {
+      return {
+        ok: false,
+        target: request.target,
+        refusals: [
+          {
+            code: 'SKW_E_EXP_ARCHIVE_INSIDE_TREE',
+            message: `--archive ${request.archive} is inside --out ${request.out}; the archive is a sibling of the tree, not a member of it`,
+            detail: { archive: request.archive, out: request.out },
+            exit: 22,
+          },
+        ],
+      };
     }
   }
 
@@ -233,7 +292,65 @@ export function runExport(request: ExportRequest): ExportResult {
       };
     }
 
-    return { ok: true, target: request.target, out: request.out, projection, tree: hashTree(request.out) };
+    const tree = hashTree(request.out);
+
+    // --- S12: the tree is written and hashed; now the one file ------------------------
+    // Built from the same `files` the writer just wrote, so the archive and the directory
+    // are the same export by construction rather than by a re-read that could see a tree
+    // somebody edited in between. A failure here leaves the **tree** in place and says so:
+    // the export succeeded, its convenient form did not.
+    let archive: ArchiveResult | undefined;
+    if (request.archive !== undefined && archiveFormat !== null) {
+      let bytes: Buffer;
+      try {
+        bytes = buildArchive(archiveFormat, files, mtimeOf(request.exportNow));
+      } catch (err) {
+        return {
+          ok: false,
+          target: request.target,
+          refusals: [
+            {
+              code: 'SKW_E_EXP_ARCHIVE_FAILED',
+              message: `the archive could not be built: ${err instanceof Error ? err.message : String(err)}`,
+              detail: { archive: request.archive, tree: request.out },
+              exit: 21,
+            },
+          ],
+        };
+      }
+      const target = resolve(request.archive);
+      const temp = `${target}.skw-tmp-${process.pid}`;
+      try {
+        writeFileSync(temp, bytes);
+        renameSync(temp, target);
+      } catch (err) {
+        rmSync(temp, { force: true });
+        const code = (err as NodeJS.ErrnoException).code ?? '';
+        if (isNoSpace(code)) {
+          return {
+            ok: false,
+            target: request.target,
+            refusals: [
+              {
+                code: 'SKW_E_EXP_INSUFFICIENT_DISK',
+                message: `the filesystem ran out of space writing the archive (${code}); the tree at ${request.out} is complete and verified`,
+                detail: { archive: request.archive, errno: code, tree: request.out },
+                exit: 25,
+              },
+            ],
+          };
+        }
+        throw err;
+      }
+      archive = {
+        path: request.archive,
+        format: archiveFormat,
+        bytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      };
+    }
+
+    return { ok: true, target: request.target, out: request.out, projection, tree, ...(archive === undefined ? {} : { archive }) };
   } finally {
     release();
   }

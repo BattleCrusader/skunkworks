@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
@@ -27,13 +27,15 @@ import { after, before, test } from 'node:test';
 
 import { openAdminWrite } from '../app/db/classes.ts';
 import { loadEnv } from '../app/env.ts';
+import { readBundleTarGz, readBundleZip } from '../app/import/archive.ts';
+import { buildZip } from '../app/export/archive.ts';
 import { runExport } from '../app/export/index.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import { REPO, SCHEMA, makeFixture, type Fixture } from '../test/helpers/fixture.ts';
 import { call } from '../test/helpers/http.ts';
 
 const NOW = '2026-10-20T12:00:00.000Z';
-const SHA = (text: string): string => createHash('sha256').update(text).digest('hex');
+const SHA = (text: string | Buffer): string => createHash('sha256').update(text).digest('hex');
 const THEME_CSS = ':root{--ink:#111}';
 const THEME_ASSET_PATH = 'assets/mark.svg';
 const THEME_MARK = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"></svg>';
@@ -452,6 +454,139 @@ test('T4b — a rendition row whose bytes are gone refuses the export, naming th
   } finally {
     writeFileSync(file, bytes);
   }
+});
+
+test('T5 — `--archive` writes the tree as one deterministic file, and refuses a format it does not know', () => {
+  // S12: the tree is still written; the archive is the same export as one file. Two exports at one
+  // `SKW_EXPORT_NOW` must agree **byte for byte**, which is a stronger promise than the tree hash
+  // and the only one a client can check on the file they were handed.
+  const exportWithArchive = (out: string, archive: string): ReturnType<typeof runExport> => {
+    const db2 = openAdminWrite(fixture.sitePath('acme'));
+    try {
+      return runExport({
+        target: 'cms',
+        db: db2,
+        tenantKey: 'acme',
+        out,
+        exportNow: NOW,
+        contentRoot: join(fixture.dir, 'content'),
+        repoRoot: REPO,
+        tmpDir: work,
+        origin: 'https://acme.test',
+        archive,
+        tenant: {
+          key: 'acme',
+          mode: 'production',
+          status: 'active',
+          displayName: 'Acme',
+          dbVersion: 3,
+          hosts: [{ host: 'acme.test', kind: 'primary', isPrimary: 1, certState: 'issued' }],
+        },
+      });
+    } finally {
+      db2.close();
+    }
+  };
+  const archiveOf = (result: ReturnType<typeof runExport>, where: string) => {
+    assert.equal(result.ok, true, `${where} refused: ${result.ok ? '' : JSON.stringify(result.refusals)}`);
+    if (!result.ok) throw new Error('unreachable');
+    assert.ok(result.archive !== undefined, `${where}: no archive in the result`);
+    return result.archive;
+  };
+
+  const zipA = join(work, 'bundle-a.zip');
+  const zipB = join(work, 'bundle-b.zip');
+  const tgzA = join(work, 'bundle-a.tar.gz');
+  const tgzB = join(work, 'bundle-b.tar.gz');
+  const first = archiveOf(exportWithArchive(join(work, 'archive-a'), zipA), 'zip #1');
+  const second = archiveOf(exportWithArchive(join(work, 'archive-b'), zipB), 'zip #2');
+  const tarFirst = archiveOf(exportWithArchive(join(work, 'archive-c'), tgzA), 'tar.gz #1');
+  const tarSecond = archiveOf(exportWithArchive(join(work, 'archive-d'), tgzB), 'tar.gz #2');
+
+  // (viii) two archives at one --now are byte-identical — asserted on the file, not the report.
+  assert.equal(first.sha256, second.sha256, 'two zip exports at one --now differ');
+  assert.equal(SHA(readFileSync(zipA)), SHA(readFileSync(zipB)), 'the two zip files are not identical on disk');
+  assert.equal(tarFirst.sha256, tarSecond.sha256, 'two tar.gz exports at one --now differ');
+  assert.equal(SHA(readFileSync(tgzA)), SHA(readFileSync(tgzB)), 'the two tar.gz files are not identical on disk');
+  assert.equal(first.format, 'zip');
+  assert.equal(tarFirst.format, 'tar.gz');
+  assert.equal(statSync(zipA).size, first.bytes, 'the reported size is not the file size');
+  assert.notEqual(first.sha256, tarFirst.sha256, 'the two formats cannot hash the same');
+  // The archive is an **addition**: the tree is still the export `install.sh` runs from.
+  assert.equal(existsSync(join(work, 'archive-a', 'BUNDLE.json')), true, 'the tree was not written beside the archive');
+  assert.equal(existsSync(join(work, 'archive-a', 'install.sh')), true, 'the tree was not written beside the archive');
+
+  // (4) the manifest and the notes ship inside the archive; a symlink keeps its link.
+  const zipEntries = readBundleZip(readFileSync(zipA));
+  const zipPaths = zipEntries.map((e) => e.path);
+  for (const required of ['BUNDLE.json', 'EXPORT-NOTES.md', 'data/site.db', 'install.sh']) {
+    assert.ok(zipPaths.includes(required), `the zip is missing ${required}`);
+  }
+  const zipLink = zipEntries.find((e) => e.path === 'content/public/work/one.jpg');
+  assert.ok(zipLink !== undefined, 'the zip carries no farm link');
+  assert.equal(zipLink.kind, 'symlink', 'the farm link must be a symlink member, not a copy');
+  assert.match(zipLink.target ?? '', /^(\.\.\/)+media\//, 'the farm link must stay relative');
+  assert.equal(zipEntries.find((e) => e.path === 'install.sh')?.mode, 0o755, 'install.sh must stay executable');
+  assert.equal(zipEntries.find((e) => e.path === 'BUNDLE.json')?.mode, 0o644, 'a data file is 0644');
+
+  // The tar.gz is the same tree: same members, same order, same link.
+  const tarEntries = readBundleTarGz(readFileSync(tgzA));
+  assert.deepEqual(
+    tarEntries.map((e) => e.path),
+    zipPaths,
+    'the two formats do not carry the same members in the same order',
+  );
+  const tarLink = tarEntries.find((e) => e.path === 'content/public/work/one.jpg');
+  assert.equal(tarLink?.kind, 'symlink');
+  assert.equal(tarLink?.target, zipLink.target, 'the two formats disagree about a symlink target');
+
+  // A tree can name one `storage_path` twice (two `cms_asset_variant` rows whose bytes are
+  // identical): writeTree overwrites the file, which is harmless, but an archive with two members
+  // of one name extracts to whichever the reader takes last. One member per path, and a genuine
+  // disagreement about the bytes is a refusal rather than a coin toss.
+  const doubled = buildZip(
+    [
+      { path: 'a.txt', bytes: 'same' },
+      { path: 'a.txt', bytes: 'same' },
+      { path: 'b.txt', bytes: 'b' },
+    ],
+    Date.parse(NOW),
+  );
+  assert.deepEqual(readBundleZip(doubled).map((e) => e.path), ['a.txt', 'b.txt'], 'a repeated path must be one member');
+  assert.throws(
+    () =>
+      buildZip(
+        [
+          { path: 'a.txt', bytes: 'one' },
+          { path: 'a.txt', bytes: 'two' },
+        ],
+        Date.parse(NOW),
+      ),
+    /twice with different content/,
+  );
+
+  // An extension this writer does not know is a named refusal, and it writes nothing at all.
+  const refusedOut = join(work, 'archive-refused');
+  const refused = exportWithArchive(refusedOut, join(work, 'bundle.tgz'));
+  assert.equal(refused.ok, false);
+  if (!refused.ok) {
+    const refusal = refused.refusals.find((r) => r.code === 'SKW_E_EXP_ARCHIVE_FORMAT');
+    assert.ok(refusal !== undefined, `expected SKW_E_EXP_ARCHIVE_FORMAT, got ${JSON.stringify(refused.refusals)}`);
+    assert.equal(refusal.exit, 22);
+  }
+  assert.equal(existsSync(refusedOut), false, 'a refused archive format must write no tree');
+
+  // The archive is a sibling of the tree, never a member of it.
+  const insideOut = join(work, 'archive-inside');
+  const inside = exportWithArchive(insideOut, join(insideOut, 'bundle.zip'));
+  assert.equal(inside.ok, false);
+  if (!inside.ok) {
+    assert.ok(
+      inside.refusals.some((r) => r.code === 'SKW_E_EXP_ARCHIVE_INSIDE_TREE'),
+      `expected SKW_E_EXP_ARCHIVE_INSIDE_TREE, got ${JSON.stringify(inside.refusals)}`,
+    );
+  }
+  assert.equal(existsSync(insideOut), false, 'a refused archive path must write no tree');
 });
 
 test('T4 — the bundle carries no control.db, no -wal/-shm, no sources, no protected tree, and no farm link to a gated asset', () => {

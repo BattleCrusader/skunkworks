@@ -222,34 +222,6 @@
       ]
     },
     {
-      "file": "test/export-targets.test.ts",
-      "worstIdleMs": 4681,
-      "measuredOn": "2026-11-03",
-      "load1m": 7.4,
-      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
-      "sha256": "4f1eec69da69587e2b83c5133fefe9c05164fcefdde4da8f35afb45d0b01fa19",
-      "runs": [
-        {
-          "ms": 3636,
-          "at": "2026-11-02T22:06:27.370Z",
-          "load1mBefore": 7,
-          "load1mAfter": 7.4,
-          "idle": true,
-          "exitCode": 0,
-          "tests": 7
-        },
-        {
-          "ms": 4681,
-          "at": "2026-11-02T22:06:32.052Z",
-          "load1mBefore": 7.4,
-          "load1mAfter": 7.4,
-          "idle": true,
-          "exitCode": 0,
-          "tests": 7
-        }
-      ]
-    },
-    {
       "file": "test/onboarding.test.ts",
       "worstIdleMs": 4438,
       "measuredOn": "2026-10-27",
@@ -293,6 +265,34 @@
           "idle": true,
           "exitCode": 0,
           "tests": 15
+        }
+      ]
+    },
+    {
+      "file": "test/export-targets.test.ts",
+      "worstIdleMs": 4102,
+      "measuredOn": "2026-11-03",
+      "load1m": 7.71,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "e30986d95bbe6da090fa9838e51a28bde45e084e69b8274a5877b9f546da7d8c",
+      "runs": [
+        {
+          "ms": 4102,
+          "at": "2026-11-02T22:47:44.447Z",
+          "load1mBefore": 7.71,
+          "load1mAfter": 7.9,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 8
+        },
+        {
+          "ms": 2190,
+          "at": "2026-11-02T22:47:46.641Z",
+          "load1mBefore": 7.9,
+          "load1mAfter": 7.9,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 8
         }
       ]
     },
@@ -453,6 +453,34 @@
           "idle": true,
           "exitCode": 0,
           "tests": 13
+        }
+      ]
+    },
+    {
+      "file": "test/site-import.test.ts",
+      "worstIdleMs": 1977,
+      "measuredOn": "2026-11-03",
+      "load1m": 6.75,
+      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+      "sha256": "5b189cc425b7b40aef58b133f3eba105495a36f89fdc0fe1ec16578e1412b751",
+      "runs": [
+        {
+          "ms": 1817,
+          "at": "2026-11-02T22:21:06.955Z",
+          "load1mBefore": 6.75,
+          "load1mAfter": 6.75,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 11
+        },
+        {
+          "ms": 1977,
+          "at": "2026-11-02T22:21:08.933Z",
+          "load1mBefore": 6.75,
+          "load1mAfter": 6.53,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 11
         }
       ]
     },
@@ -2252,5 +2280,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-11-02T22:06:33.392Z"
+  "updatedAt": "2026-11-02T22:47:47.436Z"
 }
