@@ -324,11 +324,14 @@ export async function run(argv: readonly string[]): Promise<number> {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  run(process.argv.slice(2))
-    .then((code) => process.exit(code))
-    .catch((err: unknown) => {
-      process.stderr.write(`skw-theme: ${err instanceof Error ? err.message : String(err)}\n`);
-      process.exit(1);
-    });
-}
+// Run unconditionally, the way `skw-export` does: this file is an entry point, not a library, and
+// a `import.meta.url === file://${process.argv[1]}` guard is itself a runtime-path decision the
+// dist witness has to claim (it caught exactly that here).
+run(process.argv.slice(2))
+  .then((code) => {
+    process.exitCode = code;
+  })
+  .catch((err: unknown) => {
+    process.stderr.write(`skw-theme: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exitCode = 1;
+  });
