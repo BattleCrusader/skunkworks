@@ -446,6 +446,47 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     scope.post('/whoami', whoami);
   });
 
+  /**
+   * `GET /sites/<key-or-host>/` — the path-shaped way in, and it **redirects rather than serves**.
+   *
+   * Two reasons, and the second is the one that cannot be worked around:
+   *
+   *  1. The tenant is resolved from the Host (§5.3, D37). Serving a site under a path would give
+   *     every request two answers to "which site is this" — the Host and the first path segment —
+   *     and the resolver's whole design is that there is exactly one.
+   *  2. **The content's own URLs are absolute.** `cms_asset` renders as `/media/<key>.<ext>`, a
+   *     page's link is `/about`, and the canonical/OG URLs the seo builder emits name the host.
+   *     Served at `/sites/acme/`, every one of those would point at the *outer* host's root or
+   *     another tenant's — a page that loads its own stylesheet and none of its images, with no
+   *     code able to fix it without rewriting the body of every page. A redirect keeps one
+   *     canonical address per site and puts the visitor on it.
+   *
+   * `<key>` is a tenant key **or** a host registered to that tenant, because the two things a
+   * person has when they ask "where is this site" are the name they know it by and the name in
+   * the control plane. An unknown one is the same 404 a missing page is — there is no list of
+   * tenants here, and a different body would be one.
+   */
+  const siteFinder = async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    const raw = (req.params as { key?: string }).key ?? '';
+    let key: string;
+    try {
+      key = decodeURIComponent(raw).toLowerCase();
+    } catch {
+      throw pageMiss();
+    }
+    const tenant = tenants.lookupKey(key) ?? tenants.lookupHost(normaliseHost(key) ?? key);
+    if (tenant === undefined) throw pageMiss();
+    const primary = tenants.primaryHost(tenant.id);
+    // A tenant with no domain row cannot be reached by Host at all, so there is nowhere to send
+    // a visitor: that is the same 404, not a redirect to a name nobody serves.
+    if (primary === undefined) throw pageMiss();
+    reply.header('cache-control', 'no-store');
+    reply.code(302).header('location', `https://${primary}/`);
+    reply.send('');
+  };
+  app.get('/sites/:key', siteFinder);
+  app.get('/sites/:key/', siteFinder);
+
   // §9.5's tenant health, and E-20(d)'s one new field: the seal series. Served from a 30 s
   // cache, because the alternative is a `control.db` read and a whole-file chain walk per poll.
   // D37: the tenant is the Host's and the key in the URL must agree with it — the path is a

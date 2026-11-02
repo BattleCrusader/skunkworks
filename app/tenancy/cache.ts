@@ -56,6 +56,8 @@ export class TenantMap {
   #byHost = new Map<string, Tenant>();
   #byKey = new Map<string, Tenant>();
   #byId = new Map<number, Tenant>();
+  /** tenant id -> primary host. One name per tenant (`ux_domain_primary`), so one entry. */
+  #primary = new Map<number, string>();
 
   /** Instrumentation for §5.4a's one-read-per-request gate. */
   readonly stats = { stampReads: 0, rebuilds: 0 };
@@ -91,6 +93,9 @@ export class TenantMap {
     const hosts = this.#db
       .prepare('SELECT host, tenant_id FROM domain')
       .all() as { host: string; tenant_id: number }[];
+    const primaries = this.#db
+      .prepare('SELECT host, tenant_id FROM domain WHERE is_primary = 1')
+      .all() as { host: string; tenant_id: number }[];
 
     const byKey = new Map<string, Tenant>();
     const byId = new Map<number, Tenant>();
@@ -104,11 +109,14 @@ export class TenantMap {
       // domain.host is COLLATE NOCASE and CHECKed to lowercase already.
       if (t !== undefined) byHost.set(h.host.toLowerCase(), t);
     }
+    const primary = new Map<number, string>();
+    for (const row of primaries) primary.set(row.tenant_id, row.host);
 
     // One immutable generation: swapped wholesale, never mutated in place.
     this.#byKey = byKey;
     this.#byId = byId;
     this.#byHost = byHost;
+    this.#primary = primary;
     this.#stamp = stamp;
     this.stats.rebuilds += 1;
     return true;
@@ -127,6 +135,19 @@ export class TenantMap {
   lookupId(id: number): Tenant | undefined {
     this.refresh();
     return this.#byId.get(id);
+  }
+
+  /**
+   * The tenant's primary host, or `undefined` when it has no domain row yet.
+   *
+   * S12's `/sites/<key>/` finder redirects to this name, and it is deliberately not "the first
+   * host" — `is_primary` is the tenant's own statement of its canonical address, and a redirect
+   * that picked a different one would send a visitor to an alias whose certificate might not
+   * cover it.
+   */
+  primaryHost(id: number): string | undefined {
+    this.refresh();
+    return this.#primary.get(id);
   }
 
   all(): Tenant[] {

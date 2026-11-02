@@ -15,6 +15,14 @@
  *   skwctl plugin enable <id>     --tenant <key>
  *   skwctl plugin disable <id>    --tenant <key>
  *   skwctl plugin list            --tenant <key>
+ *   skwctl site import <archive|dir> --tenant <key> --host <host> [--host <host>]
+ *                                 [--primary <host>] [--wildcard <parent>]
+ *                                 [--data-dir <dir>] [--replace] [--nginx]
+ *
+ * `site import` (S12) is the other half of `skw-export --archive`: a bundle becomes a tenant on a
+ * running instance. It verifies the bundle first — every hash, every symlink target, every
+ * `source_counts` number and every plugin package's root hash — and writes nothing until all of
+ * that has passed, so a tampered archive leaves no tenant behind.
  *
  * The plugin verbs are the operator surface S4d's report named as missing: installing a
  * package was a library call with no admin route and no CLI, so a plugin could not be put
@@ -62,7 +70,9 @@ import { SESSION_ABSOLUTE_MS } from '../admin/session.ts';
 import { TOTP_PARAMETERS, groupOf, newPassword, newSecret, otpauthUri } from '../admin/totp.ts';
 import { openAdminWrite } from '../db/classes.ts';
 import { findProjectRoot, targetVersion } from '../db/migrate.ts';
-import { loadEnv, type Env } from '../env.ts';
+import { adminHostOf, demosHostOf, loadEnv, type Env } from '../env.ts';
+import { ImportRefusal } from '../import/errors.ts';
+import { importSite, regenerateAppConf } from '../import/site.ts';
 
 /** Exit 3, and only 3, is a benign refusal: the box is already set up. */
 export const EXIT_OK = 0;
@@ -1102,12 +1112,153 @@ async function plugin(ctx: CliContext, verb: string | undefined, args: Args): Pr
   );
 }
 
+/**
+ * `skwctl site import <archive|dir> --tenant <key> --host <host> [--host <host>] …` (S12).
+ *
+ * The verb that closes the round trip: `skw-export --archive` produces one file, and this turns
+ * that file into a tenant on **this** instance — the database, the media, the theme and plugin
+ * packages, and the control rows that route a Host to it.
+ *
+ * It parses its own arguments rather than going through `parseArgs()`, because `--host` is
+ * **repeatable** and the shared parser keeps one value per flag. A site reached at two names is
+ * the ordinary case (a primary and `www`), and a parser that silently kept the last one would
+ * leave the second host unrouted with no message — the failure mode this command exists to make
+ * impossible.
+ *
+ * Refusals are printed as `REFUSAL: <SKW_E_…> <json detail>` and the process exits with the
+ * code's own status, exactly like `skw-export`: a shell script wrapping a provisioning step must
+ * be able to tell "the bundle is not what it claims" from "the tenant already exists".
+ */
+async function site(argv: readonly string[], ctx: CliContext): Promise<number> {
+  const verb = argv[0];
+  if (verb !== 'import') {
+    throw new Refusal('USAGE', 'usage: skwctl site import <archive|dir> --tenant <key> --host <host> [--host <host>] [--primary <host>] [--wildcard <parent>] [--data-dir <dir>] [--replace] [--nginx]');
+  }
+  const positional: string[] = [];
+  const hosts: string[] = [];
+  let tenant: string | undefined;
+  let primary: string | undefined;
+  let wildcard: string | undefined;
+  let dataDirFlag: string | undefined;
+  let replace = false;
+  let nginx = false;
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i] as string;
+    if (!arg.startsWith('--')) {
+      positional.push(arg);
+      continue;
+    }
+    const eq = arg.indexOf('=');
+    const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
+    const inline = eq === -1 ? undefined : arg.slice(eq + 1);
+    const take = (): string => {
+      if (inline !== undefined) return inline;
+      const next = argv[i + 1];
+      if (next === undefined) throw new Refusal('USAGE', `--${name} needs a value`);
+      i += 1;
+      return next;
+    };
+    switch (name) {
+      case 'tenant':
+        tenant = take();
+        break;
+      case 'host':
+        hosts.push(take());
+        break;
+      case 'primary':
+        primary = take();
+        break;
+      case 'wildcard':
+        wildcard = take();
+        break;
+      case 'data-dir':
+        dataDirFlag = take();
+        break;
+      case 'replace':
+        replace = true;
+        break;
+      case 'nginx':
+        nginx = true;
+        break;
+      default:
+        throw new Refusal('USAGE', `unknown argument ${JSON.stringify(arg)}`);
+    }
+  }
+  const source = positional[0];
+  if (source === undefined) throw new Refusal('USAGE', 'site import needs an archive (.zip, .tar.gz) or a bundle directory');
+  if (tenant === undefined) throw new Refusal('USAGE', 'site import needs --tenant <key>');
+  if (hosts.length === 0) throw new Refusal('USAGE', 'site import needs at least one --host <host>');
+
+  const dataDir = dataDirFlag ?? ctx.env.dataDir;
+  const derivedAdmin = ctx.env.adminOrigin === '' ? null : adminHostOf(ctx.env.adminOrigin);
+  const demosHost = derivedAdmin === null ? null : demosHostOf(derivedAdmin);
+
+  let summary;
+  try {
+    summary = importSite({
+      source,
+      tenantKey: tenant,
+      hosts,
+      dataDir,
+      replace,
+      schemaDir: ctx.schemaDir,
+      ...(primary === undefined ? {} : { primary }),
+      ...(wildcard === undefined ? {} : { wildcard }),
+      ...(demosHost === null ? {} : { demosHost }),
+    });
+  } catch (err) {
+    if (!(err instanceof ImportRefusal)) throw err;
+    ctx.stderr(`REFUSAL: ${err.code} ${JSON.stringify(err.detail)}`);
+    ctx.stderr(`skwctl: ${err.message}`);
+    return err.exit;
+  }
+
+  const primaryHost = summary.hosts.find((h) => h.isPrimary === 1)?.host ?? '(none)';
+  ctx.stdout(
+    `import: tenant=${summary.tenant} display=${JSON.stringify(summary.displayName)} hosts=${summary.hosts.length} ` +
+      `pages=${summary.pages} assets=${summary.assets} variants=${summary.variants} theme_assets=${summary.themeAssets} ` +
+      `plugins=${summary.plugins.length} db_version=${summary.dbVersion}${summary.replaced ? ' replaced=yes' : ''}`,
+  );
+  ctx.stdout(`import: primary=${primaryHost}`);
+  for (const host of summary.hosts) {
+    if (host.isPrimary === 1) continue;
+    ctx.stdout(`import: alias=${host.host}${host.wildcardAlias && wildcard !== undefined ? ` (--wildcard ${wildcard})` : ''}`);
+  }
+  if (summary.plugins.length > 0) {
+    ctx.stdout(
+      `import: plugins=${summary.plugins.map((p) => `${p.id}@${p.version}(${p.files} files, no signed install)`).join(',')}`,
+    );
+  }
+  ctx.stdout(`import: site.db ${summary.siteDb}`);
+  ctx.stdout(`import: content ${summary.contentRoot}`);
+  ctx.stdout(`import: source ${summary.source.path} (${summary.source.kind}, ${summary.source.files} entries)`);
+  ctx.stdout(
+    `import: domain rows written on ${dataDir}/control.db; the app routes by Host on its next request (the tenant map reads the control revision per request)`,
+  );
+
+  if (nginx) {
+    const out = join(findProjectRoot(), 'nginx', 'conf.d', '10-app.conf');
+    const written = regenerateAppConf({
+      dataDir,
+      out,
+      demosHost: demosHost ?? 'demos.skw.test',
+      boxRps: ctx.env.boxRps,
+    });
+    ctx.stdout(`import: nginx wrote ${written.path} (${written.lines} lines) — reload the edge to apply it`);
+  }
+  return EXIT_OK;
+}
+
 export async function run(argv: readonly string[], ctx: CliContext): Promise<number> {
   if (argv.length === 0) {
     throw new Refusal(
       'USAGE',
-      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N] | plugin (install <dir> | trust (import <key.pem> --publisher <id> | list) | enable <id> | disable <id> | revoke <id> | uninstall <id> | list) --tenant <key>>',
+      'usage: skwctl <admin (bootstrap | reset-totp | reset-password) [--email <email>] [--enrolment-out <path>] | audit (seal [--heal] | verify [--chain] | status) [--tenant <key>] [--day YYYY-MM-DD] [--days N] | plugin (install <dir> | trust (import <key.pem> --publisher <id> | list) | enable <id> | disable <id> | revoke <id> | uninstall <id> | list) --tenant <key> | site import <archive|dir> --tenant <key> --host <host> [--host <host>] [--primary <host>] [--wildcard <parent>] [--data-dir <dir>] [--replace] [--nginx]>',
     );
+  }
+  if (argv[0] === 'site') {
+    // Not `parseArgs()`: `--host` repeats, and a Map keeps one value per flag (see `site()`).
+    return site(argv.slice(1), ctx);
   }
   const args = parseArgs(argv);
   if (args.command[0] === 'audit') {
@@ -1119,7 +1270,7 @@ export async function run(argv: readonly string[], ctx: CliContext): Promise<num
   if (args.command[0] !== 'admin') {
     throw new Refusal(
       'USAGE',
-      `unknown command ${args.command.join(' ') || '(none)'}; expected "admin <verb>", "audit <verb>" or "plugin <verb>"`,
+      `unknown command ${args.command.join(' ') || '(none)'}; expected "admin <verb>", "audit <verb>", "plugin <verb>" or "site import"`,
     );
   }
   const verb = args.command[1];

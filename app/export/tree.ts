@@ -61,6 +61,11 @@ export class DiskFullError extends Error {
 
 const NO_SPACE = new Set(['ENOSPC', 'EDQUOT', 'EFBIG']);
 
+/** The three ways a filesystem says "no more bytes"; exported for the archive writer. */
+export function isNoSpace(code: string): boolean {
+  return NO_SPACE.has(code);
+}
+
 /** Free bytes on the filesystem holding `path`, or `null` when the platform cannot say. */
 export function freeBytes(path: string): number | null {
   try {
