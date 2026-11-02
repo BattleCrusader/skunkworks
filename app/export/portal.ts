@@ -27,7 +27,8 @@ import { dirname, join, relative, sep } from 'node:path';
 import { AppError } from '../errors.ts';
 import { findProjectRoot } from '../db/migrate.ts';
 import { runExport } from './index.ts';
-import { writeZip, type ZipWriteEntry } from './zip-write.ts';
+import { buildArchive } from './archive.ts';
+import type { TreeFile } from './tree.ts';
 import { exportTenantTheme } from '../themes/library.ts';
 import type { HostSpec, TenantSpec } from './cms.ts';
 
@@ -89,9 +90,9 @@ export function tenantSpecFor(controlDbPath: string, key: string): TenantSpec {
   }
 }
 
-/** Every file and symlink under `root`, as zip entries with forward-slash paths. */
-function treeEntries(root: string, now: string): ZipWriteEntry[] {
-  const entries: ZipWriteEntry[] = [];
+/** Every file and symlink under `root`, as tree entries with forward-slash paths. */
+function treeEntries(root: string): TreeFile[] {
+  const entries: TreeFile[] = [];
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
@@ -158,10 +159,10 @@ export function exportSiteZip(input: SiteExportInput): PortalFile {
         { refusals: result.refusals },
       );
     }
-    const entries = treeEntries(out, input.now);
+    const entries = treeEntries(out);
     return {
       name: `${slug(input.tenantKey)}-site-${input.now.slice(0, 10)}.zip`,
-      bytes: writeZip(entries, input.now),
+      bytes: buildArchive('zip', entries, Date.parse(input.now)),
     };
   } finally {
     rmSync(staging, { recursive: true, force: true });
@@ -185,12 +186,12 @@ export function exportThemeZip(input: ThemeExportInput): PortalFile {
     key: input.key,
     now: input.now,
   });
-  const entries: ZipWriteEntry[] = pkg.files
+  const entries: TreeFile[] = pkg.files
     .map((file) => ({ path: file.path, bytes: file.bytes }))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return {
     name: `${slug(input.key)}-theme-${input.now.slice(0, 10)}.zip`,
-    bytes: writeZip(entries, input.now),
+    bytes: buildArchive('zip', entries, Date.parse(input.now)),
   };
 }
 
@@ -204,5 +205,5 @@ export function sha256Hex(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-export { writeZip };
+export { buildArchive };
 export { dirname };

@@ -66,6 +66,7 @@
 import Database from 'better-sqlite3';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { hourlyRate, parseRateDollars, rateInput } from '../accounts/money.ts';
@@ -124,8 +125,10 @@ import { MAX_ARCHIVE_BYTES } from '../plugins/archive.ts';
 import type { DeclarativeScreen } from '../plugins/registry.ts';
 import { installFromArchive } from '../plugins/upload.ts';
 import { exportSiteZip, exportThemeZip, safeDownloadName } from '../export/portal.ts';
+import { importSite, regenerateAppConf } from '../import/site.ts';
+import { findProjectRoot } from '../db/migrate.ts';
 import { buildThemePackage } from '../themes/package.ts';
-import { activatePackage, installPackage, listLibrary as listThemeLibrary } from '../themes/library.ts';
+import { activatePackage, adoptTenantThemes, installPackage, listLibrary as listThemeLibrary } from '../themes/library.ts';
 import { LIBRARY_FILE, libraryDir, listLibrary, readLibraryArchive } from '../plugins/library.ts';
 import type { FieldSpec } from '../plugins/manifest.ts';
 import { groupOf, newSecret, otpauthUri } from './totp.ts';
@@ -725,6 +728,20 @@ export class AdminSurface {
       this.#fleetConsole(req, reply, session);
       return;
     }
+    // --- S14: import a site bundle from the console -------------------------------------
+    // Creating a tenant is a fleet action, not something one tenant's owner may do, so the door
+    // lives here rather than on `/admin`. The upload is a browser's file chooser: one
+    // `multipart/form-data` body with the file, the tenant key, the hosts and the CSRF field.
+    if (seg.length === 2 && seg[1] === 'import') {
+      if (req.method === 'GET') {
+        this.#fleetImportScreen(reply, session);
+        return;
+      }
+      this.#requireMethod(req, 'POST');
+      this.#assertOrigin(req);
+      await this.#fleetImport(req, reply, session);
+      return;
+    }
     if (seg.length === 2 && seg[1] === 'logout') {
       this.#requireMethod(req, 'POST');
       this.#assertOrigin(req);
@@ -740,6 +757,130 @@ export class AdminSurface {
   }
 
   // --- D37: the console, the login page, the reset consumer -----------------
+
+  /** `GET /fleet/import` — the form. A file chooser, a key, and the hosts that route to it. */
+  #fleetImportScreen(reply: FastifyReply, session: SessionRecord): void {
+    const csrf = this.sessions.csrfToken(session);
+    reply.type('text/html; charset=utf-8').send(
+      page(
+        'Skunkworks — import a site',
+        `<h1>Import a site</h1>
+<p class="note">A <code>.zip</code> or <code>.tar.gz</code> from <code>skw-export --target cms --archive</code>,
+or an unzipped bundle directory packed into an archive. Every hash in its <code>BUNDLE.json</code> is checked
+before a byte is written, so a tampered bundle refuses and leaves nothing behind.</p>
+<form method="post" action="/fleet/import" enctype="multipart/form-data">
+  <input type="hidden" name="csrf" value="${esc(csrf)}">
+  <label for="import-file">Site bundle</label>
+  <input id="import-file" type="file" name="file" required>
+  <label for="import-tenant">Tenant key <span class="note">lowercase letters, digits and dashes</span></label>
+  <input id="import-tenant" name="tenant" required pattern="[a-z0-9][a-z0-9-]{0,39}" placeholder="acme-copy">
+  <label for="import-hosts">Hosts <span class="note">one per line; the first is primary</span></label>
+  <textarea id="import-hosts" name="hosts" rows="3" required placeholder="acme.example.com"></textarea>
+  <label for="import-primary">Primary host <span class="note">optional — defaults to the first</span></label>
+  <input id="import-primary" name="primary" placeholder="acme.example.com">
+  <label for="import-wildcard">Wildcard parent <span class="note">optional — also registers &lt;host&gt;.&lt;parent&gt;</span></label>
+  <input id="import-wildcard" name="wildcard" placeholder="sites.example.com">
+  <label class="check"><input type="checkbox" name="replace" value="1"> Replace an existing tenant with this key</label>
+  <button type="submit">Import</button>
+</form>
+<p><a href="/fleet">Back to the console</a></p>`,
+      ),
+    );
+  }
+
+  /**
+   * `POST /fleet/import` — verify, then create the tenant.
+   *
+   * The order is the same as every other door: origin, then the parts (the CSRF field is one of
+   * them), then the bundle. `importSite()` verifies every hash before it writes, and the archive
+   * goes to a scratch file first because it verifies from a path, not from a buffer.
+   */
+  async #fleetImport(req: FastifyRequest, reply: FastifyReply, session: SessionRecord): Promise<void> {
+    let file: { filename: string; bytes: Buffer } | null = null;
+    const fields: Record<string, string> = {};
+    for await (const part of req.parts()) {
+      if (part.type === 'file') {
+        const bytes = await part.toBuffer();
+        if (file === null && bytes.length > 0) file = { filename: part.filename ?? 'bundle.zip', bytes };
+      } else {
+        fields[part.fieldname] = String(part.value ?? '');
+      }
+    }
+    this.#assertCsrf(req, session, fields.csrf);
+    if (file === null) {
+      reply.code(400).type('text/html; charset=utf-8').send(page('Nothing to import', '<h1>No file</h1><p>Choose a bundle and try again.</p><p><a href="/fleet/import">Back</a></p>'));
+      return;
+    }
+    const chosen = file as { filename: string; bytes: Buffer };
+    const hosts = (fields.hosts ?? '')
+      .split(/[\n,]/)
+      .map((host) => host.trim())
+      .filter((host) => host !== '');
+    const scratch = join(this.#env.dataDir, 'tmp');
+    mkdirSync(scratch, { recursive: true });
+    const staging = mkdtempSync(join(scratch, 'import-'));
+    const bundlePath = join(staging, chosen.filename.replace(/[^A-Za-z0-9._-]+/g, '-'));
+    writeFileSync(bundlePath, chosen.bytes);
+    try {
+      const summary = importSite({
+        source: bundlePath,
+        tenantKey: (fields.tenant ?? '').trim(),
+        hosts,
+        ...(fields.primary === undefined || fields.primary.trim() === '' ? {} : { primary: fields.primary.trim() }),
+        ...(fields.wildcard === undefined || fields.wildcard.trim() === '' ? {} : { wildcard: fields.wildcard.trim() }),
+        dataDir: this.#env.dataDir,
+        schemaDir: this.#schemaDir,
+        repoRoot: findProjectRoot(),
+        ...(fields.replace === '1' ? { replace: true } : {}),
+      });
+      // The site arrived wearing its own theme; make that look available to the other sites too.
+      let adopted: string[] = [];
+      try {
+        const importedDb = new Database(join(this.#env.dataDir, 'tenants', summary.tenant, 'site.db'));
+        try {
+          adopted = adoptTenantThemes({
+            dataDir: this.#env.dataDir,
+            db: importedDb,
+            tenantKey: summary.tenant,
+            now: new Date().toISOString(),
+          }).installed;
+        } finally {
+          importedDb.close();
+        }
+      } catch {
+        adopted = [];
+      }
+      // The hosts are rows now; the edge still needs its config. Writing it here is best-effort:
+      // a container's tree may be read-only, and the operator can regenerate with
+      // `skwctl site import --nginx` (or the next deploy) when it is not.
+      let nginxNote = 'The host rows are written. Regenerate the edge config to route them.';
+      try {
+        regenerateAppConf({
+          dataDir: this.#env.dataDir,
+          out: join(findProjectRoot(), 'nginx', 'conf.d', '10-app.conf'),
+          demosHost: 'demos.invalid',
+        });
+        nginxNote = 'nginx/conf.d/10-app.conf regenerated — reload the edge to serve the new hosts.';
+      } catch {
+        nginxNote = 'Host rows written; the edge config could not be written from here — run `skwctl site import … --nginx` or the next deploy.';
+      }
+      reply.type('text/html; charset=utf-8').send(
+        page(
+          `Imported ${summary.tenant}`,
+          `<h1>Imported <code>${esc(summary.tenant)}</code></h1>
+<p><strong>${esc(summary.displayName)}</strong> — ${summary.pages} page(s), ${summary.assets} asset(s), ${summary.variants} rendition(s), ${summary.themeAssets} theme file(s), ${summary.plugins.length} plugin(s), schema v${summary.dbVersion}.</p>
+<ul>${summary.hosts
+  .map((host) => `<li><code>${esc(host.host)}</code> — ${host.isPrimary === 1 ? 'primary' : 'alias'}${host.wildcardAlias ? ' (wildcard)' : ''}</li>`)
+  .join('')}</ul>
+${adopted.length === 0 ? '' : `<p class="note">Theme(s) added to the box library: ${adopted.map((key) => `<code>${esc(key)}</code>`).join(', ')}.</p>`}
+<p class="note">${esc(nginxNote)}</p>
+<p><a href="/fleet">Back to the console</a> · <a href="/fleet/import">Import another</a></p>`,
+        ),
+      );
+    } finally {
+      rmSync(staging, { recursive: true, force: true });
+    }
+  }
 
   #fleetConsole(req: FastifyRequest, reply: FastifyReply, session: SessionRecord): void {
     const user = this.auth.userById(session.userId);

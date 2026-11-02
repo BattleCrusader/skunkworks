@@ -313,6 +313,41 @@ export function exportTenantTheme(input: {
   });
 }
 
+/**
+ * Take every theme an imported site carries into the box's library.
+ *
+ * A site bundle is self-contained — the theme rows and files arrive with it — but after importing
+ * one site, that look should be available to the *other* sites on the box without a second upload.
+ * Best-effort by design: a collision with different bytes is reported, not raised, because the
+ * import itself already succeeded and the site keeps exactly what it carried.
+ */
+export function adoptTenantThemes(input: {
+  dataDir: string;
+  db: Database.Database;
+  tenantKey: string;
+  now: string;
+}): { installed: string[]; skipped: { key: string; reason: string }[] } {
+  const rows = input.db.prepare('SELECT theme_key FROM cms_theme ORDER BY theme_key').all() as { theme_key: string }[];
+  const installed: string[] = [];
+  const skipped: { key: string; reason: string }[] = [];
+  for (const row of rows) {
+    try {
+      const pkg = exportTenantTheme({
+        dataDir: input.dataDir,
+        db: input.db,
+        tenantKey: input.tenantKey,
+        key: row.theme_key,
+        now: input.now,
+      });
+      installPackage(input.dataDir, pkg);
+      installed.push(row.theme_key);
+    } catch (err) {
+      skipped.push({ key: row.theme_key, reason: err instanceof AppError ? err.code : String(err) });
+    }
+  }
+  return { installed, skipped };
+}
+
 /** Remove an entry. Refuses to remove one a tenant still wears, because that is a foot-gun. */
 export function removeLibraryTheme(dataDir: string, key: string, tenants: readonly Database.Database[]): void {
   const dir = libraryEntryDir(dataDir, key);
