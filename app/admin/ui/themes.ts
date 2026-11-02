@@ -45,6 +45,10 @@ export interface ThemesScreenInput {
   csrf: string;
   notices?: number;
   themes: ThemeListRow[];
+  /** Themes this box has in its library, ready to add to any site. */
+  library: { key: string; name: string; version: string; assets: number }[];
+  /** Where "download the site" points. */
+  siteExportHref: string;
   /** The pasted fallback's length, so the screen can say whether it is doing anything. */
   pastedCssBytes: number;
   activeKey: string | null;
@@ -204,6 +208,7 @@ ${input.themes
       : canChange
         ? `<form method="post" action="${base}/activate"><input type="hidden" name="csrf" value="${esc(input.csrf)}"><input type="hidden" name="theme" value="${esc(theme.key)}"><button class="btn btn--sm btn--primary" type="submit">Activate</button></form>`
         : '';
+    const download = `<a class="btn btn--sm" href="${base}/export/theme?theme=${encodeURIComponent(theme.key)}">Download</a>`;
     const del =
       canChange && !theme.active
         ? `<form method="post" action="${base}/delete"><input type="hidden" name="csrf" value="${esc(input.csrf)}"><input type="hidden" name="theme" value="${esc(theme.key)}"><button class="btn btn--sm btn--danger" type="submit">Delete</button></form>`
@@ -221,7 +226,7 @@ ${input.themes
         <td>${files}</td>
         <td>${esc(theme.createdAt.replace('T', ' ').slice(0, 16))}</td>
         <td>${pill}</td>
-        <td class="rowey">${preview}${act}${del}</td>
+        <td class="rowey">${preview}${download}${act}${del}</td>
       </tr>`;
   })
   .join('\n')}
@@ -282,6 +287,35 @@ ${input.themes
     <div class="card card--padded">
       <h2>Uploaded themes</h2>
       ${rows}
+    </div>
+    <div class="card card--padded">
+      <h2>Take it with you</h2>
+      <p class="note">A theme downloads as a package — <code>theme.json</code>, <code>theme.css</code> and every asset it names — which any box can import. The whole site downloads as one <code>.zip</code>: its database, media, theme files, plugins, schema and an <code>install.sh</code>. Identity rows are excluded by design: a bundle is a copy of the site, never of its people.</p>
+      <p><a class="btn" href="${esc(input.siteExportHref)}">Download this site (.zip)</a></p>
+    </div>
+    <div class="card card--padded">
+      <h2>Themes on this box</h2>
+      <p class="note">Every theme the box has, whether or not this site wears it. Adding one copies its rows and files into this site; it does not activate it.</p>
+      ${
+        input.library.length === 0
+          ? '<p class="note">The box library is empty. Upload a <code>.zip</code> above and it is added here for every site.</p>'
+          : `<table>
+      <thead><tr><th>Theme</th><th>Key</th><th>Version</th><th>Files</th><th></th></tr></thead>
+      <tbody>
+${input.library
+  .map((entry) => {
+    const has = input.themes.some((theme) => theme.key === entry.key);
+    const act = has
+      ? '<span class="pill">on this site</span>'
+      : canChange
+        ? `<form method="post" action="${base}/activate"><input type="hidden" name="csrf" value="${esc(input.csrf)}"><input type="hidden" name="theme" value="${esc(entry.key)}"><button class="btn btn--sm" type="submit">Add to this site</button></form>`
+        : '';
+    return `      <tr><td><strong>${esc(entry.name)}</strong></td><td><code>${esc(entry.key)}</code></td><td>${esc(entry.version)}</td><td>${entry.assets} file${entry.assets === 1 ? '' : 's'}</td><td class="rowey">${act}</td></tr>`;
+  })
+  .join('\n')}
+      </tbody>
+    </table>`
+      }
     </div>
     <div class="card card--padded">
       <h2>Per-page CSS</h2>

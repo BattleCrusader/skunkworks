@@ -63,7 +63,7 @@
  * The session precedes the CSRF check deliberately: a request with no session has no
  * token to bind and is the 404, not a 403.
  */
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -123,6 +123,9 @@ import { Auth, Semaphore, verifyTotp, type LoginFailureReason } from './auth.ts'
 import { MAX_ARCHIVE_BYTES } from '../plugins/archive.ts';
 import type { DeclarativeScreen } from '../plugins/registry.ts';
 import { installFromArchive } from '../plugins/upload.ts';
+import { exportSiteZip, exportThemeZip, safeDownloadName } from '../export/portal.ts';
+import { buildThemePackage } from '../themes/package.ts';
+import { activatePackage, installPackage, listLibrary as listThemeLibrary } from '../themes/library.ts';
 import { LIBRARY_FILE, libraryDir, listLibrary, readLibraryArchive } from '../plugins/library.ts';
 import type { FieldSpec } from '../plugins/manifest.ts';
 import { groupOf, newSecret, otpauthUri } from './totp.ts';
@@ -149,6 +152,7 @@ import {
   listThemes,
   previewToken,
   themeAssetsRoot,
+  themeByKey,
   uploadTheme,
 } from '../render/themes.ts';
 import { readThemeBundle } from '../render/theme-bundle.ts';
@@ -1126,6 +1130,19 @@ ${items}
       this.#themeDelete(req, reply, tenant, session);
       return;
     }
+    // --- S14: the portal's own doors out -------------------------------------------------
+    // Both downloads are GETs with no side effect, and both are tenant-scoped by the session that
+    // reached this handler — an operator can only take the site and the themes they can already
+    // see. The bytes are built in this request (an operator action, not a page render) and the
+    // temp tree is removed before the reply is sent.
+    if (action === 'export/site' && req.method === 'GET') {
+      this.#siteExport(req, reply, tenant, session);
+      return;
+    }
+    if (action === 'export/theme' && req.method === 'GET') {
+      this.#themeExport(req, reply, tenant, session);
+      return;
+    }
     if (action === 'site/nav/add' && req.method === 'POST') {
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
@@ -2062,6 +2079,13 @@ ${mailHtml}
           tenant: { key: tenant.key, label: tenant.key },
           user: { email: this.auth.userById(session.userId)?.email ?? '', role: this.#actorOf(session)?.role ?? 'owner' },
           csrf: this.sessions.csrfToken(session),
+          library: listThemeLibrary(this.#env.dataDir).map((entry) => ({
+            key: entry.key,
+            name: entry.name,
+            version: entry.version,
+            assets: entry.assets,
+          })),
+          siteExportHref: `/admin/t/${encodeURIComponent(tenant.key)}/export/site`,
           themes: themes.map((theme) => ({
             key: theme.key,
             name: theme.name,
@@ -2078,6 +2102,91 @@ ${mailHtml}
           notices: this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length,
         }),
       );
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * `GET /admin/t/<key>/export/site` — the whole site as one `.zip`.
+   *
+   * The same `runExport --target cms` tree the CLI writes, zipped by the deterministic writer. A
+   * refusal is sent as JSON with its code rather than as a half archive, because a bundle missing a
+   * page is worse than a download that did not start.
+   */
+  #siteExport(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const now = new Date().toISOString();
+    const db = this.#siteWrite(tenant.key);
+    let file;
+    try {
+      file = exportSiteZip({
+        dataDir: this.#env.dataDir,
+        controlDbPath: this.#controlPath,
+        tenantKey: tenant.key,
+        db,
+        now,
+        origin: `https://${this.#primaryHostOf(tenant.key) ?? tenant.key}`,
+      });
+    } finally {
+      db.close();
+    }
+    this.#audit({
+      tenantId: tenant.id,
+      userId: session.userId,
+      label: this.#actorOf(session)?.email ?? 'unknown',
+      action: 'admin.site.export',
+      targetKind: 'tenant',
+      targetId: tenant.key,
+      ip: req.socket.remoteAddress ?? '',
+    });
+    reply
+      .header('content-type', 'application/zip')
+      .header('content-disposition', `attachment; filename="${safeDownloadName(file.name)}"`)
+      .header('content-length', String(file.bytes.length))
+      .header('cache-control', 'no-store')
+      .send(file.bytes);
+  }
+
+  /** `GET /admin/t/<key>/export/theme?theme=<key>` — one theme as a portable package. */
+  #themeExport(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const key = String((req.query as { theme?: unknown }).theme ?? '').trim();
+    if (key === '') throw new AppError('SKW_E_EXP_THEME_KEY', 'export needs ?theme=<key>');
+    const now = new Date().toISOString();
+    const db = this.#siteWrite(tenant.key);
+    let file;
+    try {
+      file = exportThemeZip({ dataDir: this.#env.dataDir, db, tenantKey: tenant.key, key, now });
+    } finally {
+      db.close();
+    }
+    this.#audit({
+      tenantId: tenant.id,
+      userId: session.userId,
+      label: this.#actorOf(session)?.email ?? 'unknown',
+      action: 'admin.theme.export',
+      targetKind: 'cms_theme',
+      targetId: key,
+      ip: req.socket.remoteAddress ?? '',
+    });
+    reply
+      .header('content-type', 'application/zip')
+      .header('content-disposition', `attachment; filename="${safeDownloadName(file.name)}"`)
+      .header('content-length', String(file.bytes.length))
+      .header('cache-control', 'no-store')
+      .send(file.bytes);
+  }
+
+  /** The host a tenant answers on first — `--origin` for a bundle's sitemap. */
+  #primaryHostOf(tenantKey: string): string | null {
+    const db = new Database(this.#controlPath, { readonly: true, fileMustExist: true });
+    try {
+      const row = db
+        .prepare(
+          `SELECT host FROM domain WHERE tenant_id = (SELECT id FROM tenant WHERE key = ?)
+            ORDER BY is_primary DESC, host LIMIT 1`,
+        )
+        .get(tenantKey) as { host: string } | undefined;
+      return row?.host ?? null;
     } finally {
       db.close();
     }
@@ -2158,6 +2267,28 @@ ${mailHtml}
         assets: bundle.assets,
         assetsRoot: themeAssetsRoot(this.#env.dataDir, tenant.key),
       });
+      // The upload is also stock for the box: a look uploaded once should be addable to every site,
+      // which is what the library is for. A collision with *different* bytes is not an error here —
+      // another site may already have its own variant under the same key — so it is left alone and
+      // the tenant keeps exactly what it uploaded.
+      try {
+        installPackage(
+          this.#env.dataDir,
+          buildThemePackage({
+            key: theme.key,
+            name: theme.name,
+            css,
+            assets: bundle.assets.map((asset) => ({
+              path: asset.path,
+              bytes: asset.bytes,
+              contentType: asset.contentType,
+            })),
+            now: new Date().toISOString(),
+          }),
+        );
+      } catch (err) {
+        if (!(err instanceof AppError)) throw err;
+      }
       this.#audit({
         tenantId: tenant.id,
         userId: session.userId,
@@ -2188,7 +2319,23 @@ ${mailHtml}
     const key = (fieldsOf(req.body).theme ?? '').trim();
     const db = this.#siteWrite(tenant.key);
     try {
-      const theme = activateTheme(db, key, session.userId);
+      // A theme the site already has is activated in place. A theme the *box* has but this site
+      // does not is copied in first — that is what makes the library useful from the portal, and it
+      // is the same `uploadTheme` the upload door runs, so there is one implementation.
+      const theme =
+        themeByKey(db, key) === undefined
+          ? (() => {
+              const result = activatePackage({
+                dataDir: this.#env.dataDir,
+                db,
+                tenantKey: tenant.key,
+                key,
+                actorId: session.userId,
+                force: true,
+              });
+              return activateTheme(db, result.key, session.userId);
+            })()
+          : activateTheme(db, key, session.userId);
       this.#audit({
         tenantId: tenant.id,
         userId: session.userId,
