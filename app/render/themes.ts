@@ -461,6 +461,46 @@ export function themeAssets(db: Database.Database, themeKey: string): ThemeAsset
 }
 
 /**
+ * Replace one theme's stylesheet, in place.
+ *
+ * A theme is content-addressed — the blob is its sha — so an edit is a *new version under the
+ * same key*, not a mutation: the old sha stays in `cms_css_blob` (a bundle already exported
+ * still verifies) and the row points at the new one. The site's stylesheet panel in the editor
+ * writes here when the site wears a theme, because in that case the theme's CSS **is** the CSS
+ * every page inherits; writing `site.theme_css` instead would save a value the site never loads.
+ *
+ * The rewrite is re-run against the theme's own assets so a hand-typed `url(hero.jpg)` becomes the
+ * served `/_theme/<key>/…?v=<sha8>` exactly as an upload would. Relative-on-disk, absolute-at-rest:
+ * the stored sheet is always the bytes the browser gets.
+ */
+export function updateThemeCss(
+  db: Database.Database,
+  input: { key: string; css: string; actorId: number | null },
+): ThemeRow {
+  const theme = themeByKey(db, input.key);
+  if (theme === undefined) {
+    throw new AppError('SKW_E_PL_REJECTED', `no theme named ${input.key}`, { key: input.key });
+  }
+  const assets = themeAssets(db, input.key).map((asset) => ({ ...asset, bytes: Buffer.alloc(asset.bytes) }));
+  const css = rewriteAssetUrls(input.css, input.key, assets);
+  if (css.trim() === '') {
+    // An empty sheet would be a theme that renders an unstyled site, and `cms_css_blob` refuses it
+    // anyway; the message is the operator's, not the blob's.
+    throw new AppError('SKW_E_PL_REJECTED', `a theme's stylesheet cannot be emptied`, { key: input.key });
+  }
+  refuseMarkup(css, input.key);
+  const sha = putCssBlob(db, css);
+  if (sha !== theme.cssSha) {
+    db.prepare(`UPDATE cms_theme SET css_sha256 = ? WHERE theme_key = ?`).run(sha, input.key);
+  }
+  const row = themeByKey(db, input.key);
+  if (row === undefined) {
+    throw new AppError('SKW_E_PL_INTERNAL', 'the theme was written but cannot be read back', { key: input.key });
+  }
+  return row;
+}
+
+/**
  * Point the site at a theme. The settings row is the only thing that changes, so this is also the
  * undo for a bad upload: activate the previous one.
  */

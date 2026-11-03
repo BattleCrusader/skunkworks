@@ -150,6 +150,7 @@ import {
   THEME_KEY_SETTING,
   activateTheme,
   activeTheme,
+  updateThemeCss,
   deactivateTheme,
   deleteTheme,
   listThemes,
@@ -1399,6 +1400,15 @@ ${items}
       this.#editorPublish(req, reply, tenant, session);
       return;
     }
+    // The site stylesheet, saved from the editor where it is now written. JSON in, JSON out: the
+    // panel paints the canvas and must not be navigated away from by its own save. `siteSave()`
+    // refuses the same values (length, `<`) — one rule, two doors.
+    if (action === 'site/stylesheet' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#siteStylesheet(req, reply, tenant, session);
+      return;
+    }
     if (action === 'editor/pick' && req.method === 'POST') {
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
@@ -2595,6 +2605,62 @@ ${mailHtml}
   }
 
   /**
+   * Save the site stylesheet from the editor.
+   *
+   * Two owners, one field. When a theme is active the CSS every page inherits **is** that theme's
+   * sheet, so the write goes to the theme (a new blob under the same key — content-addressed, so
+   * nothing that already referenced the old sha breaks). With no theme it is `site.theme_css`, the
+   * same row the Site screen used to own. The response says which owner answered, because a panel
+   * that cannot tell you what it just wrote is a panel nobody can trust.
+   */
+  #siteStylesheet(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const fields = fieldsOf(req.body);
+    const css = (fields.css ?? '').trim();
+    if (Buffer.byteLength(css, 'utf8') > 100_000 || css.includes('<')) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'the site stylesheet is too long or contains <', {
+        bytes: Buffer.byteLength(css, 'utf8'),
+      });
+    }
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const owner = activeTheme(db);
+      if (owner !== null) {
+        const row = updateThemeCss(db, { key: owner.key, css, actorId: session.userId });
+        this.#audit({
+          tenantId: tenant.id,
+          userId: session.userId,
+          label: this.auth.userById(session.userId)?.email ?? 'unknown',
+          action: 'admin.theme.css',
+          targetKind: 'cms_theme',
+          targetId: row.key,
+          ip: req.socket.remoteAddress ?? '',
+        });
+        reply.header('cache-control', 'no-store');
+        reply.send({ ok: true, owner: 'theme', theme: row.key, css: row.css, sha: row.cssSha, bytes: row.bytes });
+        return;
+      }
+      db.prepare(
+        `INSERT INTO cms_settings (key, value_json, type, updated_by) VALUES (?, ?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, type = excluded.type,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = excluded.updated_by`,
+      ).run(CHROME_KEYS.theme, JSON.stringify(css), CHROME_TYPES[CHROME_KEYS.theme], session.userId);
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.auth.userById(session.userId)?.email ?? 'unknown',
+        action: 'admin.site.stylesheet',
+        targetKind: 'cms_settings',
+        targetId: CHROME_KEYS.theme,
+        ip: req.socket.remoteAddress ?? '',
+      });
+      reply.header('cache-control', 'no-store');
+      reply.send({ ok: true, owner: 'site', css, bytes: Buffer.byteLength(css, 'utf8') });
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
    * Save the identity. Five values, one statement each, in one transaction — the screen
    * shows all five at once, so a half-saved identity is a bar that disagrees with the form
    * that wrote it.
@@ -2649,7 +2715,12 @@ ${mailHtml}
         upsert.run(CHROME_KEYS.footerText, JSON.stringify(footerText), CHROME_TYPES[CHROME_KEYS.footerText], session.userId);
         upsert.run(CHROME_KEYS.headerSticky, JSON.stringify(fields.header_sticky === '1'), CHROME_TYPES[CHROME_KEYS.headerSticky], session.userId);
         upsert.run(CHROME_KEYS.footerSticky, JSON.stringify(fields.footer_sticky === '1'), CHROME_TYPES[CHROME_KEYS.footerSticky], session.userId);
-        upsert.run(CHROME_KEYS.theme, JSON.stringify(theme), CHROME_TYPES[CHROME_KEYS.theme], session.userId);
+        // The stylesheet moved to the editor (Page CSS → Site stylesheet). This form no longer
+        // carries the field, and writing `''` for an absent field would silently blank every
+        // page's CSS the first time someone renamed the site — so an absent field writes nothing.
+        if (fields.theme_css !== undefined) {
+          upsert.run(CHROME_KEYS.theme, JSON.stringify(theme), CHROME_TYPES[CHROME_KEYS.theme], session.userId);
+        }
         upsert.run(
           CHROME_KEYS.description,
           JSON.stringify(description),
@@ -4159,6 +4230,8 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
               const record = loadForEditor(db, registry, Number(raw));
               return { record, css: record.bodyCss };
             })();
+      const chromeStored = loadChrome(db);
+      const themedTheme = activeTheme(db);
       const body = renderEditorPage({
         tenant: tenant.key,
         page:
@@ -4178,6 +4251,10 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
         registry,
         csrf: this.sessions.csrfToken(session),
         bodyCss: pageRow?.css ?? registryCss(registry),
+        // The CSS every page inherits, and who owns it. A theme's sheet is what the site actually
+        // wears, so that is what the panel shows; `site.theme_css` is the sheet when no theme is on.
+        siteCss: themedTheme === null ? chromeStored.themeCss : themedTheme.css,
+        siteCssTheme: themedTheme === null ? null : themedTheme.key,
         // S8s: the site around the page. The sheet the public site links, the draft's own CSS as
         // its own URL, the header and footer the shell would draw, and the path the header uses to
         // mark the current item — all of them read from the same rows the site reads, so the

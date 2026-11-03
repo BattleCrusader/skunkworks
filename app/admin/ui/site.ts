@@ -173,8 +173,10 @@ export function siteScreen(input: SiteScreenInput): string {
         <input id="description" name="description" value="${esc(chrome.description)}" maxlength="300" placeholder="A six-person studio building small, well-made software.">
         <label>Header pins to the top <input type="checkbox" name="header_sticky" value="1"${chrome.headerSticky ? ' checked' : ''}></label>
         <label>Footer pins to the bottom <input type="checkbox" name="footer_sticky" value="1"${chrome.footerSticky ? ' checked' : ''}></label>
-        <label for="theme_css">Site stylesheet <small>CSS for every page: the bar, the footer, and whatever a page&#39;s own markup names.</small></label>
-        <textarea id="theme_css" name="theme_css" rows="10" spellcheck="false" placeholder=":root{--ink:#14181d}&#10;body{font-family:ui-serif,Georgia,serif}">${esc(chrome.themeCss)}</textarea>
+        <p class="hint">The site stylesheet now lives with the CSS it belongs to:
+        <a href="/admin/t/${encodeURIComponent(input.tenant.key)}/editor">open any page</a> →
+        <b>Page CSS</b> → <b>Site stylesheet</b>. It is shown there filled in with the CSS every page
+        actually inherits, and it paints the canvas as you type.</p>
         <div class="formactions"><button class="btn btn--primary" type="submit">Save</button>
         <a class="btn" href="${esc(mediaHref)}">Media library<span class="sr-only"> — to copy a logo key</span></a></div>
       </form>

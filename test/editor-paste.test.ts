@@ -107,6 +107,8 @@ test('P4 — the served boot script carries the same pattern and a visible refus
     registry,
     csrf: 'token',
     bodyCss: '',
+    siteCss: '',
+    siteCssTheme: null,
   });
   assert.match(page, /id="skw-notice"/);
   assert.match(page, /role="alert"/);

@@ -109,6 +109,15 @@ export interface EditorPageInput {
   /** The page's own stylesheet, as the bytes the draft holds. Shown in the canvas below it. */
   bodyCss: string;
   /**
+   * The site's stylesheet — the CSS every page inherits, exactly as `/theme.css` serves it. When a
+   * theme is active this is that theme's CSS, because that is what the site actually wears; with no
+   * theme it is the site's own sheet from `site.theme_css`. The editor shows it under Page CSS and
+   * edits it in place, so the field is never a copy of something it cannot change.
+   */
+  siteCss: string;
+  /** Who owns `siteCss`: a theme key, or `null` for the site's own sheet. */
+  siteCssTheme: string | null;
+  /**
    * S8s: the site's stylesheet, linked into the canvas so the page is edited in the look it will
    * be published in. `null` when the tenant has no theme and no chrome rules — a canvas with no
    * sheet is what a brand-new site looks like, and it says so.
@@ -254,6 +263,9 @@ export function editorBootPayload(input: EditorPageInput): {
   /** GrapesJS's own types — a selection wearing one of these is a plain element, not a component. */
   builtInTypes: string[];
   css: string;
+  /** The site's stylesheet, prefilled into the panel and applied live to the canvas. */
+  siteCss: string;
+  siteCssTheme: string | null;
   tenant: string;
   csrf: string;
   /** S8s: what the canvas needs to look like the site. See `applySiteFrame` in the boot script. */
@@ -327,6 +339,8 @@ export function editorBootPayload(input: EditorPageInput): {
         draft: false,
       },
     css: input.bodyCss,
+    siteCss: input.siteCss,
+    siteCssTheme: input.siteCssTheme,
     tenant: input.tenant,
     csrf: input.csrf,
     frame: {
@@ -504,6 +518,16 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 #skw-css-text{margin:0;border:0;border-top:1px solid #f0f0f3;padding:.55rem .6rem;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;tab-size:2;resize:vertical;min-height:132px;color:#1f2430;background:#fbfbfd;outline:none;width:100%}
 #skw-css[data-open="0"] #skw-css-text{display:none}
 #skw-css-text:focus{box-shadow:inset 0 0 0 2px #2563eb}
+/* The site stylesheet lives under Page CSS because that is where an operator looks for CSS; it is
+   its own owner, with its own save, because it is not part of the page. */
+#skw-site-css{border-top:1px solid #e6e6ec;padding-top:.5rem}
+#skw-site-css .skw-attrhead{display:flex;align-items:center;gap:.4rem;padding:.1rem .6rem .15rem}
+#skw-site-css .skw-hint{margin:0 .6rem .3rem}
+#skw-site-css-text{margin:0;border:0;border-top:1px solid #f0f0f3;padding:.55rem .6rem;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;tab-size:2;resize:vertical;min-height:110px;color:#1f2430;background:#fbfbfd;outline:none;width:100%}
+#skw-site-css-text:focus{box-shadow:inset 0 0 0 2px #2563eb}
+#skw-site-css-actions{display:flex;align-items:center;gap:.45rem;padding:.35rem .6rem .5rem}
+#skw-site-css-status[data-state="saved"]{color:#116329}
+#skw-site-css-status[data-state="failed"]{color:#a4161a}
 </style></head>
 <body data-skw-readonly="${readonly ? '1' : '0'}">
 <header id="skw-bar">
@@ -580,9 +604,18 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
         <button type="button" class="skw-railbtn" id="skw-css-toggle" aria-expanded="true" aria-controls="skw-css-text" style="margin-left:auto">Hide</button>
       </header>
       <div id="skw-css-body">
-      <p class="skw-hint" id="skw-css-hint">Its own file, this page only, loaded <em>after</em> the theme — a rule here wins at equal specificity. Press Save to put it on the page.</p>
+      <p class="skw-hint" id="skw-css-hint">Its own file, this page only, loaded <em>after</em> the site stylesheet — a rule here wins at equal specificity. Press Save to put it on the page.</p>
       <div id="skw-css-actions"><button type="button" class="skw-railbtn" id="skw-css-scaffold"${readonly ? ' disabled' : ''}>Add a rule for the selected element</button></div>
       <textarea id="skw-css-text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder=".s-hero h1 { font-size: 4.5rem }"${readonly ? ' readonly' : ''}></textarea>
+      <div id="skw-site-css">
+        <div class="skw-attrhead"><span>Site stylesheet</span><span class="skw-chip" id="skw-site-css-count">0 rules</span></div>
+        <p class="skw-hint" id="skw-site-css-hint">${input.siteCssTheme === null ? 'Every page of this site, loaded <em>before</em> this page’s own CSS. Saved on its own — it is not part of the page.' : `This site wears the theme <code>${escapeHtml(input.siteCssTheme)}</code>, so these are that theme’s rules and saving here updates the theme.`}</p>
+        <textarea id="skw-site-css-text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder=":root { --ink: #14181d }"${readonly ? ' readonly' : ''}></textarea>
+        <div id="skw-site-css-actions">
+          <button type="button" class="skw-railbtn" id="skw-site-css-save"${readonly ? ' disabled' : ''}>Save site stylesheet</button>
+          <span class="skw-hint" id="skw-site-css-status"></span>
+        </div>
+      </div>
       </div>
     </section>
   </aside>
@@ -1042,6 +1075,9 @@ const BOOT_SCRIPT = String.raw`
     // The canvas frame is created after this script starts, and rebuilt on a structural change:
     // the drop listeners are attached here, where the document is known to exist.
     canvasDrops();
+    // A rebuilt frame is a rebuilt head: the two live sheets have to be spliced back in, or the
+    // canvas would show the served CSS and forget the rules the operator is typing.
+    paintLiveCssSoon();
   }
 
   /**
@@ -2292,6 +2328,135 @@ const BOOT_SCRIPT = String.raw`
         setState('Unsaved changes', true);
         refreshCssCount();
         updateScaffold();
+        paintLiveCssSoon();
+      });
+    }
+  }
+
+  /**
+   * The *site* stylesheet, under Page CSS.
+   *
+   * It is the CSS every page inherits — exactly the bytes '/theme.css' serves, which is the active
+   * theme's sheet when a theme is active and 'site.theme_css' otherwise. Showing a field that was
+   * not what the site wears would be worse than no field at all, so the panel is prefilled from
+   * 'boot.siteCss', and saving routes the write to whoever owns those bytes.
+   *
+   * Both boxes paint the canvas as you type. The canvas already links the served sheets; the two
+   * '<style>' elements below are spliced at the same cascade positions (site before the page link,
+   * page after it) so a live rule lands exactly where the published rule will.
+   */
+  var siteBox = el('skw-site-css-text');
+  var siteStatus = el('skw-site-css-status');
+  var siteCount = el('skw-site-css-count');
+  var LIVE_ATTR_SITE = 'data-skw-live-site';
+  var LIVE_ATTR_PAGE = 'data-skw-live-page';
+
+  function liveStyle(doc, attr) {
+    var node = doc.head.querySelector('style[' + attr + ']');
+    if (node === null) {
+      node = doc.createElement('style');
+      node.setAttribute(attr, '1');
+    }
+    return node;
+  }
+
+  /**
+   * Where each sheet belongs in the head. The canvas loads 'canvas.css' (editor chrome), then the
+   * site's sheet, then the page's own link; a live site sheet goes after the link to the served
+   * site sheet but *before* the page's, and a live page sheet goes last. Equal specificity then
+   * resolves the way the published page resolves it.
+   */
+  function paintLiveCss() {
+    var doc;
+    try { doc = editor.Canvas.getDocument(); } catch (e) { return; }
+    if (!doc || !doc.head) return;
+    var pageLink = doc.head.querySelector('link[data-skw-page-css]');
+    if (siteBox !== null) {
+      var site = liveStyle(doc, LIVE_ATTR_SITE);
+      site.textContent = siteBox.value;
+      if (pageLink !== null) {
+        if (site.nextSibling !== pageLink) doc.head.insertBefore(site, pageLink);
+      } else if (site.parentNode !== doc.head) {
+        doc.head.appendChild(site);
+      } else {
+        doc.head.appendChild(site);
+      }
+    }
+    if (cssBox !== null) {
+      var page = liveStyle(doc, LIVE_ATTR_PAGE);
+      page.textContent = stripGenerated(cssBox.value);
+      if (pageLink !== null && page.previousSibling !== pageLink) {
+        doc.head.insertBefore(page, pageLink.nextSibling);
+      } else if (page.parentNode !== doc.head) {
+        doc.head.appendChild(page);
+      } else {
+        doc.head.appendChild(page);
+      }
+    }
+  }
+
+  var paintTimer = null;
+  function paintLiveCssSoon() {
+    if (paintTimer !== null) window.clearTimeout(paintTimer);
+    paintTimer = window.setTimeout(function () { paintTimer = null; paintLiveCss(); }, 60);
+  }
+
+  function refreshSiteCssCount() {
+    if (siteCount === null || siteBox === null) return;
+    var n = ruleCount(siteBox.value);
+    siteCount.textContent = n === 1 ? '1 rule' : n + ' rules';
+  }
+
+  if (siteBox !== null) {
+    siteBox.value = boot.siteCss || '';
+    refreshSiteCssCount();
+    paintLiveCssSoon();
+    siteBox.addEventListener('input', function () {
+      // The site sheet is not part of the page, so it does not make the *page* dirty — it has its
+      // own save, and claiming "Unsaved changes" here would send the operator to the wrong button.
+      refreshSiteCssCount();
+      paintLiveCssSoon();
+      if (siteStatus !== null) { siteStatus.textContent = 'Unsaved'; siteStatus.setAttribute('data-state', 'dirty'); }
+    });
+
+    var saveSite = el('skw-site-css-save');
+    if (saveSite !== null) {
+      saveSite.addEventListener('click', function () {
+        saveSite.disabled = true;
+        if (siteStatus !== null) { siteStatus.textContent = 'Saving…'; siteStatus.removeAttribute('data-state'); }
+        fetch('/admin/t/' + encodeURIComponent(boot.tenant) + '/site/stylesheet', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', 'x-csrf-token': boot.csrf },
+          body: JSON.stringify({ css: siteBox.value }),
+        }).then(function (r) {
+          return r.json().then(function (answer) { return { status: r.status, answer: answer }; });
+        }).then(function (result) {
+          saveSite.disabled = false;
+          var ok = result.answer && result.answer.ok === true;
+          if (siteStatus !== null) {
+            siteStatus.textContent = ok
+              ? 'Saved — ' + (result.answer.owner === 'theme' ? 'the theme' : 'the site') + ', ' + result.answer.bytes + ' bytes'
+              : 'Not saved: ' + ((result.answer && (result.answer.detail || result.answer.error)) || ('HTTP ' + result.status));
+            siteStatus.setAttribute('data-state', ok ? 'saved' : 'failed');
+          }
+          if (ok) {
+            // The served sheet changed underneath the canvas: drop the live copy and reload the
+            // link so what is on screen is the bytes the server holds, not only our typed text.
+            boot.siteCss = siteBox.value;
+            paintLiveCss();
+            var sheet = editor.Canvas.getDocument().querySelector('link[data-skw-sheet]');
+            if (sheet && boot.frame.sheet) {
+              sheet.setAttribute('href', boot.frame.sheet.split('&v=')[0] + '&v=' + Date.now());
+            }
+          }
+        }).catch(function (err) {
+          saveSite.disabled = false;
+          if (siteStatus !== null) {
+            siteStatus.textContent = 'Not saved: ' + err;
+            siteStatus.setAttribute('data-state', 'failed');
+          }
+        });
       });
     }
   }
@@ -2407,8 +2572,8 @@ export const EDITOR_BOOT_JS = BOOT_SCRIPT.replace('__SKW_PASTE_TYPE_PATTERN__', 
  * the editor document and CSS does not cross into the frame. Served as a file — the admin's CSP
  * permits `style-src 'self'` and nothing inline.
  *
- * `.gjs-placeholder-int` is the insertion marker the sorter writes into the canvas while a drag
- * is in flight; without a colour it is a transparent box. `[data-skw-drop]` is the outline this
+ * '.gjs-placeholder-int' is the insertion marker the sorter writes into the canvas while a drag
+ * is in flight; without a colour it is a transparent box. '[data-skw-drop]' is the outline this
  * editor puts on the element the pointer is over.
  */
 export const CANVAS_CSS = [
