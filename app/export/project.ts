@@ -152,6 +152,12 @@ export interface Projection {
   library: ProjectedAsset[];
   /** Every gated row. The CMS bundle ships it (the redeem plane); the others refuse it. */
   gated: ProjectedAsset[];
+  /**
+   * Asset rows dropped from the bundle because their bytes are gone and nothing points at
+   * them. The CMS bundle deletes the rows from its own `site.db` copy, so the shipped rows
+   * and the shipped files agree; `BUNDLE.json` names each one under `derived`.
+   */
+  dropped: { key: string; path: string; reason: string }[];
   contentSha: string;
   mediaSha: string;
   /** `contentSha:mediaSha` — the same value in all three trees. */
@@ -469,15 +475,43 @@ export function buildProjection(opts: BuildOptions): BuildResult {
     .filter((a): a is ProjectedAsset => a !== undefined)
     .sort((a, b) => byString(a.key, b.key));
 
+  // An asset row whose bytes are gone *and* that nothing points at is debris, not a broken
+  // site: a sweep, a probe, a delete that took the file before the row. Refusing the whole
+  // export for it makes one dead row a permanent export blocker (it did, on the live tenant:
+  // `sweep-pixel`, eight orphan renditions, an export that could never run again). It is
+  // dropped from the bundle and named in `dropped`, so the copy stays honest — every row it
+  // ships has bytes — without pretending the row was never there. Anything that *is* pointed
+  // at is still a refusal, because then the site really would render broken.
+  const linkCount = db.prepare(
+    'SELECT COUNT(*) AS n FROM cms_asset_link l JOIN cms_asset a ON a.id = l.asset_id WHERE a.key = ?',
+  );
+  const bundleCount = db.prepare(
+    'SELECT COUNT(*) AS n FROM cms_asset_bundle_item i JOIN cms_asset a ON a.id = i.asset_id WHERE a.key = ?',
+  );
+  const pointedAt = (key: string): boolean =>
+    (linkCount.get(key) as { n: number }).n > 0 || (bundleCount.get(key) as { n: number }).n > 0;
+  const dropped: { key: string; path: string; reason: string }[] = [];
+  const droppedKeys = new Set<string>();
+
   // The CMS bundle ships the whole library, so its file check covers that; the other two
   // ship only what a page names.
   const carried = opts.target === 'cms' ? [...library, ...gated] : referenced;
   for (const asset of carried) {
     if (!existsSync(assetFile(opts.contentRoot, asset))) {
+      if (!referencedKeys.has(asset.key) && !pointedAt(asset.key)) {
+        dropped.push({
+          key: asset.key,
+          path: asset.storagePath,
+          reason: 'asset row has no bytes on disk and nothing references it; dropped from the bundle',
+        });
+        droppedKeys.add(asset.key);
+        continue;
+      }
       refusals.push(
         refusal('SKW_E_EXP_ASSET_UNRESOLVED', 'an asset row has no bytes on disk', {
           key: asset.key,
           path: asset.storagePath,
+          referenced: referencedKeys.has(asset.key),
         }),
       );
     }
@@ -511,6 +545,7 @@ export function buildProjection(opts: BuildOptions): BuildResult {
   );
   const mediaSha = sha256(JSON.stringify(referenced.map((a) => ({ key: a.key, sha256: a.sha256, url: a.url }))));
 
+  const keep = (a: ProjectedAsset): boolean => !droppedKeys.has(a.key);
   return {
     ok: true,
     projection: {
@@ -518,9 +553,10 @@ export function buildProjection(opts: BuildOptions): BuildResult {
       tenantKey: opts.tenantKey,
       exportNow: opts.exportNow,
       pages,
-      referenced,
-      library,
-      gated,
+      referenced: referenced.filter(keep),
+      library: library.filter(keep),
+      gated: gated.filter(keep),
+      dropped,
       contentSha,
       mediaSha,
       projectionSha: `${contentSha}:${mediaSha}`,
