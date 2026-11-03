@@ -54,6 +54,9 @@ export interface SiteScreenInput {
   logoResolved: string | null;
   /** `undefined` is "no message"; the screen renders nothing rather than an empty panel. */
   flash?: string | undefined;
+  /** Where "download this site" points. The site is the container: pages, media, plugins and the
+   *  theme it wears. A theme is one of its parts, and is downloaded from Themes. */
+  exportSiteHref: string;
   active?: NavKey;
 }
 
@@ -190,6 +193,17 @@ ${addForm('header', base, input.csrf)}
       <p>Rendered in the footer, above the footer sentence.</p>
       ${rowsTable(input.footer, 'footer', base, input.csrf)}
 ${addForm('footer', base, input.csrf)}
+    </div>
+
+    <div class="card card--padded" data-screen="site-export">
+      <h2>Take this site somewhere else</h2>
+      <p class="note">One <code>.zip</code> holding the whole site: its pages, menus, settings, media,
+      plugin packages, schema, an <code>install.sh</code> — and the theme it happens to be wearing.
+      The theme travels because <em>this site</em> wears it, not because a theme is a site. Identity
+      rows are excluded by design: a bundle is a copy of the site, never of its people.</p>
+      <p><a class="btn" href="${esc(input.exportSiteHref)}">Download this site (.zip)</a></p>
+      <p class="hint">Want the theme on its own, to wear on a different site? That download lives on
+      <a href="${base}/themes">Themes</a> — a theme is one part of a site, and it can be carried without it.</p>
     </div>
 `,
   });

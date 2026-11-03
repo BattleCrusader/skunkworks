@@ -147,6 +147,29 @@ test('P2 — a theme downloads as a package the importer accepts', async () => {
   assert.equal(pkg.css, THEME_CSS);
 });
 
+test('P2b — the site export is offered on Site, and Themes does not pretend to be the site', async () => {
+  const site = await call({ port, path: '/admin/t/acme/site', host: ADMIN_HOST, headers: { cookie: session.cookie } });
+  assert.equal(site.status, 200);
+  assert.match(site.body, /Take this site somewhere else/);
+  assert.match(site.body, /href="\/admin\/t\/acme\/export\/site"/, 'the Site screen does not offer the site download');
+  // The theme travels *inside* the site bundle because the site wears it, and that is what the
+  // screen must say — a theme is a part, not a container.
+  assert.match(site.body, /the theme it happens to be wearing/);
+
+  const themes = await call({ port, path: '/admin/t/acme/themes', host: ADMIN_HOST, headers: { cookie: session.cookie } });
+  assert.equal(themes.status, 200);
+  assert.doesNotMatch(
+    themes.body,
+    /href="\/admin\/t\/acme\/export\/site"/,
+    'the site download is still offered from Themes, where a theme is the subject',
+  );
+  assert.match(themes.body, /Take a theme with you/);
+  // The row's Download must be the *tenant* route. It used to be built from the screen's base and
+  // pointed at `/themes/export/theme?theme=…`, which answers 400 — a dead button on every row.
+  assert.match(themes.body, /href="\/admin\/t\/acme\/export\/theme\?theme=acme-kit"/);
+  assert.doesNotMatch(themes.body, /\/themes\/export\/theme/, 'a theme download still points inside the Themes screen path');
+});
+
 test('P3 — both downloads are session-gated', async () => {
   for (const path of ['/admin/t/acme/export/site', '/admin/t/acme/export/theme?theme=acme-kit']) {
     const res = await call({ port, method: 'GET', path, host: ADMIN_HOST });

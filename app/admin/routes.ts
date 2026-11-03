@@ -2226,7 +2226,6 @@ ${mailHtml}
             version: entry.version,
             assets: entry.assets,
           })),
-          siteExportHref: `/admin/t/${encodeURIComponent(tenant.key)}/export/site`,
           themes: themes.map((theme) => ({
             key: theme.key,
             name: theme.name,
@@ -2578,6 +2577,7 @@ ${mailHtml}
       const user = this.auth.userById(session.userId);
       reply.header('cache-control', 'no-store').type('text/html; charset=utf-8').send(
         siteScreen({
+          exportSiteHref: `/admin/t/${encodeURIComponent(tenant.key)}/export/site`,
           tenant: { key: tenant.key, label: tenant.key },
           user: { email: user?.email ?? '', role: user?.role ?? 'owner' },
           csrf: this.sessions.csrfToken(session),
