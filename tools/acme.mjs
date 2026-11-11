@@ -46,6 +46,11 @@ const WEBROOT = process.env.SKW_ACME_WEBROOT ?? '/srv/acme';
 const INSECURE = process.env.SKW_ACME_INSECURE === '1';
 const ONESHOT = process.env.SKW_ACME_ONESHOT === '1';
 const INTERVAL_S = Number(process.env.SKW_ACME_INTERVAL_S ?? 6 * 60 * 60);
+// How often to look at the edge config for a change made by the CMS. Cheap (one stat), and it is
+// the difference between "imported a site" and "imported a site the world can reach": the CMS can
+// write `10-app.conf` but it cannot signal nginx (no socket, and it should not have one), so the
+// service that already holds the socket does the reload.
+const WATCH_S = Number(process.env.SKW_ACME_WATCH_S ?? 10);
 const RENEW_DAYS = Number(process.env.SKW_ACME_RENEW_DAYS ?? 60);
 const NGINX_CONTAINER = process.env.SKW_NGINX_CONTAINER ?? '';
 const DOCKER_SOCKET = process.env.SKW_DOCKER_SOCKET ?? '/var/run/docker.sock';
@@ -414,6 +419,27 @@ async function nginxContainer() {
   return (list.find((c) => c.State === 'running') ?? list[0])?.Id ?? null;
 }
 
+/**
+ * The edge config, as a signal.
+ *
+ * `<dataDir>/nginx/10-app.conf` is bind-mounted into nginx and rewritten by `install.sh` and by
+ * every site import. nginx reads it once at boot, so a new tenant's `server { }` block sits on disk
+ * doing nothing until someone reloads. Its mtime is the whole protocol: no queue, no table, no
+ * second trust boundary — the file *is* the request, and the process that owns the socket is the
+ * one that acts on it.
+ */
+function edgeConfigPath() {
+  return join(DATA, 'nginx', '10-app.conf');
+}
+
+function edgeConfigMtime() {
+  try {
+    return statSync(edgeConfigPath()).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 /** `POST /containers/<id>/kill?signal=HUP` — nginx reloads its certificates, no restart. */
 async function reloadNginx() {
   const id = await nginxContainer();
@@ -496,13 +522,32 @@ async function main() {
     process.exitCode = await pass();
     return;
   }
+  // Seeded, not reloaded: whatever nginx booted with is what is live right now, and a reload at
+  // start-up would only re-read the same bytes.
+  let seenConfigMtime = edgeConfigMtime();
+  let sincePass = Number.POSITIVE_INFINITY;
+
   for (;;) {
-    try {
-      await pass();
-    } catch (err) {
-      log(`pass failed: ${err instanceof Error ? err.message : String(err)}`);
+    if (sincePass >= Math.max(60, INTERVAL_S)) {
+      try {
+        await pass();
+      } catch (err) {
+        log(`pass failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      sincePass = 0;
     }
-    await new Promise((resolve) => setTimeout(resolve, Math.max(60, INTERVAL_S) * 1000));
+
+    const mtime = edgeConfigMtime();
+    if (mtime !== 0 && mtime !== seenConfigMtime) {
+      seenConfigMtime = mtime;
+      // nginx validates the new config as it loads it: a broken block leaves the old workers
+      // serving, so this cannot take the fleet down — it can only fail to add the new host.
+      const reloaded = await reloadNginx();
+      log(`edge config changed; nginx ${reloaded ? 'reloaded' : 'was not reloaded (see above)'}`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, Math.max(2, WATCH_S) * 1000));
+    sincePass += Math.max(2, WATCH_S);
   }
 }
 

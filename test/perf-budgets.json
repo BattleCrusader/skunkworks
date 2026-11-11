@@ -2,7 +2,7 @@
   "schema": 1,
   "multiplier": 4,
   "staleCheckFloorMs": 3000,
-  "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
+  "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.9.2/4cpu/3052212224B",
   "measurements": [
     {
       "file": "test/first-boot-tls.test.ts",
@@ -679,6 +679,34 @@
           "idle": true,
           "exitCode": 0,
           "tests": 4
+        }
+      ]
+    },
+    {
+      "file": "test/edge-config.test.ts",
+      "worstIdleMs": 1520,
+      "measuredOn": "2026-11-11",
+      "load1m": 7.8,
+      "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.9.2/4cpu/3052212224B",
+      "sha256": "5e23e853d36604d777d97ea2a922ce27f01f372554b784c412f264ab357d314c",
+      "runs": [
+        {
+          "ms": 1520,
+          "at": "2026-11-11T05:56:19.104Z",
+          "load1mBefore": 7.8,
+          "load1mAfter": 7.81,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 3
+        },
+        {
+          "ms": 433,
+          "at": "2026-11-11T05:56:19.721Z",
+          "load1mBefore": 7.81,
+          "load1mAfter": 7.81,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 3
         }
       ]
     },
@@ -2476,5 +2504,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-11-03T05:03:38.209Z"
+  "updatedAt": "2026-11-11T05:56:22.109Z"
 }

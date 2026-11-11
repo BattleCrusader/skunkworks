@@ -127,6 +127,7 @@ import { installFromArchive } from '../plugins/upload.ts';
 import { exportSiteZip, exportThemeZip, safeDownloadName } from '../export/portal.ts';
 import { importSite, regenerateAppConf } from '../import/site.ts';
 import { findProjectRoot } from '../db/migrate.ts';
+import { edgeConfigPath } from '../edge/config.ts';
 import { buildThemePackage } from '../themes/package.ts';
 import { activatePackage, adoptTenantThemes, installPackage, listLibrary as listThemeLibrary } from '../themes/library.ts';
 import { LIBRARY_FILE, libraryDir, listLibrary, readLibraryArchive } from '../plugins/library.ts';
@@ -856,12 +857,14 @@ before a byte is written, so a tampered bundle refuses and leaves nothing behind
       // `skwctl site import --nginx` (or the next deploy) when it is not.
       let nginxNote = 'The host rows are written. Regenerate the edge config to route them.';
       try {
-        // Into the box's own data directory, never into a tracked file: the deployment copies it
-        // into place. (Learned the hard way — a test run wrote the checkout's nginx conf.)
-        const out = join(this.#env.dataDir, 'nginx', 'conf.d', '10-app.conf');
+        // The edge reads `<dataDir>/nginx/10-app.conf` — the exact file compose bind-mounts into
+        // nginx, and the path `install.sh` writes. This used to be `<dataDir>/nginx/conf.d/…`,
+        // which nothing mounts: the CMS reported "written" while nginx served the old config
+        // forever. `test/edge-config.test.ts` pins the three places to one path.
+        const out = edgeConfigPath(this.#env.dataDir);
         mkdirSync(dirname(out), { recursive: true });
         regenerateAppConf({ dataDir: this.#env.dataDir, out, demosHost: 'demos.invalid' });
-        nginxNote = `Edge config written to ${out} — copy it into the edge and reload.`;
+        nginxNote = `Edge config written to ${out}. The acme service watches that file and reloads nginx within seconds.`;
       } catch {
         nginxNote = 'Host rows written; the edge config could not be written from here — run `skwctl site import … --nginx` or the next deploy.';
       }

@@ -60,6 +60,7 @@ import { fileURLToPath } from 'node:url';
 
 import { ARGON2_OPTIONS, Semaphore } from '../admin/auth.ts';
 import { appendAudit, verifyChain, verifyAgainstSeal } from '../audit/chain.ts';
+import { edgeConfigPath } from '../edge/config.ts';
 import { AppError } from '../errors.ts';
 import { archiveSha256, packPackage } from '../plugins/archive.ts';
 import { assertNotRevoked, installPlugin, inspectPackage, installedPlugins, uninstallPlugin } from '../plugins/install.ts';
@@ -1237,7 +1238,9 @@ async function site(argv: readonly string[], ctx: CliContext): Promise<number> {
   );
 
   if (nginx) {
-    const out = join(findProjectRoot(), 'nginx', 'conf.d', '10-app.conf');
+    // The file nginx mounts, not the checkout's fixture: a CLI import on a live box must write
+    // where the edge reads, or the site it just imported stays a 404.
+    const out = edgeConfigPath(dataDir);
     const written = regenerateAppConf({
       dataDir,
       out,
