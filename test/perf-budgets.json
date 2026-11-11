@@ -2,7 +2,7 @@
   "schema": 1,
   "multiplier": 4,
   "staleCheckFloorMs": 3000,
-  "box": "cyberdeth.za.net darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.9.2/4cpu/3052212224B",
+  "box": "Francoiss-Mac-mini.local darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.9.2/4cpu/3052212224B",
   "measurements": [
     {
       "file": "test/first-boot-tls.test.ts",
@@ -26,6 +26,34 @@
           "at": "2026-10-21T08:49:46.785Z",
           "load1mBefore": 7.86,
           "load1mAfter": 7.93,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 5
+        }
+      ]
+    },
+    {
+      "file": "test/nginx-media-e2e.test.ts",
+      "worstIdleMs": 10941,
+      "measuredOn": "2026-11-11",
+      "load1m": 3.85,
+      "box": "Francoiss-Mac-mini.local darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.9.2/4cpu/3052212224B",
+      "sha256": "03f8d32019973d0e4432f7fa44b35168132dc24c35d19f9e6ccae199db234ad9",
+      "runs": [
+        {
+          "ms": 10941,
+          "at": "2026-11-11T07:02:57.724Z",
+          "load1mBefore": 3.85,
+          "load1mAfter": 3.73,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 5
+        },
+        {
+          "ms": 9432,
+          "at": "2026-11-11T07:03:07.159Z",
+          "load1mBefore": 3.73,
+          "load1mAfter": 4.01,
           "idle": true,
           "exitCode": 0,
           "tests": 5
@@ -57,34 +85,6 @@
           "idle": true,
           "exitCode": 0,
           "tests": 13
-        }
-      ]
-    },
-    {
-      "file": "test/nginx-media-e2e.test.ts",
-      "worstIdleMs": 7571,
-      "measuredOn": "2026-10-27",
-      "load1m": 5.44,
-      "box": "Macmini.lan darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.7.2/4cpu/3054338048B",
-      "sha256": "81771feda755f5d3d8f212e691a55e5635fb75a717f6e4807c4a2a09f36541c4",
-      "runs": [
-        {
-          "ms": 7571,
-          "at": "2026-10-27T04:12:44.428Z",
-          "load1mBefore": 5.44,
-          "load1mAfter": 5.82,
-          "idle": true,
-          "exitCode": 0,
-          "tests": 5
-        },
-        {
-          "ms": 7568,
-          "at": "2026-10-27T04:12:51.996Z",
-          "load1mBefore": 5.82,
-          "load1mAfter": 5.83,
-          "idle": true,
-          "exitCode": 0,
-          "tests": 5
         }
       ]
     },
@@ -2504,5 +2504,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-11-11T05:56:22.109Z"
+  "updatedAt": "2026-11-11T07:03:07.496Z"
 }

@@ -309,9 +309,15 @@ test('N3 — a rename never leaves both URLs dead (HTTP-sampled), and the old UR
   // The link first, the URL second: if this fails the farm is wrong, and if the GET fails the
   // mount is — two different bugs that a single status assertion would blur.
   assert.ok(existsSync(join(contentRoot, 'public', 'campaign/summer.jpg')), 'the upload wrote no farm link');
-  // Polled: a bind mount's view of a *new* directory is eventually consistent on Docker Desktop
-  // (the same file is visible to the host immediately and to the container after a short
-  // cache interval). The assertion is the end state — that the URL resolves — not the latency.
+  // The mount, then the URL — in that order, and both polled.
+  //
+  // A bind mount's view of a *new directory* is eventually consistent on Docker Desktop: the bytes
+  // are on the host at once, and the container sees the directory a moment later. Polling only the
+  // HTTP status made the test read that latency as a routing failure — measured at a quiet load it
+  // failed 3 runs in 3, and adding a single `docker exec ls` before the poll made it pass, which is
+  // the signature of the container's view, not of the farm. `visibleInEdge` forces the container to
+  // answer for itself; `pollFor` then owns the end state, which is the only thing asserted.
+  await visibleInEdge(join('/srv/content/public', 'campaign/summer.jpg'));
   assert.equal((await pollFor(oldPath, 200)).status, 200, 'the old URL is not live before the rename');
   assert.equal((await get(newPath)).status, 404, 'the new URL is live before the rename');
 
@@ -468,6 +474,37 @@ test('N4 — a delete removes the link and the alias: both URLs are 404 after a 
 });
 
 /** Poll a path until it answers `want`, up to ~3 s: a reload is asynchronous by design. */
+/**
+ * Wait until the *edge container* can see a file the host just wrote.
+ *
+ * Docker Desktop's bind-mount view of a directory created after the container started is
+ * eventually consistent; a Linux host is immediate. Asserting on HTTP without this makes a green
+ * suite depend on the file-sharing cache's mood — measured: 3 failures in 3 runs on a quiet box,
+ * all of them "the old URL is not live", none of them a defect in the farm or the edge.
+ */
+async function visibleInEdge(absPath: string): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  const parent = absPath.slice(0, absPath.lastIndexOf('/'));
+  for (;;) {
+    // Listing the parent is not decoration: Docker Desktop's file-sharing layer refreshes a
+    // directory's view when something *enumerates* it, and a bare `test -f` on a path inside a
+    // directory created after the container started keeps answering "no" indefinitely. Measured:
+    // adding one directory listing before the poll turned a 3-of-3 failure into a pass; the `test`
+    // that followed it is what the loop then trusts.
+    spawnSync('docker', ['exec', container, 'ls', '-a', parent], { encoding: 'utf8' });
+    const seen = spawnSync('docker', ['exec', container, 'test', '-f', absPath], { encoding: 'utf8' });
+    if (seen.status === 0) return;
+    if (Date.now() > deadline) {
+      const ps = spawnSync('docker', ['ps', '-a', '--filter', `name=${container}`, '--format', '{{.Status}}'], { encoding: 'utf8' });
+      throw new Error(
+        `the edge container still cannot see ${absPath} after 15 s ` +
+          `(container ${container}: ${ps.stdout.trim() || 'absent'}; exec said ${seen.stderr.trim() || 'nothing'})`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 async function pollFor(path: string, want: number): Promise<Res & { raw: Buffer }> {
   // A reload restarts workers, and a connection that lands in that instant is reset — a
   // property of `nginx -s reload`, not of the farm. The poll treats a reset as "not yet".
