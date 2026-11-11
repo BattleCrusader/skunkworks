@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96"
+     role="img" aria-label="Made to Ship">
+  <title>Made to Ship — outbox mark</title>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 46v26a4 4 0 0 0 4 4h52a4 4 0 0 0 4-4V46" stroke-width="6"/>
+    <path d="M48 42V16" stroke-width="7"/>
+    <path d="M36 27l12-12 12 12" stroke-width="7"/>
+  </g>
+</svg>
