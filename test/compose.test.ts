@@ -65,7 +65,7 @@ test('nginx is the only service with published ports, and it publishes 80 and 44
   );
 });
 
-test('app runs read-only with a tmpfs /tmp and two volumes (§12.2, E-31)', () => {
+test('app runs read-only with a tmpfs /tmp and only its data volumes (§12.2, E-31)', () => {
   const app = result.json.services.app;
   assert.equal(app.read_only, true);
   assert.ok(Array.isArray(app.tmpfs) && app.tmpfs.some((t: string) => t.startsWith('/tmp')));
@@ -73,7 +73,13 @@ test('app runs read-only with a tmpfs /tmp and two volumes (§12.2, E-31)', () =
   // `/srv/run` held `plugin.sock`. With the socket deleted (§13.3.9) the mount is deleted
   // too: a directory mounted for a file that is never created is a place a future builder
   // puts a second boundary without noticing this design has none.
-  assert.deepEqual(targets, ['/srv/content', '/srv/data']);
+  //
+  // `/srv/skunkworks-sites` is the sites repository, and it is a *data* mount, not a second
+  // boundary: a site's tenant data lives beside its sources (sources and state travel
+  // together, so a site can leave the platform without an export), and `/srv/data/tenants/<key>`
+  // reaches it through a relative symlink. Everything else E-31 asks for still holds — the
+  // root filesystem stays read-only, /tmp stays a tmpfs, and nothing else is mounted.
+  assert.deepEqual(targets, ['/srv/content', '/srv/data', '/srv/skunkworks-sites']);
 });
 
 test('app gets SKW_DATA_DIR and UV_THREADPOOL_SIZE=8, and no legacy prefix', () => {

@@ -29,3 +29,8 @@ __pycache__/
 # theme packages are build output; the sources in themes/<name>/ are what is tracked
 themes/*.zip
 scratch/
+
+# Websites live in their own repository. Commercial and client sites are not part of the
+# platform: skunkworks-sites/ is a checkout of github.com/BattleCrusader/skunkworks-sites,
+# with one directory per site (sources, theme, verifier, deploy kit, tenant data).
+skunkworks-sites/
