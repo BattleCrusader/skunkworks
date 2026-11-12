@@ -12,6 +12,9 @@
  */
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { after, before, test } from 'node:test';
 
 import { loadEnv } from '../app/env.ts';
@@ -27,8 +30,38 @@ let port = 0;
 const HOST = 'acme.test';
 const ORIGIN = `https://${HOST}`;
 
+/**
+ * S8t: the artwork a themed tenant ships, as a *file*. This is what a deploy installs
+ * (`tenants/<key>/theme-assets/<themeKey>/assets/favicon.svg`), and the point of the fixture is
+ * that there is no `cms_theme_asset` row for it: the route reads the file, because a file is what
+ * an operator can drop in.
+ */
+const THEME_KEY = 'beta-mark';
+const THEME_MARK =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#b4400f"/><path d="M8 8h16v6H8z" fill="#ffffff"/><path d="M8 18h10v6H8z" fill="#ffffff"/></svg>';
+
+function themeMarkFile(): string {
+  return join(fixture.dir, 'tenants', 'beta', 'theme-assets', THEME_KEY, 'assets', 'favicon.svg');
+}
+
+function sha256(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** The IHDR's width and height: 8 signature bytes, 4 length, `IHDR`, then two big-endian u32s. */
+function pngSize(png: Buffer): { width: number; height: number; bitDepth: number } {
+  assert.equal(png.subarray(0, 8).toString('latin1'), '\u0089PNG\r\n\u001a\n', 'not a PNG at all');
+  assert.equal(png.subarray(12, 16).toString('latin1'), 'IHDR', 'a PNG with no IHDR where it belongs');
+  return { width: png.readUInt32BE(16), height: png.readUInt32BE(20), bitDepth: png.readUInt8(24) };
+}
+
 function get(path: string): Promise<Res> {
   return call({ port, path, host: HOST });
+}
+
+/** A second tenant, so the two icons can be compared without one test's settings leaking. */
+function themedGet(path: string): Promise<Res> {
+  return call({ port, path, host: 'beta.test' });
 }
 
 function listen(app: AppHandle): Promise<number> {
@@ -60,6 +93,33 @@ before(async () => {
      VALUES ('/secret', 'secret', 'Not yet', 'draft', 'page', '<h1>Not yet</h1>', '', '', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`,
   ).run();
   db.close();
+
+  // The themed tenant: a theme row, the pointer that makes it active, and the mark on disk. The
+  // artwork is written *after* `makeFixture` because it lives beside the tenant, not in the DB.
+  const beta = new Database(fixture.sitePath('beta'));
+  try {
+    const css = ':root{--ink:#202020}';
+    const cssSha = sha256(Buffer.from(css, 'utf8'));
+    beta.prepare('INSERT INTO cms_css_blob (sha256, css, bytes) VALUES (?, ?, ?)').run(
+      cssSha,
+      css,
+      Buffer.byteLength(css),
+    );
+    beta.prepare("INSERT INTO cms_theme (theme_key, name, css_sha256) VALUES (?, 'Beta mark', ?)").run(
+      THEME_KEY,
+      cssSha,
+    );
+    beta.prepare(
+      `INSERT INTO cms_settings (key, value_json, type) VALUES ('site.theme_key', ?, 'string')
+         ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json`,
+    ).run(JSON.stringify(THEME_KEY));
+  } finally {
+    beta.close();
+  }
+  const markFile = themeMarkFile();
+  mkdirSync(dirname(markFile), { recursive: true });
+  writeFileSync(markFile, THEME_MARK);
+
   handle = await buildApp({ env: loadEnv(fixture.env) });
   port = await listen(handle);
 });
@@ -163,4 +223,88 @@ test('D7. the description is escaped into the attribute, not trusted', async () 
   // head cannot even look like it carries markup. `alert(1)` stays as text inside the attribute.
   assert.match(res.body, /content="Widgets &amp; &quot;gadgets&quot; scriptalert\(1\)\/script"/);
   assert.doesNotMatch(res.body, /<script>alert/);
+});
+
+test('D8. a themed tenant serves its own artwork at /favicon.svg, byte for byte', async () => {
+  const res = await themedGet('/favicon.svg');
+  assert.equal(res.status, 200);
+  assert.equal(String(header(res, 'content-type')), 'image/svg+xml; charset=utf-8');
+  assert.match(String(header(res, 'cache-control')), /max-age=86400/);
+  const bytes = res.bytes;
+  assert.notEqual(bytes, undefined, 'the client kept the bytes');
+  // The file's bytes, not a re-render of them: a designer's SVG is what the browser must get.
+  assert.equal(sha256(bytes as Buffer), sha256(Buffer.from(THEME_MARK, 'utf8')));
+  assert.equal((bytes as Buffer).toString('utf8'), THEME_MARK);
+  assert.doesNotMatch(res.body, /<text/, 'the artwork, not the generated letter tile');
+});
+
+test('D9. a tenant with no artwork still gets the generated tile — 200, never a 404', async () => {
+  const res = await get('/favicon.svg');
+  assert.equal(res.status, 200);
+  assert.equal(String(header(res, 'content-type')), 'image/svg+xml; charset=utf-8');
+  assert.match(res.body, /<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 64 64"/);
+  // The fallback is the letter tile, `<text>` and all — the artwork path is what has to win.
+  assert.match(res.body, /<text /);
+});
+
+test('D10. /apple-touch-icon.png is a real 180×180 PNG, and the two tenants do not share one', async () => {
+  const themed = await themedGet('/apple-touch-icon.png');
+  assert.equal(themed.status, 200);
+  assert.equal(String(header(themed, 'content-type')), 'image/png');
+  assert.match(String(header(themed, 'cache-control')), /max-age=86400/);
+  const png = themed.bytes as Buffer;
+  assert.notEqual(png, undefined);
+  const size = pngSize(png);
+  assert.deepEqual([size.width, size.height], [180, 180]);
+  assert.ok(png.length > 400, `a real raster, got ${png.length} bytes`);
+
+  const letter = await get('/apple-touch-icon.png');
+  assert.equal(letter.status, 200);
+  const letterSize = pngSize(letter.bytes as Buffer);
+  assert.deepEqual([letterSize.width, letterSize.height], [180, 180]);
+  assert.notEqual(sha256(png), sha256(letter.bytes as Buffer), 'two tenants, one raster: the artwork never reached the PNG');
+});
+
+test('D11. /favicon.ico is rasterised from the artwork, so the two tenants differ', async () => {
+  const themed = await themedGet('/favicon.ico');
+  const letter = await get('/favicon.ico');
+  for (const res of [themed, letter]) {
+    assert.equal(res.status, 200);
+    assert.equal(String(header(res, 'content-type')), 'image/png');
+    const size = pngSize(res.bytes as Buffer);
+    assert.deepEqual([size.width, size.height], [32, 32]);
+  }
+  // The defect this replaces: both tenants answered one 291-byte blank tile.
+  assert.notEqual(sha256(themed.bytes as Buffer), sha256(letter.bytes as Buffer));
+});
+
+test('D12. the public page names both icons, so the browser stops falling back to a blank tile', async () => {
+  for (const [where, res] of [
+    ['acme', await get('/pricing')],
+    ['beta', await themedGet('/pricing')],
+  ] as const) {
+    assert.equal(res.status, 200, `${where}: ${res.status}`);
+    assert.match(res.body, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg">/, `${where}: no icon link`);
+    assert.match(
+      res.body,
+      /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png">/,
+      `${where}: no apple-touch-icon link`,
+    );
+    // Still no script: this change adds links and nothing else.
+    assert.doesNotMatch(res.body, /<script/);
+  }
+});
+
+test('D13. replacing the artwork is picked up without a restart — the cache is keyed by the file', async () => {
+  const before = await themedGet('/favicon.ico');
+  assert.equal(before.status, 200);
+  const next = THEME_MARK.replace('#b4400f', '#0b1f33');
+  // A distinct mtime: the key is (tenant, size, mtime, size-in-bytes), so this must be visible
+  // even though the process has already cached a raster for the previous file.
+  writeFileSync(themeMarkFile(), next);
+  const after = await themedGet('/favicon.ico');
+  assert.equal(after.status, 200);
+  assert.notEqual(sha256(before.bytes as Buffer), sha256(after.bytes as Buffer), 'a stale raster survived the artwork change');
+  const svg = await themedGet('/favicon.svg');
+  assert.equal(svg.body, next);
 });

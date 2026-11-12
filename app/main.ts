@@ -17,7 +17,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type Database from 'better-sqlite3';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -870,6 +870,87 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     return tenantKey;
   }
 
+  /** An artwork over this is a mistake, not a theme's icon. */
+  const FAVICON_MAX_BYTES = 64 * 1024;
+
+  /**
+   * The mark the tenant's own theme ships: `<theme-assets>/<themeKey>/assets/favicon.svg`.
+   *
+   * The generated letter tile is a fallback that **cannot render on this box**: `faviconSvg()`
+   * draws a `<text>` element, the container has no font installed, and the PNG that came out was a
+   * blank rounded square — the same 291 bytes for every tenant on the platform, which is what a
+   * browser showed in two different tabs. A theme that carries its own artwork is paths and
+   * shapes, so it rasterises where the letter does not.
+   *
+   * `version` is the file's own mtime and size: the raster cache is keyed by it, so replacing the
+   * artwork is picked up by the next request instead of at the next restart.
+   */
+  function themeFavicon(tenantKey: string): { bytes: Buffer; version: string } | null {
+    const db = openRenderRead(sitePath(tenantKey), env.dbBusyTimeoutMs);
+    let themeKey = '';
+    try {
+      themeKey = activeThemeKey(db);
+    } finally {
+      db.close();
+    }
+    if (themeKey === '') return null;
+    // The path is the theme's own, not the request's: `assets/favicon.svg` is a fixed name and no
+    // part of a URL reaches `join()`.
+    const file = join(themeAssetsRoot(env.dataDir, tenantKey), themeKey, 'assets', 'favicon.svg');
+    try {
+      const stat = statSync(file);
+      if (!stat.isFile() || stat.size === 0 || stat.size > FAVICON_MAX_BYTES) return null;
+      return { bytes: readFileSync(file), version: `${stat.mtimeMs}:${stat.size}` };
+    } catch {
+      // A theme without a mark is the ordinary case for a tenant nobody has drawn one for, and the
+      // letter tile is what it gets — not a 404 on every page load.
+      return null;
+    }
+  }
+
+  /**
+   * One raster of an SVG at `size`, for the two PNG URLs.
+   *
+   * `density` is derived from the target because librsvg honours it for the initial render: a
+   * 32-unit `viewBox` at the default 72 dpi is 32 px, and upscaling that to 180 would be a blur
+   * of the mark rather than the mark.
+   */
+  function rasterise(svg: Buffer, size: number): Promise<Buffer> {
+    return sharp(svg, { density: Math.max(72, Math.round((size * 72) / 32)) })
+      .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .png()
+      .toBuffer();
+  }
+
+  /**
+   * The PNG one of the icon URLs answers: the theme's mark when there is one, the letter tile
+   * otherwise, cached by tenant, size and the source's version.
+   *
+   * An artwork `sharp` refuses is not a reason to fail a favicon: the letter tile answers instead,
+   * exactly as it does for a tenant with no artwork at all.
+   */
+  async function iconPng(tenantKey: string, size: number): Promise<Buffer> {
+    const mark = themeFavicon(tenantKey);
+    const letter = mark === null ? faviconLetter(tenantKey) : '';
+    const cacheKey = `${tenantKey}:${size}:${mark === null ? `letter:${letter}` : mark.version}`;
+    const cached = iconCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    let png: Buffer | null = null;
+    if (mark !== null) {
+      try {
+        png = await rasterise(mark.bytes, size);
+      } catch {
+        png = null;
+      }
+    }
+    if (png === null) png = await rasterise(Buffer.from(faviconSvg(letter === '' ? faviconLetter(tenantKey) : letter)), size);
+    // A versioned key adds an entry on an artwork change instead of replacing one, so the map is
+    // bounded: a long-lived process must not collect a raster per edit.
+    if (iconCache.size >= 64) iconCache.clear();
+    iconCache.set(cacheKey, png);
+    return png;
+  }
+
   app.get('/robots.txt', async (req: FastifyRequest, reply: FastifyReply) => {
     const ctx = resolveRequest(req);
     const host = normaliseHost(req.headers.host ?? null) ?? ctx.tenant.key;
@@ -927,28 +1008,44 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       .send(sitemapXml(entries));
   });
 
+  /**
+   * The site's mark, as an image.
+   *
+   * The theme's own artwork when the tenant's active theme ships one, **byte for byte** and with no
+   * re-encoding — a designer's `favicon.svg` is what the browser gets — and the generated letter
+   * tile otherwise, so a tenant nobody has drawn a mark for still answers 200 here rather than
+   * 404ing on every page load.
+   */
   app.get('/favicon.svg', async (req: FastifyRequest, reply: FastifyReply) => {
     const ctx = resolveRequest(req);
-    const letter = faviconLetter(ctx.tenant.key);
-    reply
-      .type('image/svg+xml; charset=utf-8')
-      .header('cache-control', 'public, max-age=86400')
-      .send(faviconSvg(letter));
+    const mark = themeFavicon(ctx.tenant.key);
+    reply.type('image/svg+xml; charset=utf-8').header('cache-control', 'public, max-age=86400');
+    reply.send(mark === null ? faviconSvg(faviconLetter(ctx.tenant.key)) : mark.bytes);
   });
 
+  /**
+   * iOS's home-screen icon: 180×180, rasterised from the same source as `/favicon.ico`.
+   *
+   * One artwork to replace when the brand changes, and two URLs that cannot disagree about what
+   * the site looks like — which is the property the letter tile never had.
+   */
+  app.get('/apple-touch-icon.png', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const png = await iconPng(ctx.tenant.key, 180);
+    reply.type('image/png').header('cache-control', 'public, max-age=86400').send(png);
+  });
+
+  /**
+   * Chrome decodes the bytes and does not trust the extension, so a real PNG at the `.ico` URL is
+   * what ends the 404 every page load was making.
+   *
+   * One 32×32 image, not a multi-size `.ico` container: the two URLs above already name the sizes
+   * the platforms ask for (32 for a tab, 180 for a home screen), so a container would buy a second
+   * encoder and a second raster for a frame no current browser asks this URL for.
+   */
   app.get('/favicon.ico', async (req: FastifyRequest, reply: FastifyReply) => {
     const ctx = resolveRequest(req);
-    const letter = faviconLetter(ctx.tenant.key);
-    const cacheKey = `${ctx.tenant.key}:${letter}`;
-    const cached = iconCache.get(cacheKey);
-    if (cached !== undefined) {
-      reply.type('image/png').header('cache-control', 'public, max-age=86400').send(cached);
-      return;
-    }
-    // Chrome decodes the bytes and does not trust the extension, so a real PNG at the `.ico`
-    // URL is what ends the 404 every page load was making.
-    const png = await sharp(Buffer.from(faviconSvg(letter))).resize(32, 32).png().toBuffer();
-    iconCache.set(cacheKey, png);
+    const png = await iconPng(ctx.tenant.key, 32);
     reply.type('image/png').header('cache-control', 'public, max-age=86400').send(png);
   });
 

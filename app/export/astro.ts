@@ -23,6 +23,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { pageCssPath } from './document.ts';
+import { EXPORT_APPLE_TOUCH_PNG, EXPORT_MARK_SVG } from './icons.ts';
 import { renderNotes } from './notes.ts';
 import { assetFile, variantFile, type Projection } from './project.ts';
 import { variantLinkName } from '../assets/farm.ts';
@@ -69,7 +70,7 @@ const tenantKey = ${JSON.stringify(tenantKey)};
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{title}</title>{cssHref !== null ? <link rel="stylesheet" href={cssHref} /> : null}
+    <title>{title}</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="apple-touch-icon" href="/apple-touch-icon.png">{cssHref !== null ? <link rel="stylesheet" href={cssHref} /> : null}
   </head>
   <body data-page-path={path}>
     <main set:html={body} />
@@ -220,6 +221,11 @@ export function planAstro(options: AstroOptions): TreeFile[] {
     if (page.bodyCss !== '') sheets.set(pageCssPath(page.bodyCss), page.bodyCss);
   }
   for (const [path, css] of sheets) files.push({ path: `public${path}`, bytes: css });
+
+  // The two files the shell's `<head>` names. `public/` is served at the site root, so these are
+  // `/favicon.svg` and `/apple-touch-icon.png` in a built `dist/`.
+  files.push({ path: 'public/favicon.svg', bytes: EXPORT_MARK_SVG });
+  files.push({ path: 'public/apple-touch-icon.png', bytes: EXPORT_APPLE_TOUCH_PNG });
 
   for (const asset of projection.referenced) {
     files.push({ path: `public/${mediaFile(asset.url)}`, bytes: readFileSync(assetFile(options.contentRoot, asset)) });

@@ -20,6 +20,7 @@ import { join, relative, sep } from 'node:path';
 
 import type { TreeFile } from './tree.ts';
 import { pageCssPath, renderDocument } from './document.ts';
+import { EXPORT_APPLE_TOUCH_PNG, EXPORT_MARK_SVG } from './icons.ts';
 import { pageSeoHead } from '../render/seo.ts';
 import { renderNotes } from './notes.ts';
 import { assetFile, variantFile, type Projection } from './project.ts';
@@ -81,10 +82,12 @@ export function planStatic(options: StaticOptions): TreeFile[] {
 
   const sheet = options.sheet === undefined || options.sheet === '' ? null : options.sheet;
   if (sheet !== null) files.push({ path: 'theme.css', bytes: sheet });
-  // A favicon, once, so every page load stops asking for one that is not there. The mark is the
-  // site's own: ink square, warm dot — the same shape the header uses.
-  const FAVICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#0B1F33"/><rect x="7" y="9" width="12" height="3" fill="#F7F5F2"/><rect x="7" y="15" width="8" height="3" fill="#F7F5F2"/><circle cx="23" cy="22" r="4" fill="#B4400F"/></svg>';
-  files.push({ path: 'favicon.svg', bytes: FAVICON });
+  // A favicon, once, so every page load stops asking for one that is not there — and the iOS
+  // home-screen raster beside it, because the document names both (`renderDocument`) and a tree
+  // has no server to derive the second from the first. The mark is the site's own: ink square,
+  // warm dot — the same shape the header uses.
+  files.push({ path: 'favicon.svg', bytes: EXPORT_MARK_SVG });
+  files.push({ path: 'apple-touch-icon.png', bytes: EXPORT_APPLE_TOUCH_PNG });
 
   const themeAssets = options.themeAssets;
   if (themeAssets !== undefined && existsSync(themeAssets.root)) {
@@ -110,9 +113,9 @@ export function planStatic(options: StaticOptions): TreeFile[] {
         title: page.title,
         bodyHtml: page.bodyHtml,
         bodyCss: page.bodyCss,
-        // The favicon belongs to a site with a look of its own: a tenant with no theme has no
-        // mark to draw one from, and its document must stay byte-identical to the served page.
-        ...(sheet === null ? {} : { sheetHref: '/theme.css', iconHref: '/favicon.svg' }),
+        // A tenant with no theme has no `/theme.css` to link, and its document must stay
+        // byte-identical to the served page — the icon links are unconditional in both renderers.
+        ...(sheet === null ? {} : { sheetHref: '/theme.css' }),
         ...(page.seo === null
           ? {}
           : {
