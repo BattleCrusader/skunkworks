@@ -18,6 +18,12 @@ export interface PageRow {
   title: string;
   /** `draft` | `published` | `hidden` — the schema's three, and no others. */
   status: string;
+  /**
+   * `cms_page.published_at`, and it decides whether a published page is LIVE or SCHEDULED: a
+   * published page whose `published_at` is still in the future is invisible to visitors
+   * (`app/render/visibility.ts`), so the pill would lie if it read `status` alone.
+   */
+  publishedAt: string | null;
   /** There are unpublished changes: the editor has a draft the live body does not have. */
   draft: boolean;
   versions: number;
@@ -41,7 +47,20 @@ export interface PageListInput {
   unavailable?: boolean;
 }
 
-function statusPill(status: string): string {
+/** A published page that is not due yet: published, scheduled, and invisible. */
+function scheduledAt(page: PageRow, nowMs: number): number | null {
+  if (page.status !== 'published' || page.publishedAt === null) return null;
+  const at = Date.parse(page.publishedAt);
+  return Number.isFinite(at) && at > nowMs ? at : null;
+}
+
+function statusPill(page: PageRow, nowMs: number): string {
+  const status = page.status;
+  const due = scheduledAt(page, nowMs);
+  if (due !== null) {
+    const when = new Date(due).toISOString().replace('T', ' ').slice(0, 16).replace(' ', ' at ');
+    return `<span class="pill pill--draft" title="Goes live ${esc(`${when} UTC`)}"><i aria-hidden="true"></i>Scheduled</span>`;
+  }
   if (status === 'published') return '<span class="pill pill--live"><i aria-hidden="true"></i>Live</span>';
   if (status === 'draft') return '<span class="pill pill--draft"><i aria-hidden="true"></i>Draft</span>';
   if (status === 'hidden') return '<span class="pill pill--private"><i aria-hidden="true"></i>Hidden</span>';
@@ -76,7 +95,7 @@ function row(page: PageRow, base: string, nowMs: number): string {
           <div class="pagerow__title">${esc(title)}</div>
           <div class="pagerow__meta"><span>${esc(where)}</span><i class="dotsep" aria-hidden="true"></i><span>Updated ${esc(whenLabel(page.updatedAt, nowMs))}</span><i class="dotsep" aria-hidden="true"></i><span>${esc(versions)}</span>${pending}</div>
         </div>
-        ${statusPill(page.status)}
+        ${statusPill(page, nowMs)}
         <div class="rowactions"><a class="btn btn--sm" href="${esc(`${base}/editor?page=${page.id}`)}">${action}<span class="sr-only"> — ${esc(title)}</span></a>${ICON.chevron}</div>
       </div>`;
 }
@@ -100,7 +119,10 @@ export function pageListScreen(input: PageListInput): string {
     });
   }
   const pages = input.pages;
-  const live = pages.filter((p) => p.status === 'published').length;
+  // A scheduled page is `status='published'` and not yet visible, so "live" must mean what a
+  // visitor sees, not what the status column says.
+  const live = pages.filter((p) => p.status === 'published' && scheduledAt(p, input.nowMs) === null).length;
+  const scheduled = pages.filter((p) => scheduledAt(p, input.nowMs) !== null).length;
   const drafts = pages.filter((p) => p.status === 'draft').length;
   const hidden = pages.filter((p) => p.status === 'hidden').length;
   const versions = pages.reduce((sum, p) => sum + p.versions, 0);
@@ -112,6 +134,7 @@ export function pageListScreen(input: PageListInput): string {
     parts.push(live === 0 ? 'Nothing is live for visitors yet.' : `${live} ${live === 1 ? 'is' : 'are'} live for everyone.`);
     if (drafts > 0) parts.push(`${plural(drafts, 'draft')} only you can see.`);
     if (hidden > 0) parts.push(`${plural(hidden, 'page')} hidden from the menu.`);
+    if (scheduled > 0) parts.push(`${plural(scheduled, 'page')} scheduled to go live later.`);
     return parts.join(' ');
   })();
 

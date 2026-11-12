@@ -5,6 +5,8 @@
  * handed a statement built from text, and this module builds none.
  */
 import type Database from 'better-sqlite3';
+
+import { PAGE_VISIBLE, visibleBefore } from './visibility.ts';
 import { AppError } from '../errors.ts';
 
 export interface PageRecord {
@@ -53,18 +55,22 @@ export function normalisePagePath(rawUrl: string): string | null {
 }
 
 /**
- * A published page at `path`, or null. `cms_page.path` is COLLATE NOCASE, so
+ * A published, *due* page at `path`, or null. `cms_page.path` is COLLATE NOCASE, so
  * the comparison inherits case-insensitivity from the schema (O-01).
+ *
+ * `now` is injected for the same reason every other clock here is: a scheduled page is a
+ * statement about a moment, and a test that had to sleep to observe it would be a test that
+ * measures the box. Production passes nothing.
  */
-export function loadPage(db: Database.Database, path: string): PageRecord | null {
+export function loadPage(db: Database.Database, path: string, now: Date = new Date()): PageRecord | null {
   const row = db
     .prepare(
       `SELECT id, path, title, status, template, body_html, body_css, seo_json, updated_at
          FROM cms_page
-        WHERE path = ? AND status = 'published'
+        WHERE path = ? AND ${PAGE_VISIBLE}
         LIMIT 1`,
     )
-    .get(path) as Row | undefined;
+    .get(path, visibleBefore(now)) as Row | undefined;
   if (row === undefined) return null;
   return {
     id: row.id,

@@ -444,6 +444,9 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
 #skw-bar .skw-btn--primary:hover{background:#1d4ed8}
 #skw-bar .skw-btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
 #skw-bar .skw-save-state{font-size:.8rem;color:#6b6b76;min-width:9rem;text-align:right}
+/* Scheduling: blank means "now", which is what Publish has always meant. */
+#skw-bar .skw-when{font:inherit;font-size:.78rem;padding:.3rem .4rem;border:1px solid #d5d5dd;border-radius:8px;background:#fff;color:#2b2b33;max-width:11.5rem}
+#skw-bar .skw-when:disabled{opacity:.5}
 #skw-bar .skw-save-state[data-dirty="1"]{color:#7a4a00;font-weight:600}
 #skw-layout{height:calc(100vh - 56px);display:grid;grid-template-columns:240px minmax(0,1fr) 344px;grid-template-rows:1fr}
 /* ---- the inspector: three cards in the right rail ----
@@ -540,7 +543,8 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
   <button type="button" class="skw-btn skw-btn--icon" id="skw-redo" title="Redo" aria-label="Redo" aria-keyshortcuts="Control+Shift+z"${readonly ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
   <button type="button" class="skw-btn" id="skw-preview" title="Preview the page without editing controls"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>Preview</button>
   <button type="button" class="skw-btn" id="skw-save" title="Save your changes as a draft — nothing goes live until you publish"${readonly ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>Save</button>
-  <button type="button" class="skw-btn skw-btn--primary" id="skw-publish" title="Publish — put what you have made live for visitors"${readonly || !payload.page.draft ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>Publish</button>
+  <input class="skw-when" id="skw-publish-at" type="datetime-local" title="Optional: go live at this time (your own clock) instead of now. Leave blank to publish immediately." aria-label="Publish at, in your local time (optional)"${readonly ? ' disabled' : ''}>
+  <button type="button" class="skw-btn skw-btn--primary" id="skw-publish" title="Publish — put what you have made live for visitors, or schedule it for the time on the left"${readonly || !payload.page.draft ? ' disabled' : ''}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>Publish</button>
 </header>
 <p id="skw-notice" role="alert" hidden></p>
 <div id="skw-layout">
@@ -562,6 +566,7 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif}
           <div class="skw-row skw-row--stack" id="skw-text-row" hidden><label for="skw-sel-text">text</label><textarea class="skw-in skw-in--area" id="skw-sel-text" rows="3" spellcheck="true"></textarea></div>
           <div id="skw-sel-fields"></div>
           <div class="skw-attrhead"><span>Element</span></div>
+          <div class="skw-row"><label for="skw-hide-toggle">visibility</label><button type="button" class="skw-railbtn" id="skw-hide-toggle" aria-pressed="false" title="Hide this element from visitors. It stays in the page, blurred, so you can bring it back.">Hide this element</button></div>
           <div class="skw-actions">
             <button type="button" class="skw-railbtn" id="skw-el-up" title="Move this element before its previous sibling">↑ up</button>
             <button type="button" class="skw-railbtn" id="skw-el-down" title="Move this element after its next sibling">↓ down</button>
@@ -788,15 +793,37 @@ const BOOT_SCRIPT = String.raw`
     }
     var button = el('skw-publish');
     if (button) button.disabled = true;
-    setState('Publishing…', true);
-    return window.skwPublish()
+    var when = el('skw-publish-at');
+    // The field is a datetime-local: a wall-clock time with no zone. The browser is the only party
+    // that knows which zone the operator typed it in, so the conversion to an instant happens here
+    // — a bare "2026-12-01T09:00" sent to a server running UTC would mean nine in the morning UTC,
+    // which is eight in the evening in Sydney. ISO-8601 UTC leaves the server nothing to guess.
+    var at = '';
+    if (when && typeof when.value === 'string' && when.value !== '') {
+      var parsed = new Date(when.value);
+      if (!isNaN(parsed.getTime())) at = parsed.toISOString();
+    }
+    setState(at === '' ? 'Publishing…' : 'Scheduling…', true);
+    return window.skwPublish(at)
       .then(function (res) {
         var ok = res && res.ok !== false && !(res.error);
         if (ok) {
+          var scheduled = !!(res.page && res.page.scheduled);
           boot.page.draft = false;
           boot.page.status = 'published';
-          pillSet('published', 'Live');
-          setState('Published — visitors can see it now', false);
+          pillSet('published', scheduled ? 'Scheduled' : 'Live');
+          // The sentence has to match what the server did. "Published" for a page that will not
+          // be visible until Tuesday is the kind of reassurance that loses a launch.
+          setState(
+            scheduled
+              ? 'Scheduled — it goes live ' +
+                  new Date(String(res.page.publishedAt)).toLocaleString(undefined, {
+                    dateStyle: 'medium',
+                    timeStyle: 'short',
+                  })
+              : 'Published — visitors can see it now',
+            false,
+          );
         } else if (!signedOut(res)) {
           setState((res && res.error && res.error.message) || 'Could not publish', true);
           if (button) button.disabled = false;
@@ -1896,6 +1923,7 @@ const BOOT_SCRIPT = String.raw`
     if (selAttrs !== null) selAttrs.innerHTML = '';
     if (selFields !== null) selFields.innerHTML = '';
     if (!has) {
+      paintHideButton(null);
       chip(selWhere, 'nothing selected', true);
       chip(stylesTarget, '—', true);
       actionsEnabled(false);
@@ -1909,6 +1937,7 @@ const BOOT_SCRIPT = String.raw`
     chip(selWhere, '<' + tag + '> · ' + labelFor(current), false);
 
     actionsEnabled(true);
+    paintHideButton(current);
     dropInventedId(current);
     var hook = current.getClasses().length > 0 || authoredId(current) !== '';
     chip(stylesTarget, hook ? selectorFor(current) : 'no hook yet', !hook);
@@ -2016,6 +2045,9 @@ const BOOT_SCRIPT = String.raw`
   // that would destroy the input the operator is typing into.
   editor.on('component:update:attributes', function (c) {
     if (c !== current || current === null) return;
+    // The attribute can be edited by hand in the attributes list as well as by the toggle, so the
+    // button follows the element rather than the other way round.
+    paintHideButton(current);
     chip(stylesTarget, selectorFor(current), false);
   });
   editor.on('component:update:classes', function (c) {
@@ -2045,6 +2077,44 @@ const BOOT_SCRIPT = String.raw`
   var elDown = el('skw-el-down');
   var elDup = el('skw-el-dup');
   var elDel = el('skw-el-del');
+  var hideBtn = el('skw-hide-toggle');
+
+  /**
+   * Hidden is an attribute on the element, not a class and not a deletion: the element stays in
+   * the document, the saved bytes and the history, so bringing it back is one click on a page that
+   * has since been published again. The canvas blurs it (CANVAS_CSS); the published page removes
+   * it from the flow, which is what makes the rest of the page shift up.
+   */
+  var HIDDEN_ATTR = 'data-skw-hidden';
+
+  function isHidden(component) {
+    if (component === null || component === undefined) return false;
+    var attrs = component.getAttributes();
+    return String(attrs[HIDDEN_ATTR] || '') !== '';
+  }
+
+  function paintHideButton(component) {
+    if (hideBtn === null) return;
+    var hidden = isHidden(component);
+    hideBtn.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+    hideBtn.textContent = hidden ? 'Show this element' : 'Hide this element';
+    hideBtn.disabled = component === null || readonly;
+  }
+
+  function toggleHidden() {
+    if (current === null) return;
+    var next = {};
+    if (isHidden(current)) {
+      current.removeAttributes(HIDDEN_ATTR);
+    } else {
+      next[HIDDEN_ATTR] = '1';
+      current.addAttributes(next);
+    }
+    paintHideButton(current);
+    setState(isHidden(current) ? 'Element hidden — visitors will not see it' : 'Element visible again', true);
+  }
+
+  if (hideBtn !== null) hideBtn.addEventListener('click', toggleHidden);
 
   /** Re-place a component at a new index inside its own parent. */
   function moveTo(component, index) {
@@ -2549,12 +2619,16 @@ const BOOT_SCRIPT = String.raw`
    * — never as the canvas happens to look now. An unpublished tab cannot publish a half-typed
    * document by accident.
    */
-  window.skwPublish = function () {
+  window.skwPublish = function (publishAt) {
+    var body = { id: boot.page.id };
+    // Blank is absent, not an empty string: the server reads an empty publish_at as "now",
+    // and sending nothing at all says the same thing without relying on that reading.
+    if (typeof publishAt === 'string' && publishAt !== '') body.publish_at = publishAt;
     return fetch('/admin/t/' + encodeURIComponent(boot.tenant) + '/editor/publish', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json', 'x-csrf-token': boot.csrf },
-      body: JSON.stringify({ id: boot.page.id }),
+      body: JSON.stringify(body),
     }).then(function (r) { return r.json(); });
   };
 })();
@@ -2580,6 +2654,13 @@ export const CANVAS_CSS = [
   '.gjs-placeholder-int{background:#2563eb !important;box-shadow:0 0 0 1px rgba(37,99,235,.35) !important;border-radius:2px}',
   '.gjs-placeholder,.gjs-placeholder-parent{outline:2px solid #2563eb !important;outline-offset:-2px}',
   '[data-skw-drop="1"]{outline:2px dashed #2563eb !important;outline-offset:-2px;box-shadow:inset 0 0 0 9999px rgba(37,99,235,.045)}',
+  // A hidden element: blurred, so it reads as "not shown to visitors", and still in the flow with
+  // its own space, because an element with no geometry cannot be clicked and there is then no way
+  // back. What shifts is the PUBLISHED page, where the shell's stylesheet removes it entirely.
+  // `filter` paints the element and everything inside it, which is exactly the blur wanted: the
+  // element as a whole reads as "not shown", children included.
+  '[data-skw-hidden]{filter:blur(2.5px);opacity:.6;outline:2px dashed #b45309 !important;outline-offset:-2px}',
+  '[data-skw-hidden]:hover{opacity:.85}',
 ].join('\n');
 
 /** The vendored GrapesJS bundle, read once. Served from the admin origin, never a CDN. */

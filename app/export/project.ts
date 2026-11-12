@@ -46,6 +46,8 @@
  * `SKW_EXPORT_NOW` produce the same `Projection` and therefore the same bytes.
  */
 import type Database from 'better-sqlite3';
+
+import { PAGE_VISIBLE, visibleBefore } from '../render/visibility.ts';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -300,9 +302,9 @@ export function buildProjection(opts: BuildOptions): BuildResult {
   const pageRows = db
     .prepare(
       `SELECT id, path, slug, title, body_html, body_css, seo_json
-         FROM cms_page WHERE status = 'published'`,
+         FROM cms_page WHERE ${PAGE_VISIBLE}`,
     )
-    .all() as PageRow[];
+    .all(visibleBefore()) as PageRow[];
   pageRows.sort((a, b) => byString(a.path, b.path));
 
   // --- 1. every body through the site's own projection -------------------------

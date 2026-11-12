@@ -12,7 +12,7 @@ host from a marker.
 |---|---|
 | Tenant | `madetoship` |
 | Host | `dev-madetoship.com` → `127.0.0.1` (this box) |
-| Pages | `/`, `/services`, `/process`, `/engagements`, `/about`, `/contact` |
+| Pages | `/`, `/services`, `/websites`, `/process`, `/engagements`, `/about`, `/contact` |
 | Theme | `madetoship` — `sites/madetoship/theme/` → package in `sites/madetoship/dist/theme/` |
 | Packages | `menu` 1.0.0 (enabled) · `contact` 1.2.0 (enabled) |
 | Form | `contact/contact`, rows in `p_contact_message`, read at **Admin → Messages** |
@@ -95,7 +95,7 @@ Everything that must be a real business detail is a `CONFIG` constant in `site.t
 | `BUSINESS_EMAIL` | `hello@madetoship.com` | the address an enquiry is answered from |
 | `BUSINESS_PHONE` / `BUSINESS_PHONE_HREF` | `+61 400 000 000` | the number a client rings (and its `tel:` digits) |
 | `LINKEDIN_URL` | `…/company/made-to-ship/` | the agency's LinkedIn page |
-| `ABN` | `00 000 000 000` | the registered ABN (also in the footer and the structured data) |
+| `ABN` | `00 000 000 000` | the registered ABN (also in the footer and the structured data) - read from the .env file on from .env in profile |
 There are two cards, and the page a client reads decides which one they see — no geo-detection,
 no currency swap, both indexable:
 
@@ -107,6 +107,22 @@ no currency swap, both indexable:
 | `RETAINER_FEE` | `$9,500` | four senior days a month, from |
 | `DAY_RATE` | `$2,000` | a senior day beyond the retainer |
 | `MIN_PROJECT` | `$32,000` | one sprint |
+
+Website development is sold as three fixed packages (`WEB_TIERS`) rather than as sprints, because the
+work is repeatable: the effective day rate is ~$810 instead of the $2,000 bespoke rate, and the page
+states the person-days so the number is explainable.
+
+| Tier | Price | Scope | Effort |
+|---|---|---|---|
+| Launch | `$6,500` | five pages, copy editing, measured Lighthouse/WCAG | 2 weeks, 8 person-days |
+| Catalogue | `$14,500` | fifteen pages, CMS, 300-page migration, analytics | 4 weeks, 18 person-days |
+| Commerce | `$28,000` | storefront, Stripe checkout, 100 products, admin screens | 6 weeks, 34 person-days |
+| Care (per tier) | `$180` / `$320` / `$560` a month | hosting, backups, updates, monitoring, changes | monthly |
+
+Grounding, checked 11 Nov 2026: an AU survey of 25 designers' published packages puts the middle
+price at $2,500 for ~5 pages, $4,525 for ~10 and $6,250 for ~15 (catalysthub, 5 Nov 2026); the
+small-business band is $2,500-8,000 and a store $3,500-25,000+; 63% of agencies quote $1,000-15,000
+fixed (GoodFirms). The tiers sit above the commodity median on purpose, and the page says why.
 
 The arithmetic is written into `site.ts` beside the constants: a senior agency day runs
 A$1,200–2,200, a sprint is 20 person-days at $1,600, and the retainer is four days plus an
@@ -124,8 +140,10 @@ Change them, then rerun `deploy.sh` — the copy lives in the database, so nothi
 `verify.ts` runs against `https://dev-madetoship.com` and asserts, from outside the container:
 
 - six pages, 200, each with its own `<title>`, and no `<script>` other than the JSON-LD document;
-- one currency: the card on `/engagements` reads `$32,000` and no page carries an `A$`, `AU$` or
-  `US$`;
+- seven pages, with `/services` carrying a `02 - Web` section that links to `/websites`;
+- a footer `Search` link to `/search` — a base-skunkworks route, not a page (see below);
+- one currency: the card on `/engagements` reads `$32,000`, the tiers read `$6,500` / `$14,500` /
+  `$28,000`, and no page carries an `A$`, `AU$` or `US$`;
 - the theme sheet at its declared URL, `text/css`, carrying `#ff4a1c`, and its monogram asset
   answering 200 as SVG;
 - the menu package's block resolved to **five** rows on `/` with real labels and no template
@@ -134,10 +152,22 @@ Change them, then rerun `deploy.sh` — the copy lives in the database, so nothi
   row in `p_contact_message` (read back, then deleted, so the check leaves no residue);
 - six published pages, nine menu rows, both packages enabled, theme `madetoship` active.
 
-43 checks, all passing. `verify-admin.ts` then signs in with the password + TOTP from
+51 checks, all passing. `verify-admin.ts` then signs in with the password + TOTP from
 `data/enrol-madetoship.txt` and asserts the other half: the login form asks for a second factor, the
 POST answers `303 → /admin`, the Pages screen lists this site's paths, the Messages screen opens, and
 the same URL *without* the session cookie bounces — 8 checks, all passing. No secret is printed.
+
+## Base-skunkworks features this site uses
+
+Two capabilities were added to the platform so that this site's own price list could be true; the
+site is their first consumer.
+
+| Feature | Where it lives | How the site uses it |
+|---|---|---|
+| **Scheduled publishing** | `app/render/visibility.ts` — one predicate, `status='published' AND (published_at IS NULL OR published_at <= now)`, honoured by the renderer, the sitemap, the nav resolver, the exporter and search. The editor's Publish button takes an optional `datetime-local`. | Nothing to configure: a page published with a future time is invisible until that time. The Pages screen shows a `Scheduled` pill, and the editor says "Scheduled — it goes live at …" instead of "Published". |
+| **Site search** | `GET /search?q=…` (`app/main.ts`) + `app/render/search.ts`; base styles in `app/render/chrome.ts`, dressed as the freight document in `theme/theme.css`. | Linked from the footer only (a seventh header item wraps badly on a phone). Results are `noindex`, `robots.txt` says `Disallow: /search`, and the visibility predicate means drafts, hidden and not-yet-due pages never appear in them. |
+| **The current menu item** | The shell marks the matching link `aria-current="page"` (`nav-list.astro`, `navListHtml`), and the base sheet bolds it. `theme.css` draws one border under it. | Styling is by attribute, not by a list of paths: this theme used to enumerate six paths by hand, so `/websites` went live as the only menu item with no current-page mark. |
+| **Hidden elements** | Editor: the inspector's *visibility* toggle writes `data-skw-hidden="1"`, and the canvas blurs the element (`CANVAS_CSS`) while keeping its space, so it can be clicked again. Publish: `app/render/body.ts` drops every marked subtree from the projected body, so the rest of the page closes up — on the site and in an export. | Use it for a section that is not ready, a seasonal block, or copy that must stay in the page for later. The stored body keeps the element; the visitor never receives it. |
 
 Layout was checked at 1440 and 390 CSS px through CDP device emulation: `scrollWidth === 390` and
 no element to the right of the viewport. (`--screenshot` with a small `--window-size` lies on macOS

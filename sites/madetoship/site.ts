@@ -17,7 +17,7 @@
  * page's index are: content, with rows in `p_menu_item`, drawn by the host from the declared block.
  * Both are declared here so a rebuild of the site leaves the same two menus.
  */
-import { ABOUT, CONTACT, ENGAGEMENTS, HOME, PROCESS, SERVICES } from './content.ts';
+import { ABOUT, CONTACT, ENGAGEMENTS, HOME, PROCESS, SERVICES, WEBSITES } from './content.ts';
 
 /* ------------------------------------------------------------------------- the placeholders */
 
@@ -32,6 +32,33 @@ export const CONFIG = {
   LINKEDIN_URL: 'https://www.linkedin.com/company/made-to-ship/',
   /** REPLACE: the registered ABN. */
   ABN: '00 000 000 000',
+} as const;
+
+/**
+ * Website development, sold as three fixed-price packages rather than as sprints.
+ *
+ * Grounding (checked 11 Nov 2026): an Australian survey of 25 designers' published packages
+ * (catalysthub.com.au, 5 Nov 2026) puts the middle price at $2,500 for ~5 pages, $4,525 for ~10
+ * and $6,250 for ~15; the small-business range runs $2,500-8,000 and a store $3,500-25,000+
+ * (marketingforyou.com.au, exiq.com.au). GoodFirms: 63% of agencies quote $1,000-15,000 fixed.
+ *
+ * These sit above the commodity median on purpose, and the page says why: the deliverable is a
+ * senior engineering build (Lighthouse 95+, WCAG AA, structured data, analytics, a 30-day fix
+ * window), not a theme install. The tiers are productised, so the effective day rate is lower than
+ * bespoke work and is stated as person-days on the page:
+ *   Launch    $6,500 / 8 person-days  = ~$812 a day
+ *   Catalogue $14,500 / 18            = ~$806 a day
+ *   Commerce  $28,000 / 34            = ~$824 a day
+ * Custom web applications stay on the sprint card ($32,000 per two-week sprint); these numbers
+ * only cover work that fits a template.
+ */
+export const WEB_TIERS = {
+  LAUNCH: '$6,500',
+  CATALOGUE: '$14,500',
+  COMMERCE: '$28,000',
+  CARE_LAUNCH: '$180',
+  CARE_CATALOGUE: '$320',
+  CARE_COMMERCE: '$560',
 } as const;
 
 /**
@@ -81,7 +108,13 @@ export function fill(text: string): string {
     .replaceAll('__EXTRA_ENGINEER__', AU_CARD.EXTRA_ENGINEER)
     .replaceAll('__RETAINER_FEE__', AU_CARD.RETAINER)
     .replaceAll('__DAY_RATE__', AU_CARD.DAY)
-    .replaceAll('__MIN_PROJECT__', AU_CARD.MIN);
+    .replaceAll('__MIN_PROJECT__', AU_CARD.MIN)
+    .replaceAll('__WEB_LAUNCH__', WEB_TIERS.LAUNCH)
+    .replaceAll('__WEB_CATALOGUE__', WEB_TIERS.CATALOGUE)
+    .replaceAll('__WEB_COMMERCE__', WEB_TIERS.COMMERCE)
+    .replaceAll('__CARE_LAUNCH__', WEB_TIERS.CARE_LAUNCH)
+    .replaceAll('__CARE_CATALOGUE__', WEB_TIERS.CARE_CATALOGUE)
+    .replaceAll('__CARE_COMMERCE__', WEB_TIERS.CARE_COMMERCE);
 }
 
 /* ---------------------------------------------------------------------------- structured data */
@@ -149,6 +182,11 @@ const META = {
     description:
       'Product engineering, platform and payment integrations, applied AI and rescue work — delivered as software in production, with the repository and the docs in your name.',
   },
+  websites: {
+    title: 'Website development, three fixed prices — Made to Ship',
+    description:
+      'Three fixed-price website packages from a senior engineering shop: a five-page launch site from $6,500, a catalogue site with a CMS from $14,500, and a store with checkout from $28,000.',
+  },
   process: {
     title: 'How a project runs — Made to Ship',
     description:
@@ -194,6 +232,20 @@ export const PAGES: SeededPage[] = [
       jsonLd: {
         '@context': 'https://schema.org',
         '@graph': [webPage('/services', META.services.title, META.services.description)],
+      },
+    },
+  },
+  {
+    path: '/websites',
+    slug: 'websites',
+    title: META.websites.title,
+    body: fill(WEBSITES),
+    seo: {
+      title: META.websites.title,
+      description: META.websites.description,
+      jsonLd: {
+        '@context': 'https://schema.org',
+        '@graph': [webPage('/websites', META.websites.title, META.websites.description)],
       },
     },
   },
@@ -276,6 +328,7 @@ export interface NavItem {
 
 export const HEADER_NAV: NavItem[] = [
   { label: 'Services', href: '/services', kind: 'page' },
+  { label: 'Websites', href: '/websites', kind: 'page' },
   { label: 'Process', href: '/process', kind: 'page' },
   { label: 'Engagements', href: '/engagements', kind: 'page' },
   { label: 'About', href: '/about', kind: 'page' },
@@ -284,10 +337,15 @@ export const HEADER_NAV: NavItem[] = [
 
 export const FOOTER_NAV: NavItem[] = [
   { label: 'Services', href: '/services', kind: 'page' },
+  { label: 'Websites', href: '/websites', kind: 'page' },
   { label: 'Process', href: '/process', kind: 'page' },
   { label: 'Engagements', href: '/engagements', kind: 'page' },
   { label: 'About', href: '/about', kind: 'page' },
   { label: 'Contact', href: '/contact', kind: 'page' },
+  // Footer only: `/search` is a server route, not a page (`app/render/routes.ts` lists it as a
+  // core route so the nav resolver accepts a link to it). Not in the header — six items already
+  // wrap on a phone, and a search box is a look-up, not a destination.
+  { label: 'Search', href: '/search', kind: 'page' },
 ];
 
 export const SITE_TITLE = 'Made to Ship';
@@ -311,15 +369,18 @@ export interface MenuRow {
  */
 export const MENU_MAIN: MenuRow[] = [
   { menu: 'main', label: 'Services', href: '/services', position: 1 },
-  { menu: 'main', label: 'Process', href: '/process', position: 2 },
-  { menu: 'main', label: 'Engagements', href: '/engagements', position: 3 },
-  { menu: 'main', label: 'About', href: '/about', position: 4 },
-  { menu: 'main', label: 'Contact', href: '/contact', position: 5 },
+  { menu: 'main', label: 'Websites', href: '/websites', position: 2 },
+  { menu: 'main', label: 'Process', href: '/process', position: 3 },
+  { menu: 'main', label: 'Engagements', href: '/engagements', position: 4 },
+  { menu: 'main', label: 'About', href: '/about', position: 5 },
+  { menu: 'main', label: 'Contact', href: '/contact', position: 6 },
 ];
 
 export const MENU_FOOTER: MenuRow[] = [
   { menu: 'footer', label: 'Services', href: '/services', position: 1 },
-  { menu: 'footer', label: 'Engagements', href: '/engagements', position: 2 },
-  { menu: 'footer', label: 'Process', href: '/process', position: 3 },
-  { menu: 'footer', label: 'Contact', href: '/contact', position: 4 },
+  { menu: 'footer', label: 'Websites', href: '/websites', position: 2 },
+  { menu: 'footer', label: 'Engagements', href: '/engagements', position: 3 },
+  { menu: 'footer', label: 'Process', href: '/process', position: 4 },
+  { menu: 'footer', label: 'Contact', href: '/contact', position: 5 },
+  { menu: 'footer', label: 'Search', href: '/search', position: 6 },
 ];

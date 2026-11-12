@@ -41,6 +41,9 @@
  */
 import type Database from 'better-sqlite3';
 
+import { isCoreRoute } from './routes.ts';
+import { pageIsDue } from './visibility.ts';
+
 import { assetByKey } from '../assets/library.ts';
 import { assetUrl } from '../assets/url.ts';
 import { AppError } from '../errors.ts';
@@ -107,11 +110,17 @@ function hrefFor(db: Database.Database, row: NavRow, pageExists?: PageExists): s
       }
       // `cms_page.path` is COLLATE NOCASE, so this comparison is case-insensitive for
       // the same reason the renderer's own lookup is (O-01).
-      const page = db.prepare('SELECT status FROM cms_page WHERE path = ?').get(row.href_target) as
-        | { status: string }
-        | undefined;
-      const declaredByPackage = pageExists !== undefined && pageExists(row.href_target);
-      if (!declaredByPackage && (page === undefined || page.status !== 'published')) {
+      const page = db
+        .prepare('SELECT status, published_at FROM cms_page WHERE path = ?')
+        .get(row.href_target) as { status: string; published_at: string | null } | undefined;
+      // A package page (`/blog/<slug>`) or a core route (`/search`) is a real destination with no
+      // `cms_page` row behind it; everything else must have a published, due page.
+      const declaredByPackage =
+        isCoreRoute(row.href_target) || (pageExists !== undefined && pageExists(row.href_target));
+      // A scheduled page is published and not yet due, so it is as invisible as a draft to a
+      // visitor — and a nav link to it would be a link to the site's own 404 (the refusal this
+      // branch exists to state before the page ships).
+      if (!declaredByPackage && (page === undefined || !pageIsDue(page))) {
         refuse(row, 'SKW_E_RT_NAV_TARGET_MISSING', 'points at a path with no published page');
       }
       return row.href_target;
@@ -213,7 +222,7 @@ function loadLocation(db: Database.Database, location: NavLocation, pageExists?:
  * attributes the same five characters this does), and a gate test compares the editor's header
  * with the live page's byte for byte.
  */
-export function navListHtml(items: readonly NavItem[], className: string): string {
+export function navListHtml(items: readonly NavItem[], className: string, current?: string): string {
   const esc = (value: string): string =>
     value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const render = (level: readonly NavItem[]): string =>
@@ -221,7 +230,7 @@ export function navListHtml(items: readonly NavItem[], className: string): strin
     level
       .map(
         (item) =>
-          `<li><a href="${esc(item.href)}">${esc(item.label)}</a>${item.children.length > 0 ? render(item.children) : ''}</li>`,
+          `<li><a href="${esc(item.href)}"${item.href === current ? ' aria-current="page"' : ''}>${esc(item.label)}</a>${item.children.length > 0 ? render(item.children) : ''}</li>`,
       )
       .join('') +
     `</ul>`;

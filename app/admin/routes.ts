@@ -3073,19 +3073,29 @@ ${mailHtml}
     try {
       const rows = db
         .prepare(
-          `SELECT p.id, p.path, p.title, p.status, p.updated_at,
+          `SELECT p.id, p.path, p.title, p.status, p.updated_at, p.published_at,
                   (p.draft_sha <> '') AS draft,
                   (SELECT COUNT(*) FROM cms_page_revision r WHERE r.page_id = p.id) AS versions
              FROM cms_page p
             ORDER BY p.path
             LIMIT 200`,
         )
-        .all() as { id: number; path: string; title: string; status: string; updated_at: string; draft: number; versions: number }[];
+        .all() as {
+        id: number;
+        path: string;
+        title: string;
+        status: string;
+        updated_at: string;
+        published_at: string | null;
+        draft: number;
+        versions: number;
+      }[];
       return rows.map((row) => ({
         id: Number(row.id),
         path: String(row.path),
         title: String(row.title),
         status: String(row.status),
+        publishedAt: row.published_at === null ? null : String(row.published_at),
         draft: Number(row.draft) === 1,
         versions: Number(row.versions),
         updatedAt: String(row.updated_at),
@@ -4199,10 +4209,19 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
     if (raw === undefined || !Number.isInteger(id) || id <= 0) {
       throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'a page id is required');
     }
+    // Scheduling: `publish_at` is the same request as an immediate publish, with a time. Blank
+    // means now, which is what the button has always meant.
+    const publishAt = fieldsOf(req.body).publish_at;
     const db = this.#siteWrite(tenant.key);
     try {
       const actor = this.#actor(session);
-      const result = publishPage({ db, registry: loadRegistry(this.#schemaDir), pageId: id, actorId: actor.userId });
+      const result = publishPage({
+        db,
+        registry: loadRegistry(this.#schemaDir),
+        pageId: id,
+        actorId: actor.userId,
+        ...(publishAt === undefined ? {} : { publishAt }),
+      });
       // `no-store` is already set for every admin response, but this one answers with the state a
       // browser will now show; a cached copy would say "draft" on a page that is live.
       reply.header('cache-control', 'no-store');
@@ -4269,14 +4288,15 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
           const sheet = siteSheet({ chrome: themed, showChrome: hasChrome(themed, nav) });
           const pageId = pageRow?.record.id ?? null;
           const draftCss = pageRow?.css ?? '';
+          const framePath = pageRow?.record.path ?? '/';
           return {
             sheetHref: sheet === '' ? null : `/theme.css?v=${sheetVersion(sheet)}`,
             pageCssHref:
               pageId === null || draftCss === ''
                 ? null
                 : `/admin/t/${encodeURIComponent(tenant.key)}/editor/page.css?page=${pageId}&v=${sheetVersion(draftCss)}`,
-            frame: chromeHtml(themed, nav, chromeLogoUrl(db, themed), navListHtml),
-            pagePath: pageRow?.record.path ?? '/',
+            frame: chromeHtml(themed, nav, chromeLogoUrl(db, themed), navListHtml, framePath),
+            pagePath: framePath,
           };
         })(),
         // S8h: every block the tenant's *loaded* packages registered. Loaded is the whole rule:

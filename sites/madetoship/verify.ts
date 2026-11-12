@@ -42,6 +42,8 @@ interface Answer {
   status: number;
   location: string;
   body: string;
+  /** Response headers, so a check can assert a policy (`x-robots-tag`) and not just a body. */
+  headers: Headers;
 }
 
 let cookies: string[] = [];
@@ -56,7 +58,7 @@ async function call(method: string, path: string, body?: string, accept = 'text/
   if (cookies.length > 0) headers.set('Cookie', cookies.join('; '));
   const res = await fetch(`https://${host}${path}`, { method, headers, body, redirect: 'manual' });
   for (const cookie of res.headers.getSetCookie?.() ?? []) cookies.push(cookie.split(';')[0] ?? '');
-  return { status: res.status, location: res.headers.get('location') ?? '', body: await res.text() };
+  return { status: res.status, location: res.headers.get('location') ?? '', body: await res.text(), headers: res.headers };
 }
 
 const failures: string[] = [];
@@ -73,6 +75,7 @@ function hasCode(html: string): boolean {
 const PAGES: { path: string; title: RegExp }[] = [
   { path: '/', title: /Made to Ship — software agency/ },
   { path: '/services', title: /What we build — Made to Ship/ },
+  { path: '/websites', title: /Website development, three fixed prices — Made to Ship/ },
   { path: '/process', title: /How a project runs — Made to Ship/ },
   { path: '/engagements', title: /Engagements and pricing — Made to Ship/ },
   { path: '/about', title: /About Made to Ship/ },
@@ -92,10 +95,21 @@ for (const page of PAGES) {
 const home = bodies.get('/') ?? '';
 const about = bodies.get('/about') ?? '';
 
-check('manifest: five rows on /', (home.match(/class="index__row"/g) ?? []).length === 5, `${String((home.match(/class="index__row"/g) ?? []).length)} row(s)`);
+check('manifest: six rows on /', (home.match(/class="index__row"/g) ?? []).length === 6, `${String((home.match(/class="index__row"/g) ?? []).length)} row(s)`);
 check('manifest: labels drew', /class="index__link"[^>]*>Services</.test(home.replace(/\s+/g, ' ')), 'no Services link');
 check('manifest: placeholder gone', !home.includes('>A page<'), 'template placeholder still rendered');
-check('index: four rows on /about', (about.match(/class="index__row"/g) ?? []).length === 4, `${String((about.match(/class="index__row"/g) ?? []).length)} row(s)`);
+check('websites: three tiers are priced', (bodies.get('/websites') ?? '').includes('$6,500') && (bodies.get('/websites') ?? '').includes('$14,500') && (bodies.get('/websites') ?? '').includes('$28,000'), 'a tier price is missing');
+check('websites: the services page links to them', (bodies.get('/services') ?? '').includes('href="/websites"'), 'no link from /services');
+
+// Site search is a server route (base skunkworks), not a page row: the site must link to it from
+// the footer, the route must answer, and the results must be the site's own pages.
+check('search: the footer links to /search', (bodies.get('/') ?? '').includes('href="/search"'), 'no search link in the footer');
+const searchEmpty = await call('GET', '/search');
+check('search: the route answers with a box', searchEmpty.status === 200 && searchEmpty.body.includes('class="skw-search__form"'), `status ${String(searchEmpty.status)}`);
+const searchHit = await call('GET', '/search?q=pricing');
+check('search: a word in a page body is found', searchHit.status === 200 && searchHit.body.includes('class="skw-search__hit"'), `status ${String(searchHit.status)}, no hit`);
+check('search: results are noindex', (searchHit.headers.get('x-robots-tag') ?? '').includes('noindex'), `x-robots-tag ${String(searchHit.headers.get('x-robots-tag'))}`);
+check('index: six rows on /about', (about.match(/class="index__row"/g) ?? []).length === 6, `${String((about.match(/class="index__row"/g) ?? []).length)} row(s)`);
 
 const feed = await call('GET', '/_plugin/menu/items?menu=main', undefined, 'application/json');
 let feedCount = -1;
@@ -104,7 +118,7 @@ try {
 } catch {
   feedCount = -1;
 }
-check('menu feed answers JSON with five items', feed.status === 200 && feedCount === 5, `status ${String(feed.status)}, items ${String(feedCount)}`);
+check('menu feed answers JSON with six items', feed.status === 200 && feedCount === 6, `status ${String(feed.status)}, items ${String(feedCount)}`);
 
 // One currency, one set of numbers, and no per-visitor swapping: every page quotes dollars as `$`
 // and no page qualifies them — an `A$` or a `US$` anywhere means a second card crept back in.

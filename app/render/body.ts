@@ -29,9 +29,54 @@
 import type Database from 'better-sqlite3';
 
 import { unwrapBody } from '../editor/canon.ts';
+import { attr, parseHtml, serialize, type HtmlNode, type ElementNode } from '../editor/html.ts';
 import { renderBody, type RenderOptions } from '../editor/render.ts';
 import { AppError } from '../errors.ts';
 import { bindCoreForms } from './components/form.ts';
+
+/**
+ * The attribute the editor puts on an element the operator hid, and the marker this module
+ * removes at the last moment — before the bytes reach a visitor or an export.
+ *
+ * Why remove rather than `display:none`: an element that is still in the document still has
+ * bytes, still appears in a text dump, still costs a reader their scroll position, and would need
+ * every theme (and the exported tree, which carries no site sheet at all) to agree about a rule.
+ * Dropping the subtree means the page closes up the way the operator saw it close up, in the site
+ * and in a bundle, by construction. The stored body keeps the element — that is what makes it
+ * possible to bring it back without retyping it.
+ */
+export const HIDDEN_ATTR = 'data-skw-hidden';
+
+/** True when any element under `nodes` is marked hidden. */
+function anyHidden(nodes: readonly HtmlNode[]): boolean {
+  return nodes.some((node) =>
+    node.type === 'element' ? attr(node, HIDDEN_ATTR) !== undefined || anyHidden(node.children) : false,
+  );
+}
+
+/** Every hidden subtree gone, everything else serialised as it arrived. */
+function withoutHidden(nodes: readonly HtmlNode[]): HtmlNode[] {
+  const out: HtmlNode[] = [];
+  for (const node of nodes) {
+    if (node.type !== 'element') {
+      out.push(node);
+      continue;
+    }
+    if (attr(node, HIDDEN_ATTR) !== undefined) continue;
+    out.push({ ...node, children: withoutHidden((node as ElementNode).children) });
+  }
+  return out;
+}
+
+/**
+ * Hide what the editor hid, and only when something actually is: a body with no marked element
+ * keeps the bytes it was stored with, so this step cannot reflow or re-quote an untouched page.
+ */
+export function applyHidden(html: string): string {
+  if (!html.includes(HIDDEN_ATTR)) return html;
+  const nodes = parseHtml(html);
+  return anyHidden(nodes) ? serialize(withoutHidden(nodes)) : html;
+}
 
 /** `/<body` anywhere after the unwrap — a document the shell cannot hold. */
 const BODY_DOCUMENT = /<body[\s>]/i;
@@ -61,5 +106,5 @@ export function renderStoredBody(db: Database.Database, storedHtml: string, opti
   // The second projection: a `form` block becomes a form that the intake will accept (§8.6 O-30).
   // It runs here, in the one function the site and all three exporters share, so a page cannot
   // render a submittable form on the site and a token-less one in a bundle — or the reverse.
-  return bindCoreForms(renderBody(db, document, options), db, options.forms);
+  return applyHidden(bindCoreForms(renderBody(db, document, options), db, options.forms));
 }

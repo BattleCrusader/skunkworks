@@ -36,6 +36,8 @@ import {
   targetVersion,
 } from './db/migrate.ts';
 import { loadPage, normalisePagePath, pageMiss, type PageRecord } from './render/page.ts';
+import { PAGE_VISIBLE, visibleBefore } from './render/visibility.ts';
+import { SEARCH_PATH, searchBody, searchDescription, searchPages, searchTitle } from './render/search.ts';
 import { renderStoredBody } from './render/body.ts';
 import { resolveSourceBlocks } from './render/blocks.ts';
 import sharp from 'sharp';
@@ -886,8 +888,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
     try {
       const pages = db
-        .prepare(`SELECT path, updated_at FROM cms_page WHERE status = 'published' ORDER BY path`)
-        .all() as { path: string; updated_at: string }[];
+        .prepare(`SELECT path, updated_at FROM cms_page WHERE ${PAGE_VISIBLE} ORDER BY path`)
+        .all(visibleBefore()) as { path: string; updated_at: string }[];
       for (const page of pages) entries.push({ loc: `${origin}${page.path}`, lastmod: page.updated_at });
       // The board's list is a core route rather than a `cms_page` row, and a role page is only
       // crawlable if the index that links it is in the file too.
@@ -1508,6 +1510,36 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       updatedAt: new Date().toISOString(),
     };
     await renderPage(req, reply, ctx, db, record, { preview: false });
+  });
+
+  // --- site search ---------------------------------------------------------------------------
+  //
+  // `GET /search?q=…`, drawn by the site's own shell exactly as `/jobs` is: a synthesized
+  // `PageRecord` handed to `renderPage`, so the header, the footer, `theme.css` and the CSP are
+  // the site's, not a second renderer's copy. The results come from `app/render/search.ts`, whose
+  // visibility predicate is the same one the page lookup and the sitemap use, so a draft, a hidden
+  // page and a page scheduled for later cannot appear in results.
+  //
+  // `noindex`: a results page is a derivative of the site's own pages. Letting a crawler index it
+  // would put a second, stale copy of every page title in the index.
+  app.get(SEARCH_PATH, async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const raw = (req.query as { q?: unknown } | undefined)?.q;
+    const db = getSiteDb(ctx.tenant);
+    const result = searchPages(db, typeof raw === 'string' ? raw : '');
+    const siteName = loadChrome(db).title;
+    const record: PageRecord = {
+      id: 0,
+      path: SEARCH_PATH,
+      title: searchTitle(result, siteName),
+      status: 'published',
+      template: 'page',
+      bodyHtml: searchBody(result),
+      bodyCss: '',
+      seoJson: JSON.stringify({ description: searchDescription(result, siteName) }),
+      updatedAt: new Date().toISOString(),
+    };
+    await renderPage(req, reply, ctx, db, record, { preview: false, noindex: true });
   });
 
   app.setNotFoundHandler(async (req, reply) => {

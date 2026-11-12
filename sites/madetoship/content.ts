@@ -116,7 +116,7 @@ export const SERVICES = `
 <section class="page-head">
   <p class="eyebrow">Capabilities</p>
   <h1 class="display display--sm">What we build.</h1>
-  <p class="lede">Four kinds of engagement. All of them end the same way: software in production that
+  <p class="lede">Five kinds of engagement. All of them end the same way: software in production that
     your team can operate without us, with the repository, the infrastructure and the documentation in
     your name.</p>
 </section>
@@ -150,7 +150,35 @@ export const SERVICES = `
 
 <section class="band">
   <div class="section-head">
-    <p class="eyebrow">02 — Platform</p>
+    <p class="eyebrow">02 — Web</p>
+    <h2>Website development</h2>
+    <p class="section-head__note">The site a business actually needs, built by engineers and sold at a
+      fixed price. Three packages, priced on <a href="/websites">their own page</a>, with the number of
+      person-days written down so you can see what you are buying.</p>
+  </div>
+  <div class="split">
+    <div class="prose">
+      <p>Most websites are either a template with your logo on it, or an agency project that bills
+        discovery before it will name a figure. Both leave the same gap: nobody measured whether the
+        thing is fast, whether it can be edited by the person who owns it, or whether it will still
+        deploy in two years.</p>
+      <p>We build sites the way we build software — server-rendered, no framework weighing down the
+        first paint, a content model rather than a page builder, and a deploy you can roll back. The
+        prices are fixed because the work is repeatable.</p>
+    </div>
+    <ul class="spec">
+      <li><span>Launch</span>__WEB_LAUNCH__ — five pages, two weeks</li>
+      <li><span>Catalogue</span>__WEB_CATALOGUE__ — fifteen pages and a CMS, four weeks</li>
+      <li><span>Commerce</span>__WEB_COMMERCE__ — a store with checkout, six weeks</li>
+      <li><span>Always</span>Lighthouse 95+, WCAG AA, your accounts, a written handover</li>
+      <li><span>Care</span>Hosting, backups and changes from __CARE_LAUNCH__ a month</li>
+    </ul>
+  </div>
+</section>
+
+<section class="band">
+  <div class="section-head">
+    <p class="eyebrow">03 — Platform</p>
     <h2>Platforms &amp; integrations</h2>
     <p class="section-head__note">The systems that move money and data between the tools a business
       already runs on. Boring, observable, and safe to change.</p>
@@ -176,7 +204,7 @@ export const SERVICES = `
 
 <section class="band">
   <div class="section-head">
-    <p class="eyebrow">03 — Applied AI</p>
+    <p class="eyebrow">04 — Applied AI</p>
     <h2>AI features that survive contact with users</h2>
     <p class="section-head__note">Retrieval over your own documents, an assistant inside a workflow, a
       classifier that replaces a queue of manual decisions. Measured, guarded, and priced per request.</p>
@@ -202,7 +230,7 @@ export const SERVICES = `
 
 <section class="band">
   <div class="section-head">
-    <p class="eyebrow">04 — Rescue</p>
+    <p class="eyebrow">05 — Rescue</p>
     <h2>Rescue &amp; stabilisation</h2>
     <p class="section-head__note">A release that keeps slipping, a codebase nobody wants to touch, an
       agency that left mid-project. We start by making change safe again.</p>
@@ -233,6 +261,129 @@ export const SERVICES = `
         that it is none of them.</p>
     </div>
     <p class="actions"><a class="btn" href="/contact">Talk to an engineer</a></p>
+  </div>
+</section>
+`;
+
+export const WEBSITES = `
+<section class="page-head">
+  <p class="eyebrow">Website development</p>
+  <h1 class="display display--sm">A website, priced on the page.</h1>
+  <p class="lede">Three fixed prices, three shapes of site, and the effort written down in person-days
+    so the number is explainable. No discovery invoice to find out what it costs, no hourly meter, and
+    no rebuild in year two because the first one could not be edited.</p>
+</section>
+
+<section class="band">
+  <div class="plans">
+    <article class="plan">
+      <p class="plan__kind">Two weeks · 8 person-days</p>
+      <h2 class="plan__name">Launch</h2>
+      <p class="plan__price">__WEB_LAUNCH__<span>up to five pages, fixed</span></p>
+      <p class="plan__for">A business that needs to exist properly online: the offer, the proof, the
+        way to get in touch. One page that does the work of five is fine by us.</p>
+      <ul class="plan__list">
+        <li>Five pages, or one long page in sections — designed, not templated</li>
+        <li>Copy editing on those pages included; you write the first draft</li>
+        <li>Lighthouse 95+ on a phone, WCAG AA, structured data for search</li>
+        <li>Forms that land in your inbox or CRM, spam-filtered</li>
+        <li>Deployed to your domain with TLS, analytics and a sitemap</li>
+      </ul>
+      <p class="plan__note">Photography, illustration and brand identity are quoted separately.</p>
+    </article>
+    <article class="plan plan--feature">
+      <p class="plan__kind">Four weeks · 18 person-days</p>
+      <h2 class="plan__name">Catalogue</h2>
+      <p class="plan__price">__WEB_CATALOGUE__<span>up to fifteen pages, fixed</span></p>
+      <p class="plan__for">The site a business grows into: services, case studies, resources, and
+        somebody in marketing who needs to publish without emailing a developer.</p>
+      <ul class="plan__list">
+        <li>Fifteen pages on a design system, not fifteen separate designs</li>
+        <li>A CMS your team publishes from: drafts, publishing roles, image handling</li>
+        <li>Blog or resources section with tags, authors and a feed</li>
+        <li>Structured data for search engines, and a redirect for every old URL</li>
+        <li>Migration of up to 300 existing pages or posts, included</li>
+      </ul>
+      <p class="plan__note">Analytics set up and a monthly traffic report in plain English.</p>
+    </article>
+    <article class="plan">
+      <p class="plan__kind">Six weeks · 34 person-days</p>
+      <h2 class="plan__name">Commerce</h2>
+      <p class="plan__price">__WEB_COMMERCE__<span>up to 100 products, fixed</span></p>
+      <p class="plan__for">Selling online without renting a theme: your catalogue, your checkout, your
+        customer list — and a storefront that does not make a phone wait three seconds.</p>
+      <ul class="plan__list">
+        <li>Product and collection pages rendered on the server, nothing heavy on first paint</li>
+        <li>Stripe checkout, webhooks, refunds and a customer portal you own</li>
+        <li>Search, filters, variants, stock states, Australian shipping and tax rules</li>
+        <li>Receipts and order notifications from your own domain, on your own mail</li>
+        <li>Admin screens for orders and products; adding a product needs no developer</li>
+      </ul>
+      <p class="plan__note">Stripe's processing fees are Stripe's. Marketplace and ERP integrations are
+        quoted as a separate sprint.</p>
+    </article>
+  </div>
+</section>
+
+<section class="band">
+  <div class="section-head">
+    <p class="eyebrow">Every tier, no exceptions</p>
+    <h2>The things that are not upgrades.</h2>
+    <p class="section-head__note">Speed, accessibility and ownership are not a premium add-on. They are
+      the reason the price is what it is.</p>
+  </div>
+  <div class="split">
+    <ul class="spec">
+      <li><span>Who builds it</span>A senior engineer, not a junior assembling a bought theme</li>
+      <li><span>Ownership</span>Your repository, your hosting account, your domain, your analytics</li>
+      <li><span>Measured</span>Lighthouse 95+ mobile and WCAG AA, reported with screenshots, not claimed</li>
+      <li><span>Environments</span>Staging from week one, production inside the tier's window</li>
+      <li><span>After launch</span>Thirty days of fixes at no charge, then a care plan or nothing</li>
+      <li><span>Handover</span>A written guide: how to publish, how to deploy, who to call</li>
+    </ul>
+    <div class="prose">
+      <p>A website that cannot be edited by the person who owns it is a subscription to the agency that
+        built it. We price the CMS into the tier it belongs in rather than selling it back monthly.</p>
+      <p>If what you need has accounts, billing or a workflow behind the login, it is not a website
+        package — it is a product. Those are priced per two-week sprint on the
+        <a href="/engagements">engagements page</a>.</p>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="section-head">
+    <p class="eyebrow">What moves the price</p>
+    <h2>Everything the tier does not cover, priced.</h2>
+  </div>
+  <div class="split">
+    <ul class="spec">
+      <li><span>Extra pages</span>$650 a page beyond the tier</li>
+      <li><span>Extra language</span>$1,200 a locale, including the content model</li>
+      <li><span>Photography</span>Quoted — we bring a photographer, we do not shoot it</li>
+      <li><span>Integrations</span>Booking, ERP, marketplace feeds: quoted per sprint</li>
+      <li><span>Rush</span>Half the window costs 30% more, and we will tell you if it is a bad idea</li>
+    </ul>
+    <div class="prose">
+      <p>Care is optional and monthly: __CARE_LAUNCH__ for a Launch site, __CARE_CATALOGUE__ for a
+        Catalogue and __CARE_COMMERCE__ for a store. That covers managed hosting, backups, dependency
+        and security updates, uptime monitoring, and a block of changes each month. Cancel any month —
+        the site is yours, and it keeps working.</p>
+      <p>Fixed price means the number does not move because we were slow. If the scope has to change,
+        you get a written change with a price before anything is built, and you can decline it.</p>
+    </div>
+  </div>
+</section>
+
+<section class="band band--tight">
+  <div class="cta">
+    <div>
+      <p class="eyebrow">Next</p>
+      <h2>Pick the tier, or ask which one.</h2>
+      <p class="cta__note">Send the URL of your current site and one sentence about what is wrong with
+        it. You get the tier, the price and the date back within a business day.</p>
+    </div>
+    <p class="actions"><a class="btn" href="/contact">Start a website</a></p>
   </div>
 </section>
 `;

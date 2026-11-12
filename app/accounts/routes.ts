@@ -899,7 +899,7 @@ class Portal {
    * lock everyone out. The CMS page keeps its own refusal — it has no such duty to a signed-out
    * visitor.
    */
-  #chromeParts(tenantKey: string): { header: string; footer: string } | null {
+  #chromeParts(tenantKey: string, current?: string): { header: string; footer: string } | null {
     let db: Database.Database | null = null;
     try {
       db = this.#deps.openDb(tenantKey);
@@ -908,7 +908,7 @@ class Portal {
       // package serves, and refusing it here would drop the whole header on a site that has one.
       const pageExists = this.#deps.pageExists;
       const nav = loadNav(db, pageExists === undefined ? {} : { pageExists: (path) => pageExists(tenantKey, path) });
-      return chromeHtml(chrome, nav, chromeLogoUrl(db, chrome), navListHtml);
+      return chromeHtml(chrome, nav, chromeLogoUrl(db, chrome), navListHtml, current);
     } catch {
       return null;
     } finally {
@@ -925,13 +925,15 @@ class Portal {
    * no third-party request on the page.
    */
   #page(req: FastifyRequest, tenantKey: string, title: string, body: string, width: PortalWidth = 'regular'): string {
-    const chrome = this.#chromeParts(tenantKey);
     let path = '/portal';
     try {
       path = new URL(req.url, 'http://portal.invalid').pathname;
     } catch {
       path = '/portal';
     }
+    // The path first: the chrome marks the current menu entry, and a portal page is as much a
+    // page of this site as any other.
+    const chrome = this.#chromeParts(tenantKey, path);
     return `<!doctype html>
 <html lang="en" data-tenant="${escapeHtml(tenantKey)}">
 <head>

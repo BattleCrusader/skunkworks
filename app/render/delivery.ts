@@ -89,7 +89,16 @@ export function sitemapXml(entries: readonly SitemapEntry[]): string {
  * crawler that found the site by accident learns the site has an index at all.
  */
 export function robotsTxt(origin: string): string {
-  return ['User-agent: *', 'Allow: /', '', `Sitemap: ${origin}/sitemap.xml`, ''].join('\n');
+  // `/search` is disallowed as well as `noindex`: the results page is a derivative of the site's
+  // own pages, and a crawler that walks `?q=` with a dictionary turns one page into a thousand.
+  return [
+    'User-agent: *',
+    'Allow: /',
+    'Disallow: /search',
+    '',
+    `Sitemap: ${origin}/sitemap.xml`,
+    '',
+  ].join('\n');
 }
 
 /**

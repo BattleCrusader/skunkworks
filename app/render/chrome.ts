@@ -279,7 +279,9 @@ export function chromeHtml(
   chrome: SiteChrome,
   nav: { header: NavItem[]; footer: NavItem[] },
   logoUrl: string | null,
-  menu: (items: readonly NavItem[], className: string) => string,
+  menu: (items: readonly NavItem[], className: string, current?: string) => string,
+  /** The path being drawn, so the menu can mark itself with `aria-current="page"`. */
+  current?: string,
 ): { header: string; footer: string } | null {
   const identity = chrome.title !== '' || logoUrl !== null;
   const headerBar = identity || nav.header.length > 0;
@@ -290,12 +292,12 @@ export function chromeHtml(
       (identity
         ? `<a class="site-id" href="/">${logoUrl === null ? '' : `<img src="${esc(logoUrl)}" alt="">`}<span>${esc(chrome.title)}</span></a>`
         : '') +
-      (nav.header.length > 0 ? `<nav aria-label="Main">${menu(nav.header, 'site-menu')}</nav>` : '') +
+      (nav.header.length > 0 ? `<nav aria-label="Main">${menu(nav.header, 'site-menu', current)}</nav>` : '') +
       `</header>`
     : '';
   const footer = footerBar
     ? `<footer class="site-footer${chrome.footerSticky ? ' site-footer--sticky' : ''}">` +
-      (nav.footer.length > 0 ? `<nav aria-label="Footer">${menu(nav.footer, 'site-menu site-menu--footer')}</nav>` : '') +
+      (nav.footer.length > 0 ? `<nav aria-label="Footer">${menu(nav.footer, 'site-menu site-menu--footer', current)}</nav>` : '') +
       (chrome.footerText !== '' ? `<p class="site-footer__text">${esc(chrome.footerText)}</p>` : '') +
       `</footer>`
     : '';
@@ -310,6 +312,14 @@ export function chromeCss(chrome: SiteChrome): string {
     '.site-id img{height:1.75rem;width:auto}',
     '.site-menu{display:flex;flex-wrap:wrap;gap:.75rem;margin:0;padding:0;list-style:none}',
     '.site-menu a{color:inherit}',
+    // A menu says which page you are on. The shell marks the matching link with aria-current, so
+    // any theme can style it without enumerating its own paths — and a page added after the theme
+    // was written is styled the day it is added.
+    //
+    // Weight only, no `text-decoration`: a theme that draws its own rule under the current item
+    // (madetoship draws a border) would then show two lines, one under the other. Weight is a
+    // default a theme can override without leaving a mark on the page.
+    '.site-menu a[aria-current="page"]{font-weight:600}',
     '.site-footer{padding:1rem;border-top:1px solid rgba(0,0,0,.12);background:Canvas}',
     '.site-footer--sticky{position:sticky;bottom:0;z-index:20}',
     // No `opacity` here. It was `.75`, and Lighthouse's only accessibility finding on the live
@@ -317,6 +327,20 @@ export function chromeCss(chrome: SiteChrome): string {
     // lighter grey, and 4.97:1 became 3.6:1. A default that fails AA in the theme nobody edited
     // is a defect in the default.
     '.site-footer__text{margin:.5rem 0 0}',
+    // Site search (`/search`). Base styles, so the shell's own page is legible in a theme that has
+    // never heard of it; a theme that wants its own look overrides these by name.
+    '.skw-search{max-width:46rem}',
+    '.skw-search__lede{margin:.5rem 0 1.5rem}',
+    '.skw-search__form{margin:0 0 1.5rem}',
+    '.skw-search__label{display:block;font-size:.8rem;text-transform:uppercase;letter-spacing:.08em;margin:0 0 .4rem}',
+    '.skw-search__row{display:flex;gap:.5rem;flex-wrap:wrap}',
+    '.skw-search__input{flex:1 1 14rem;min-width:0;padding:.6rem .7rem;font:inherit;border:1px solid rgba(0,0,0,.35);border-radius:.2rem;background:Canvas;color:CanvasText}',
+    '.skw-search__submit{padding:.6rem 1.1rem;font:inherit;border:1px solid currentColor;border-radius:.2rem;background:transparent;color:inherit;cursor:pointer}',
+    '.skw-search__hits{list-style:none;margin:0;padding:0}',
+    '.skw-search__hit{padding:.9rem 0;border-top:1px solid rgba(0,0,0,.14)}',
+    '.skw-search__link{font-weight:600}',
+    '.skw-search__where{margin-left:.5rem;font-size:.78rem;opacity:.7}',
+    '.skw-search__snippet{margin:.35rem 0 0}',
     chrome.headerSticky || chrome.footerSticky ? '' : '',
   ]
     .filter((line) => line !== '')

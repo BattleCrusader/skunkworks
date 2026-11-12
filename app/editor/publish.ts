@@ -28,6 +28,7 @@ import type Database from 'better-sqlite3';
 
 import { syncPageLinks } from '../assets/links.ts';
 import { putCssBlob } from '../render/themes.ts';
+import { normaliseInstant } from '../render/visibility.ts';
 import { AppError } from '../errors.ts';
 import type { Registry } from './registry.ts';
 
@@ -38,6 +39,13 @@ export interface PublishInput {
   actorId?: number;
   /** Defaults to 'published in the editor'. Goes into the revision row's `note`. */
   note?: string;
+  /**
+   * When the page should go live. Absent or blank means now. A future instant is a SCHEDULE:
+   * the body ships as published, `published_at` names the future moment, and every reader
+   * (`app/render/visibility.ts`) treats the page as invisible until then. An instant that is
+   * past is simply now — "publish at 3pm" typed at 4pm must not hide the page for a day.
+   */
+  publishAt?: string;
   now?: () => Date;
 }
 
@@ -48,6 +56,8 @@ export interface PublishResult {
   rev: number;
   publishedAt: string;
   bodySha: string;
+  /** True when `publishedAt` is in the future: published, not yet visible. */
+  scheduled: boolean;
 }
 
 interface Row {
@@ -88,6 +98,17 @@ export function publishPage(input: PublishInput): PublishResult {
   }
 
   const at = (input.now ?? (() => new Date()))().toISOString();
+  // A blank field is "now"; a value that will not parse is a mistake the operator can fix, so it
+  // is refused by name rather than silently turned into now (which would put an unpublished page
+  // live at the wrong time — the failure a schedule exists to prevent).
+  const wantsSchedule = input.publishAt !== undefined && input.publishAt.trim() !== '';
+  const scheduledFor = wantsSchedule ? normaliseInstant(input.publishAt) : null;
+  if (wantsSchedule && scheduledFor === null) {
+    throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'publish_at is not a time this site can read', {
+      page: row.path,
+    });
+  }
+  const liveAt = scheduledFor !== null && scheduledFor > at ? scheduledFor : at;
   // A page that was already live has been serving `body_html` while the draft waited, so this is
   // its next body revision. A page that was never live has been revising the one body it has,
   // and publishing ships the number that body already carries.
@@ -102,7 +123,7 @@ export function publishPage(input: PublishInput): PublishResult {
               draft_html = '', draft_css = '', draft_sha = '', draft_updated_at = NULL,
               updated_at = ?, updated_by = ?
         WHERE id = ?`,
-    ).run(row.draft_html, row.draft_css, row.draft_sha, at, rev, at, input.actorId ?? null, row.id);
+    ).run(row.draft_html, row.draft_css, row.draft_sha, liveAt, rev, at, input.actorId ?? null, row.id);
 
     // S8s: the live page's CSS becomes a file at `/_css/<sha>.css`; name it as it is published,
     // so the document that starts linking it never points at a 404.
@@ -110,10 +131,25 @@ export function publishPage(input: PublishInput): PublishResult {
     db.prepare(
       `INSERT INTO cms_page_revision (page_id, rev, body_html, body_css, note, created_by)
        VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(row.id, rev, row.draft_html, row.draft_css, input.note ?? 'published from the editor', input.actorId ?? null);
+    ).run(
+      row.id,
+      rev,
+      row.draft_html,
+      row.draft_css,
+      input.note ?? (liveAt === at ? 'published from the editor' : `scheduled for ${liveAt}`),
+      input.actorId ?? null,
+    );
 
     syncPageLinks(db, row.id);
   })();
 
-  return { id: row.id, path: row.path, status: 'published', rev, publishedAt: at, bodySha: row.draft_sha };
+  return {
+    id: row.id,
+    path: row.path,
+    status: 'published',
+    rev,
+    publishedAt: liveAt,
+    bodySha: row.draft_sha,
+    scheduled: liveAt !== at,
+  };
 }

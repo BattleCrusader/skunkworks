@@ -321,7 +321,9 @@ test('PJ-8. both pages wear the site\u2019s own chrome, not a copy of it', async
     assert.equal(res.status, 200, res.body);
     assert.match(res.body, /<header class="site-header site-header--sticky">/, `${path} has the site header`);
     assert.match(res.body, /<nav aria-label="Main">/, `${path} has the main menu`);
-    assert.match(res.body, /<a href="\/jobs">Jobs<\/a>/, `${path} carries the Jobs menu item`);
+    // `[^>]*` because the menu marks the current page (`aria-current="page"`) — on `/jobs` that is
+    // this item, on `/jobs/<id>` it is not, and both are the same menu.
+    assert.match(res.body, /<a href="\/jobs"[^>]*>Jobs<\/a>/, `${path} carries the Jobs menu item`);
     assert.match(res.body, /<footer class="site-footer">/, `${path} has the site footer`);
     assert.match(res.body, /<p class="site-footer__text">© 2026 Alpha Works<\/p>/, `${path} has the footer sentence`);
     assert.match(res.body, /<link rel="stylesheet" href="\/theme.css\?v=[0-9a-f]{6,64}">/, `${path} links the tenant sheet`);

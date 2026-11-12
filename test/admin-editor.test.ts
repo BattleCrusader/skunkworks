@@ -179,7 +179,12 @@ test('E1b — the editor has a toolbar of its own, and no button is a missing Fo
   // S8b: Save writes a draft and Publish is the request that makes it live. The button and the
   // request it calls are one contract; a toolbar with a Publish that posts to nothing is the
   // defect this line exists to catch.
-  assert.match(boot.body, /window\.skwPublish = function \(\)/);
+  // The publish call takes the optional schedule time as its one argument; with it blank the
+  // request is exactly the immediate publish it has always been.
+  assert.match(boot.body, /window\.skwPublish = function \(publishAt\)/);
+  // A `datetime-local` carries no zone: the browser converts the operator's wall-clock time to an
+  // instant before sending it, so a server in UTC cannot read "09:00" as nine in the morning UTC.
+  assert.match(boot.body, /parsed\.toISOString\(\)/, 'the schedule time must be converted in the browser');
   assert.match(boot.body, /\/editor\/publish/);
   assert.match(boot.body, /addEventListener\('keydown'/);
   assert.match(boot.body, /toLowerCase\(\) === 's'/);
@@ -423,6 +428,75 @@ test('E9 — bytes claiming a component this build does not define are refused, 
   try {
     const count = db.prepare("SELECT count(*) AS n FROM cms_page WHERE path = '/degraded'").get() as { n: number };
     assert.equal(count.n, 0);
+  } finally {
+    db.close();
+  }
+});
+
+/**
+ * E10 — hiding an element: the control, the blur, and what a visitor gets.
+ *
+ * The operator's ask was three things, and the three are asserted here because any two of them can
+ * hold while the third lies: a control that hides, a canvas that shows what it hid (blurred, still
+ * clickable), and a published page where the element is *gone* — not transparent, not a gap, but
+ * absent, so the rest of the page closes up.
+ */
+test('E10a — the inspector carries a visibility toggle and the canvas blurs what it hides', async () => {
+  const page = await admin('/admin/t/acme/editor');
+  assert.equal(page.status, 200, page.body);
+  assert.match(page.body, /id="skw-hide-toggle"/);
+  assert.match(page.body, /aria-pressed="false"/, 'a pressed state is what makes the button a toggle');
+
+  const css = await admin('/admin/t/acme/editor/canvas.css');
+  assert.equal(css.status, 200, css.body);
+  assert.match(css.body, /\[data-skw-hidden\]\{[^}]*filter:blur\(/, 'the hidden element is blurred in the canvas');
+  assert.match(css.body, /\[data-skw-hidden\]\{[^}]*outline:2px dashed/, 'and outlined, so it can be found');
+  assert.doesNotMatch(
+    css.body,
+    /\[data-skw-hidden\]\{[^}]*display:none/,
+    'the element keeps its space in the editor, or it cannot be clicked to bring it back',
+  );
+
+  const boot = await admin('/admin/t/acme/editor/editor.js');
+  assert.equal(boot.status, 200);
+  assert.match(boot.body, /data-skw-hidden/, 'the toggle writes the attribute the renderer reads');
+});
+
+test('E10b — the saved draft keeps a hidden element, and the published page does not carry it', async () => {
+  const res = await admin('/admin/t/acme/editor/save', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: ADMIN_ORIGIN, 'x-csrf-token': session.csrfToken },
+    body: JSON.stringify({
+      path: '/hide-probe',
+      title: 'Hide probe',
+      slug: 'hide-probe',
+      template: 'page',
+      status: 'draft',
+      html: '<section><p>Always seen</p><p data-skw-hidden="1">Only in the draft</p><p>After it</p></section>',
+    }),
+  });
+  assert.equal(res.status, 200, res.body);
+  const id = Number((res.json as { id?: number }).id ?? 0);
+  assert.ok(id > 0);
+
+  const publish = await admin('/admin/t/acme/editor/publish', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: ADMIN_ORIGIN, 'x-csrf-token': session.csrfToken },
+    body: JSON.stringify({ id }),
+  });
+  assert.equal(publish.status, 200, publish.body);
+
+  const served = await call({ port, path: '/hide-probe', host: 'acme.test' });
+  assert.equal(served.status, 200, served.body);
+  assert.match(served.body, /Always seen/);
+  assert.match(served.body, /After it/);
+  assert.doesNotMatch(served.body, /Only in the draft/, 'a hidden element must not reach a visitor');
+  assert.doesNotMatch(served.body, /data-skw-hidden/, 'nor leave its marker in the published bytes');
+
+  const db = openAdminWrite(fixture.sitePath('acme'));
+  try {
+    const row = db.prepare('SELECT body_html FROM cms_page WHERE id = ?').get(id) as { body_html: string };
+    assert.match(row.body_html, /Only in the draft/, 'the stored body keeps it — that is how it can be brought back');
   } finally {
     db.close();
   }

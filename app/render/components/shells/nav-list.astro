@@ -23,6 +23,12 @@ interface Item {
 interface Props {
   items: Item[];
   /**
+   * The path being drawn. The item whose href equals it gets `aria-current="page"`, which is how a
+   * menu says "you are here" — in the markup, so any theme can style it and a screen reader can
+   * announce it, instead of a stylesheet that has to enumerate every page a site will ever have.
+   */
+  current?: string;
+  /**
    * The `<ul>`'s class. The chrome's own stylesheet (`chromecCss` in `app/render/chrome.ts`) and
    * every site theme select the menu by `.site-menu`, and until S8o this component emitted a bare
    * `<ul>` — so those rules matched nothing and the header's menu was unstyled on every site. The
@@ -30,7 +36,7 @@ interface Props {
    */
   className?: string;
 }
-const { items, className } = Astro.props as Props;
+const { items, className, current } = Astro.props as Props;
 ---
 
-<ul class={className}>{items.map((item) => (<li><a href={item.href}>{item.label}</a>{item.children.length > 0 ? <NavList items={item.children} className={className} /> : null}</li>))}</ul>
+<ul class={className}>{items.map((item) => (<li><a href={item.href} aria-current={item.href === current ? 'page' : undefined}>{item.label}</a>{item.children.length > 0 ? <NavList items={item.children} className={className} current={current} /> : null}</li>))}</ul>

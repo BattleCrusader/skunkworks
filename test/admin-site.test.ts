@@ -174,8 +174,14 @@ test('S8l-4. a menu row renders as a link in the bar, in position order', async 
   assert.equal(second.status, 303, second.body);
 
   const home = await site('/pricing');
-  assert.match(home.body, /<nav aria-label="Main"><ul class="site-menu"><li><a href="\/pricing">Pricing<\/a><\/li><\/ul><\/nav>/);
-  assert.match(home.body, /<nav aria-label="Footer"><ul class="site-menu site-menu--footer"><li><a href="\/pricing">Buy<\/a><\/li><\/ul><\/nav>/);
+  // Both rows point at `/pricing`, which is the page being served, so both carry `aria-current`:
+  // that is the shell saying "you are here", and it is the reason a theme no longer has to
+  // enumerate its own paths to underline the current item.
+  assert.match(home.body, /<nav aria-label="Main"><ul class="site-menu"><li><a href="\/pricing" aria-current="page">Pricing<\/a><\/li><\/ul><\/nav>/);
+  assert.match(
+    home.body,
+    /<nav aria-label="Footer"><ul class="site-menu site-menu--footer"><li><a href="\/pricing" aria-current="page">Buy<\/a><\/li><\/ul><\/nav>/,
+  );
 });
 
 test('S8l-5. a blog post — a row in a package table, not a cms_page — wears the same bar', async () => {
@@ -226,15 +232,15 @@ test('S8l-6. hiding a row removes it from the page; deleting removes the row', a
 
   const hidden = await post('/admin/t/acme/site/nav/visible', { id, visible: '0' });
   assert.equal(hidden.status, 303, hidden.body);
-  assert.doesNotMatch((await site('/pricing')).body, /<a href="\/pricing">Pricing<\/a>/, 'a hidden row does not render');
+  assert.doesNotMatch((await site('/pricing')).body, /<a href="\/pricing"[^>]*>Pricing<\/a>/, 'a hidden row does not render');
 
   const shown = await post('/admin/t/acme/site/nav/visible', { id, visible: '1' });
   assert.equal(shown.status, 303, shown.body);
-  assert.match((await site('/pricing')).body, /<a href="\/pricing">Pricing<\/a>/);
+  assert.match((await site('/pricing')).body, /<a href="\/pricing"[^>]*>Pricing<\/a>/);
 
   const removed = await post('/admin/t/acme/site/nav/delete', { id });
   assert.equal(removed.status, 303, removed.body);
-  assert.doesNotMatch((await site('/pricing')).body, /<a href="\/pricing">Pricing<\/a>/);
+  assert.doesNotMatch((await site('/pricing')).body, /<a href="\/pricing"[^>]*>Pricing<\/a>/);
 });
 
 test('S8l-7. a logo key that names no asset is refused, and the title is not lost with it', async () => {
