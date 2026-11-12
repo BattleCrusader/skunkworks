@@ -4,11 +4,11 @@ A multi-tenant Astro CMS: one deployment serves many websites, each on its own d
 
 TypeScript on Node 22. Fastify plus an Astro SSR shell in **one** Node process. One SQLite file per tenant, one small `control.db` for the fleet. Three containers on one host, nginx at the edge. Every claim below is either checkable in this repository or was measured by a gate you can re-run.
 
-## Status & licence
+## Status & license
 
 **Pre-1.0. No release has been cut.**
 
-- There is **no `LICENCE` file** in this repository yet, so no licence is granted by it. Do not assume terms that are not written down.
+- **MIT licensed.** The full terms are in `LICENSE` at the repository root, and the copyright line is `Copyright (c) 2026 BattleCrusader`.
 - `.github/workflows/gate.yml` exists and describes the CI gate, but that workflow **has never completed a run on GitHub Actions** — its own header says it must not be cited as evidence until a green run exists. The local gate is the real gate: `make test`.
 - `docker-compose.yml` ships **placeholder all-zero image digests**, so a bare `docker compose up -d` fails with `denied` until you build the images locally (or a release publishes real digests). That is the first thing a new operator hits, so it is in the quickstart, not a footnote.
 - Interfaces will change. The schema is frozen per release (`schema/`), not per minor version.
@@ -391,7 +391,6 @@ docker-compose.yml   Makefile   astro.config.mjs   IDEA.md
 
 Verified by reading the repository, not inferred:
 
-- **No `LICENCE` file.** No licence is granted.
 - **CI has never run green.** `.github/workflows/gate.yml` exists, and by its own header must not be cited as evidence.
 - **The registry pull is impossible as shipped.** The compose digests are all zeros.
 - **ACME against a production CA is unproven.** Measured against Pebble with validation not short-circuited; do the first issuance on a throwaway host.
