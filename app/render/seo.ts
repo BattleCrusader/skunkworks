@@ -22,7 +22,22 @@
  * When it is present: description, an absolute canonical (only when an origin is known), Open
  * Graph and Twitter cards, and a JSON-LD document if the JSON parses. Every `<` inside the JSON is
  * written `\u003c`, so a value cannot close the script element it lives in.
+ *
+ * ## `robots`, and why `index` is never stored
+ *
+ * One key is a *control* rather than metadata: `"robots": "noindex"` is the page an operator has
+ * decided search engines should not list. It rides in the same column instead of a new one because
+ * `seo_json` is already on every page row, already carried by the render, and already written by
+ * no other code — a column would be a schema amendment for a single enum.
+ *
+ * `"index"` is the default and is therefore **not representable**: `parsePageSeo` drops it, and
+ * the writer removes the key. That is what keeps criterion "an indexable page is byte-unchanged"
+ * true — a page that has never been touched carries no `robots` key, produces no `<meta
+ * name="robots">`, and renders precisely the bytes it rendered before this existed.
  */
+
+/** What an operator chooses in the Pages screen. `index` is the default. */
+export type PageRobots = 'index' | 'noindex';
 
 export interface PageSeo {
   /** Social title. The document title is emitted by the shell and is not repeated here. */
@@ -33,6 +48,11 @@ export interface PageSeo {
   canonical?: string;
   /** An absolute image URL for the share card. */
   image?: string;
+  /**
+   * `'noindex'` only. Absent means indexable, and `'index'` in the stored JSON is normalised away
+   * so that writing "yes, index this" cannot change a document's bytes.
+   */
+  robots?: 'noindex';
   /** A JSON-LD document, as an object. */
   jsonLd?: unknown;
 }
@@ -74,7 +94,49 @@ export function parsePageSeo(raw: string | null | undefined): PageSeo | null {
     if (typeof value === 'string' && value.trim() !== '') seo[key] = value.trim();
   }
   if (source.jsonLd !== undefined && source.jsonLd !== null) seo.jsonLd = source.jsonLd;
+  // `'index'` is the default and is deliberately not representable: storing it would be a no-op
+  // that changed the document's bytes (this object would no longer be empty, so `pageSeoHead`
+  // would start emitting a card for a page that had none).
+  if (source.robots === 'noindex') seo.robots = 'noindex';
   return Object.keys(seo).length === 0 ? null : seo;
+}
+
+/** The page's search-engine visibility, with `seo_json` missing or malformed read as indexable. */
+export function pageRobots(raw: string | null | undefined): PageRobots {
+  return parsePageSeo(raw)?.robots === 'noindex' ? 'noindex' : 'index';
+}
+
+/** The result of setting one page's visibility: the new column value, or why it was refused. */
+export type PageRobotsWrite = { ok: true; json: string | null } | { ok: false; reason: string };
+
+/**
+ * `seo_json` with `robots` set (or removed, for `'index'`), for the write path.
+ *
+ * Every other key is preserved verbatim, including ones this module does not understand — the
+ * column is the operator's data and a visibility toggle is not licence to drop a key. An empty
+ * result becomes `null` so the column stays NULL for a page with no metadata at all, which is the
+ * state every page row starts in.
+ *
+ * Invalid JSON is **refused** rather than overwritten: an operator who hand-edited the column into
+ * a syntax error should be told, not have their typing replaced by the toggle they pressed.
+ */
+export function withPageRobots(raw: string | null | undefined, robots: PageRobots): PageRobotsWrite {
+  let source: Record<string, unknown> = {};
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { ok: false, reason: 'seo_json is not JSON' };
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, reason: 'seo_json is not an object' };
+    }
+    source = { ...(parsed as Record<string, unknown>) };
+  }
+  if (robots === 'noindex') source.robots = 'noindex';
+  else delete source.robots;
+  return { ok: true, json: Object.keys(source).length === 0 ? null : JSON.stringify(source) };
 }
 
 export interface SeoHeadInput {
@@ -105,6 +167,10 @@ export function pageSeoHead(input: SeoHeadInput): string {
   const canonical = seo.canonical ?? (origin === null ? null : `${origin}${path === '/' ? '/' : path}`);
   const title = seo.title ?? (documentTitle === '' ? null : documentTitle);
 
+  // First, because it decides whether anything after it is read at all. `follow` is left to the
+  // document: hiding a page from the index is not a claim that its links are untrustworthy, and a
+  // crawler that stops following here would also stop finding the pages it may index.
+  if (seo.robots === 'noindex') parts.push('<meta name="robots" content="noindex">');
   if (seo.description !== undefined) {
     parts.push(`<meta name="description" content="${attr(seo.description)}">`);
     parts.push(`<meta property="og:description" content="${attr(seo.description)}">`);

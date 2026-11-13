@@ -145,6 +145,7 @@ import {
 } from '../render/chrome.ts';
 import { loadNav, navListHtml } from '../render/nav.ts';
 import { sheetVersion, siteSheet } from '../render/theme.ts';
+import { pageRobots, withPageRobots, type PageRobots } from '../render/seo.ts';
 import { matchPluginPage } from '../render/plugin-pages.ts';
 import { isPublicJobsPath } from '../render/public-jobs.ts';
 import {
@@ -663,7 +664,7 @@ export class AdminSurface {
         this.#seeOther(reply, '/admin/login', 302);
         return;
       }
-      await this.#tenantHome(reply, tenant, session);
+      await this.#tenantHome(req, reply, tenant, session);
       return;
     }
 
@@ -1157,7 +1158,7 @@ ${items}
       const session = this.#sessionGate(req, reply, tenant);
       if (session === null) return;
       this.#assertTenantMatches(session, tenant);
-      await this.#tenantHome(reply, tenant, session);
+      await this.#tenantHome(req, reply, tenant, session);
       return;
     }
 
@@ -1382,6 +1383,14 @@ ${items}
       this.#pagesList(reply, tenant);
       return;
     }
+    // Per-page search visibility, from the Pages screen. A write, so origin and CSRF are checked
+    // before a field is read — the order every other write in this file uses.
+    if (action === 'pages/visibility' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#pageVisibility(req, reply, tenant, session);
+      return;
+    }
     // §10.1–§10.3 (S4a): the editor. The page is a GET; every write is origin- and
     // CSRF-checked before the editor module sees a field, and the three static assets are
     // served from this origin (a CDN would be a script the image does not ship).
@@ -1541,7 +1550,7 @@ ${items}
     throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
   }
 
-  async #tenantHome(reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
+  async #tenantHome(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
     const actor = this.#actorOf(session);
     // §13.3.4, `admin.menu`: `{tenant, items} → items`. Core's menu is built first and the
     // filter may **add** an entry; an entry pointing anywhere but a screen a loaded plugin
@@ -1585,14 +1594,25 @@ ${items}
       .map((item) => ({ href: item.href, label: item.label }));
 
     const rows = this.#pageRows(tenant.key);
+    // PRG, like every other write in this file: the POST redirects here with the outcome in the
+    // query so a refresh does not repeat it (`account.ts` established the pattern).
+    const saved = queryValue(req.url, 'robots');
+    const flash =
+      saved === '1'
+        ? { kind: 'ok' as const, text: 'Search visibility saved.' }
+        : saved === '0'
+          ? { kind: 'bad' as const, text: 'That page could not be saved — its search metadata is not valid JSON. Nothing was changed.' }
+          : undefined;
     reply.type('text/html; charset=utf-8').send(
       pageListScreen({
         tenant: { key: tenant.key, label: tenant.key },
         user: actor,
         pages: rows ?? [],
+        csrf: this.sessions.csrfToken(session),
         nowMs: Date.now(),
         notices,
         more,
+        ...(flash === undefined ? {} : { flash }),
         ...(rows === null ? { unavailable: true } : {}),
       }),
     );
@@ -3073,7 +3093,7 @@ ${mailHtml}
     try {
       const rows = db
         .prepare(
-          `SELECT p.id, p.path, p.title, p.status, p.updated_at, p.published_at,
+          `SELECT p.id, p.path, p.title, p.status, p.updated_at, p.published_at, p.seo_json,
                   (p.draft_sha <> '') AS draft,
                   (SELECT COUNT(*) FROM cms_page_revision r WHERE r.page_id = p.id) AS versions
              FROM cms_page p
@@ -3087,6 +3107,7 @@ ${mailHtml}
         status: string;
         updated_at: string;
         published_at: string | null;
+        seo_json: string | null;
         draft: number;
         versions: number;
       }[];
@@ -3095,6 +3116,9 @@ ${mailHtml}
         path: String(row.path),
         title: String(row.title),
         status: String(row.status),
+        // The same reader the renderer and the sitemap use, so the screen cannot disagree with
+        // what a crawler is told (`app/render/seo.ts`).
+        robots: pageRobots(row.seo_json),
         publishedAt: row.published_at === null ? null : String(row.published_at),
         draft: Number(row.draft) === 1,
         versions: Number(row.versions),
@@ -3852,6 +3876,60 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
         )
         .all() as Record<string, unknown>[];
       reply.send({ tenant: tenant.key, pages: rows });
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * `POST /admin/t/<key>/pages/visibility` — `{page_id, robots}`.
+   *
+   * One page, one flag, one column: `cms_page.seo_json`. Nothing else is written. In particular
+   * `rev`, `status`, `published_at` and the `draft_*` columns are untouched, so choosing "Hidden
+   * from search" cannot publish a draft, unpublish a live page or discard unpublished changes —
+   * it is metadata about a page, not a version of it, which is also why `updated_at` is left
+   * alone (the list's "Updated …" line is about content, and a visibility toggle is not content).
+   *
+   * The merge is `withPageRobots()`, which preserves every other key in the document and refuses
+   * invalid JSON by name rather than replacing an operator's typing with whatever they pressed.
+   * The outcome travels by redirect to the Pages screen with `?robots=1` or `?robots=0`.
+   */
+  #pageVisibility(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const home = `/admin/t/${encodeURIComponent(tenant.key)}/`;
+    const fields = fieldsOf(req.body);
+    const rawId = fields.page_id ?? '';
+    if (!PAGE_ID_RE.test(rawId)) throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'not a page id');
+    const wanted = fields.robots;
+    if (wanted !== 'index' && wanted !== 'noindex') {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'robots must be index or noindex');
+    }
+    const robots: PageRobots = wanted;
+    const id = Number(rawId);
+
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const row = db.prepare('SELECT seo_json FROM cms_page WHERE id = ?').get(id) as
+        | { seo_json: string | null }
+        | undefined;
+      if (row === undefined) throw new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'no such page');
+      const next = withPageRobots(row.seo_json, robots);
+      if (!next.ok) {
+        this.#seeOther(reply, `${home}?robots=0`);
+        return;
+      }
+      db.prepare('UPDATE cms_page SET seo_json = ? WHERE id = ?').run(next.json, id);
+      const user = this.auth.userById(session.userId);
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: user?.email ?? `user ${session.userId}`,
+        action: 'page.robots',
+        targetKind: 'cms_page',
+        targetId: String(id),
+        after: { robots },
+        ip: req.socket.remoteAddress ?? '',
+      });
+      this.#seeOther(reply, `${home}?robots=1`);
     } finally {
       db.close();
     }

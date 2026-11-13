@@ -18,10 +18,9 @@
  *
  * ## What each file is
  *
- *   `/robots.txt`   allows everything a tenant publishes and points at the sitemap. There is no
- *                   `/admin` Disallow: it is a 404 to a crawler anyway (row 7), it is the only
- *                   path that would be named, and naming it would publish the fact that this box
- *                   serves a CMS.
+ *   `/robots.txt`   allows everything a tenant publishes and points at the sitemap. It disallows
+ *                   `/admin` and `/fleet`, `/search` and nothing else — see `robotsTxt()` for why
+ *                   the first two are named now and were not before.
  *   `/sitemap.xml`  every published `cms_page`, plus every row a package exposes as a detail
  *                   page (`/blog/<slug>` and its kin), each with `<lastmod>` where the row can
  *                   supply one. Rows are read through the package's own declaration, so a new
@@ -87,6 +86,24 @@ export function sitemapXml(entries: readonly SitemapEntry[]): string {
  *
  * `Sitemap:` is a bare absolute URL and not a directive a crawler may ignore: it is how a
  * crawler that found the site by accident learns the site has an index at all.
+ *
+ * ## Why `/admin` and `/fleet` are named, having deliberately not been
+ *
+ * This file used to argue the opposite: `/admin` was a 404 to a crawler, it was the only path
+ * worth naming, and naming it published the fact that the box serves a CMS. The first two clauses
+ * were true and the conclusion was wrong, because a `Disallow` is not the only thing a crawler can
+ * find. `/admin/login` answers 200 on every tenant host (it is where an operator signs in), a
+ * misconfigured proxy or a link in a support ticket puts it in front of a crawler, and the rule
+ * "no admin endpoint may be indexed, ever" cannot be satisfied by a file that stays silent about
+ * the one prefix that must never be indexed.
+ *
+ * So the prefix is named. The cost is that a reader of `robots.txt` learns a CMS answers here,
+ * which anyone who requests `/admin` learns for free anyway. The benefit is a statement, in the
+ * one file a crawler reads before it crawls, that everything under those two prefixes is off
+ * limits — and it is the outermost of three independent mechanisms, alongside the
+ * `X-Robots-Tag` header every admin response carries and the `<meta name="robots">` in the admin
+ * shell. None of the three is trusted to be the only one. (`isAdminPath` and the header values
+ * live in `app/render/robots.ts`.)
  */
 export function robotsTxt(origin: string): string {
   // `/search` is disallowed as well as `noindex`: the results page is a derivative of the site's
@@ -94,6 +111,8 @@ export function robotsTxt(origin: string): string {
   return [
     'User-agent: *',
     'Allow: /',
+    'Disallow: /admin',
+    'Disallow: /fleet',
     'Disallow: /search',
     '',
     `Sitemap: ${origin}/sitemap.xml`,

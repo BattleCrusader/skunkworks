@@ -19,6 +19,14 @@ export interface PageRow {
   /** `draft` | `published` | `hidden` — the schema's three, and no others. */
   status: string;
   /**
+   * The page's search-engine visibility, from `cms_page.seo_json`.
+   *
+   * `hidden` in `status` and `noindex` here are different facts and the screen keeps them apart:
+   * `status = 'hidden'` is a page the *menu* stops linking, while `noindex` is a page a crawler is
+   * told to ignore. A live page can be either.
+   */
+  robots: 'index' | 'noindex';
+  /**
    * `cms_page.published_at`, and it decides whether a published page is LIVE or SCHEDULED: a
    * published page whose `published_at` is still in the future is invisible to visitors
    * (`app/render/visibility.ts`), so the pill would lie if it read `status` alone.
@@ -34,11 +42,15 @@ export interface PageListInput {
   tenant: { key: string; label: string };
   user: { email: string; role: string } | null;
   pages: readonly PageRow[];
+  /** The session's CSRF token, in every row's search-visibility form. */
+  csrf: string;
   /** Injected so "Saved 41 minutes ago" is a function of its inputs. */
   nowMs: number;
   notices?: number;
   /** Core's remaining screens plus anything `admin.menu` added. */
   more?: readonly NavItem[];
+  /** The outcome of the last visibility write, reported by PRG (see `account.ts` for the pattern). */
+  flash?: { text: string; kind: 'ok' | 'bad' };
   /**
    * The site database could not be read. The screen says so and changes nothing —
    * the old home page needed no database, and a broken tenant should not turn the
@@ -69,7 +81,7 @@ function statusPill(page: PageRow, nowMs: number): string {
   return `<span class="pill pill--private"><i aria-hidden="true"></i>${esc(status)}</span>`;
 }
 
-function row(page: PageRow, base: string, nowMs: number): string {
+function row(page: PageRow, base: string, nowMs: number, csrf: string): string {
   const title = page.title === '' ? page.path : page.title;
   const where = page.path === '/' ? 'Home page' : page.path;
   const action = page.status === 'draft' ? 'Finish' : 'Edit';
@@ -89,13 +101,32 @@ function row(page: PageRow, base: string, nowMs: number): string {
   const pending = page.draft
     ? `<i class="dotsep" aria-hidden="true"></i><span class="pagerow__pending">unpublished changes</span>`
     : '';
-  return `      <div class="pagerow" data-page-id="${page.id}" data-status="${esc(page.status)}" data-draft="${page.draft ? '1' : '0'}">
+  // Search visibility is a third fact, so it gets a third mark. It is drawn only when the page is
+  // hidden from search: that is the exceptional state an operator scans the list for, and the
+  // select below already states the normal one on every row.
+  const notInSearch =
+    page.robots === 'noindex'
+      ? `<i class="dotsep" aria-hidden="true"></i><span class="pagerow__noindex" title="Search engines are asked not to list this page">not in search</span>`
+      : '';
+  const selected = page.robots === 'noindex' ? ' selected' : '';
+  const indexSelected = page.robots === 'noindex' ? '' : ' selected';
+  return `      <div class="pagerow" data-page-id="${page.id}" data-status="${esc(page.status)}" data-draft="${page.draft ? '1' : '0'}" data-robots="${esc(page.robots)}">
         <span class="thumb-ic ${tintOf(page.path)}" aria-hidden="true">${esc(initialOf(title, page.path))}</span>
         <div class="pagerow__main">
           <div class="pagerow__title">${esc(title)}</div>
-          <div class="pagerow__meta"><span>${esc(where)}</span><i class="dotsep" aria-hidden="true"></i><span>Updated ${esc(whenLabel(page.updatedAt, nowMs))}</span><i class="dotsep" aria-hidden="true"></i><span>${esc(versions)}</span>${pending}</div>
+          <div class="pagerow__meta"><span>${esc(where)}</span><i class="dotsep" aria-hidden="true"></i><span>Updated ${esc(whenLabel(page.updatedAt, nowMs))}</span><i class="dotsep" aria-hidden="true"></i><span>${esc(versions)}</span>${pending}${notInSearch}</div>
         </div>
         ${statusPill(page, nowMs)}
+        <form class="pagerow__search" method="post" action="${esc(`${base}/pages/visibility`)}">
+          <input type="hidden" name="csrf" value="${esc(csrf)}">
+          <input type="hidden" name="page_id" value="${page.id}">
+          <label class="sr-only" for="seo-robots-${page.id}">Search engines — ${esc(title)}</label>
+          <select id="seo-robots-${page.id}" name="robots">
+            <option value="index"${indexSelected}>In search results</option>
+            <option value="noindex"${selected}>Hidden from search</option>
+          </select>
+          <button class="btn btn--sm" type="submit">Save<span class="sr-only"> — search visibility for ${esc(title)}</span></button>
+        </form>
         <div class="rowactions"><a class="btn btn--sm" href="${esc(`${base}/editor?page=${page.id}`)}">${action}<span class="sr-only"> — ${esc(title)}</span></a>${ICON.chevron}</div>
       </div>`;
 }
@@ -154,7 +185,7 @@ export function pageListScreen(input: PageListInput): string {
   const list =
     pages.length === 0
       ? `      <div class="empty">Nothing here yet. <a href="${esc(`${base}/editor`)}">Make your first page</a>.</div>`
-      : pages.map((p) => row(p, base, input.nowMs)).join('\n');
+      : pages.map((p) => row(p, base, input.nowMs, input.csrf)).join('\n');
 
   const more = input.more ?? [];
   const moreList =
@@ -172,6 +203,7 @@ ${more.map((item) => `      <a class="morelink" href="${esc(item.href)}">${esc(i
     user: input.user,
     active: 'pages',
     ...(input.notices === undefined ? {} : { notices: input.notices }),
+    ...(input.flash === undefined ? {} : { flash: input.flash }),
     body: `    <div class="pagehead">
       <div>
         <h1>Your pages</h1>
@@ -185,9 +217,14 @@ ${more.map((item) => `      <a class="morelink" href="${esc(item.href)}">${esc(i
 
 ${banner}
 
-    <div class="sectionhead"><h2>All pages</h2><span>Sorted by address</span></div>
+    <div class="sectionhead"><h2>All pages</h2><span>Sorted by address · search visibility on each row</span></div>
     <div class="card pagelist">
 ${list}
+    </div>
+
+    <div class="helper">
+      ${ICON.info}
+      <span><b>Hidden from search</b> keeps a page out of Google and the sitemap but leaves it live at its address, so you can still share the link. The page itself is not changed, and you can put it back in search at any time.</span>
     </div>
 
     <dl class="stats">

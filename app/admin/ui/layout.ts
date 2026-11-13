@@ -15,6 +15,7 @@
  *   - a nav whose current item is `aria-current="page"` (not colour alone).
  */
 import { esc } from './html.ts';
+import { ADMIN_ROBOTS_META } from '../../render/robots.ts';
 
 export type NavKey = 'pages' | 'site' | 'themes' | 'media' | 'plugins' | 'none';
 
@@ -175,6 +176,10 @@ td form[action$="/disable"] button,td form[action$="/uninstall"] button{border-c
 .pagerow__main{min-width:0;flex:1}
 .pagerow__title{font-size:16px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pagerow__meta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);margin-top:2px;flex-wrap:wrap}
+.pagerow__noindex{color:#8a4a09;font-weight:600}
+.pagerow__search{display:flex;align-items:center;gap:6px;flex:none}
+.pagerow__search select{min-height:30px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:0 6px;font:12.5px/1.3 var(--sans);color:var(--ink);background:#fff}
+.pagerow__search select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.12);outline:0}
 .dotsep{width:3px;height:3px;border-radius:50%;background:#c3cdda;display:inline-block}
 .pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:4px 9px;border-radius:999px;white-space:nowrap}
 .pill i{width:5px;height:5px;border-radius:50%;background:currentColor;display:block;flex:none}
@@ -503,6 +508,7 @@ export function layout(input: LayoutInput): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+${ADMIN_ROBOTS_META}
 <title>${title}</title>
 <style>${CSS}</style>
 </head>

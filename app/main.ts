@@ -45,7 +45,8 @@ import sharp from 'sharp';
 import { loadPluginPage, matchPluginPage, pluginPageBody, resolveFormMarkers } from './render/plugin-pages.ts';
 import { loadNav, type NavTree } from './render/nav.ts';
 import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings, type SiteChrome } from './render/chrome.ts';
-import { originFromHost, pageSeoHead, parsePageSeo } from './render/seo.ts';
+import { ADMIN_ROBOTS_VALUE, isAdminPath, PAGE_ROBOTS_VALUE, ROBOTS_HEADER } from './render/robots.ts';
+import { originFromHost, pageRobots, pageSeoHead, parsePageSeo } from './render/seo.ts';
 import { matchesEtag, sheetEtag, sheetVersion, siteSheet } from './render/theme.ts';
 import {
   THEME_KEY_SETTING,
@@ -208,9 +209,7 @@ export function isEditorDocument(url: string): boolean {
 }
 
 export function isAdminDocument(url: string): boolean {
-  const q = url.indexOf('?');
-  const pathname = q === -1 ? url : url.slice(0, q);
-  return pathname === '/admin' || pathname.startsWith('/admin/') || pathname === '/fleet' || pathname.startsWith('/fleet/');
+  return isAdminPath(url);
 }
 
 /**
@@ -351,6 +350,29 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       done();
     });
   }
+
+  /**
+   * **No admin answer is indexable — enforced once, for every route that exists or ever will.**
+   *
+   * The rule is central on purpose. `/admin/login` answers 200 on every tenant host, the admin API
+   * answers JSON, and most admin writes answer 303 redirects; a header written per-route would be
+   * forgotten by the next route someone adds, and the omission would be invisible until a search
+   * engine listed a sign-in page. So it is an `onRequest` hook on the root instance: it runs before
+   * routing, therefore it covers a route that does not exist yet, a 404, a 500 from the error
+   * handler, a `reply.send()` and a `reply.redirect()` alike.
+   *
+   * `/fleet` is the same surface's console, so it gets the same header. The three mechanisms are
+   * independent and all three are kept: this header, the `<meta name="robots" content="noindex,
+   * nofollow">` the admin shell writes into every document (`app/admin/ui/layout.ts`), and
+   * `Disallow: /admin` / `Disallow: /fleet` in `/robots.txt`.
+   *
+   * `nofollow` here and not on a page an operator hid from search: the admin has no page a crawler
+   * should follow out of, while a hidden *page* is a normal document whose links are normal links.
+   */
+  app.addHook('onRequest', (req, reply, done) => {
+    if (isAdminPath(req.url)) reply.header(ROBOTS_HEADER, ADMIN_ROBOTS_VALUE);
+    done();
+  });
 
   // §10.5 (C-12, S4c): the CSP is a property of the document, and the document is this
   // process's reply. `onSend` is after the payload is produced and before it is written, so
@@ -969,9 +991,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
     try {
       const pages = db
-        .prepare(`SELECT path, updated_at FROM cms_page WHERE ${PAGE_VISIBLE} ORDER BY path`)
-        .all(visibleBefore()) as { path: string; updated_at: string }[];
-      for (const page of pages) entries.push({ loc: `${origin}${page.path}`, lastmod: page.updated_at });
+        .prepare(`SELECT path, updated_at, seo_json FROM cms_page WHERE ${PAGE_VISIBLE} ORDER BY path`)
+        .all(visibleBefore()) as { path: string; updated_at: string; seo_json: string | null }[];
+      for (const page of pages) {
+        // A page the operator hid from search is offered to nobody. It is still served — see
+        // `renderPage`, where the row is rendered exactly as before with a `noindex` head — but
+        // `<loc>` is an explicit invitation to crawl it, and the sitemap is the one place where
+        // asking not to be indexed and asking to be crawled would be a contradiction in the file.
+        if (pageRobots(page.seo_json) === 'noindex') continue;
+        entries.push({ loc: `${origin}${page.path}`, lastmod: page.updated_at });
+      }
       // The board's list is a core route rather than a `cms_page` row, and a role page is only
       // crawlable if the index that links it is in the file too.
       entries.push({ loc: `${origin}${JOBS_PATH}` });
@@ -1391,6 +1420,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     const startedAt = Date.now();
     plugins.enter(ctx.tenant.key);
     let head = '';
+    /** Criterion C: a page nobody has hidden renders exactly the bytes, and headers, it did before. */
+    let pageNoindex = false;
     let page = { ...stored, bodyHtml: stored.bodyHtml };
     const assetUrls = new Map<string, string>();
     try {
@@ -1478,6 +1509,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       // string stays empty and the document is byte-for-byte what it was before this existed.
       const seo = parsePageSeo(stored.seoJson);
       if (seo !== null) {
+        pageNoindex = seo.robots === 'noindex';
         head = pageSeoHead({
           seo,
           path,
@@ -1505,7 +1537,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     // §10.5 (C-12): the page path hands the socket to Astro, so the policy has to be on the
     // raw response before the hijack — the `onSend` hook above never sees this reply.
     reply.raw.setHeader(CSP_HEADER, cspPolicy());
-    if (opts.noindex === true) reply.raw.setHeader('x-robots-tag', 'noindex, nofollow');
+    if (opts.noindex === true) reply.raw.setHeader(ROBOTS_HEADER, ADMIN_ROBOTS_VALUE);
+    // A page an operator hid from search: the same header a crawler already understands, without
+    // `nofollow` — its links are ordinary links (see `app/render/robots.ts`). Set here rather than
+    // in the Astro shell because the shell owns the document and not the response, and because a
+    // crawler that reads only headers must still be told.
+    else if (pageNoindex) reply.raw.setHeader(ROBOTS_HEADER, PAGE_ROBOTS_VALUE);
     reply.hijack();
     // S8s: the page's own CSS is a file, named by its bytes. The shell links it after the site
     // sheet, so a page's rules win at equal specificity and nothing is inlined — the policy's
