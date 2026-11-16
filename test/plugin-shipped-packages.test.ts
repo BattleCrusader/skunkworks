@@ -1,6 +1,9 @@
 /**
- * The two packages this repository **ships** — `plugins/blog` and `plugins/contact` — driven
- * through the real install path, the real activation path and the real endpoint resolver.
+ * The two packages **this file** drives — `plugins/blog` and `plugins/contact` — through the real
+ * install path, the real activation path and the real endpoint resolver. It is not the register of
+ * what ships: every other package has its own file (`plugin-menu` … `plugin-analytics`), because a
+ * package's tests are about its own contract and one file that grew by package would stop being
+ * readable at the third.
  *
  * Nothing here mocks the host. `installPlugin()` copies the package into `<data>/plugins` and
  * creates the tables from the validated manifest; `PluginRuntime.enable()` imports the module

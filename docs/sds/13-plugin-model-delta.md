@@ -67,6 +67,7 @@ A delta that deletes too much is as expensive as one that deletes too little. Th
 - **The manifest is still the contract** — `id`, `version`, `cms` range, `publisher`, `tables` + export class,
   `settings`, `admin` screens (declarative only), `public` endpoints, `capabilities`, `tests`, `cron: none`.
   Two fields are **added**: `main` (what to `import()`) and `hooks` (what it may register).
+  A third is added later — `files[]`, the same-origin scripts a package may serve; see §7.
 - **The host still writes every row.** A plugin describes a row; it never holds a `Database`. `p_*` tables are
   still created by the host executor inside one `BEGIN IMMEDIATE`, with the `asset_key` guard trigger, and the
   four-op forward-only migration grammar still has no `drop_table`, `rename_table` or `drop_column`.
@@ -122,3 +123,42 @@ replacements:
   defended against*.
 - **…review this for security.** Start at §13.1 P3, P5, then §13.3.7, then §13.4 item 5. If you find a sentence
   that promises containment, it is a defect, and E-33 is the item that owns it.
+
+---
+
+## 7. Amendment: `files[]` — a package's own script (2026-11-17)
+
+The model above says a package draws no markup and answers JSON, and both remain true. What it did
+not have was a way to put *code* in a visitor's browser, and one class of package cannot exist
+without it: first-party analytics, which must observe a page it does not draw.
+
+The constraint that decided the shape: every tenant page is served with
+`script-src 'self'` and **no nonce and no hash** (C-12, `app/render/csp.ts`), so an inline
+`<script>` in `page.head` never runs. The only legal insertion is a `<script src>` whose URL is on
+the tenant's own origin — which means the host must serve it.
+
+So the manifest gains a third added field:
+
+```json
+"files": [{ "name": "t.js", "path": "client/t.js", "mime": "text/javascript" }]
+```
+
+- **`GET /_plugin/<id>/f/<name>`** serves it, `Cache-Control: immutable` with the version in the
+  URL, `X-Content-Type-Options: nosniff`, and an ETag that is the sha256 of the bytes.
+- **`text/javascript` is the only MIME**, and the list is one entry on purpose. `text/html` would be
+  a second document on the tenant's origin, which is exactly what §10.5 forbids; `text/css` would
+  let a package restyle a theme's page.
+- **Four refusals, all a 404**: a name not in `files[]`, a path outside the package root (checked by
+  `realpath`, not by the manifest string), a file that is not there, and a file over 512 KiB
+  (`app/plugins/static.ts`). A disabled or uninstalled package serves nothing.
+- **The install screen lists it** (`public files`), because it is the one declaration that reaches a
+  visitor rather than the site's data. `skwctl plugin install` prints it before the write.
+- **It is not a new privilege for the package.** An installed package is imported into this process
+  (§13.3.7) and can already read the site's files; serving its own script widens what it can do to
+  the *visitor*, which is a decision the operator makes by installing it.
+
+First consumer: `plugins/analytics` 1.0.3 — a `page.head` tag, a `POST collect` endpoint and one
+cookieless tracker. `test/plugin-analytics.test.ts` A1–A4 and
+`test/plugin-analytics-tracker.test.ts` T1–T5 are the witnesses; the latter executes the tracker in
+jsdom and asserts every beacon it sends, which is how the shadowed-`event()` defect that silently
+dropped every click was found before it shipped.

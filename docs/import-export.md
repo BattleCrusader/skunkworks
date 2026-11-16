@@ -39,7 +39,7 @@ node --experimental-strip-types app/cli/export.ts \
 | schema | `schema/control.sql`, `schema/site.sql`, and the tenant `data/site.db` (every table created; content rows populated) |
 | content | pages, nav, settings, forms, CSS blobs, theme rows, plugin rows, plugin data (`p_<id>_*`) |
 | assets | every `cms_asset` **and every `cms_asset_variant`** (renditions are files too), plus theme assets under `data/tenants/<key>/theme-assets/` |
-| plugins | `data/plugins/<id>/{plugin.json,index.mjs}` |
+| plugins | `data/plugins/<id>/{plugin.json,index.mjs}` and, when a manifest declares `files[]`, the same-origin scripts under `client/` |
 | installer | `install.sh`, `docker-compose.yml`, `nginx/`, `snippets/`, `tools/`, `BUNDLE.json` (sha256 per file), `EXPORT-NOTES.md` |
 
 **What it deliberately does not carry** — the people. `cms_account`, `cms_account_role`,

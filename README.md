@@ -112,7 +112,7 @@ There is no fifth namespace.
 
 ### Plugins
 
-- A plugin is a module **imported into the app process**, WordPress-style: a manifest (`plugin.json`), its own `p_*` tables, declared admin screens, declared public endpoints.
+- A plugin is a module **imported into the app process**, WordPress-style: a manifest (`plugin.json`), its own `p_*` tables, declared admin screens, declared public endpoints, and the same-origin files it may serve to a visitor's browser.
 - No runner container, no socket protocol, no RPC boundary. An earlier design had all three; `IDEA.md` D36 supersedes it, and `docs/sds/13-plugin-model-delta.md` is the reader's guide to what became false.
 - Third-party packages are signed. A publisher key is imported by the tenant with its fingerprint shown beside every capability; revocation is local to the install and is read at install **and** at enable.
 - A plugin that fails at load is disabled and reported, not allowed to take the site down.
@@ -267,6 +267,7 @@ Shipped packages (`plugins/` holds the sources):
 | `blog` | 1.1.0 | `p_blog_post` | Blog posts | `GET /_plugin/blog/posts` |
 | `contact` | 1.2.0 | `p_contact_message` | Messages | `POST /_plugin/contact/submit` |
 | `menu` | 1.0.0 | `p_menu_item` | menus | `GET /_plugin/menu/items` |
+| `analytics` | 1.0.3 | `p_analytics_event` | Analytics events | `POST /_plugin/analytics/collect` · `GET /_plugin/analytics/f/t.js` |
 
 Packing one:
 
@@ -328,7 +329,7 @@ make verify-claims-modern
 - **`verify-no-leak` fails the run** if a `skw-*` container or network is left behind, and carries its own negative control: create a probe, skip its teardown, require the audit to name it, then require clean. A matcher that matches nothing would otherwise read as a tidy daemon.
 - **`verify-claims` re-runs every measurement the design documents cite** — 27 checks — rather than trusting the numbers in prose. `make verify-claims-modern` runs the same chain on an interpreter whose SQLite is ≥ 3.50, because SQLite only re-parses triggers on `ALTER TABLE … RENAME` from 3.50, and that is the only version on which one known regression class is visible.
 
-Suite size: **119** `*.test.ts` files (`find test -name '*.test.ts' | wc -l`). `npm run test` runs them with `--test-concurrency=1`; `npm run typecheck` runs both tsconfigs; `npm run build` is `tsc` plus `astro build`.
+Suite size: **122** `*.test.ts` files (`find test -name '*.test.ts' | wc -l`). `npm run test` runs them with `--test-concurrency=1`; `npm run typecheck` runs both tsconfigs; `npm run build` is `tsc` plus `astro build`.
 
 The philosophy is the one thing here worth copying: gates you can re-run, not claims you can only trust. `docs/build/STATUS.md` keeps the measurement notes, including the four gates that were testing a path one step to the side of what shipped.
 
@@ -347,13 +348,13 @@ app/            the application, one directory per concern:
                 tenancy (host resolution), themes
 schema/         frozen DDL: control.sql, site.sql, numbered amendments,
                 control.seed.json, component and error registries
-plugins/        blog, contact, jobboard, menu (+ README.md)
+plugins/        analytics, blog, contact, jobboard, menu (+ README.md)
 themes/         theme sources and packages
 content/        media/ and public/ (runtime data, gitignored)
 nginx/          nginx.conf, conf.d, templates
 snippets/       CSP and proxy includes
 scripts/        gates and measurement: model/, measure/, proof/
-test/           119 test files, including the dist and leak gates
+test/           122 test files, including the dist and leak gates
 docs/           sds/, build/, debate/, design/, privacy/, sites/
 tools/          acme.mjs, bundle_verify.mjs, nginx_gen.ts, seed_control.mjs
 install.sh      the installer; its exit codes are its contract

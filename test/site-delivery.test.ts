@@ -175,7 +175,7 @@ test('D4. a page carries no script at all — and the prefetch experiment is gon
   // without the other being reconsidered.
   const page = await get('/pricing');
   assert.equal(page.status, 200);
-  assert.doesNotMatch(page.body, /<script/, 'the public shell loads no script');
+  assert.doesNotMatch(page.body, /<script/, 'the public shell loads no script of its own — this fixture installs no package that declares page.head');
   const gone = await get('/skw-nav.js');
   assert.equal(gone.status, 404, 'the prefetch route was removed with the script');
 });

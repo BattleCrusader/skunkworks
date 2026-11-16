@@ -1,7 +1,8 @@
 # Plugin packages
 
-A package is a directory with `plugin.json`, an ESM entry point, and — when it is packed — a
-`test-report.json` beside it. Three states, and they belong to different things:
+A package is a directory with `plugin.json`, an ESM entry point, optionally the client scripts it
+declares in `files[]` (served same-origin at `GET /_plugin/<id>/f/<name>`), and — when it is packed —
+a `test-report.json` beside it. Three states, and they belong to different things:
 
 | State | Lives in | Belongs to |
 |---|---|---|
@@ -44,6 +45,16 @@ removes it from the shelf for tenants that have not installed it (installed copi
 | `blog` | 1.1.0 | `p_blog_post` | “Blog posts” | `GET /_plugin/blog/posts` |
 | `contact` | 1.2.0 | `p_contact_message` | “Messages” | `POST /_plugin/contact/submit` |
 | `menu` | 1.0.0 | `p_menu_item` | menus | `GET /_plugin/menu/items` |
+| `analytics` | 1.0.3 | `p_analytics_event` | “Analytics events” | `POST /_plugin/analytics/collect` · `GET /_plugin/analytics/f/t.js` |
+
+`analytics` 1.0.3 is the first package to declare `files[]`, and it is the reason the field exists.
+A page's CSP is `script-src 'self'` with no nonce (§10.5, C-12), so the only way a package can run
+code in a visitor's browser is a `<script src>` on the tenant's own origin — served by the host from
+the package's own root at `/_plugin/<id>/f/<name>`, `text/javascript` only, realpath-contained, and
+404 for anything the manifest did not declare. The package's `page.head` hook writes the tag; the
+dashboard is the host's own Analytics screen (`/admin/t/<key>/analytics`), which reads the table and
+draws no plugin markup. The tracker itself sets no cookie and stores no address — see
+`docs/privacy/pii-australia.md` §5.
 
 `contact` 1.2.0 adds the optional `company` column: a firm's enquiry form keeps the name of the firm
 it came from instead of folding it into the message. A form the host draws can be given the page's

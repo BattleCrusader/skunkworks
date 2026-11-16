@@ -1,0 +1,156 @@
+{
+  "id": "analytics",
+  "version": "1.0.3",
+  "main": "index.mjs",
+  "hooks": [
+    "page.head"
+  ],
+  "description": "First-party site analytics: pageviews, which links and buttons people press, where they came from, whether they come back, and how long a page held them. One owned table of events, a public POST /_plugin/analytics/collect that validates and stamps every row server-side, and one same-origin script the page loads. No cookies: a visitor is a random value this browser keeps in localStorage, and an address is never stored. The dashboard is the host's Analytics screen, which reads this table; this package owns the data and draws no markup.",
+  "capabilities": [
+    "store.insert",
+    "store.delete",
+    "store.query",
+    "settings.get",
+    "settings.has",
+    "util.now",
+    "log.write"
+  ],
+  "files": [
+    {
+      "name": "t.js",
+      "path": "client/t.js",
+      "mime": "text/javascript"
+    }
+  ],
+  "endpoints": [
+    {
+      "name": "collect",
+      "method": "POST"
+    }
+  ],
+  "settings": [
+    {
+      "key": "paused",
+      "type": "bool"
+    },
+    {
+      "key": "retention_days",
+      "type": "int"
+    }
+  ],
+  "tables": [
+    {
+      "name": "p_analytics_event",
+      "export": "rows",
+      "columns": [
+        {
+          "name": "kind",
+          "type": "TEXT",
+          "notNull": true,
+          "indexed": true
+        },
+        {
+          "name": "day",
+          "type": "TEXT",
+          "notNull": true,
+          "indexed": true
+        },
+        {
+          "name": "ts",
+          "type": "TEXT",
+          "notNull": true
+        },
+        {
+          "name": "session",
+          "type": "TEXT",
+          "notNull": true,
+          "indexed": true
+        },
+        {
+          "name": "visitor",
+          "type": "TEXT",
+          "notNull": true,
+          "indexed": true
+        },
+        {
+          "name": "path",
+          "type": "TEXT",
+          "notNull": true,
+          "indexed": true
+        },
+        {
+          "name": "url",
+          "type": "TEXT"
+        },
+        {
+          "name": "referrer",
+          "type": "TEXT"
+        },
+        {
+          "name": "source",
+          "type": "TEXT"
+        },
+        {
+          "name": "medium",
+          "type": "TEXT"
+        },
+        {
+          "name": "campaign",
+          "type": "TEXT"
+        },
+        {
+          "name": "target",
+          "type": "TEXT"
+        },
+        {
+          "name": "target_url",
+          "type": "TEXT"
+        },
+        {
+          "name": "target_kind",
+          "type": "TEXT"
+        },
+        {
+          "name": "scroll",
+          "type": "INTEGER"
+        },
+        {
+          "name": "dwell_ms",
+          "type": "INTEGER"
+        },
+        {
+          "name": "vw",
+          "type": "INTEGER"
+        },
+        {
+          "name": "vh",
+          "type": "INTEGER"
+        },
+        {
+          "name": "device",
+          "type": "TEXT"
+        },
+        {
+          "name": "browser",
+          "type": "TEXT"
+        },
+        {
+          "name": "os",
+          "type": "TEXT"
+        },
+        {
+          "name": "lang",
+          "type": "TEXT"
+        }
+      ],
+      "list": [
+        "ts",
+        "kind",
+        "path",
+        "target",
+        "device",
+        "session"
+      ]
+    }
+  ]
+}

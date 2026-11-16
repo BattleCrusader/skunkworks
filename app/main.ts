@@ -92,6 +92,8 @@ import { seedSettings } from './download/code.ts';
 import { DownloadPlane, RETRY_ATTEMPTS } from './download/plane.ts';
 import { PluginRuntime } from './plugins/runtime.ts';
 import { matchEndpoint, runEndpoint } from './plugins/endpoint.ts';
+import { readStaticFile } from './plugins/static.ts';
+import type { Manifest } from './plugins/manifest.ts';
 import { attachPluginRuntime, filterSite, actionSite } from './plugins/site.ts';
 import { FormLimiter, submitCoreForm } from './forms/intake.ts';
 import { clientHash } from './download/token.ts';
@@ -1121,6 +1123,58 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   // no page, so the surface does not tell a scanner which packages a site has.
   app.register(async (scope) => {
     scope.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => done(null, body));
+    /**
+     * `GET /_plugin/<id>/f/<name>` — a package's own script, from its own root, on this origin.
+     *
+     * The one non-JSON answer the plugin surface has, and it is deliberately not an endpoint: an
+     * endpoint is a function the package registered and this is a file the package shipped, so
+     * the URL space keeps them apart (`/f/`) and no manifest endpoint name can shadow a file.
+     * `readStaticFile()` owns the four refusals — undeclared, outside the root, absent, too large
+     * — and every one of them becomes the tenant's ordinary 404 (§13.3.5: the surface is not an
+     * oracle for what is installed).
+     *
+     * Cache: the URL the `page.head` markup writes carries `?v=<version>`, so a year is honest
+     * for one version's bytes, and the ETag makes a revalidated hit free. `nosniff` because the
+     * content type is the point — a browser must not decide this file is something else.
+     */
+    scope.get('/_plugin/:plugin/f/:name', async (req: FastifyRequest, reply: FastifyReply) => {
+      const ctx = resolveRequest(req);
+      const params = req.params as { plugin: string; name: string };
+      const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+      let file: ReturnType<typeof readStaticFile> = null;
+      try {
+        const row = db
+          .prepare(`SELECT manifest_json FROM cms_plugin_installed WHERE plugin_id = ? AND enabled = 1`)
+          .get(params.plugin) as { manifest_json: string } | undefined;
+        if (row !== undefined) {
+          const manifest = JSON.parse(row.manifest_json) as Manifest;
+          file = readStaticFile({
+            pluginsRoot: plugins.pluginsDirectory(),
+            plugin: params.plugin,
+            name: params.name,
+            manifest,
+          });
+        }
+      } catch {
+        // A manifest row that will not parse is a package that cannot be loaded either; the file
+        // it would have served is a 404, not a 500 on a page that is otherwise fine.
+        file = null;
+      } finally {
+        db.close();
+      }
+      if (file === null) {
+        await serveNotFound(req, reply);
+        return;
+      }
+      reply.header('x-content-type-options', 'nosniff');
+      reply.header('cache-control', 'public, max-age=31536000, immutable');
+      reply.header('etag', file.etag);
+      if (req.headers['if-none-match'] === file.etag) {
+        reply.code(304).send('');
+        return;
+      }
+      reply.type(`${file.mime}; charset=utf-8`).send(file.bytes);
+    });
     scope.all('/_plugin/*', async (req: FastifyRequest, reply: FastifyReply) => {
       const match = matchEndpoint(req.url);
       const ctx = resolveRequest(req);

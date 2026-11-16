@@ -139,6 +139,10 @@ product* is satisfied, and the field is still subject to APP 6 (use only for tha
 | `cms_watermark_render` | `path` (and the file it names) | **necessary** | One stamped file per purchaser, carrying that purchaser's address. It is the anti-piracy control — a leaked file names its buyer — and the reason the table is swept and exported empty. | APP 3, APP 11 |
 | `p_contact_message` (plugin) | `name`, `email`, `company`, `message` | **necessary — bounded by policy** | A visitor asks for a reply; the reply needs an address. Kept 90 days, then purged (§6.1). The message is free text from a stranger and is never shown to anyone but the operator. | APP 3, APP 5, APP 11 |
 | `p_contact_message` (plugin) | `ip_hash` | **minimised** | Nullable and **NULL today**: the endpoint contract hands a package no client address, so the plugin writes nothing rather than a guess. | APP 11 |
+| `p_analytics_event` (plugin) | `visitor`, `session` | **pseudonymous — not identifying in itself** | Two random 16-byte values the visitor's own browser keeps: one for the browser, one for a visit that ends after 30 idle minutes. Neither is derived from an address, a device or an account, so neither can be reversed into a person; they exist so that "did anyone come back?" is answerable at all. Clearing site data replaces them with new ones. | APP 5, APP 11 |
+| `p_analytics_event` (plugin) | `path`, `url`, `referrer`, `source`, `medium`, `campaign` | **minimised** | Which page was read and which site or campaign sent the visitor. A `utm_*` value is whatever a marketer put in a URL, and a referrer is whatever the previous site's policy let through. A full URL can incidentally carry personal information (a search term), which is why the stored `url` is used to *derive* the source and campaign and the dashboard never shows it. | APP 3, APP 11 |
+| `p_analytics_event` (plugin) | `target`, `target_url`, `target_kind` | **minimised** | The words on the link or button a visitor pressed, where it pointed, and whether it left the site. It is a description of the page's own control, not of the visitor. | APP 11 |
+| `p_analytics_event` (plugin) | `device`, `browser`, `os`, `lang`, `vw`, `vh` | **minimised** | Coarse classes the browser assigns to itself (`mobile`, `Chrome`, `iOS`, `en-AU`, viewport size). **The user-agent string is never stored**: the browser sends the class, not the string it derived it from. | APP 11 |
 
 ### 2.2 The operator surface — `control.db`
 
@@ -279,8 +283,14 @@ is theirs. That is what the screen is for, and it is the residual risk in §7.
 - No plaintext password: an Argon2id hash. (The TOTP secret *is* stored in clear — gap G11 — so it is
   named as a gap rather than claimed as a protection here.)
 - No card number, no bank account: this product takes no payments.
-- No third-party analytics, no advertising pixel, no session replay. There is no JavaScript on the
-  portal pages at all, so there is nothing to instrument.
+- No third-party analytics, no advertising pixel, no session replay, no cross-site identifier, no
+  cookie. Portal pages carry no JavaScript of their own.
+- A site owner may install the first-party `analytics` package. When it is installed, **one** script
+  is served from the site's own origin and records a pageview, a press on a link or button, how far
+  a page was scrolled and how long it was open. It sets no cookie; it stores no address, no
+  user-agent string and no query string; its two identifiers are random values the browser keeps
+  locally and any visitor can clear. A visitor whose browser sends Global Privacy Control is not
+  counted at all, and an operator can switch collection off from the package's settings.
 - No address in any mail template's variables: `application_received` has variables for a job title,
   a display name and a headline, and nothing else.
 
@@ -301,6 +311,7 @@ requires**, because a retention table that described the intention would be the 
 | `cms_form_submission` | tenant form payloads (arbitrary PII) | **90 days** (recommended), or the operator's stated period | Nothing deletes them. | **gap G5** |
 | `cms_watermark_render` | stamped download files | token expiry + continuation grace | A minute-interval sweep deletes the row and the file (`plane.watermark.sweep`). | **enforced** |
 | `p_contact_message` (plugin) | contact-form messages | **90 days from `created_at`** | **Decided, not built** — §6.1. | **gap G1** |
+| `p_analytics_event` (plugin) | pageviews, presses, dwell, scroll depth | **90 days from `day`**, and the package's own `retention_days` setting overrides it (0 = keep) | The collector prunes opportunistically: at most once an hour per site, on traffic that is already arriving, oldest day first. There is no scheduler to run it, so a site with no visits keeps its rows until the next one. | **enforced on collection / a gap while idle** |
 | `audit_log` | operator actions, ip_hash | kept; the accountability record | Day-sealed; no deletion, deliberately. | **enforced as policy** |
 | `cms_application`, `cms_profile`, `cms_account` | the applicant's record | for the life of the account, then on request | An account closing sets `status='closed'` and revokes sessions; the rows remain. Erasure is an operator action. | **gap G6** |
 
@@ -323,6 +334,15 @@ every table a manifest declares, so a core query against `p_contact_message` wou
 on a table a package can remove at uninstall — and the same rule is why `cms_application.job_id`
 takes no foreign key to the jobboard's table. The deletion must therefore be expressed *by the
 plugin*, through the plugin contract.
+
+**One deliberate exception, and it is a read.** A package may own data but draw no markup (§13.1
+freezes declarative screens but no template), so any screen over a plugin's rows has to be a *core*
+screen: `app/admin/analytics.ts` reads `p_analytics_event` for the `analytics` package's dashboard.
+It is written to survive exactly the failure the rule exists for — the table's absence is detected
+once and reported as `installed: false`, so uninstalling the package leaves the screen reading "not
+installed" rather than throwing a 500 on an operator's next click. The terms of the exception are:
+**reads are permitted when they are guarded and the screen degrades; writes, joins and foreign keys
+into a `p_*` table are not.**
 
 **The contract has no scheduled work.** `app/plugins/manifest.ts` freezes twelve hooks — six filters
 and six actions — and the file says in terms that `cron` and `worker` are absent because in-process

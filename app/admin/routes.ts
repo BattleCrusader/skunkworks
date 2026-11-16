@@ -101,6 +101,8 @@ import {
   type TableInfo,
 } from './crud.ts';
 import { openAdminWrite, openRenderRead } from '../db/classes.ts';
+import { parseRange, readAnalytics } from './analytics.ts';
+import { analyticsScreen } from './ui/analytics.ts';
 import { actionSite, filterSite, screenHref } from '../plugins/site.ts';
 import type { PluginRuntime } from '../plugins/runtime.ts';
 import { ensureVariants } from '../assets/renditions.ts';
@@ -1527,6 +1529,15 @@ ${items}
       return;
     }
 
+    // The analytics screen: a core route over the `analytics` package's own table. The package
+    // owns the rows, this file owns the markup — §10.5's split, and the reason a dashboard is not
+    // a declarative screen (a declarative screen is a list over one table, and this is nine
+    // aggregates plus a trend).
+    if (action === 'analytics' && req.method === 'GET') {
+      this.#analytics(req, reply, tenant, session);
+      return;
+    }
+
     // §9.3 — the CRUD write path, on `admin-write`.
     if (action === 'tables' && req.method === 'GET') {
       this.#tablesIndex(reply, tenant, session);
@@ -1618,8 +1629,38 @@ ${items}
     );
   }
 
-  // --- S8a: the operator's own account -----------------------------------
+  // --- analytics -----------------------------------------------------------
 
+  /**
+   * `GET /admin/t/<key>/analytics` — the trend, the pages, the links, the sources, the cohorts.
+   *
+   * The read is `render-read` (`#siteDb`), not `admin-write`: this screen never changes a row, and
+   * a handle that cannot write is a stronger statement of that than a promise not to.
+   *
+   * `?days=7|30|90`, anything else is 30 (`parseRange`), because a hand-edited query string must
+   * not be able to ask a SQLite scan for five years of rows.
+   */
+  #analytics(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const range = parseRange(queryValue(req.url, 'days') ?? null);
+    const db = this.#siteDb(tenant.key);
+    let report;
+    try {
+      report = readAnalytics(db, { days: range, nowMs: Date.now() });
+    } finally {
+      db.close();
+    }
+    reply.type('text/html; charset=utf-8').send(
+      analyticsScreen({
+        tenant: { key: tenant.key, label: tenant.key },
+        user: this.#actorOf(session),
+        report,
+        range,
+        ...(this.#plugins === null ? {} : { notices: this.#plugins.noticesFor(tenant.key).length }),
+      }),
+    );
+  }
+
+  // --- S8a: the operator's own account -----------------------------------
   /**
    * One POST, one 303. No write in this file renders its result: a refresh after a
    * password change must not repeat it, and a form that answers with JSON leaves the

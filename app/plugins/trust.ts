@@ -458,6 +458,13 @@ export interface InstallScreen {
   tables: { name: string; export: string; columns: number }[];
   settings: { key: string; type: string; secret: boolean }[];
   endpoints: { name: string; method: string }[];
+  /**
+   * The scripts this package serves on the site's own origin (§13.3.1's `files[]`). On the screen
+   * because it is the one declaration that reaches a *visitor* rather than the site's data: an
+   * operator deciding on a package should be able to read that it will serve executable code
+   * from this origin, and at which URL, before the install.
+   */
+  files: { name: string; mime: string }[];
   test_report: { ran_at: string; sha256: string; runner_image_digest: string };
   root_hash: string;
   /** Loud, and repeated in the audit row. */
@@ -500,6 +507,7 @@ export function installScreen(req: ScreenRequest): InstallScreen {
     tables: manifest.tables.map((t) => ({ name: t.name, export: t.export, columns: (t.columns ?? []).length })),
     settings: manifest.settings.map((s) => ({ key: s.key, type: s.type, secret: s.type === 'secret' })),
     endpoints: (manifest.endpoints ?? []).map((e) => ({ name: e.name, method: e.method })),
+    files: (manifest.files ?? []).map((f) => ({ name: f.name, mime: f.mime })),
     test_report: req.report,
     root_hash: req.root,
     unsigned: verified.state === 'unsigned',

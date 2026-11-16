@@ -774,6 +774,13 @@ function screenLines(screen: InstallScreen): string[] {
   if (screen.endpoints.length > 0) {
     lines.push(`${pad('public URLs')}${screen.endpoints.map((e) => `${e.method} /_plugin/${screen.plugin}/${e.name}`).join(', ')}`);
   }
+  // The one declaration that reaches a visitor: a script served from the site's own origin. Shown
+  // after the URLs because it is the second half of the same public surface.
+  if (screen.files.length > 0) {
+    lines.push(
+      `${pad('public files')}${screen.files.map((f) => `GET /_plugin/${screen.plugin}/f/${f.name} (${f.mime})`).join(', ')}`,
+    );
+  }
   if (screen.unsigned) {
     lines.push('');
     lines.push('  *** UNSIGNED — no key this install trusts vouches for this package.            ***');

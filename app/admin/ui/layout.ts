@@ -17,7 +17,7 @@
 import { esc } from './html.ts';
 import { ADMIN_ROBOTS_META } from '../../render/robots.ts';
 
-export type NavKey = 'pages' | 'site' | 'themes' | 'media' | 'plugins' | 'none';
+export type NavKey = 'pages' | 'analytics' | 'site' | 'themes' | 'media' | 'plugins' | 'none';
 
 export interface NavItem {
   href: string;
@@ -424,6 +424,10 @@ function navOf(input: LayoutInput): string {
   const tenant = input.tenant.key;
   const items: { key: NavKey; href: string; label: string }[] = [
     { key: 'pages', href: `/admin/t/${encodeURIComponent(tenant)}/`, label: 'Pages' },
+    // The `analytics` package's screen. A core route, because a package may own data and may not
+    // draw markup (§10.5) and this screen is nine aggregates and a chart; a site without the
+    // package installed sees the screen's own empty state, which is where it is switched on.
+    { key: 'analytics', href: `/admin/t/${encodeURIComponent(tenant)}/analytics`, label: 'Analytics' },
     // S8l: the bar and footer every page wears. It sat behind `sqlite3` until this screen.
     { key: 'site', href: `/admin/t/${encodeURIComponent(tenant)}/site`, label: 'Site' },
     // S8s: the look, next to the other site-wide decisions and before the content ones.

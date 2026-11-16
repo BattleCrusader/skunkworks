@@ -204,6 +204,41 @@ export interface EndpointSpec {
 
 const ENDPOINT_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 
+/**
+ * **The one MIME a package may serve.** Not a list, because the list is the surface.
+ *
+ * A package's endpoint answers JSON (§10.5: plugin markup never reaches a tenant's origin), and
+ * that leaves the `page.head` filter unable to do the one thing a first-party integration
+ * needs: run a line of code on the page. The CSP is `script-src 'self'` with no nonce and no
+ * hash (C-12, `app/render/csp.ts`), so the only way in is a `<script src>` **on this origin** —
+ * which means the bytes have to come from somewhere the host controls.
+ *
+ * `text/javascript` and nothing else. `text/html` would be a second document on the tenant's
+ * origin, which is the whole thing §10.5 excludes; `text/css` would let a package restyle a page
+ * the theme owns. A file is *code the package already runs*: an installed package is imported
+ * into this process (§13.3.7), so serving its own script does not widen what it can do to the
+ * box — it widens what it can do to the *visitor*, deliberately, for packages whose job is a
+ * first-party integration.
+ */
+export const FILE_MIMES = ['text/javascript'] as const;
+export type FileMime = (typeof FILE_MIMES)[number];
+const FILE_NAME = /^[a-z][a-z0-9-]{0,31}\.js$/;
+
+/**
+ * A file a package serves from its own root: `GET /_plugin/<id>/f/<name>`.
+ *
+ * `path` is inside the package (validated here, and again by realpath in `static.ts`), so the
+ * URL can name nothing the package does not carry. The URL is a function of the id, the name and
+ * the package's version — which is what lets the host cache it hard: a new version is a new URL.
+ */
+export interface StaticFileSpec {
+  /** The URL's last segment; `.js`, because that is the only thing the host will serve. */
+  name: string;
+  /** A relative path inside the package root. */
+  path: string;
+  mime: FileMime;
+}
+
 export interface Manifest {
   id: string;
   version: string;
@@ -225,6 +260,16 @@ export interface Manifest {
   settings: SettingSpec[];
   /** D25 (S4e): the public URLs this package answers, and with which method. */
   endpoints?: EndpointSpec[];
+  /**
+   * The same-origin files this package serves, at `/_plugin/<id>/f/<name>`.
+   *
+   * Optional in the type as well as in the grammar: a row installed before this field existed has
+   * no `files` key in its stored `manifest_json`, and two call sites (`app/main.ts`,
+   * `app/plugins/context.ts`) read that JSON with a cast instead of `parseManifest`. Declaring it
+   * required would make the type lie about those rows; every reader already treats it as
+   * `?? []`.
+   */
+  files?: StaticFileSpec[];
   /** §8.5's `tests` block: the packager's report is bound to the image digest. */
   tests?: { entry: string; timeout_s: number };
   /** Optional declared site.db version range. */
@@ -410,7 +455,7 @@ export function parseManifest(raw: unknown): Manifest {
     settings.push({ key, type: type as SettingSpec['type'], ...(typeof s.max === 'number' ? { max: s.max } : {}) });
   }
 
-  const manifest: Manifest = { id, version: r.version, entry: entryRaw, main: '', hooks: [], capabilities, tables, settings };
+  const manifest: Manifest = { id, version: r.version, entry: entryRaw, main: '', hooks: [], capabilities, tables, settings, files: [] };
   // §13.3.1 (D36): `main` is what `import()` loads. A package that predates D36 names its
   // entry `entry`; the value is validated with the same rule either way, because the one
   // thing that must not happen is a package naming a path outside its own root.
@@ -464,6 +509,30 @@ export function parseManifest(raw: unknown): Manifest {
     }
     if (new Set(endpoints.map((e) => e.name)).size !== endpoints.length) bad(id, 'an endpoint is declared twice');
     manifest.endpoints = endpoints;
+  }
+  // The same-origin file surface. Validated here, before an install writes anything, for the same
+  // reason the endpoint list is: a malformed entry must be a refused package and not a 404 on the
+  // tenant's site at the moment a visitor's browser asks for the script.
+  if (r.files !== undefined) {
+    if (!Array.isArray(r.files)) bad(id, 'files must be an array');
+    const files: StaticFileSpec[] = [];
+    for (const entry of r.files) {
+      if (typeof entry !== 'object' || entry === null) bad(id, 'a file entry is not an object');
+      const f = entry as Record<string, unknown>;
+      const name = typeof f.name === 'string' ? f.name : '';
+      if (!FILE_NAME.test(name)) bad(id, `file name ${JSON.stringify(name)} is not <name>.js`);
+      const mime = String(f.mime ?? '');
+      if (!(FILE_MIMES as readonly string[]).includes(mime)) {
+        bad(id, `file ${name}: mime ${JSON.stringify(f.mime)} is not one of ${FILE_MIMES.join(', ')}`);
+      }
+      const path = typeof f.path === 'string' ? f.path : '';
+      if (path === '' || path.includes('..') || path.startsWith('/') || path.includes('\\')) {
+        bad(id, `file ${name}: path ${JSON.stringify(path)} is not a relative path inside the package`);
+      }
+      files.push({ name, path, mime: mime as FileMime });
+    }
+    if (new Set(files.map((f) => f.name)).size !== files.length) bad(id, 'a file is declared twice');
+    manifest.files = files;
   }
   if (typeof r.tests === 'object' && r.tests !== null) {
     const t = r.tests as Record<string, unknown>;
