@@ -105,6 +105,17 @@ import { parseRange, readAnalytics } from './analytics.ts';
 import { analyticsScreen } from './ui/analytics.ts';
 import { actionSite, filterSite, screenHref } from '../plugins/site.ts';
 import type { PluginRuntime } from '../plugins/runtime.ts';
+import {
+  actionOf,
+  countBadge,
+  filterValues,
+  isManaged,
+  readManaged,
+  BULK_MAX,
+  CONFIRM_PREVIEW,
+  type ManagedResult,
+} from './managed.ts';
+import { confirmDeleteScreen, managedScreen } from './ui/managed.ts';
 import { ensureVariants } from '../assets/renditions.ts';
 import { storageQuotaFor, uploadAsset } from '../assets/library.ts';
 import { DEFAULT_CONTENT_ROOT, UPLOAD_MAX_BYTES } from '../assets/store.ts';
@@ -166,6 +177,7 @@ import {
 import { readThemeBundle } from '../render/theme-bundle.ts';
 import { THEME_PICK_JS, themesScreen } from './ui/themes.ts';
 import { layout, type NavKey, type NavItem } from './ui/layout.ts';
+import { plural } from './ui/html.ts';
 import { pageListScreen, type PageRow } from './ui/pageList.ts';
 import { mediaLibraryScreen, type MediaAsset } from './ui/mediaLibrary.ts';
 import { signInScreen } from './ui/signIn.ts';
@@ -331,6 +343,34 @@ function fieldsOf(body: unknown): Record<string, string | undefined> {
   return out;
 }
 
+/**
+ * The same body with repeated names kept as arrays.
+ *
+ * `fieldsOf` drops everything that is not a string, which is right for a form of one value per
+ * name and wrong for a form of checkboxes: a bulk action posts `ids` once per ticked row, and the
+ * urlencoded parser hands the route the body as a *string* (`app/main.ts` parses it that way so the
+ * admin needs no dependency). So the only place a repeated name can survive is here.
+ */
+function formFields(body: unknown): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  const push = (key: string, value: string): void => {
+    const seen = out[key];
+    if (seen === undefined) out[key] = value;
+    else if (Array.isArray(seen)) seen.push(value);
+    else out[key] = [seen, value];
+  };
+  if (typeof body === 'string') {
+    for (const [k, v] of new URLSearchParams(body)) push(k, v);
+    return out;
+  }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return out;
+  for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+    if (typeof v === 'string') push(k, v);
+    else if (Array.isArray(v)) for (const one of v) if (typeof one === 'string') push(k, one);
+  }
+  return out;
+}
+
 /** A browser form sends `Accept: text/html`; a JSON client does not. */
 function wantsHtml(req: FastifyRequest): boolean {
   const accept = header(req, 'accept') ?? '';
@@ -394,6 +434,7 @@ interface PageChrome {
   user: { email: string; role: string } | null;
   active: NavKey;
   notices?: number;
+  badge?: { label: string; count: number; href: string };
 }
 
 function page(title: string, body: string, chrome?: PageChrome): string {
@@ -405,6 +446,7 @@ function page(title: string, body: string, chrome?: PageChrome): string {
     user: chrome === undefined ? null : chrome.user,
     active: chrome === undefined ? 'none' : chrome.active,
     ...(chrome === undefined || chrome.notices === undefined ? {} : { notices: chrome.notices }),
+    ...(chrome === undefined || chrome.badge === undefined ? {} : { badge: chrome.badge }),
   });
 }
 
@@ -1622,6 +1664,7 @@ ${items}
         csrf: this.sessions.csrfToken(session),
         nowMs: Date.now(),
         notices,
+        ...this.#badgeOf(tenant),
         more,
         ...(flash === undefined ? {} : { flash }),
         ...(rows === null ? { unavailable: true } : {}),
@@ -1655,7 +1698,7 @@ ${items}
         user: this.#actorOf(session),
         report,
         range,
-        ...(this.#plugins === null ? {} : { notices: this.#plugins.noticesFor(tenant.key).length }),
+        ...this.#bar(tenant),
       }),
     );
   }
@@ -1688,7 +1731,7 @@ ${items}
         user: { email: user.email, role: user.role },
         csrf: this.sessions.csrfToken(session),
         flash,
-        notices: this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length,
+        ...this.#bar(tenant),
         minPasswordLength: PASSWORD_MIN_LENGTH,
       }),
     );
@@ -2313,7 +2356,7 @@ ${mailHtml}
           pastedCssBytes: Buffer.byteLength(pasted, 'utf8'),
           activeKey: active === null ? null : active.key,
           ...(queryValue(req.url, 'result') === undefined ? {} : { flash: queryValue(req.url, 'result') }),
-          notices: this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length,
+          ...this.#bar(tenant),
         }),
       );
     } finally {
@@ -2655,7 +2698,7 @@ ${mailHtml}
           tenant: { key: tenant.key, label: tenant.key },
           user: { email: user?.email ?? '', role: user?.role ?? 'owner' },
           csrf: this.sessions.csrfToken(session),
-          notices: this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length,
+          ...this.#bar(tenant),
           chrome,
           header: mapped.filter((row) => row.location === 'header'),
           footer: mapped.filter((row) => row.location === 'footer'),
@@ -3421,7 +3464,7 @@ ${installedRows}
 <h2>Plugin screens</h2>
 ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pluginHrefs}</ul>`}
 <p><a href="/admin/t/${esc(tenant.key)}/">Back</a></p>`,
-        { tenant, user: this.#actorOf(session), active: 'plugins', notices: notices.length },
+        { tenant, user: this.#actorOf(session), active: 'plugins', notices: notices.length, ...this.#badgeOf(tenant) },
       ),
     );
   }
@@ -4838,6 +4881,242 @@ ${items}
     return out;
   }
 
+  /**
+   * The screen a package declared a badge for, if any.
+   *
+   * The base has no opinion about which screen that is. A package says "count these rows and put
+   * the number in the bar"; if none says it, no badge exists. Uninstalling the package removes the
+   * table the count reads, and `countBadge` answers null rather than throwing.
+   */
+  #badgedScreen(tenant: Tenant): { screen: DeclarativeScreen; href: string } | undefined {
+    const runtime = this.#plugins;
+    if (runtime === null) return undefined;
+    for (const entry of runtime.registry.plugins(tenant.key)) {
+      for (const screen of entry.screens.values()) {
+        if (screen.badge !== undefined) return { screen, href: screenHref(tenant.key, screen.path) };
+      }
+    }
+    return undefined;
+  }
+
+  /** The declared badge, counted. `undefined` means "draw nothing" — never an error on a page. */
+  #badgeOf(tenant: Tenant): { badge: { label: string; count: number; href: string } } | undefined {
+    const found = this.#badgedScreen(tenant);
+    if (found === undefined || found.screen.badge === undefined) return undefined;
+    let db: Database.Database | undefined;
+    try {
+      db = this.#siteDb(tenant.key);
+      const count = countBadge(db, found.screen);
+      if (count === null) return undefined;
+      return { badge: { label: found.screen.badge.label, count, href: found.href } };
+    } catch {
+      // A badge is not worth a 500 on a page that has nothing to do with it.
+      return undefined;
+    } finally {
+      db?.close();
+    }
+  }
+
+  /** What the last bulk action did, read back off the redirect. */
+  #managedFlash(url: string, screen: DeclarativeScreen): { kind: 'ok' | 'bad'; text: string } | null {
+    // `queryValue` answers `undefined` for a parameter that is not there — testing for null made
+    // every visit to the screen render a flash of its own absence ("0 rows changed.").
+    const done = queryValue(url, 'done');
+    if (done === undefined || done === '') return null;
+    const changed = Number.parseInt(queryValue(url, 'n') ?? '0', 10) || 0;
+    const failed = Number.parseInt(queryValue(url, 'failed') ?? '0', 10) || 0;
+    const what = plural(changed, 'row');
+    if (done === 'nothing') return { kind: 'bad', text: 'Nothing was selected, so nothing changed.' };
+    const action = actionOf(screen, queryValue(url, 'action') ?? '');
+    // The package's own words, as a prefix: lowercasing "Mark read" into a sentence produced
+    // "2 rows mark read.", which is not English. A label is a button, not a verb.
+    const label = action === undefined ? 'Changed' : action.label.replace(/…$/, '');
+    return {
+      kind: failed > 0 ? 'bad' : 'ok',
+      text:
+        `${label}: ${what}.` +
+        (failed > 0 ? ` ${plural(failed, 'row')} could not be changed — it had gone.` : ''),
+    };
+  }
+
+  /** `GET <screen>` for a managed screen: the filter, the search, one page of rows. */
+  #managedPage(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    session: SessionRecord,
+    tenant: Tenant,
+    screen: DeclarativeScreen,
+    basePath: string,
+  ): void {
+    const filterColumn = screen.filter?.column;
+    const rawPage = queryValue(req.url, 'page');
+    const db = this.#siteDb(tenant.key);
+    let result: ManagedResult;
+    try {
+      result = readManaged(db, screen, {
+        filter: filterColumn === undefined ? null : (queryValue(req.url, filterColumn) ?? null),
+        q: queryValue(req.url, 'q') ?? null,
+        page: rawPage === undefined ? 1 : Number.parseInt(rawPage, 10),
+      });
+    } finally {
+      db.close();
+    }
+    const inbox = this.#badgeOf(tenant);
+    reply.type('text/html; charset=utf-8').send(
+      managedScreen({
+        tenant: { key: tenant.key, label: tenant.key },
+        user: this.#actorOf(session),
+        screen,
+        result,
+        basePath,
+        csrf: this.sessions.csrfToken(session),
+        ...(inbox === undefined ? {} : inbox),
+        flash: this.#managedFlash(req.url, screen),
+        nowMs: Date.now(),
+      }),
+    );
+  }
+
+  /**
+   * `POST <screen>/bulk` — several rows, one press.
+   *
+   * The ids are checkbox values, so they are re-validated here: digits only, at most `BULK_MAX`.
+   * Each write goes through `updateRow` / `deleteRow` — the same functions the row form uses — so
+   * every record keeps its own audit row and its own before/after pair. A bulk action is a loop
+   * over single actions, not a new way to write.
+   *
+   * A destructive action needs a confirming second post; without it this renders what would go
+   * and writes nothing.
+   */
+  #managedBulk(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    session: SessionRecord,
+    tenant: Tenant,
+    screen: DeclarativeScreen,
+  ): void {
+    const body = formFields(req.body);
+    const basePath = `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}`;
+    const filterColumn = screen.filter?.column;
+    const values = filterValues(screen);
+    const scalar = (key: string): string | undefined => {
+      const v = body[key];
+      return Array.isArray(v) ? v[0] : v;
+    };
+
+    const raw = body['ids'];
+    const ids = (Array.isArray(raw) ? raw : raw === undefined ? [] : [raw])
+      .filter((value): value is string => typeof value === 'string' && /^\d+$/.test(value))
+      .slice(0, BULK_MAX);
+    const action = actionOf(screen, scalar('action') ?? '');
+    const askedFilter = filterColumn === undefined ? undefined : scalar(filterColumn);
+    const filter = askedFilter !== undefined && values.includes(askedFilter) ? askedFilter : null;
+    const q = (scalar('q') ?? '').slice(0, 120);
+    const page = Number.parseInt(scalar('page') ?? '1', 10) || 1;
+    const back = (extra: Record<string, string>): string => {
+      const params = new URLSearchParams();
+      if (filterColumn !== undefined && filter !== null) params.set(filterColumn, filter);
+      if (q !== '') params.set('q', q);
+      if (page > 1) params.set('page', String(page));
+      for (const [k, v] of Object.entries(extra)) params.set(k, v);
+      return `${basePath}?${params.toString()}`;
+    };
+
+    if (action === undefined) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', `${scalar('action') ?? '(nothing)'} is not an action this screen declares`);
+    }
+    if (ids.length === 0) {
+      reply.code(303).header('location', back({ done: 'nothing' })).send('');
+      return;
+    }
+
+    if (action.delete === true) {
+      const confirmed = scalar('confirm') === '1';
+      if (!confirmed) {
+        // Step one: show what would go. Nothing is written.
+        const db = this.#siteDb(tenant.key);
+        let rows: Record<string, unknown>[] = [];
+        let pk = 'id';
+        try {
+          const info = describeTable(db, screen.table);
+          pk = info.pk;
+          rows = db
+            .prepare(
+              `SELECT * FROM "${info.name}" WHERE "${info.pk}" IN (${ids.map(() => '?').join(', ')}) ORDER BY "${info.pk}" DESC LIMIT ${CONFIRM_PREVIEW}`,
+            )
+            .all(...ids) as Record<string, unknown>[];
+        } finally {
+          db.close();
+        }
+        const inbox = this.#badgeOf(tenant);
+        reply.type('text/html; charset=utf-8').send(
+          confirmDeleteScreen({
+            tenant: { key: tenant.key, label: tenant.key },
+            user: this.#actorOf(session),
+            screen,
+            basePath,
+            csrf: this.sessions.csrfToken(session),
+            ids,
+            pk,
+            rows,
+            warning: action.warning ?? 'This cannot be undone.',
+            label: action.label,
+            actionName: action.name,
+            filterKey: filterColumn ?? 'filter',
+            firstColumn: (screen.list ?? [])[0] ?? pk,
+            ...(screen.preview === undefined ? {} : { preview: screen.preview }),
+            state: { filter, q, page },
+            ...(inbox === undefined ? {} : inbox),
+            nowMs: Date.now(),
+          }),
+        );
+        return;
+      }
+      const { changed, failed } = this.#applyBulk(tenant, (db) => (id) => deleteRow(db, screen.table, id, this.#actor(session)), ids);
+      reply.code(303).header('location', back({ done: 'ran', action: action.name, n: String(changed), failed: String(failed) })).send('');
+      return;
+    }
+
+    const patch = action.set ?? {};
+    const { changed, failed } = this.#applyBulk(
+      tenant,
+      (db) => (id) => updateRow(db, screen.table, id, patch, this.#actor(session)),
+      ids,
+    );
+    reply
+      .code(303)
+      .header('location', back({ done: 'ran', action: action.name, n: String(changed), failed: String(failed) }))
+      .send('');
+  }
+
+  /**
+   * Run one single-row write per id, and count what actually happened.
+   *
+   * One handle, one audit row per row, and no outer transaction: row seven failing must not
+   * silently undo rows one to six, and the operator is told how many could not be changed.
+   */
+  #applyBulk(
+    tenant: Tenant,
+    write: (db: Database.Database) => (id: string) => unknown,
+    ids: string[],
+  ): { changed: number; failed: number } {
+    return this.#write(tenant, (db) => {
+      const one = write(db);
+      let changed = 0;
+      let failed = 0;
+      for (const id of ids) {
+        try {
+          one(id);
+          changed += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      return { changed, failed };
+    });
+  }
+
+
   #pluginScreen(tenant: Tenant, action: string): DeclarativeScreen | undefined {
     const runtime = this.#plugins;
     if (runtime === null) return undefined;
@@ -4868,15 +5147,20 @@ ${items}
         reply.code(303).header('location', `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}/${encodeURIComponent(created.id)}`).send('');
         return;
       }
-      this.#rowsPage(
-        reply,
-        tenant,
-        screen.table,
-        session,
-        screen.title,
-        `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}`,
-        screen,
-      );
+      const basePath = `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}`;
+      if (isManaged(screen)) {
+        this.#managedPage(req, reply, session, tenant, screen, basePath);
+        return;
+      }
+      this.#rowsPage(reply, tenant, screen.table, session, screen.title, basePath, screen);
+      return;
+    }
+    // A screen whose package declared actions, a filter, a preview or a badge is a *manager*: chips,
+    // a search, one page of rows, and actions over many at once. A package that declares none keeps
+    // the plain browser it always had.
+    if (parts.length === 1 && parts[0] === 'bulk') {
+      this.#requireMethod(req, 'POST');
+      this.#managedBulk(req, reply, session, tenant, screen);
       return;
     }
     if (parts.length === 1 && parts[0] === 'new') {
@@ -4908,13 +5192,33 @@ ${items}
     throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
   }
 
+  /**
+   * What every app bar carries: the plugin notices an operator has not seen, and the inbox.
+   *
+   * One expression, because "on every admin page" is a claim that is only true if there is one
+   * place it comes from. A screen that hand-built `notices` would be a screen the inbox misses.
+   */
+  #bar(tenant: Tenant): { notices: number; badge?: { label: string; count: number; href: string } } {
+    const inbox = this.#badgeOf(tenant);
+    return {
+      notices: this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length,
+      ...(inbox === undefined ? {} : inbox),
+    };
+  }
+
   /** The shell's chrome, for the screens that pass it explicitly. */
-  #chrome(tenant: Tenant, session: SessionRecord): { tenant: Tenant; user: { email: string; role: string } | null; active: 'none'; notices: number } {
+  #chrome(tenant: Tenant, session: SessionRecord): {
+    tenant: Tenant;
+    user: { email: string; role: string } | null;
+    active: 'none';
+    notices: number;
+    badge?: { label: string; count: number; href: string };
+  } {
     return {
       tenant,
       user: this.#actorOf(session),
       active: 'none',
-      notices: this.#plugins === null ? 0 : this.#plugins.noticesFor(tenant.key).length,
+      ...this.#bar(tenant),
     };
   }
 

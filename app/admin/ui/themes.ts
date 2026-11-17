@@ -44,6 +44,9 @@ export interface ThemesScreenInput {
   user: { email: string; role: string };
   csrf: string;
   notices?: number;
+
+  /** The package's declared badge, for the app bar pill. `undefined` draws no pill. */
+  badge?: { label: string; count: number; href: string };
   themes: ThemeListRow[];
   /** Themes this box has in its library, ready to add to any site. */
   library: { key: string; name: string; version: string; assets: number }[];
@@ -276,6 +279,7 @@ ${input.themes
     user: input.user,
     active: 'themes',
     ...(input.notices === undefined ? {} : { notices: input.notices }),
+    ...(input.badge === undefined ? {} : { badge: input.badge }),
     // `flash` used to be passed into `layout()` as a bare string, which the layout silently dropped:
     // the upload worked, the redirect carried `?result=uploaded`, and the screen said nothing at
     // all (S8x). It is now a value the layout renders, with a kind that decides the colour.
@@ -295,7 +299,7 @@ ${input.themes
       <p class="note">Each row's <b>Download</b> hands back one theme as a package — <code>theme.json</code>,
       <code>theme.css</code> and every asset its rules name — which any box can import and any site can
       wear. A theme is one part of a site, not a site: to move the <em>site</em> — pages, menus, media,
-      plugins, schema and the theme it wears — use <a href="${base}/site#site-export">Site → Take this site somewhere else</a>.</p>
+      plugins, schema and the theme it wears — use <a href="${root}/site#site-export">Site → Take this site somewhere else</a>.</p>
     </div>
     <div class="card card--padded">
       <h2>Themes on this box</h2>

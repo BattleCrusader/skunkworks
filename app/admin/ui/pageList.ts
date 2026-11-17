@@ -47,6 +47,9 @@ export interface PageListInput {
   /** Injected so "Saved 41 minutes ago" is a function of its inputs. */
   nowMs: number;
   notices?: number;
+
+  /** The package's declared badge, for the app bar pill. `undefined` draws no pill. */
+  badge?: { label: string; count: number; href: string };
   /** Core's remaining screens plus anything `admin.menu` added. */
   more?: readonly NavItem[];
   /** The outcome of the last visibility write, reported by PRG (see `account.ts` for the pattern). */
@@ -140,6 +143,7 @@ export function pageListScreen(input: PageListInput): string {
       user: input.user,
       active: 'pages',
       ...(input.notices === undefined ? {} : { notices: input.notices }),
+    ...(input.badge === undefined ? {} : { badge: input.badge }),
       body: `    <div class="pagehead">
       <div>
         <h1>Your pages</h1>
@@ -203,6 +207,7 @@ ${more.map((item) => `      <a class="morelink" href="${esc(item.href)}">${esc(i
     user: input.user,
     active: 'pages',
     ...(input.notices === undefined ? {} : { notices: input.notices }),
+    ...(input.badge === undefined ? {} : { badge: input.badge }),
     ...(input.flash === undefined ? {} : { flash: input.flash }),
     body: `    <div class="pagehead">
       <div>

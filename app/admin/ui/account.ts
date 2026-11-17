@@ -26,6 +26,9 @@ export interface AccountInput {
   /** `changed` | `email` | `current` | `short` | `same` | undefined. */
   flash?: string | undefined;
   notices?: number;
+
+  /** The package's declared badge, for the app bar pill. `undefined` draws no pill. */
+  badge?: { label: string; count: number; href: string };
   /** From `PASSWORD_MIN_LENGTH` — the help text and the server's rule are one number. */
   minPasswordLength: number;
 }
@@ -63,6 +66,7 @@ export function accountScreen(input: AccountInput): string {
     user: input.user,
     active: 'none',
     ...(input.notices === undefined ? {} : { notices: input.notices }),
+    ...(input.badge === undefined ? {} : { badge: input.badge }),
     body: `    <div class="pagehead">
       <div>
         <h1>Your account</h1>

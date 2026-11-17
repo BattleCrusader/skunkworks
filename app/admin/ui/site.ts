@@ -38,6 +38,9 @@ export interface SiteScreenInput {
   user: { email: string; role: string };
   csrf: string;
   notices?: number;
+
+  /** The package's declared badge, for the app bar pill. `undefined` draws no pill. */
+  badge?: { label: string; count: number; href: string };
   chrome: {
     title: string;
     logoKey: string;
@@ -150,6 +153,7 @@ export function siteScreen(input: SiteScreenInput): string {
     user: input.user,
     active: input.active ?? 'site',
     ...(input.notices === undefined ? {} : { notices: input.notices }),
+    ...(input.badge === undefined ? {} : { badge: input.badge }),
     body: `${flashBlock(input.flash)}    <div class="pagehead">
       <div>
         <h1>Site</h1>

@@ -50,6 +50,10 @@ services:
       - ./data/nginx/10-app.conf:/etc/nginx/conf.d/10-app.conf:ro
       - ./snippets:/etc/nginx/snippets:ro
       - ./content:/srv/content:ro
+      # Static demo pages (`/demos/<name>/` on a tenant host, wired by
+      # snippets/tenants/<key>/*.conf which the generated tenant block includes).
+      # Source of truth is skunkworks-sites/demos/<name>/ — plain files, no app involved.
+      - ./skunkworks-sites/demos:/srv/demos:ro
       # S4e: the pairs install.sh mints and the acme service replaces live with the install's
       # mutable state, not inside the verified bundle (a read-only bundle used to fail at the
       # cert step, and the verified tree was no longer the installed tree).

@@ -36,6 +36,8 @@ import { REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
 import { call, header, type Res } from './helpers/http.ts';
 
 const CONTACT = join(REPO, 'plugins', 'contact');
+/** Whatever the shipped package says it is — a test that hardcodes it goes stale on every release. */
+const CONTACT_VERSION = (JSON.parse(readFileSync(join(CONTACT, 'plugin.json'), 'utf8')) as { version: string }).version;
 const DIGEST = 'sha256:library-gate';
 const ACME_HOST = 'acme.test';
 const BETA_HOST = 'beta.test';
@@ -54,7 +56,7 @@ function reportFor(packageDir: string, plugin: string, name: string): string {
   const path = join(fixture.dir, name);
   writeFileSync(
     path,
-    `${JSON.stringify({ plugin, version: '1.2.0', root_hash: root, runner_image_digest: DIGEST, ran_at: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify({ plugin, version: CONTACT_VERSION, root_hash: root, runner_image_digest: DIGEST, ran_at: new Date().toISOString() }, null, 2)}\n`,
   );
   return path;
 }
@@ -190,7 +192,7 @@ test('L5. the acknowledged install lands: a row for this tenant, its tables in i
   const res = await install(acme, 'acme', ACME_HOST, { package: archiveName, understand: '1', allow_unsigned: '1' });
   assert.equal(res.status, 303, res.body);
   const location = decodeURIComponent(String(header(res, 'location')));
-  assert.match(location, /installed contact@1\.2\.0 for acme only/);
+  assert.match(location, new RegExp(`installed contact@${CONTACT_VERSION.replace(/\./g, '\\.')} for acme only`));
   assert.match(location, /this tenant's database/);
   assert.match(location, /UNSIGNED/);
   assert.match(location, /press Enable/, 'installing is not running: enable stays a separate press');
@@ -211,11 +213,11 @@ test('L6. the other tenant keeps the package on its shelf and none of its schema
   assert.match(res.body, /available/, 'beta is still being offered it');
 });
 
-test('L7. the same bytes install idempotently; different bytes under one id are refused', async () => {
+test('L7. the same bytes install idempotently; the same version with different bytes is refused', async () => {
   // Same root twice is not an error: the row is the identity, so a second press changes nothing.
   const again = await install(acme, 'acme', ACME_HOST, { package: archiveName, understand: '1', allow_unsigned: '1' });
   assert.equal(again.status, 303, again.body);
-  assert.equal(installedRow('acme', 'contact')?.version, '1.2.0');
+  assert.equal(installedRow('acme', 'contact')?.version, CONTACT_VERSION);
   const rows = (() => {
     const db = openAdminWrite(fixture.sitePath('acme'));
     try {
@@ -226,8 +228,10 @@ test('L7. the same bytes install idempotently; different bytes under one id are 
   })();
   assert.equal(rows.n, 1, 'one package, one row');
 
-  // A different root under the same id is the case §8.2 refuses: two roots for one id would make
-  // the installed row a lie. Uninstall is the only way round it, so the refusal has to be a refusal.
+  // Different bytes under one id are now an *upgrade*, not a reinstall — but only forward. A copy
+  // that kept the same version is a rebuild of a version already installed, and that is refused:
+  // two roots for one version would make `cms_plugin_installed` a lie. (A genuinely newer version
+  // upgrades in place and keeps its rows: `test/plugin-upgrade.test.ts`.)
   const changed = mkdtempSync(join(fixture.dir, 'changed-'));
   cpSync(CONTACT, changed, { recursive: true });
   writeFileSync(join(changed, 'index.mjs'), `${readFileSync(join(changed, 'index.mjs'), 'utf8')}\n// a later build\n`);
@@ -237,7 +241,7 @@ test('L7. the same bytes install idempotently; different bytes under one id are 
   const refused = await install(acme, 'acme', ACME_HOST, { package: changedName, understand: '1', allow_unsigned: '1' });
   assert.equal(refused.status, 200, refused.body);
   assert.match(refused.body, /SKW_E_PL_/, 'a refusal with a code, not a 500');
-  assert.equal(installedRow('acme', 'contact')?.version, '1.2.0', 'the installed row is untouched');
+  assert.equal(installedRow('acme', 'contact')?.version, CONTACT_VERSION, 'the installed row is untouched');
 });
 
 test('L8. an unreadable archive is listed on the shelf with its error, not silently hidden', async () => {
@@ -269,7 +273,7 @@ test('L8. an unreadable archive is listed on the shelf with its error, not silen
  * L7 left a changed archive on the shelf; this installs it for the tenant that has no row, which
  * is exactly the case that used to slip through.
  */
-test('L9. a second version of one package is refused at install, naming both roots', async () => {
+test('L9. an older version is refused at install, naming both roots', async () => {
   const changedName = 'contact-9.9.9.tar.gz';
   const res = await install(beta, 'beta', BETA_HOST, { package: changedName, understand: '1', allow_unsigned: '1' });
   assert.equal(res.status, 200, res.body);

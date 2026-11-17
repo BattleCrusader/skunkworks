@@ -1,15 +1,19 @@
 # Dockerfile.app — multi-stage; ends on node:22-bookworm-slim, non-root uid 10001 (§3).
 #
 # S4d: the image had never been built. `better-sqlite3` has no prebuild for this Node on
-# linux/arm64, so `npm ci` compiles it, and `node:22-bookworm-slim` ships no toolchain —
-# both stages failed at `npm ci` with gyp's "not ok". The build stage now installs
-# python3/make/g++, and the runtime **copies** the pruned tree instead of re-running
-# `npm ci`: a second compile in the shipping image would put a compiler in the container
-# for no reason, and it was the second failure in the same build.
-FROM node:22-bookworm-slim AS build
-RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 make g++ \
- && rm -rf /var/lib/apt/lists/*
+# linux/arm64, so `npm ci` compiles it, and `node:22-bookworm-slim` ships no toolchain — both
+# stages failed at `npm ci` with gyp's "not ok". The build stage **copies** its pruned tree into
+# the runtime image instead of re-running `npm ci`: a second compile in the shipping image would
+# put a compiler in the container for no reason.
+#
+# The build stage is `node:22-bookworm` (full, not `-slim`) because that tag is `buildpack-deps`
+# underneath and already carries python3, make and g++ — the three things gyp needs. Installing
+# them with apt made every build depend on a Debian mirror, and a mirror serving an index whose
+# hash does not match its own Release file fails `apt-get update` with `Hash Sum mismatch`: the
+# image then cannot be built at all, over a change that has nothing to do with Debian. The
+# runtime image stays `-slim`, so nothing extra ships.
+FROM node:22-bookworm AS build
+WORKDIR /src
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund

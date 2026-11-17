@@ -880,6 +880,34 @@
       ]
     },
     {
+      "file": "test/admin-messages.test.ts",
+      "worstIdleMs": 1291,
+      "measuredOn": "2026-11-18",
+      "load1m": 5.04,
+      "box": "Francoiss-Mac-mini.local darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.9.2/4cpu/3052212224B",
+      "sha256": "8fa209ddb28b46c62bcd07d6da7b6ad684c1d0494565af5c5f4e1ea0adbb169d",
+      "runs": [
+        {
+          "ms": 1291,
+          "at": "2026-11-17T23:01:31.157Z",
+          "load1mBefore": 5.04,
+          "load1mAfter": 5.04,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 10
+        },
+        {
+          "ms": 760,
+          "at": "2026-11-17T23:01:31.918Z",
+          "load1mBefore": 5.04,
+          "load1mAfter": 5.04,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 10
+        }
+      ]
+    },
+    {
       "file": "test/plugin-analytics-tracker.test.ts",
       "worstIdleMs": 1242,
       "measuredOn": "2026-11-17",
@@ -1505,6 +1533,34 @@
           "idle": true,
           "exitCode": 0,
           "tests": 6
+        }
+      ]
+    },
+    {
+      "file": "test/plugin-upgrade.test.ts",
+      "worstIdleMs": 791,
+      "measuredOn": "2026-11-18",
+      "load1m": 5.04,
+      "box": "Francoiss-Mac-mini.local darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.9.2/4cpu/3052212224B",
+      "sha256": "eca054be442a4edf09b1d0557e923437de950e69714135fd2ac9a9d5400899a2",
+      "runs": [
+        {
+          "ms": 647,
+          "at": "2026-11-17T23:01:33.090Z",
+          "load1mBefore": 5.04,
+          "load1mAfter": 5.04,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 4
+        },
+        {
+          "ms": 791,
+          "at": "2026-11-17T23:01:33.881Z",
+          "load1mBefore": 5.04,
+          "load1mAfter": 5.19,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 4
         }
       ]
     },
@@ -2625,5 +2681,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-11-16T23:20:42.470Z"
+  "updatedAt": "2026-11-17T23:01:34.355Z"
 }

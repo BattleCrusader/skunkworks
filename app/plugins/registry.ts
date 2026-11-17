@@ -51,6 +51,27 @@ export interface RegisteredEndpoint {
   }) => unknown | Promise<unknown>;
 }
 
+/**
+ * One row-wide action the package offers on its screen: "mark read", "publish", "delete".
+ *
+ * The host draws the button and performs the write; the package decides *what the write is*. That
+ * split is the whole point: "these rows are now `read`" is a product decision and lives in the
+ * package, while "how do I safely update many rows with an audit row each" is a platform decision
+ * and lives here. A screen that declares no actions keeps the plain browser it always had.
+ */
+export interface ScreenAction {
+  /** The value the button posts. Must be unique within the screen; `delete` is reserved. */
+  name: string;
+  /** The words on the button. */
+  label: string;
+  /** The patch one press applies to every ticked row, as `column: value`. */
+  set?: Record<string, string>;
+  /** Destroys the ticked rows instead of patching them. Needs `warning`. */
+  delete?: boolean;
+  /** What the operator is told before a `delete`. Required when `delete` is true. */
+  warning?: string;
+}
+
 export interface DeclarativeScreen {
   /** The admin path, already constrained to a declared table by the activation check. */
   path: string;
@@ -63,6 +84,20 @@ export interface DeclarativeScreen {
    */
   fields?: FieldSpec[];
   list?: string[];
+  /**
+   * The column a screen may be narrowed by, and — because it must be a `select` — the values the
+   * chips offer. `filter` is the package saying "these rows have a state worth filtering on".
+   */
+  filter?: { column: string };
+  /** The long-text column shown as a one-line preview in the list. */
+  preview?: string;
+  /** Row-wide actions, in the order the buttons should appear. */
+  actions?: ScreenAction[];
+  /**
+   * The count to show in the app bar, on every admin page, linking to this screen: rows where
+   * `column` equals `value`. The label is the pill's own word ("Inbox"), not the base's.
+   */
+  badge?: { column: string; value: string; label: string };
 }
 
 /**
@@ -404,12 +439,94 @@ export class ActivationRecorder {
       throw new Error(`SKW_E_PL_REJECTED: screen path ${JSON.stringify(path)} is not /[a-z0-9-/]`);
     }
     const spec = this.declaredTables.get(table) as TableSpec;
+    const columnsOf = new Set((spec.columns ?? []).map((c) => c.name));
+    const fieldsOf = new Map((spec.fields ?? []).map((f) => [f.name, f]));
+    const refuse = (why: string): never => {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} screen ${path} ${why}`);
+    };
+    const columnOf = (name: unknown, what: string): string =>
+      typeof name === 'string' && columnsOf.has(name) ? name : refuse(`names ${what} ${JSON.stringify(name)}, which ${table} does not declare`);
+
+    // A filter is only honest if the column is a closed vocabulary: those are the chips.
+    let filter: { column: string } | undefined;
+    if (s.filter !== undefined) {
+      const f = s.filter as Record<string, unknown>;
+      const column = columnOf(f.column, 'its filter column');
+      const field = fieldsOf.get(column);
+      if (field?.options === undefined || field.options.length === 0) {
+        refuse(`filters on ${column}, which is not a select with options`);
+      }
+      filter = { column };
+    }
+
+    let preview: string | undefined;
+    if (s.preview !== undefined) {
+      const column = columnOf(s.preview, 'its preview column');
+      const field = fieldsOf.get(column);
+      if (field?.widget !== 'textarea' && field?.widget !== 'markdown') {
+        refuse(`calls ${column} a preview, but it is not a textarea or markdown field`);
+      }
+      preview = column;
+    }
+
+    let actions: ScreenAction[] | undefined;
+    const declaredActions = s.actions as unknown[] | undefined;
+    if (declaredActions !== undefined) {
+      if (!Array.isArray(declaredActions) || declaredActions.length === 0) refuse('declared no actions');
+      const seen = new Set<string>();
+      actions = declaredActions.map((raw: unknown): ScreenAction => {
+        if (typeof raw !== 'object' || raw === null) refuse('declared an action that is not an object');
+        const a = raw as Record<string, unknown>;
+        const name = typeof a.name === 'string' ? a.name : '';
+        if (!/^[a-z][a-z0-9-]{0,30}$/.test(name)) refuse(`declared the action name ${JSON.stringify(name)}`);
+        if (seen.has(name)) refuse(`declared the action ${name} twice`);
+        seen.add(name);
+        const label = typeof a.label === 'string' && a.label !== '' ? a.label : name;
+        if (a.delete === true) {
+          const warning = typeof a.warning === 'string' ? a.warning.trim() : '';
+          if (warning === '') refuse(`declared the delete action ${name} with no warning`);
+          return { name, label, delete: true, warning };
+        }
+        if (typeof a.set !== 'object' || a.set === null) refuse(`declared the action ${name} with neither \`set\` nor \`delete\``);
+        const set: Record<string, string> = {};
+        for (const [column, value] of Object.entries(a.set as Record<string, unknown>)) {
+          columnOf(column, `the action ${name}'s column`);
+          if (typeof value !== 'string') refuse(`declared the action ${name} setting ${column} to a non-string`);
+          const field = fieldsOf.get(column);
+          // A select's values are a closed vocabulary; an action may only choose from it.
+          if (field?.options !== undefined && !field.options.includes(value as string)) {
+            refuse(`declared the action ${name} setting ${column}=${JSON.stringify(value)}, which its options do not include`);
+          }
+          set[column] = value as string;
+        }
+        if (Object.keys(set).length === 0) refuse(`declared the action ${name} setting nothing`);
+        return { name, label, set };
+      });
+    }
+
+    let badge: DeclarativeScreen['badge'];
+    if (s.badge !== undefined) {
+      const b = s.badge as Record<string, unknown>;
+      const column = columnOf(b.column, 'its badge column');
+      if (typeof b.value !== 'string') refuse(`declared a badge without a value`);
+      const value = b.value as string;
+      const field = fieldsOf.get(column);
+      if (field?.options !== undefined && !field.options.includes(value)) {
+        refuse(`counts ${column}=${JSON.stringify(value)} for its badge, which its options do not include`);
+      }
+      badge = { column, value, label: typeof b.label === 'string' && b.label !== '' ? b.label : 'Open' };
+    }
+
     this.registrations.screens.set(path, {
       path,
       table,
       title: typeof s.title === 'string' ? s.title : this.pluginId,
       ...(spec.fields === undefined ? {} : { fields: spec.fields }),
       ...(spec.list === undefined ? {} : { list: spec.list }),
+      ...(filter === undefined ? {} : { filter }),
+      ...(preview === undefined ? {} : { preview }),
+      ...(actions === undefined ? {} : { actions }),
+      ...(badge === undefined ? {} : { badge }),
     });
   }
 

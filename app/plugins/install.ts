@@ -39,6 +39,7 @@ import {
   type Manifest,
 } from './manifest.ts';
 import { revokedRoot } from './revocation.ts';
+import { DestructiveUpgrade, compareVersions, planUpgrade, type UpgradeStep } from './upgrade.ts';
 import {
   installScreen,
   trustDirFor,
@@ -280,16 +281,10 @@ export function inspectPackage(input: InstallRequest): InspectedPackage {
       }
     }
 
-    // 6. the downgrade path: a different root under the same id is uninstall-first (§8.2).
-    const existing = db.prepare('SELECT root_hash, enabled FROM cms_plugin_installed WHERE plugin_id = ?').get(source.id) as
-      | { root_hash: string; enabled: number }
-      | undefined;
-    if (existing !== undefined && existing.root_hash !== root) {
-      refuse('SKW_E_PL_SCHEMA', `${source.id} is installed at root ${existing.root_hash}; uninstall it before installing ${root}`, {
-        installed_root_hash: existing.root_hash,
-        package_root_hash: root,
-      });
-    }
+    // 6. a different root under the same id is an **upgrade**, decided by `installPlugin` against
+    //    the live schema (§8.2 used to say uninstall-first, which dropped the package's data —
+    //    see `upgrade.ts`). The screen below is the same either way: it describes the package
+    //    about to be installed, and the operator approves *that* package.
 
     const screen = installScreen({
       manifest: source,
@@ -325,15 +320,38 @@ export function installPlugin(input: InstallRequest): InstallResult {
   const report = { sha: inspected.test_report_sha };
   const db = openAdminWrite(input.siteDb, 5000);
   try {
-    const existing = db.prepare('SELECT root_hash, enabled FROM cms_plugin_installed WHERE plugin_id = ?').get(source.id) as
-      | { root_hash: string; enabled: number }
-      | undefined;
+    const existing = db
+      .prepare('SELECT root_hash, version, manifest_json, enabled FROM cms_plugin_installed WHERE plugin_id = ?')
+      .get(source.id) as { root_hash: string; version: string; manifest_json: string; enabled: number } | undefined;
     const target = packageDir(input.pluginsRoot, source.id);
-    if (existing !== undefined && existing.root_hash !== root) {
-      refuse('SKW_E_PL_SCHEMA', `${source.id} is installed at root ${existing.root_hash}; uninstall it before installing ${root}`, {
-        installed_root_hash: existing.root_hash,
-        package_root_hash: root,
-      });
+
+    /**
+     * Installing a second root under one id is an **upgrade**, not a reinstall.
+     *
+     * It used to be refused, and the only way forward was uninstall — which drops every table the
+     * manifest declares. "Upgrade the contact package" and "delete every message a customer sent"
+     * were the same instruction. Now the schema diff decides: additive changes are applied in
+     * place, anything that would lose a column or a row is refused by name, and the rows stay put.
+     */
+    let upgrade: UpgradeStep[] = [];
+    const upgrading = existing !== undefined && existing.root_hash !== root;
+    if (upgrading && existing !== undefined) {
+      if (compareVersions(source.version, existing.version) <= 0) {
+        refuse(
+          'SKW_E_PL_SCHEMA',
+          `${source.id} is installed at ${existing.version}; ${source.version} is not newer, so this is a downgrade. An upgrade moves forward only — install the version you mean.`,
+          { installed_version: existing.version, package_version: source.version },
+        );
+      }
+      const previous = JSON.parse(existing.manifest_json) as Manifest;
+      try {
+        upgrade = planUpgrade(db, previous, source);
+      } catch (err) {
+        if (err instanceof DestructiveUpgrade) {
+          refuse(err.code, err.message, err.details);
+        }
+        throw err;
+      }
     }
 
     // The package **tree** is the box's, not the tenant's (`data/plugins/<id>`), so it can hold one
@@ -344,7 +362,11 @@ export function installPlugin(input: InstallRequest): InstallResult {
     // way to act on it. Refuse here, where the operator is standing, and say what to do.
     if (existsSync(target)) {
       const onDisk = packageRootHash(target).root;
-      if (onDisk !== root) {
+      // A box holds one version of a package tree, so a new root replaces it — that is what an
+      // upgrade means for every tenant at once. Tenants still rowed to the old root keep working
+      // until they are upgraded; `enable` names them, because "changed on disk" is a true statement
+      // about the wrong moment unless somebody lists who is behind.
+      if (onDisk !== root && !upgrading) {
         refuse(
           'SKW_E_PL_SCHEMA',
           `${source.id} on this box is root ${onDisk}; this archive is ${root} — a box holds one version of a package, so uninstall it from every tenant before installing another`,
@@ -355,18 +377,31 @@ export function installPlugin(input: InstallRequest): InstallResult {
 
     // Copy first, transaction second. Copying into a sibling then renaming is atomic on the
     // same filesystem; a copy into the live directory would expose a half package.
-    if (!existsSync(target)) {
+    if (!existsSync(target) || upgrading) {
       mkdirSync(input.pluginsRoot, { recursive: true });
       const staging = `${target}.tmp-${process.pid}`;
       rmSync(staging, { recursive: true, force: true });
       copyPackageTree(input.sourceDir, staging);
+      if (existsSync(target)) {
+        // Keep the version being replaced reachable: a failed upgrade must be reversible without a
+        // backup, because the tree is bytes and the rows are not.
+        const keep = `${target}.from-${existing?.version ?? 'previous'}`;
+        rmSync(keep, { recursive: true, force: true });
+        renameSync(target, keep);
+      }
       renameSync(staging, target);
     }
 
-    const enabled = input.enable === true;
+    // An upgrade must not switch a package off just because the flag was omitted. The operator's
+    // last decision about `enabled` stands unless this call says something.
+    const enabled = input.enable === true || (upgrading && existing !== undefined && existing.enabled === 1);
     if (enabled && report.sha === '') refuse('SKW_E_PL_TESTS_STALE', 'a plugin cannot be enabled without a test report');
     try {
       db.exec('BEGIN IMMEDIATE');
+      // Columns first, then the manifest's own DDL: `tableStatements` emits `CREATE INDEX … (new
+      // column)` for an indexed column the upgrade is about to add, and an index on a column that
+      // does not exist yet is `SQLITE_ERROR: no such column`.
+      for (const step of upgrade) db.exec(step.sql);
       for (const statement of tableStatements(source)) db.exec(statement);
       for (const table of source.tables) {
         const columns = table.columns ?? [];

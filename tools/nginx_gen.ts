@@ -171,6 +171,15 @@ export function generateAppConf(rows: readonly HostRow[], opts: GenOptions): str
     out.push('        try_files $uri =404;');
     out.push('    }');
     out.push('');
+    // Per-tenant edge extras: locations this tenant and no other serves, hand-maintained
+    // on the box (a static demo site, a campaign lander) and never written by this
+    // generator. A glob, because `include` of a path that does not exist is a boot-loop
+    // and most tenants have no extras at all — an unmatched mask is tolerated by nginx.
+    // The directory is a plain mount (snippets/), so a file dropped in takes effect on the
+    // next reload without touching this generated config.
+    out.push(`    # per-tenant extras (hand-maintained, optional): snippets/tenants/${key}/*.conf`);
+    out.push(`    include /etc/nginx/snippets/tenants/${key}/*.conf;`);
+    out.push('');
     out.push('    location / {');
     out.push(`        limit_req zone=tenant burst=${burst} nodelay;`);
     out.push('        include /etc/nginx/snippets/skunk-proxy.conf;');

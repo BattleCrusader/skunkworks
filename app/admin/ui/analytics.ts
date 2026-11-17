@@ -25,6 +25,9 @@ export interface AnalyticsScreenInput {
   /** The range the operator asked for, so the pills can mark it. */
   range: AnalyticsRange;
   notices?: number;
+
+  /** The package's declared badge, for the app bar pill. `undefined` draws no pill. */
+  badge?: { label: string; count: number; href: string };
 }
 
 /** `1,234` — grouped thousands, no locale dependency (this runs on the server, once). */
@@ -205,6 +208,7 @@ export function analyticsScreen(input: AnalyticsScreenInput): string {
       active: 'none',
       nav,
       ...(input.notices === undefined ? {} : { notices: input.notices }),
+    ...(input.badge === undefined ? {} : { badge: input.badge }),
       body: `    <div class="pagehead"><div><h1>Analytics</h1><p>How this site is being read.</p></div></div>
 ${notInstalled(base)}`,
     });
@@ -233,6 +237,7 @@ ${notInstalled(base)}`,
     active: 'none',
     nav,
     ...(input.notices === undefined ? {} : { notices: input.notices }),
+    ...(input.badge === undefined ? {} : { badge: input.badge }),
     body: `    <style>
       .an-grid { stroke: var(--line, #e6e3dc); stroke-width: 1; }
       .an-axis { fill: var(--muted, #7a756c); font-size: 10px; }

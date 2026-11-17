@@ -153,6 +153,26 @@ test('S8s-2. the stylesheet URL serves the bytes, immutably, and refuses anythin
   assert.equal(bad.status, 400, 'a stylesheet URL is /_css/<sha256>.css and nothing else');
 });
 
+/**
+ * Every link on a screen has to be a route.
+ *
+ * The Themes screen points at the Site screen's export panel, and it built that address from its
+ * own `base` (`/admin/t/<key>/themes`) — so the anchor was `/themes/site#site-export`, a path the
+ * router answers with `SKW_E_PLT_REQUEST_INVALID: no such admin action`. A person clicks it and the
+ * admin tells them their own screen does not exist. Found by sweeping every href on every admin
+ * page and fetching it; this is that sweep, kept.
+ */
+test('S8s-3b. the Themes screen\'s link to the Site export is a route that answers', async () => {
+  const screen = await get('/admin/t/acme/themes');
+  assert.equal(screen.status, 200, screen.body);
+  const link = /href="([^"]*#site-export)"/.exec(screen.body)?.[1];
+  assert.ok(link !== undefined, 'the Themes screen must still offer the way to the site export');
+  assert.equal(link, '/admin/t/acme/site#site-export', 'the Site screen is a sibling of Themes, not a child');
+  const followed = await get(link.split('#')[0] as string);
+  assert.equal(followed.status, 200, `the link must answer, not refuse: ${followed.body.slice(0, 120)}`);
+  assert.match(followed.body, /data-screen="site-export"/, 'and it must land on the panel the fragment names');
+});
+
 test('S8s-3. uploading a theme stores it once and lands on the screen', async () => {
   const up = await multipart('/admin/t/acme/themes/upload', { name: 'Probe look' }, { name: THEME_CSS, filename: 'probe-look.css' });
   assert.equal(up.status, 303, up.body);

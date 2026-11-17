@@ -42,7 +42,35 @@ const MESSAGE_MAX = 4_000;
 const EMAIL = /^[^\s@<>]{1,64}@[^\s@<>]{1,190}\.[^\s@<>]{2,24}$/;
 
 export function activate(ctx) {
-  ctx.screen({ path: '/messages', table: 'p_contact_message', title: 'Messages' });
+  // The screen is the package's, not only its table. Everything an operator does here — which
+  // column is the handling state, the four states in their own words, the four bulk actions, what a
+  // delete warns about, which column previews a message, and the badge in the admin bar — is
+  // declared here. The host draws it and refuses to guess: a `set` value outside the column's
+  // declared options, or a column the table does not own, fails activation by name.
+  ctx.screen({
+    path: '/messages',
+    table: 'p_contact_message',
+    title: 'Messages',
+    // Rows narrow to one value of `status`; the chips are that field's own options, counted.
+    filter: { column: 'status' },
+    // The message itself, on one line, so a list reads like a list of enquiries.
+    preview: 'message',
+    actions: [
+      { name: 'read', label: 'Mark read', set: { status: 'read' } },
+      { name: 'replied', label: 'Mark replied', set: { status: 'replied' } },
+      { name: 'archived', label: 'Archive', set: { status: 'archived' } },
+      { name: 'new', label: 'Mark unread', set: { status: 'new' } },
+      {
+        name: 'delete',
+        label: 'Delete…',
+        delete: true,
+        warning:
+          'Deleting a message is permanent. There is no archive and no undo, and the site cannot bring the enquiry back.',
+      },
+    ],
+    // What the admin bar counts: enquiries nobody has touched yet.
+    badge: { column: 'status', value: 'new', label: 'Inbox' },
+  });
 
   ctx.endpoint('POST', 'submit', async (args) => {
     const raw = typeof args.body === 'string' ? args.body : '';

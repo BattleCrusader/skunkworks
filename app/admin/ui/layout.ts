@@ -44,6 +44,14 @@ export interface LayoutInput {
   /** Count shown beside "Plugins" — the notices an operator has not seen. */
   notices?: number;
   /**
+   * A package's declared badge: how many rows are in the state its screen says is the open one.
+   *
+   * `undefined` draws nothing (no package declared one, or its table is gone). `count: 0` still
+   * draws the pill — a screen you can only reach when it has rows waiting is a screen you cannot
+   * reach at the moment you want to tidy it up.
+   */
+  badge?: { label: string; count: number; href: string };
+  /**
    * `app` draws the bar and the page gutter; `plain` draws only the canvas and
    * `<main>`, which is what the centered sign-in card needs.
    */
@@ -105,6 +113,8 @@ code{font-family:var(--mono)}
 .brand b{font-size:15px;font-weight:650;letter-spacing:-.01em}
 .tenantpill{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);background:var(--card-2);border:1px solid var(--line);padding:5px 9px;border-radius:999px}
 .tenantpill i{width:6px;height:6px;border-radius:50%;background:var(--green);display:block}
+.inboxpill{display:inline-flex;align-items:center;gap:7px;min-height:32px;padding:0 12px;border-radius:999px;border:1px solid var(--line-2);background:var(--card-2);color:var(--ink-2);font-size:12.5px;font-weight:600;text-decoration:none;font-variant-numeric:tabular-nums}
+.inboxpill:hover{border-color:var(--blue);color:var(--blue-2);background:var(--blue-soft);text-decoration:none}
 .appnav{display:flex;gap:2px;flex-wrap:wrap}
 .appnav a{padding:8px 13px;border-radius:9px;font-size:13.5px;color:var(--muted)}
 .appnav a:hover{background:var(--card-2);color:var(--ink);text-decoration:none}
@@ -472,10 +482,21 @@ function barOf(input: LayoutInput): string {
       <span class="who"><b>${esc(user.role === 'owner' ? 'Owner' : user.role === 'editor' ? 'Editor' : user.role === 'viewer' ? 'Viewer' : 'Fleet operator')}</b>${esc(user.email)}</span>${
         accountHref === null ? '' : '</a>'
       }`;
+  // A package's badge, on every admin page, one press from the screen it counts. It sits left of
+  // the account block because it is a work item, not an identity, and it is drawn at zero as well
+  // as at twelve — a badge that vanishes when it is empty cannot be used to get somewhere.
+  const inbox =
+    input.badge === undefined
+      ? ''
+      : `<a class="inboxpill" href="${esc(input.badge.href)}" title="${esc(
+          input.badge.count === 0 ? `Nothing in ${input.badge.label}` : `${input.badge.count} in ${input.badge.label}`,
+        )}"><span aria-hidden="true">●</span> ${esc(input.badge.label)}${
+          input.badge.count === 0 ? '' : ` ${input.badge.count}`
+        }</a>`;
   return `  <header class="appbar">
     <span class="brand"><span class="brand__mark" aria-hidden="true">S</span><b>Skunkworks</b></span>
     ${pill}${navOf(input)}
-    <div class="appbar__right">${who}</div>
+    <div class="appbar__right">${inbox}${who}</div>
   </header>`;
 }
 
