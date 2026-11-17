@@ -175,7 +175,7 @@ function kpi(label: string, value: string, hint?: string): string {
  * table to read, and the operator who can fix that is the one reading this.
  */
 function notInstalled(base: string): string {
-  return `<div class="card an-emptycard">
+  return `<div class="card card--padded an-emptycard">
   <h2>Analytics is not switched on for this site</h2>
   <p>This screen reads the <code>analytics</code> package's own table. Install it once and it starts
   recording: pageviews, which links people press, where they came from, and whether they come back.</p>
@@ -252,6 +252,9 @@ ${notInstalled(base)}`,
       .an-kpi__value { margin: 0; font-size: 27px; line-height: 1.1; font-variant-numeric: tabular-nums; }
       .an-kpi__hint { margin: 6px 0 0; font-size: 12px; color: var(--muted, #7a756c); }
       .an-2up { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin: 0 0 16px; align-items: start; }
+      /* A card in this grid is spaced by the grid gap; the padded variant's own bottom margin
+         would add to it and open a 32px hole between rows. */
+      .an-2up > .card { margin: 0; }
       .an-table { width: 100%; border-collapse: collapse; font-size: 13px; }
       .an-table th, .an-table td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line, #e6e3dc); vertical-align: top; }
       .an-table thead th { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted, #7a756c); font-weight: 600; }
@@ -288,10 +291,10 @@ ${notInstalled(base)}`,
       ${kpi('Bounced', pct(totals.bounceRate), 'Sessions that saw one page only.')}
     </div>
 
-    <div class="card"><h2>Traffic</h2>${trendChart(report)}</div>
+    <div class="card card--padded"><h2>Traffic</h2>${trendChart(report)}</div>
 
     <div class="an-2up">
-      <div class="card">
+      <div class="card card--padded">
         <h2>Pages</h2>
         <p class="an-fine">Pageviews, and how many different people each page saw.</p>
         ${table(
@@ -301,7 +304,7 @@ ${notInstalled(base)}`,
           'No page has been viewed in this window.',
         )}
       </div>
-      <div class="card">
+      <div class="card card--padded">
         <h2>Links &amp; buttons</h2>
         <p class="an-fine">What people pressed, by its own words. A press is recorded before the next page loads.</p>
         ${table(
@@ -318,7 +321,7 @@ ${notInstalled(base)}`,
     </div>
 
     <div class="an-2up">
-      <div class="card">
+      <div class="card card--padded">
         <h2>Where people came from</h2>
         <p class="an-fine">The site that referred them, or the campaign that sent them.</p>
         ${table(
@@ -331,7 +334,7 @@ ${notInstalled(base)}`,
           'No pageviews in this window.',
         )}
       </div>
-      <div class="card">
+      <div class="card card--padded">
         <h2>What they used</h2>
         <p class="an-fine">People, by device and browser.</p>
         ${table(
@@ -345,7 +348,7 @@ ${notInstalled(base)}`,
     </div>
 
     <div class="an-2up">
-      <div class="card">
+      <div class="card card--padded">
         <h2>New and returning</h2>
         <p class="an-fine">People per day, split by whether this was their first visit.</p>
         ${table(
@@ -357,7 +360,7 @@ ${notInstalled(base)}`,
           'No pageviews in this window.',
         )}
       </div>
-      <div class="card">
+      <div class="card card--padded">
         <h2>Do they come back?</h2>
         <p class="an-fine">Of the people whose first visit was in this window, the share who returned exactly N days later.</p>
         ${report.retention.every((r) => r.cohort === 0)
@@ -375,7 +378,7 @@ ${notInstalled(base)}`,
       </div>
     </div>
 
-    <div class="card">
+    <div class="card card--padded">
       <h2>Latest events</h2>
       ${table(
         ['When', 'What', 'Page', 'Where'],
