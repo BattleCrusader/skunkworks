@@ -22,6 +22,18 @@ skwctl plugin pack plugins/contact --report test-reports/contact.json \
   --out data/plugin-library/contact-1.2.0.tar.gz
 ```
 
+Every package at once, with the smoke report written for you:
+
+```sh
+make plugin-shelf
+```
+
+It walks `plugins/`, computes each package's canonical root, writes `test-reports/<id>-<version>.json`,
+packs `data/plugin-library/<id>-<version>.tar.gz`, and **prunes a superseded version** (never the
+archive of a package that failed to pack — a failing run must not empty the shelf). No package here
+declares `plugin.json.tests`, so each report says in its `note` that it records pre-pack smoke checks
+rather than a suite result; that gap is real and this command does not pretend otherwise.
+
 The report must be bound to the package's **own root hash**, and it must sit beside the package in
 the archive rather than inside it — a file inside the root changes the hash the report attests,
 which is why `pack` puts it there and why `unpackArchive` refuses an archive that has one inside.

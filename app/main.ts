@@ -43,7 +43,7 @@ import { resolveSourceBlocks } from './render/blocks.ts';
 import sharp from 'sharp';
 
 import { loadPluginPage, matchPluginPage, pluginPageBody, resolveFormMarkers } from './render/plugin-pages.ts';
-import { loadNav, type NavTree } from './render/nav.ts';
+import { loadNav, menuPluginEnabled, type NavTree } from './render/nav.ts';
 import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings, type SiteChrome } from './render/chrome.ts';
 import { ADMIN_ROBOTS_VALUE, isAdminPath, PAGE_ROBOTS_VALUE, ROBOTS_HEADER } from './render/robots.ts';
 import { originFromHost, pageRobots, pageSeoHead, parsePageSeo } from './render/seo.ts';
@@ -694,7 +694,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     let sheet = '';
     const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
     try {
-      const nav = loadNav(db, { pageExists: isPublicJobsPath });
+      // The menu bar is dynamic only while the `menu` package is enabled for this tenant.
+      const nav = loadNav(db, { pageExists: isPublicJobsPath, enabled: menuPluginEnabled(db) });
       // S8s: the active theme is a row, not the `site.theme_css` string. `?theme=<key>` names an
       // uploaded theme that is *not* active, which is how the preview page shows a look before
       // anyone commits to it — the key is unguessable only in the sense that it is a slug the
@@ -1522,7 +1523,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       // path a loaded package serves counts as a page: `/blog/<slug>` is a row in the package's
       // table, and a header link to it is not a dead link.
       const pageExists = (candidate: string): boolean => sitePageExists(ctx.tenant.key, candidate);
-      nav = loadNav(db, { pageExists });
+      // Dynamic only while the `menu` package is on: the rows live in `cms_nav`, but the bar is
+      // the package's feature. Off means no menu, not a stale one.
+      nav = loadNav(db, { pageExists, enabled: menuPluginEnabled(db) });
       // S8l: the identity bar and footer, from `cms_settings`. `null` when the tenant has set
       // none of it, so a site that has never opened the Site screen renders exactly the bytes
       // it rendered before this feature existed (and the exported tree stays byte-identical).

@@ -19,14 +19,17 @@
  *     cannot become a menu link.
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { after, before, test } from 'node:test';
 
 import { AppError } from '../app/errors.ts';
-import { loadNav } from '../app/render/nav.ts';
+import { loadNav, menuPluginEnabled } from '../app/render/nav.ts';
 import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
-import { makeFixture, type Fixture } from './helpers/fixture.ts';
+import { makeFixture, SCHEMA, type Fixture } from './helpers/fixture.ts';
+import { installMenuPackage } from './helpers/menu-package.ts';
 import { call } from './helpers/http.ts';
 
 const SHA = (text: string): string => text.padEnd(64, '0').slice(0, 64);
@@ -43,6 +46,7 @@ function page(path: string, status = 'published'): void {
      VALUES (?, ?, ?, ?, 'page', '<p>x</p>', '2026-01-01T00:00:00.000Z')`,
   ).run(path, slug, path, status);
 }
+
 
 function nav(row: {
   location: string;
@@ -95,6 +99,7 @@ before(async () => {
   await handle.app.listen({ port: 0, host: '127.0.0.1' });
   const address = handle.app.server.address();
   port = typeof address === 'object' && address !== null ? address.port : 0;
+  installMenuPackage(db, fixture.dir);
 });
 
 after(async () => {
@@ -231,4 +236,46 @@ test('the served page refuses the dead link instead of rendering it', async () =
   assert.notEqual(res.status, 200, 'a menu the CMS cannot resolve is not served as a 200');
   assert.doesNotMatch(res.body, /href="\/careers"/, 'the dead link must not reach the browser');
   assert.doesNotMatch(res.body, />Careers</);
+});
+
+/**
+ * The menu bar is a `menu` package feature, not a `cms_nav` one.
+ *
+ * The rows stay in `cms_nav` either way; what changes is whether anything reads them. This test
+ * builds its **own** database: the shared fixture deliberately carries a dead-link row (test 7's
+ * subject), which would make a whole-tree read throw here for a reason that is not this test's.
+ */
+test('nav: the menu bar exists only while the menu package is enabled', () => {
+  const own = new Database(':memory:');
+  own.exec(readFileSync(join(SCHEMA, 'site.sql'), 'utf8'));
+  own.prepare(
+    `INSERT INTO cms_page (path, slug, title, status, template, body_html, published_at)
+     VALUES ('/gated', 'gated', 'Gated', 'published', 'page', '<p>x</p>', '2026-01-01T00:00:00.000Z')`,
+  ).run();
+  own.prepare(
+    `INSERT INTO cms_nav (location, parent_id, label, href_kind, href_target, position, visible)
+     VALUES ('header', NULL, 'Gated', 'page', '/gated', 10, 1)`,
+  ).run();
+
+  // No package installed: the rows exist, but nothing is allowed to read them.
+  assert.equal(menuPluginEnabled(own), false, 'no menu package row means not enabled');
+  assert.deepEqual(loadNav(own, { enabled: menuPluginEnabled(own) }), { header: [], footer: [] });
+  assert.equal(loadNav(own).header.length, 1, 'ungated read still sees the row (that is what is gated)');
+
+  // Installed but disabled: still no menu.
+  own.prepare(
+    `INSERT INTO cms_plugin_installed
+       (plugin_id, version, manifest_json, root_hash, publisher, signature_state, enabled, test_report_sha)
+     VALUES ('menu', '1.0.0', '{"id":"menu","version":"1.0.0"}', ?, 'skunkworks', 'first_party', 0, 'sha256:test')`,
+  ).run('c'.repeat(64));
+  assert.equal(menuPluginEnabled(own), false, 'disabled row is not enabled');
+  assert.deepEqual(loadNav(own, { enabled: menuPluginEnabled(own) }).header, []);
+
+  // Enabled: the bar comes back.
+  own.prepare("UPDATE cms_plugin_installed SET enabled = 1 WHERE plugin_id = 'menu'").run();
+  assert.equal(menuPluginEnabled(own), true, 'enabled row opens the gate');
+  const live = loadNav(own, { enabled: menuPluginEnabled(own) });
+  assert.equal(live.header.length, 1, 'enabled package renders the menu');
+  assert.equal(live.header[0]?.label, 'Gated');
+  own.close();
 });

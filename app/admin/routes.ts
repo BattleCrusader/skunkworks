@@ -157,7 +157,7 @@ import {
   loadChrome,
   logoUrl as chromeLogoUrl,
 } from '../render/chrome.ts';
-import { loadNav, navListHtml } from '../render/nav.ts';
+import { loadNav, navListHtml, menuPluginEnabled } from '../render/nav.ts';
 import { sheetVersion, siteSheet } from '../render/theme.ts';
 import { pageRobots, withPageRobots, type PageRobots } from '../render/seo.ts';
 import { matchPluginPage } from '../render/plugin-pages.ts';
@@ -4482,7 +4482,11 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
     tenantKey: string,
   ): ReturnType<typeof loadNav> {
     try {
+      // The editor's canvas must match the live page: menu only while the `menu` package is on.
+      const menuEnabled =
+        plugins !== null && plugins.registry.plugins(tenantKey).some((entry) => entry.pluginId === 'menu');
       return loadNav(db, {
+        enabled: menuEnabled,
         pageExists: (candidate: string): boolean => {
           // `/jobs` is a core route, not a `cms_page` row (the same rule the live render applies):
           // a "Jobs" menu entry must not blank the editor's canvas.

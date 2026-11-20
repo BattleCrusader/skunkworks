@@ -21,7 +21,10 @@ import { packageRootHash } from '../app/plugins/manifest.ts';
 import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import { ADMIN_HOST, ADMIN_ORIGIN, TOTP_SECRET, openSession, seedUser, type Sessioned } from './helpers/admin.ts';
+import Database from 'better-sqlite3';
+
 import { REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
+import { installMenuPackage } from './helpers/menu-package.ts';
 import { call, type Res } from './helpers/http.ts';
 
 const CLI = join(REPO, 'app', 'cli', 'skwctl.ts');
@@ -100,6 +103,10 @@ before(async () => {
     '--enable',
   ]);
   assert.equal(installed.status, 0, `install failed: ${installed.stderr}${installed.stdout}`);
+  // The bar is a `menu` package feature: a tenant without it renders no menu at all.
+  const site = new Database(fixture.sitePath('acme'));
+  installMenuPackage(site, fixture.dir);
+  site.close();
   handle = await buildApp({ env: loadEnv(fixture.env) });
   port = await handle.app.listen({ port: 0, host: '127.0.0.1' }).then(() => (handle.app.server.address() as { port: number }).port);
   session = await openSession({ port, key: 'acme', email: 'owner@acme.test' });

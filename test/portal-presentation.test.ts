@@ -30,6 +30,7 @@ import { Semaphore, totpCode } from '../app/admin/auth.ts';
 import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import { makeFixture, type Fixture } from './helpers/fixture.ts';
+import { installMenuPackage } from './helpers/menu-package.ts';
 import { call, header, type Res } from './helpers/http.ts';
 
 const HOST = 'acme.test';
@@ -185,6 +186,9 @@ before(async () => {
      VALUES ('/', 'home', 'Fractional work, listed by the day', 'published', 'page', '<p>Home.</p>', '2026-01-01T00:00:00.000Z')`,
   ).run();
 
+  // The menus above only render while the `menu` package is enabled for the tenant.
+  installMenuPackage(db, fixture.dir);
+
   handle = await buildApp({ env: loadEnv(fixture.env), contentRoot: `${fixture.dir}/content` });
   await handle.app.listen({ port: 0, host: '127.0.0.1' });
   const address = handle.app.server.address();
@@ -328,6 +332,8 @@ test('P-7 — a menu entry naming a package-served page does not cost the portal
        VALUES ('header', 'Jobs', 'page', '/jobs', 0, 1)`,
     )
     .run();
+  // This tenant draws a header too, so it needs the package that owns the bar.
+  installMenuPackage(seedDb, local.dir);
   seedDb.close();
 
   const build = async (pageExists?: (key: string, path: string) => boolean): Promise<ReturnType<typeof Fastify>> => {

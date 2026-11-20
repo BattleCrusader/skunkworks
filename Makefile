@@ -5,10 +5,18 @@
 # exit non-zero on failure.
 
 .PHONY: help test test-perf verify verify-toolchain verify-gitignore verify-schema verify-claims \
-        verify-claims-modern verify-frozen verify-s1 verify-dist verify-no-leak build typecheck diagrams
+        verify-claims-modern verify-frozen verify-s1 verify-dist verify-no-leak build typecheck diagrams \
+        plugin-shelf
+
+plugin-shelf:
+	@echo "plugin-shelf — smoke-report and pack every package into data/plugin-library/ (the box shelf"
+	@echo "               every tenant sees; see plugins/README.md). Prunes archives that no longer"
+	@echo "               correspond to a package source, which is how the shelf stops going stale."
+	@node --no-warnings --experimental-strip-types scripts/plugin-shelf.ts
 
 help:
 	@echo "make test                run every verification check (canonical, deterministic)"
+	@echo "make plugin-shelf        report + pack every package into data/plugin-library/"
 	@echo "make test-perf           the performance gate: wall-clock assertions, IDLE BOX ONLY"
 	@echo "make verify              alias of make test"
 	@echo "make verify-toolchain    assert \$$(PYTHON) imports argon2 and sqlite3 (E-15)"

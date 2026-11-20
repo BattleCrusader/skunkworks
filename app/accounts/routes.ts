@@ -31,7 +31,7 @@ import { normaliseHost } from '../tenancy/normalise-host.ts';
 import { AppError, HTTP } from '../errors.ts';
 import type { Env } from '../env.ts';
 import { chromeHtml, loadChrome, logoUrl as chromeLogoUrl } from '../render/chrome.ts';
-import { loadNav, navListHtml } from '../render/nav.ts';
+import { loadNav, navListHtml, menuPluginEnabled } from '../render/nav.ts';
 import { PORTAL_CSS } from './portal-css.ts';
 import type { Accounts, Role, SelfView } from './service.ts';
 import { PASSWORD_MIN } from './service.ts';
@@ -907,7 +907,11 @@ class Portal {
       // The same predicate the CMS page hands `loadNav`: a menu entry may name a path a loaded
       // package serves, and refusing it here would drop the whole header on a site that has one.
       const pageExists = this.#deps.pageExists;
-      const nav = loadNav(db, pageExists === undefined ? {} : { pageExists: (path) => pageExists(tenantKey, path) });
+      const nav = loadNav(db, {
+        // Same gate as the live page: no menu package, no menu bar.
+        enabled: menuPluginEnabled(db),
+        ...(pageExists === undefined ? {} : { pageExists: (path: string) => pageExists(tenantKey, path) }),
+      });
       return chromeHtml(chrome, nav, chromeLogoUrl(db, chrome), navListHtml, current);
     } catch {
       return null;

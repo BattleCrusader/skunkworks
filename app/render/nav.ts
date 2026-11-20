@@ -237,7 +237,40 @@ export function navListHtml(items: readonly NavItem[], className: string, curren
   return render(items);
 }
 
-export function loadNav(db: Database.Database, opts: { pageExists?: PageExists } = {}): NavTree {
+/**
+ * Is the `menu` package enabled for this tenant?
+ *
+ * Read from `cms_plugin_installed` — the same row the plugin runtime syncs from — rather than
+ * from the loaded registry, because the menu gate has to answer the same way everywhere: the page
+ * render (after `sync`), `/theme.css` (which never syncs), the editor's canvas and the accounts
+ * shell all draw the same header, and they must not disagree about whether it has a menu.
+ *
+ * A tenant on a schema with no plugin table has no menu package, so no menu: `false`, not a throw.
+ */
+export function menuPluginEnabled(db: Database.Database): boolean {
+  try {
+    const row = db
+      .prepare("SELECT enabled FROM cms_plugin_installed WHERE plugin_id = 'menu' LIMIT 1")
+      .get() as { enabled?: number } | undefined;
+    return row?.enabled === 1;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The two menus the shell renders: `header` and `footer`.
+ *
+ * `enabled` is `menuPluginEnabled()`'s answer for this tenant. The site's menu bar is dynamic only
+ * while that package is on, so a tenant that turns it off gets **no** menu rather than a stale,
+ * uneditable one — the rows stay in `cms_nav`, nothing reads them. `undefined` is treated as on,
+ * which is what every render did before the gate existed.
+ */
+export function loadNav(
+  db: Database.Database,
+  opts: { pageExists?: PageExists; enabled?: boolean } = {},
+): NavTree {
+  if (opts.enabled === false) return { header: [], footer: [] };
   return {
     header: loadLocation(db, 'header', opts.pageExists),
     footer: loadLocation(db, 'footer', opts.pageExists),
