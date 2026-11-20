@@ -30,6 +30,7 @@ import { Semaphore, totpCode } from '../app/admin/auth.ts';
 import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import { makeFixture, type Fixture } from './helpers/fixture.ts';
+import { installJobboardPackage } from './helpers/jobboard-package.ts';
 import { installMenuPackage } from './helpers/menu-package.ts';
 import { call, header, type Res } from './helpers/http.ts';
 
@@ -188,6 +189,10 @@ before(async () => {
 
   // The menus above only render while the `menu` package is enabled for the tenant.
   installMenuPackage(db, fixture.dir);
+  // And the portal is the job board's account surface, so a fixture that asserts its pages must
+  // install the board — a row alone is not an installed package (`plugins.sync` disables a row it
+  // cannot load from `<data>/plugins`).
+  installJobboardPackage(fixture.sitePath('acme'), fixture.dir);
 
   handle = await buildApp({ env: loadEnv(fixture.env), contentRoot: `${fixture.dir}/content` });
   await handle.app.listen({ port: 0, host: '127.0.0.1' });

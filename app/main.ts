@@ -380,6 +380,42 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     done();
   });
 
+  /**
+   * ── The job board's surfaces belong to the tenant that has the board ──────────────────────
+   *
+   * `/jobs`, `/jobs/<id>` and the whole `/portal/**` account surface are **code, not content**, so
+   * nothing in a tenant's database keeps them off that tenant's host. On a site that never
+   * installed the `jobboard` package they were served anyway: arnavia.com answered 200 on `/jobs`
+   * carrying another product's copy ("companies post fractional roles…", the advertiser and
+   * applicant sign-up links) and 200 on `/portal/register` with a registration form for a board it
+   * does not have. That is one tenant's product surface appearing inside another tenant's site —
+   * not a row leak (the facade is tenant-scoped and answered `null` throughout), but a leak of a
+   * capability and its copy, which is the same class of defect in the eyes of the customer.
+   *
+   * One hook, before routing, for the same reason the robots header is: a portal route added next
+   * month is covered without anyone remembering. The predicate is the facade's own
+   * (`jobsBoardEnabled`), so the page, the sitemap (`coreSitemapPaths`), the nav item and this gate
+   * cannot disagree about whether a tenant has a board.
+   */
+  app.addHook('onRequest', (req, _reply, done) => {
+    const path = pathnameOf(req.url);
+    const onPortal = path === '/portal' || path === '/portal.css' || path.startsWith('/portal/');
+    if (!onPortal) {
+      done();
+      return;
+    }
+    try {
+      const ctx = resolveRequest(req);
+      if (!jobsBoardEnabled(getSiteDb(ctx.tenant), ctx.tenant.key, env.emailMode)) {
+        done(pageMiss());
+        return;
+      }
+      done();
+    } catch (err) {
+      done(err as Error);
+    }
+  });
+
   // §10.5 (C-12, S4c): the CSP is a property of the document, and the document is this
   // process's reply. `onSend` is after the payload is produced and before it is written, so
   // a 404, a 500 and a 200 all carry the same policy — which is the point: the error page is

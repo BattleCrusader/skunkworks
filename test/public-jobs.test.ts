@@ -464,3 +464,24 @@ test('PJ-15. every `<loc>` the sitemap publishes answers 200 — no crawlable 40
     assert.equal(page.status, 200, `${path} is invited to a crawler but answers ${String(page.status)}`);
   }
 });
+
+test('PJ-16. the board portal is not served on a tenant that has no board', async () => {
+  // `/portal/**` is code, not content: every route is registered for every host, so without a gate
+  // a marketing site answered 200 on another product's sign-up form. The board is the feature; the
+  // portal is that feature's account surface, and both must be absent together.
+  const noBoard: [string, string][] = [
+    ['/portal', 'the portal home'],
+    ['/portal/register', 'the registration form'],
+    ['/portal/applicant', 'the applicant console'],
+    ['/portal.css', 'the portal stylesheet'],
+  ];
+  for (const [path, label] of noBoard) {
+    const res = await get(path, NOBOARD);
+    assert.equal(res.status, 404, `${label} must not exist without the board: ${res.body}`);
+    assert.equal((res.json as { error?: { code?: string } }).error?.code, 'SKW_E_RT_PAGE_NOT_FOUND');
+  }
+  // A tenant that has the board keeps every one of them, including a board with no adverts: the
+  // gate is "is this feature installed", never "are there rows".
+  assert.equal((await get('/portal/register')).status, 200, 'the board tenant keeps its sign-up');
+  assert.equal((await get('/portal/register', EMPTY)).status, 200, 'an installed board with no roles still onboards');
+});
