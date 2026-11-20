@@ -99,6 +99,11 @@ export function renderDocument(input: DocumentInput): string {
     `\n  </head>\n` +
     `  <body data-page-path="${escapeHtml(input.path)}">\n` +
     `    <main>${input.bodyHtml}</main>\n` +
+    // The navigation pilot, in the same place `page.astro` and `shellSource()` put it. An exported
+    // tree is served by plain nginx, so a click there is a full document load unless the tree
+    // carries the script: fetching the next page from the same static root works exactly as it does
+    // against the product. Omitted, and the three targets stop being byte-identical.
+    `    <script src="/_js/nav.js" data-mode="site" defer></script>\n` +
     `  </body>\n` +
     `</html>`
   );

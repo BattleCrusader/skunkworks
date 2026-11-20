@@ -53,10 +53,32 @@ export interface ThemesScreenInput {
   /** The pasted fallback's length, so the screen can say whether it is doing anything. */
   pastedCssBytes: number;
   activeKey: string | null;
+  /**
+   * The base colours the active theme declares. The theme owns this list — the screen only offers
+   * what the package shipped, because a colour the theme did not choose for itself will fight it.
+   */
+  palettes: { key: string; name: string; bg: string; ink: string; accent: string }[];
+  /** Which one the site wears; `''` is the theme's own default colours. */
+  chosenPalette: string;
+  /** The tenant's own accent and ink. `''` means the theme keeps its own. */
+  brand: { accent: string; ink: string };
+  /** What the colour input shows: the brand accent, or the theme's accent when none is set. */
+  brandAccentNow: string;
+  /** Whether the brand accent is legible on the ground this theme + palette paint. */
+  brandContrast: { ground: string; ratio: number | null; weak: boolean } | null;
+  /**
+   * The saved palette the active theme does not declare. The choice is the tenant's and survives a
+   * theme change, so this is the case where the site is wearing the theme's own colours while the
+   * settings still name a colour: say it, do not let the change happen quietly.
+   */
+  orphanPalette: string | null;
   flash?: string | undefined;
 }
 
 const FLASH: Record<string, string> = {
+  palette: 'Base colour updated. The site is wearing it now.',
+  brand: 'Brand colour updated — it applies to every look.',
+  'palette-default': 'Back to the theme\'s own colours.',
   uploaded: 'Theme uploaded. It is not active yet — preview it, then activate.',
   activated: 'Active. Every page of the site is wearing this theme now.',
   deactivated: 'No theme is active. The site is using its pasted stylesheet, if it has one.',
@@ -76,7 +98,7 @@ const FLASH: Record<string, string> = {
  * whether the operator has to do anything — not whether the request was a 303 either way, which is
  * exactly the distinction a status code cannot carry.
  */
-const GOOD = new Set(['uploaded', 'activated', 'deactivated', 'deleted']);
+const GOOD = new Set(['uploaded', 'activated', 'deactivated', 'deleted', 'palette', 'palette-default' ]);
 
 function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -94,6 +116,19 @@ function bytes(n: number): string {
  * silently by the browser, which is indistinguishable from a broken form).
  */
 export const THEME_PICK_JS = `(function () {
+  // The base-colour grid applies on choose. The Apply button stays in the markup for the case this
+  // script never runs — a page served from cache before this file existed, or JS off — because a
+  // control that only works with script is a control that is broken for somebody.
+  var chooser = document.querySelector('form[data-palette-form]');
+  if (chooser) {
+    chooser.addEventListener('change', function (event) {
+      var target = event.target;
+      if (target && target.name === 'palette' && typeof chooser.requestSubmit === 'function') {
+        chooser.requestSubmit();
+      }
+    });
+  }
+
   var form = document.querySelector('form[data-skw-upload]');
   if (!form) return;
   var input = form.querySelector('input[type=file]');
@@ -268,6 +303,116 @@ ${input.themes
     </div>`
     : `<div class="card card--padded"><h2>Upload a theme</h2><p class="note">Your role may look at themes but not add them.</p></div>`;
 
+  // The base-colour chooser is a grid of palette cards, not a row of buttons: each card draws a
+  // miniature of the site in that palette — the ground, two ink bars and the accent — so the choice
+  // is made by looking at colour rather than by reading a list of names. The colours arrive as
+  // custom properties on the card. `style-src-attr 'unsafe-inline'` is in the admin policy, which is
+  // what makes a per-card style attribute legal here; a stylesheet would have needed the response
+  // nonce, and the nonce is minted after this string is built.
+  const paletteValue = (palette: { bg: string; ink: string; accent: string }): string =>
+    `--pb:${esc(palette.bg)};--pi:${esc(palette.ink)};--pa:${esc(palette.accent)}`;
+
+  const paletteCard = (input: { key: string; name: string; bg: string; ink: string; accent: string }, chosen: string): string => {
+    const on = input.key === chosen;
+    const id = `palette-${input.key === '' ? 'default' : input.key}`;
+    return `        <label class="palette-card" for="${esc(id)}">
+          <input type="radio" id="${esc(id)}" name="palette" value="${esc(input.key)}"${on ? ' checked' : ''}${canChange ? '' : ' disabled'}>
+          <span class="palette-card__preview" style="${paletteValue(input)}" aria-hidden="true">
+            <span class="palette-card__chrome"></span>
+            <span class="palette-card__headline"></span>
+            <span class="palette-card__bar"></span>
+            <span class="palette-card__bar palette-card__bar--short"></span>
+            <span class="palette-card__cta"></span>
+          </span>
+          <span class="palette-card__name">${esc(input.name)}</span>
+        </label>`;
+  };
+
+  // A saved colour the active look cannot offer is its own message, not a footnote on the chooser:
+  // a theme that declares no palettes renders no chooser at all, and that is precisely the case
+  // where the site's colours changed without anyone choosing a colour.
+  /**
+   * The brand colour is the tenant's, not the look's. It is shown above the palette grid because it
+   * outranks it: the palette decides the ground, the brand decides the accent that sits on it — and
+   * when the two collide the ratio is stated instead of being left to the operator's eye.
+   */
+  const brandCard = ((): string => {
+    if (!canChange) {
+      const accent = input.brand.accent === '' ? 'the theme’s own' : input.brand.accent;
+      return `<div class="card card--padded"><h2>Brand colour</h2><p class="note">This site wears ${esc(accent)}. Your role may look at it but not change it.</p></div>`;
+    }
+    const contrast = input.brandContrast;
+    const warning =
+      contrast === null || contrast.ratio === null
+        ? ''
+        : contrast.weak
+          ? `<p class="note note--warn"><b>Hard to see.</b> The accent scores ${contrast.ratio.toFixed(1)}:1 against the ground
+             this look paints (<code>${esc(contrast.ground)}</code>). Large text and UI edges want 3:1; body text wants 4.5:1.
+             It will still apply — this is a warning, not a refusal.</p>`
+          : `<p class="note">Contrast against this look’s ground (<code>${esc(contrast.ground)}</code>):
+             <b>${contrast.ratio.toFixed(1)}:1</b>.</p>`;
+    return `<div class="card card--padded">
+      <h2>Brand colour</h2>
+      <p class="note">Your accent, applied over <b>every</b> look you switch to — a redesign changes the material, not the company.
+      Leave the ink empty and the theme keeps its own.</p>
+      ${warning}
+      <form method="post" action="${base}/brand">
+        <input type="hidden" name="csrf" value="${esc(input.csrf)}">
+        <div class="brandrow">
+          <label for="brand-accent">Accent
+            <input type="color" id="brand-accent" name="accent" value="${esc(input.brandAccentNow)}">
+          </label>
+          <label for="brand-ink">Ink
+            <input type="text" id="brand-ink" name="ink" value="${esc(input.brand.ink)}" placeholder="optional, or theme default" spellcheck="false">
+          </label>
+          <button class="btn btn--primary" type="submit">Apply brand colour</button>
+        </div>
+      </form>
+      ${input.brand.accent === '' && input.brand.ink === '' ? '' : `<form method="post" action="${base}/brand" class="brandreset"><input type="hidden" name="csrf" value="${esc(input.csrf)}"><input type="hidden" name="accent" value=""><input type="hidden" name="ink" value=""><button class="btn btn--sm" type="submit">Back to the theme’s own colours</button></form>`}
+    </div>`;
+  })();
+
+  const orphanNote =
+    input.orphanPalette === null
+      ? ''
+      : `<div class="card card--padded">
+      <h2>Saved base colour</h2>
+      <p class="note note--warn"><b>${esc(input.orphanPalette)}</b> is saved as this site’s base colour, but
+      <code>${esc(input.activeKey ?? '')}</code> does not offer it — so the site is wearing the theme’s own colours.
+      Choose one below, or forget the saved choice.</p>
+      <form method="post" action="${base}/palette"><input type="hidden" name="csrf" value="${esc(input.csrf)}"><input type="hidden" name="palette" value=""><button class="btn btn--sm" type="submit">Forget the saved colour</button></form>
+    </div>`;
+
+  const paletteChooser = ((): string => {
+    if (input.activeKey === null || input.palettes.length === 0) return '';
+    const cards = [
+      ...input.palettes.map((palette) => paletteCard(palette, input.chosenPalette)),
+      // The theme's own colours are a real option, and it belongs in the same control: a separate
+      // "reset" button elsewhere on the page would be a second way to say the same thing.
+      paletteCard(
+        { key: '', name: 'Theme default', bg: 'linear-gradient(135deg,#ffffff 0 50%,#e8ecf1 50% 100%)', ink: '#94a3b8', accent: '#cbd5e1' },
+        input.chosenPalette,
+      ),
+    ].join('\n');
+    const wearing = input.chosenPalette === ''
+      ? 'the theme’s own colours'
+      : `<code>${esc(input.chosenPalette)}</code>`;
+    return `<div class="card card--padded">
+      <h2>Base colour</h2>
+      <p class="note">The look keeps its material; the palette changes the ground, the ink and the accent it sits on.
+      These are the ones <code>${esc(input.activeKey)}</code> declares — the theme picked them, so all of them flatter it.
+      Currently wearing ${wearing}.</p>
+      <form method="post" action="${base}/palette" data-palette-form>
+        <input type="hidden" name="csrf" value="${esc(input.csrf)}">
+        <fieldset class="palette-grid">
+          <legend class="visually-hidden">Base colour</legend>
+${cards}
+        </fieldset>
+        ${canChange ? '<p class="palette-apply"><button class="btn btn--primary" type="submit">Apply base colour</button></p>' : '<p class="note">Your role may look at palettes but not change them.</p>'}
+      </form>
+    </div>`;
+  })();
+
   const fallback =
     input.pastedCssBytes > 0
       ? `The pasted stylesheet on the <a href="/admin/t/${esc(input.tenant.key)}/site">Site</a> screen is ${bytes(input.pastedCssBytes)} and is used whenever no theme is active.`
@@ -294,6 +439,9 @@ ${input.themes
       <h2>Uploaded themes</h2>
       ${rows}
     </div>
+    ${brandCard}
+    ${orphanNote}
+    ${paletteChooser}
     <div class="card card--padded">
       <h2>Take a theme with you</h2>
       <p class="note">Each row's <b>Download</b> hands back one theme as a package — <code>theme.json</code>,

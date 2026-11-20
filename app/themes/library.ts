@@ -37,6 +37,8 @@ import {
   activateTheme as activateThemeRow,
   activeThemeKey,
   deactivateTheme,
+  storeThemePalettes,
+  themePalettes,
   deleteTheme,
   themeAssetDir,
   themeAssetsRoot,
@@ -198,6 +200,9 @@ export function activatePackage(input: {
       // Same key, same bytes: activation is idempotent, and it must be, because a re-run of an
       // import should not be an error.
       if (input.force === true) activateThemeRow(input.db, input.key, input.actorId);
+      // Same look, possibly new colours: the palettes are part of what the package declares, so a
+      // re-import with an unchanged sheet still refreshes them.
+      storeThemePalettes(input.db, input.key, pkg.manifest.palettes ?? [], input.actorId);
       return {
         key: input.key,
         themeId: existing.id,
@@ -235,6 +240,7 @@ export function activatePackage(input: {
     key: input.key,
   });
 
+  storeThemePalettes(input.db, row.key, pkg.manifest.palettes ?? [], input.actorId);
   const hasActive = activeThemeKey(input.db) !== '';
   const shouldActivate = input.force === true || !hasActive;
   if (shouldActivate) activateThemeRow(input.db, row.key, input.actorId);
@@ -309,6 +315,9 @@ export function exportTenantTheme(input: {
     name: theme.name,
     css: blob.css,
     assets: members,
+    // The package is the whole look, and the colours it can be worn in are part of it — an export
+    // that dropped them would produce a package that cannot reproduce the site it came from.
+    palettes: themePalettes(input.db, input.key),
     now: input.now,
   });
 }

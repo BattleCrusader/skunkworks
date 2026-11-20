@@ -16,7 +16,7 @@
  */
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type Database from 'better-sqlite3';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,9 +48,11 @@ import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings, ty
 import { ADMIN_ROBOTS_VALUE, isAdminPath, PAGE_ROBOTS_VALUE, ROBOTS_HEADER } from './render/robots.ts';
 import { originFromHost, pageRobots, pageSeoHead, parsePageSeo } from './render/seo.ts';
 import { matchesEtag, sheetEtag, sheetVersion, siteSheet } from './render/theme.ts';
+import { NAV_PILOT_JS } from './render/nav-pilot.ts';
 import {
   THEME_KEY_SETTING,
   activeTheme,
+  palettePrelude,
   activeThemeKey,
   cssBlob,
   listThemes,
@@ -59,7 +61,8 @@ import {
   sha256 as cssSha256,
   themeByKey,
   verifyPreviewToken,
-} from './render/themes.ts';
+
+  brandPrelude,} from './render/themes.ts';
 import { faviconSvg, robotsTxt, sitemapXml, type SitemapEntry } from './render/delivery.ts';
 import { CSP_HEADER, cspPolicy, cspPolicyForEditor, cspPolicyWithNonce } from './render/csp.ts';
 import { createRenderData } from './render/data.ts';
@@ -698,8 +701,20 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       // operator chose, and the CSS it selects is the site's own content either way.
       const asked = typeof req.query === 'object' && req.query !== null ? (req.query as { theme?: string }).theme : undefined;
       const preview = typeof asked === 'string' ? themeByKey(db, asked) : undefined;
-      const chrome = withTheme(loadChrome(db), preview ?? activeTheme(db));
-      sheet = siteSheet({ chrome, showChrome: hasChrome(chrome, nav) });
+      const theme = preview ?? activeTheme(db);
+      const chrome = withTheme(loadChrome(db), theme);
+      // Two preludes, in cascade order, after the theme:
+      //
+      //   palette   the ground and ink this look is worn in — the theme's own business
+      //   brand     the tenant's accent, applied over everything, whatever the look
+      //
+      // Both are `html:root`, so they beat the theme's `:root` by specificity; brand comes last so it
+      // wins over a palette accent at equal specificity. They ride inside the sheet bytes, so the
+      // version token and the ETag follow them and either change busts the browser cache.
+      const themed = siteSheet({ chrome, showChrome: hasChrome(chrome, nav) });
+      const prelude = theme === null ? '' : palettePrelude(db, theme.key);
+      const brand = brandPrelude(db);
+      sheet = [themed, prelude, brand].filter((part) => part !== '').join('\n');
     } finally {
       db.close();
     }
@@ -760,6 +775,28 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     } finally {
       db.close();
     }
+  });
+
+  /**
+   * The navigation pilot: one file, both surfaces.
+   *
+   * A separate route rather than an inline `<script>` because the site's policy is
+   * `script-src 'self'` with no inline allowance and no nonce — an inline pilot would be dead bytes
+   * in every real browser. It is tenant-agnostic (it holds no data, only behaviour), so the URL is
+   * not scoped by Host and a cached copy is correct for every tenant.
+   *
+   * Served with an ETag and `must-revalidate` rather than a year-long immutable cache: the URL
+   * cannot carry its own hash the way `/_css/<sha>.css` does, and a pilot that cannot be updated
+   * without renaming a file is a pilot the next change has to work around. A 304 on revalidation
+   * costs one round trip per document load, which is what the document costs anyway.
+   */
+  app.get('/_js/nav.js', async (_req: FastifyRequest, reply: FastifyReply) => {
+    const tag = `"${createHash('sha256').update(NAV_PILOT_JS).digest('hex').slice(0, 32)}"`;
+    reply
+      .type('text/javascript; charset=utf-8')
+      .header('cache-control', 'public, max-age=0, must-revalidate')
+      .header('etag', tag)
+      .send(NAV_PILOT_JS);
   });
 
   /**

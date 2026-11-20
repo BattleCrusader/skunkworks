@@ -168,16 +168,21 @@ test('D3. a favicon answers 200 as a real PNG, not a 404 on every page load', as
 });
 
 test('D4. a page carries no script at all — and the prefetch experiment is gone with its reason', async () => {
-  // A `rel=prefetch` on hover was built for this, then measured: site documents are
-  // `cache-control: no-store`, so Chrome discards the prefetched response and the click still costs
-  // a full request (`fromPrefetchCache: false`, `transferSize: 1991`). The script and its route
-  // were removed; this test holds both halves of that decision, so neither half can come back
-  // without the other being reconsidered.
+  // This test used to hold "a page carries no script at all". A `rel=prefetch` on hover was built,
+  // measured, and removed: site documents are `cache-control: no-store`, so Chrome discards the
+  // prefetched response and the click still cost a full request (`fromPrefetchCache: false`,
+  // `transferSize: 1991`). Navigation is now the product's own choice, so the invariant is the one
+  // that keeps that measurement honest: exactly ONE script, same-origin, never inline — and the
+  // pilot must not depend on the HTTP cache, because there isn't one. It keeps parsed documents in
+  // memory instead (`pages`, bounded), which is why the fetch on hover is worth doing at all.
   const page = await get('/pricing');
   assert.equal(page.status, 200);
-  assert.doesNotMatch(page.body, /<script/, 'the public shell loads no script of its own — this fixture installs no package that declares page.head');
+  assert.equal((page.body.match(/<script/gi) ?? []).length, 1, 'one script, not a pile of them');
+  assert.match(page.body, /<script src="\/_js\/nav\.js" data-mode="site" defer><\/script>/, 'and it is the navigation pilot');
+  assert.doesNotMatch(page.body, /<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i, 'never inline: an inline tag is the one that can carry reflected text');
+  // The removed prefetch route stays removed — its successor is a fetch, not a browser hint.
   const gone = await get('/skw-nav.js');
-  assert.equal(gone.status, 404, 'the prefetch route was removed with the script');
+  assert.equal(gone.status, 404, 'the prefetch route was removed with its measurement');
 });
 
 test('D5. a site with no description emits no meta tag — the exported document stays identical', async () => {
@@ -291,7 +296,7 @@ test('D12. the public page names both icons, so the browser stops falling back t
       `${where}: no apple-touch-icon link`,
     );
     // Still no script: this change adds links and nothing else.
-    assert.doesNotMatch(res.body, /<script/);
+    assert.equal((res.body.match(/<script/gi) ?? []).length, 1, 'only the pilot');
   }
 });
 

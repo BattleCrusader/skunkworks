@@ -32,6 +32,7 @@ import {
   removeLibraryTheme,
 } from '../themes/library.ts';
 import { readThemePackage, readThemePackageZip } from '../themes/package.ts';
+import { activeTheme, brandContrast, chosenBrand, chosenPaletteKey, setBrand, setPalette, themePalettes } from '../render/themes.ts';
 
 export const EXIT_OK = 0;
 export const EXIT_REFUSED = 1;
@@ -119,7 +120,10 @@ const USAGE = `usage:
   skw-theme import <file.zip|dir> [--replace] [--data-dir <dir>]
   skw-theme export <key> --tenant <key> --out <dir> [--now <ISO 8601>] [--data-dir <dir>]
   skw-theme activate <key> --tenant <key> [--replace] [--force] [--data-dir <dir>]
-  skw-theme remove <key> [--data-dir <dir>]`;
+  skw-theme remove <key> [--data-dir <dir>]
+  skw-theme palettes --tenant <key> [--data-dir <dir>]
+  skw-theme palette <key|default> --tenant <key> [--data-dir <dir>]
+  skw-theme brand <#hex|default> [--tenant <key>] [--data-dir <dir>]`;
 
 function siteDbPath(dataDir: string, tenant: string): string {
   return join(dataDir, 'tenants', tenant, 'site.db');
@@ -287,6 +291,94 @@ function writeFileSyncAtomic(target: string, bytes: Buffer): void {
   renameSync(temp, target);
 }
 
+/**
+ * `skw-theme palettes --tenant <key>` — what the active look can be worn in, and which is worn.
+ *
+ * The same information the Themes screen shows, for a box with no browser: a palette is a settings
+ * row, and an operator changing one deserves to be able to do it over ssh.
+ */
+function listPalettes(args: Args): number {
+  if (args.tenant === undefined) throw new AppError('SKW_E_EXP_TENANT_NOT_FOUND', 'palettes needs --tenant <key>');
+  const tenant = args.tenant;
+  const db = openAdminWrite(siteDbPath(args.dataDir, tenant));
+  try {
+    const theme = activeTheme(db);
+    if (theme === null) {
+      process.stdout.write(`tenant ${tenant} wears no theme, so it has no palettes\n`);
+      return EXIT_OK;
+    }
+    const chosen = chosenPaletteKey(db);
+    const palettes = themePalettes(db, theme.key);
+    process.stdout.write(`tenant ${tenant}  theme ${theme.key}  wearing ${chosen === '' ? '(theme default)' : chosen}\n`);
+    if (palettes.length === 0) process.stdout.write('  this theme declares no palettes\n');
+    for (const palette of palettes) {
+      const count = Object.keys(palette.vars).length;
+      const mark = palette.key === chosen ? '*' : ' ';
+      process.stdout.write(`  ${mark} ${palette.key.padEnd(14)} ${palette.name.padEnd(14)} ${count} propert${count === 1 ? 'y' : 'ies'}\n`);
+    }
+    return EXIT_OK;
+  } finally {
+    db.close();
+  }
+}
+
+/** `skw-theme palette <key|default> --tenant <key>` — wear one, or go back to the theme's own colours. */
+function setPaletteCommand(args: Args): number {
+  if (args.tenant === undefined) throw new AppError('SKW_E_EXP_TENANT_NOT_FOUND', 'palette needs --tenant <key>');
+  const tenant = args.tenant;
+  const wanted = (args.key ?? '').trim();
+  if (wanted === '') {
+    process.stderr.write(`skw-theme: palette needs a palette key, or "default"\n${USAGE}\n`);
+    return EXIT_USAGE;
+  }
+  const db = openAdminWrite(siteDbPath(args.dataDir, tenant));
+  try {
+    const theme = activeTheme(db);
+    if (theme === null) {
+      process.stderr.write(`skw-theme: tenant ${tenant} wears no theme\n`);
+      return EXIT_USAGE;
+    }
+    const key = wanted === 'default' ? '' : wanted;
+    setPalette(db, theme.key, key, null);
+    process.stdout.write(`theme palette: ${theme.key} on ${tenant} now wearing ${key === '' ? '(theme default)' : key}\n`);
+    return EXIT_OK;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `skw-theme brand <#hex|default>` — the tenant's accent, applied over every look.
+ *
+ * Prints the contrast against the ground the site paints today, because "it applied" and "it is
+ * legible" are two different successes and only the second one matters.
+ */
+function setBrandCommand(args: Args): number {
+  if (args.tenant === undefined) throw new AppError('SKW_E_EXP_TENANT_NOT_FOUND', 'brand needs --tenant <key>');
+  const wanted = (args.key ?? '').trim();
+  if (wanted === '') {
+    process.stderr.write(`skw-theme: brand needs a colour, or "default"\n${USAGE}\n`);
+    return EXIT_USAGE;
+  }
+  const db = openAdminWrite(siteDbPath(args.dataDir, args.tenant));
+  try {
+    const accent = wanted === 'default' ? '' : wanted;
+    setBrand(db, { accent, ink: chosenBrand(db).ink }, null);
+    const theme = activeTheme(db);
+    const check = theme === null ? null : brandContrast(db, theme.css, theme.key);
+    const legible =
+      accent === ''
+        ? 'nothing to check — the theme keeps its own accent'
+        : check === null || check.ratio === null
+          ? `contrast: cannot judge against ${check?.ground ?? 'an unknown ground'} (translucent)`
+          : `contrast: ${check.ratio.toFixed(1)}:1 against ${check.ground}${check.weak ? ' — WEAK, below 3:1' : ''}`;
+    process.stdout.write(`theme brand: ${args.tenant} accent ${accent === '' ? '(the theme’s own)' : accent}; ${legible}\n`);
+    return EXIT_OK;
+  } finally {
+    db.close();
+  }
+}
+
 export async function run(argv: readonly string[]): Promise<number> {
   let args: Args;
   try {
@@ -311,6 +403,12 @@ export async function run(argv: readonly string[]): Promise<number> {
         return activate(args);
       case 'remove':
         return remove(args);
+      case 'palettes':
+        return listPalettes(args);
+      case 'palette':
+        return setPaletteCommand(args);
+      case 'brand':
+        return setBrandCommand(args);
       default:
         process.stderr.write(`skw-theme: unknown command ${JSON.stringify(args.command)}\n${USAGE}\n`);
         return EXIT_USAGE;

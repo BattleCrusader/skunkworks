@@ -142,6 +142,7 @@ import { importSite, regenerateAppConf } from '../import/site.ts';
 import { findProjectRoot } from '../db/migrate.ts';
 import { edgeConfigPath } from '../edge/config.ts';
 import { buildThemePackage } from '../themes/package.ts';
+import { hexOr, lastCustomProperty } from '../render/colour.ts';
 import { activatePackage, adoptTenantThemes, installPackage, listLibrary as listThemeLibrary } from '../themes/library.ts';
 import { LIBRARY_FILE, libraryDir, listLibrary, readLibraryArchive } from '../plugins/library.ts';
 import type { FieldSpec } from '../plugins/manifest.ts';
@@ -173,7 +174,13 @@ import {
   themeAssetsRoot,
   themeByKey,
   uploadTheme,
-} from '../render/themes.ts';
+  setPalette,
+  themePalettes,
+  chosenPaletteKey,
+
+  chosenBrand,
+  setBrand,
+  brandContrast,} from '../render/themes.ts';
 import { readThemeBundle } from '../render/theme-bundle.ts';
 import { THEME_PICK_JS, themesScreen } from './ui/themes.ts';
 import { layout, type NavKey, type NavItem } from './ui/layout.ts';
@@ -1320,6 +1327,18 @@ ${items}
       this.#themeDelete(req, reply, tenant, session);
       return;
     }
+    if (action === 'themes/brand' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#themeBrand(req, reply, tenant, session);
+      return;
+    }
+    if (action === 'themes/palette' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#themePalette(req, reply, tenant, session);
+      return;
+    }
     // --- S14: the portal's own doors out -------------------------------------------------
     // Both downloads are GETs with no side effect, and both are tenant-scoped by the session that
     // reached this handler — an operator can only take the site and the themes they can already
@@ -2353,6 +2372,41 @@ ${mailHtml}
             assetBytes: theme.assetBytes,
             previewHref: `/preview-theme?t=${encodeURIComponent(previewToken(this.#env.sessionKey, tenant.key, theme.key, Date.now()))}&path=/`,
           })),
+          palettes:
+            active === null
+              ? []
+              : themePalettes(db, active.key).map((palette) => ({
+                  key: palette.key,
+                  name: palette.name,
+                  // The card paints a miniature of the site, so it needs the three properties a
+                  // reader actually sees: the ground, the ink and the accent.
+                  bg: palette.vars['--bg'] ?? palette.vars['--surface'] ?? '#ffffff',
+                  ink: palette.vars['--ink'] ?? '#111111',
+                  accent: palette.vars['--accent'] ?? palette.vars['--accent-ink'] ?? '#4a7f86',
+                })),
+          chosenPalette: chosenPaletteKey(db),
+          // The brand accent is the tenant's, so it is read independently of the theme's palettes and
+          // checked against the ground this theme + palette actually paint.
+          brand: chosenBrand(db),
+          // `<input type="color">` only speaks #rrggbb, so the field is pre-filled with what the site
+          // paints today when no brand colour is set — the operator edits the colour they can see
+          // rather than starting from black.
+          brandAccentNow:
+            chosenBrand(db).accent !== ''
+              ? hexOr(chosenBrand(db).accent, '#000000')
+              : hexOr(active === null ? '' : (lastCustomProperty(active.css, '--accent') ?? ''), '#4a7f86'),
+          brandContrast: active === null ? null : brandContrast(db, active.css, active.key),
+          // A stored choice can outlive the theme that declared it. That is not an error — the brand
+          // outlives a redesign — but it must be visible, because the site is silently wearing the
+          // theme's own colours until the operator picks again.
+          orphanPalette:
+            active === null
+              ? null
+              : (() => {
+                  const chosen = chosenPaletteKey(db);
+                  if (chosen === '') return null;
+                  return themePalettes(db, active.key).some((palette) => palette.key === chosen) ? null : chosen;
+                })(),
           pastedCssBytes: Buffer.byteLength(pasted, 'utf8'),
           activeKey: active === null ? null : active.key,
           ...(queryValue(req.url, 'result') === undefined ? {} : { flash: queryValue(req.url, 'result') }),
@@ -2612,6 +2666,87 @@ ${mailHtml}
       db.close();
     }
     this.#seeOther(reply, `${base}?result=activated`);
+  }
+
+  /**
+   * `POST /admin/t/<key>/themes/brand` — the tenant's own accent, applied over every look.
+   *
+   * Two fields, both optional: `accent` and `ink`. An empty value means "the theme's own", which is
+   * how the override is undone without a separate reset route.
+   */
+  #themeBrand(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const base = `/admin/t/${tenant.key}/themes`;
+    this.#assertMayTheme(session);
+    const fields = fieldsOf(req.body);
+    const db = this.#siteWrite(tenant.key);
+    try {
+      setBrand(
+        db,
+        { accent: (fields.accent ?? '').trim(), ink: (fields.ink ?? '').trim() },
+        session.userId,
+      );
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.#actorOf(session)?.email ?? 'unknown',
+        action: 'admin.theme.brand',
+        targetKind: 'tenant',
+        targetId: tenant.key,
+        ip: req.socket.remoteAddress ?? '',
+      });
+    } catch (err) {
+      if (err instanceof AppError) {
+        this.#seeOther(reply, `${base}?result=${encodeURIComponent(err.message)}`);
+        return;
+      }
+      throw err;
+    } finally {
+      db.close();
+    }
+    this.#seeOther(reply, `${base}?result=brand`);
+  }
+
+  /**
+   * `POST /admin/t/<key>/themes/palette` — wear one of the colours the active theme declares.
+   *
+   * The theme's CSS does not change: the choice is a settings row, and `/theme.css` puts the chosen
+   * palette in front of the sheet as `html:root{…}`. So switching is instant, reversible, and costs
+   * one cache-busting byte in the version token rather than a re-uploaded theme.
+   *
+   * An empty value is meaningful — it is the theme's own default colours — which is why the form
+   * posts an explicit `palette=` rather than relying on an absent field.
+   */
+  #themePalette(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const base = `/admin/t/${tenant.key}/themes`;
+    this.#assertMayTheme(session);
+    const wanted = (fieldsOf(req.body).palette ?? '').trim();
+    const db = this.#siteWrite(tenant.key);
+    try {
+      const theme = activeTheme(db);
+      if (theme === null) {
+        this.#seeOther(reply, `${base}?result=${encodeURIComponent('No theme is active, so there are no palettes to choose from.')}`);
+        return;
+      }
+      setPalette(db, theme.key, wanted, session.userId);
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: this.#actorOf(session)?.email ?? 'unknown',
+        action: 'admin.theme.palette',
+        targetKind: 'cms_theme',
+        targetId: theme.key,
+        ip: req.socket.remoteAddress ?? '',
+      });
+    } catch (err) {
+      if (err instanceof AppError) {
+        this.#seeOther(reply, `${base}?result=${encodeURIComponent(err.message)}`);
+        return;
+      }
+      throw err;
+    } finally {
+      db.close();
+    }
+    this.#seeOther(reply, `${base}?result=${encodeURIComponent(wanted === '' ? 'palette-default' : 'palette')}`);
   }
 
   #themeDeactivate(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
@@ -3833,8 +3968,16 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
       throw new AppError('SKW_E_SEC_CSRF', `admin requires https: this request arrived over ${proto}`);
     }
     const origin = header(req, 'origin');
-    const host = normaliseHost(req.headers.host ?? null);
-    const expected = host === null ? null : `https://${host}`;
+    // The comparison keeps any non-default port this request arrived on, because that is what the
+    // browser put in `Origin`. `normaliseHost()` strips it by design (it answers "which tenant"),
+    // so the port is read back off the raw header here rather than thrown away — a dev host served
+    // on :8443 sends `Origin: https://host:8443`, and comparing it against `https://host` is a
+    // refusal no password can pass. On 443 the browser omits the port and nothing is added.
+    const rawHost = (req.headers.host ?? '').trim().toLowerCase().replace(/\.+$/, '');
+    const host = normaliseHost(rawHost);
+    const port = /:(\d+)$/.exec(rawHost)?.[1];
+    const hostForOrigin = host === null ? null : port !== undefined && port !== '443' ? `${host}:${port}` : host;
+    const expected = hostForOrigin === null ? null : `https://${hostForOrigin}`;
     if (origin === undefined || expected === null || origin !== expected) {
       throw new AppError('SKW_E_SEC_CSRF', 'origin does not match the host this request was sent to');
     }

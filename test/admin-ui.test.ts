@@ -145,6 +145,14 @@ after(async () => {
 
 // --- sign in ---------------------------------------------------------------
 
+
+/** The one script an admin document may carry: the navigation pilot, same-origin, no inline code. */
+function assertOnlyThePilot(html: string, where: string): void {
+  assert.equal((html.match(/<script/gi) ?? []).length, 1, `${where}: exactly one script`);
+  assert.match(html, /<script src="\/_js\/nav\.js" data-mode="admin" defer><\/script>/, `${where}: and it is the pilot`);
+  assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i, `${where}: no inline script`);
+}
+
 test('S7-1. the sign-in page is the Guided Cards card and the same form contract', async () => {
   const res = await call({ port, path: '/admin/login', host: ADMIN_HOST });
   assert.equal(res.status, 200, res.body);
@@ -165,7 +173,10 @@ test('S7-1. the sign-in page is the Guided Cards card and the same form contract
   assert.match(res.body, /<h1 id="signin-title">Welcome back<\/h1>/);
   assert.match(res.body, /<title>Sign in — acme — Skunkworks<\/title>/);
   assert.equal(count(res.body, /<h1[ >]/g), 1, 'exactly one h1');
-  assert.doesNotMatch(res.body, /<script/i, 'sign-in carries no JavaScript at all');
+  // Was "no JavaScript at all". The product now loads one script on every surface — the navigation
+  // pilot — so the invariant is what actually protects the page: exactly one, same-origin, never
+  // inline (an inline tag is the one that could carry a reflected value).
+  assertOnlyThePilot(res.body, 'sign-in');
   assert.doesNotMatch(res.body, /<link[^>]+rel="stylesheet"/i, 'no stylesheet request');
   assert.doesNotMatch(res.body, /<(?:img|iframe)[^>]+src="https?:/i, 'no third-party request');
 });
@@ -209,7 +220,7 @@ test('S7-2. the page list is the landing screen, and every word on it is a datab
   // The skip link, first in the document.
   assert.match(res.body, /<body>\n {2}<a class="skip" href="#main">Skip to content<\/a>/);
   assert.match(res.body, /<main id="main" class="page">/);
-  assert.doesNotMatch(res.body, /<script/i, 'the page list needs no JavaScript');
+  assertOnlyThePilot(res.body, 'the page list');
 });
 
 test('S7-9. a published page is never described as "not published yet", whatever its revision count', async () => {
@@ -302,11 +313,14 @@ test('S7-4. every tile says what it is used on, and the gated file is visibly no
   assert.match(res.body, /<a class="chip" href="\/admin\/t\/acme\/media"[^>]*>All 3<\/a>/);
   assert.match(res.body, /<a class="chip" href="\/admin\/t\/acme\/media\?q=image">Photos<\/a>/);
 
-  // One inline style, one enhancement script, no external request.
+  // One inline style, one enhancement script of the screen's own, plus the pilot every admin
+  // document now carries — and still no external request beyond that one same-origin file.
   assert.equal(count(res.body, /<style[ >]/g), 1);
   const scripts = res.body.match(/<script[\s\S]*?<\/script>/g) ?? [];
-  assert.equal(scripts.length, 1, 'exactly one inline script');
-  assert.doesNotMatch(scripts[0] ?? '', /src=/, 'the script is inline, not fetched');
+  const inline = scripts.filter((tag) => !/\ssrc=/.test(tag));
+  assert.equal(scripts.length, 2, 'the screen’s own script and the pilot');
+  assert.equal(inline.length, 1, 'exactly one inline script');
+  assert.match(scripts.find((tag) => /\ssrc=/.test(tag)) ?? '', /<script src="\/_js\/nav\.js" data-mode="admin" defer>/);
   assert.doesNotMatch(res.body, /<link[^>]+rel="stylesheet"/i);
 });
 

@@ -74,6 +74,7 @@ const tenantKey = ${JSON.stringify(tenantKey)};
   </head>
   <body data-page-path={path}>
     <main set:html={body} />
+    <script src="/_js/nav.js" data-mode="site" defer></script>
   </body>
 </html>
 `;

@@ -108,3 +108,50 @@ test('install.sh installs a fresh bundle and logs in end to end; a second run ch
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * The VPS kit's own scripts, where the two ways an operator loses data are decided.
+ *
+ * `provision.sh` copied the bundle's `site.db` over the live one on **every** deploy — every page,
+ * media row and message created on the box since the last deploy. `qa-session.sh delete` read the
+ * session id from a file a previous `docker run --rm` had written, so under the very invocation
+ * pattern the kit uses it deleted nothing and said so to nobody.
+ *
+ * Both are shell, so nothing here runs them against a live database. What is asserted is the shape
+ * that makes them safe — a guard that is present, says why, and cannot be a no-op — because these
+ * are the lines a future edit deletes without noticing.
+ */
+test('the VPS kit never overwrites a live site.db, and its cleanup cannot silently do nothing', () => {
+  const kit = join(REPO, 'skunkworks-sites', 'madetoship', 'vps');
+  const read = (name: string): string => readFileSync(join(kit, name), 'utf8');
+
+  const provision = read('provision.sh');
+  // control.db was guarded this way from the start; site.db — the one holding what visitors and the
+  // operator created — was not.
+  assert.match(
+    provision,
+    /if \[ -f "\$DATA\/tenants\/\$TENANT\/site\.db" \]; then\s*\n\s*say "site\.db already exists; not overwriting it with the bundle's"/,
+    'a deploy must not replace a live tenant database',
+  );
+  assert.match(provision, /else\s*\n\s*cp "\$BUNDLE\/data\/site\.db"/, 'a first deploy still seeds it');
+  // …and a bundle must not replace an installed package with its older copy.
+  assert.match(provision, /if \[ -d "\$DATA\/plugins\/\$id" \]; then/, 'an installed package is left for `skwctl plugin install`');
+  assert.doesNotMatch(provision, /cp -R "\$BUNDLE\/data\/plugins\/\.\"/, 'the blanket copy is what downgraded a package');
+
+  const qa = read('qa-session.sh');
+  // The id is an argument first, a file only as a fallback, and a delete that removes nothing fails.
+  assert.match(qa, /ID="\$\{2:-\}"/, 'delete takes the session id it is told to remove');
+  assert.match(qa, /run\('\$ID'\)\.changes/, 'it counts the rows it removed');
+  assert.match(qa, /if \(gone !== 1\) process\.exit\(1\)/, 'and refuses to be a no-op');
+
+  const upgrade = read('upgrade-contact.sh');
+  assert.match(upgrade, /if \[ "\$BEFORE" != "\$AFTER" \]/, 'the upgrade counts the rows across itself');
+  assert.match(upgrade, /echo "upgrade: FAILED/, 'and says so before it exits');
+  assert.match(upgrade, /^set -eu$/m, 'under `set -e`, so a failed install stops the script');
+
+  // All three must parse as POSIX sh: they run in the image, where there is no bash guarantee.
+  for (const name of ['provision.sh', 'qa-session.sh', 'upgrade-contact.sh']) {
+    const parsed = spawnSync('sh', ['-n', join(kit, name)], { encoding: 'utf8' });
+    assert.equal(parsed.status, 0, `${name} does not parse: ${parsed.stderr}`);
+  }
+});

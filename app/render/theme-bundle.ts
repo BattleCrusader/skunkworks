@@ -231,3 +231,115 @@ export function rewriteAssetUrls(css: string, themeKey: string, assets: readonly
     return next === null ? whole : `@import url("${next}")`;
   });
 }
+
+
+/**
+ * A **palette**: the base colours a look can be worn in, declared by the package itself.
+ *
+ * ## Why this is part of the theme and not a colour picker in the app
+ *
+ * A theme's material is its own business — a glass panel over warm paper and the same panel over
+ * cool stone are two different looks, and only the theme knows which grounds flatter it. So the
+ * package declares a short list of palettes (a name and a set of custom properties), and the site
+ * chooses one. The app never invents a colour; it only stores which declared palette is worn.
+ *
+ * ## The values are CSS, so they are checked as CSS
+ *
+ * A palette value lands inside a `:root` block on every page, which makes it a stylesheet the
+ * operator writes through a form. `paletteValueProblem` is the door: it admits colours and plain
+ * arithmetic-ish values (hex, `rgb()`, `hsl()`, named colours, `clamp()`) and refuses the characters
+ * that would let a value escape its declaration — `{`, `}`, `;`, quotes, angle brackets, and
+ * `url(`. The same predicate runs on the way in (package validation) and on the way out (the
+ * served prelude), so a theme cannot store what the server would refuse to emit.
+ */
+export const MAX_PALETTES = 12;
+export const MAX_PALETTE_VARS = 24;
+
+export interface ThemePalette {
+  /** Slug used in the URL and the settings row: `cool-stone`. */
+  key: string;
+  /** Human label on the Themes screen: `Cool stone`. */
+  name: string;
+  /** Custom properties the prelude sets, e.g. `{ '--paper': '#eef1f4' }`. */
+  vars: Record<string, string>;
+}
+
+const PALETTE_KEY = /^[a-z0-9][a-z0-9-]{1,31}$/;
+const PALETTE_VAR = /^--[a-z0-9][a-z0-9-]{0,47}$/;
+/** Everything a colour value needs, and nothing that could end its declaration early. */
+const PALETTE_VALUE = /^[#a-zA-Z0-9 .,%()\/+-]{1,120}$/;
+
+/** `null` when the key is usable, else why it is not. */
+export function paletteKeyProblem(key: string): string | null {
+  if (!PALETTE_KEY.test(key)) return 'is not a palette key (lowercase letters, digits, dashes; 2-32)';
+  return null;
+}
+
+/** `null` when the value is safe inside a `:root` block, else why it is not. */
+export function paletteValueProblem(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed === '') return 'is empty';
+  if (!PALETTE_VALUE.test(trimmed)) return 'is not a plain colour value';
+  if (/url\(/i.test(trimmed)) return 'may not reference a url()';
+  if (/[{};<>"'\\]/.test(trimmed)) return 'may not contain a brace, semicolon, quote or backslash';
+  return null;
+}
+
+/** Validate a manifest's or a settings row's palettes, or say exactly which one is wrong. */
+export function normalisePalettes(input: unknown): ThemePalette[] {
+  if (input === undefined || input === null) return [];
+  if (!Array.isArray(input)) throw new AppError('SKW_E_EXP_THEME_SCHEMA', 'palettes must be a list');
+  if (input.length > MAX_PALETTES) {
+    throw new AppError('SKW_E_EXP_THEME_LIMIT', `a theme may declare ${MAX_PALETTES} palettes, not ${input.length}`);
+  }
+  const seen = new Set<string>();
+  const out: ThemePalette[] = [];
+  for (const raw of input) {
+    const entry = raw as Partial<ThemePalette>;
+    const key = typeof entry.key === 'string' ? entry.key : '';
+    const problem = paletteKeyProblem(key);
+    if (problem !== null) throw new AppError('SKW_E_EXP_THEME_SCHEMA', `palette ${JSON.stringify(key)} ${problem}`, { key });
+    if (seen.has(key)) throw new AppError('SKW_E_EXP_THEME_SCHEMA', `palette ${key} appears twice`, { key });
+    seen.add(key);
+    const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+    if (name === '' || name.length > 60) {
+      throw new AppError('SKW_E_EXP_THEME_SCHEMA', `palette ${key} needs a name of 1 to 60 characters`, { key });
+    }
+    const vars: Record<string, string> = {};
+    const source = (entry.vars ?? {}) as Record<string, unknown>;
+    const names = Object.keys(source);
+    if (names.length === 0) throw new AppError('SKW_E_EXP_THEME_SCHEMA', `palette ${key} sets no properties`, { key });
+    if (names.length > MAX_PALETTE_VARS) {
+      throw new AppError('SKW_E_EXP_THEME_LIMIT', `palette ${key} sets ${names.length} properties, not ${MAX_PALETTE_VARS}`, { key });
+    }
+    for (const name of names) {
+      if (!PALETTE_VAR.test(name)) {
+        throw new AppError('SKW_E_EXP_THEME_SCHEMA', `palette ${key}: ${JSON.stringify(name)} is not a custom property`, { key, name });
+      }
+      const valueProblem = paletteValueProblem(String(source[name] ?? ''));
+      if (valueProblem !== null) {
+        throw new AppError('SKW_E_EXP_THEME_SCHEMA', `palette ${key}: ${name} ${valueProblem}`, { key, name });
+      }
+      vars[name] = String(source[name]).trim();
+    }
+    out.push({ key, name, vars });
+  }
+  return out;
+}
+
+/**
+ * The stylesheet a chosen palette contributes: one rule, `html:root`.
+ *
+ * `html:root` and not `:root`: the theme's own defaults are also `:root`, and the prelude is served
+ * **before** it, so equal specificity would lose the cascade. One extra element selector wins
+ * regardless of order, which means the prelude does not have to be spliced into the middle of a
+ * sheet it does not own. `''` when the palette sets nothing — an empty rule is not worth a byte.
+ */
+export function paletteCss(palette: ThemePalette | null): string {
+  if (palette === null) return '';
+  const declarations = Object.entries(palette.vars)
+    .filter(([name, value]) => PALETTE_VAR.test(name) && paletteValueProblem(value) === null)
+    .map(([name, value]) => `${name}:${value}`);
+  if (declarations.length === 0) return '';
+  return `html:root{${declarations.join(';')}}`;
+}

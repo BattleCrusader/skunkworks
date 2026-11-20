@@ -38,6 +38,8 @@ import { dirname, join } from 'node:path';
 import type Database from 'better-sqlite3';
 
 import { AppError } from '../errors.ts';
+import { normalisePalettes, paletteCss, paletteValueProblem, type ThemePalette } from './theme-bundle.ts';
+import { contrastRatio, lastCustomProperty, parseColour } from './colour.ts';
 import { THEME_MAX_BYTES, rewriteAssetUrls, type ThemeAsset } from './theme-bundle.ts';
 
 export { THEME_MAX_BYTES };
@@ -223,6 +225,199 @@ export function backfillCssBlobs(db: Database.Database): number {
     }
   }
   return written;
+}
+
+/**
+ * ## Palettes: which base colours a look is worn in
+ *
+ * Two rows in `cms_settings`, and no schema change:
+ *
+ *     theme.palettes.<theme_key>   the palettes the package declared, as JSON
+ *     site.theme_palette           which of them the site wears, as a string
+ *
+ * The declarations live beside the theme because they *are* the theme's — the app can store which
+ * one is worn, but it cannot invent a colour the theme did not offer. Keeping them in the settings
+ * table rather than in a column on `cms_theme` is the difference between shipping this today and a
+ * migration on every tenant on the box; the export path reads them back into the package manifest,
+ * so a palette still round-trips with the look it belongs to.
+ */
+export const PALETTE_SETTING = 'site.theme_palette';
+export const PALETTES_PREFIX = 'theme.palettes.';
+
+function readSettingString(db: Database.Database, key: string): string {
+  const row = db.prepare(`SELECT value_json FROM cms_settings WHERE key = ?`).get(key) as
+    | { value_json: string }
+    | undefined;
+  if (row === undefined) return '';
+  try {
+    const value: unknown = JSON.parse(row.value_json);
+    return typeof value === 'string' ? value : '';
+  } catch {
+    return '';
+  }
+}
+
+function writeSetting(db: Database.Database, key: string, json: string, type: string, actorId: number | null): void {
+  db.prepare(
+    `INSERT INTO cms_settings (key, value_json, type, updated_by) VALUES (?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, type = excluded.type,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = excluded.updated_by`,
+  ).run(key, json, type, actorId);
+}
+
+/** Every palette this theme declared, in the order the package listed them. */
+export function themePalettes(db: Database.Database, themeKey: string): ThemePalette[] {
+  const row = db.prepare(`SELECT value_json FROM cms_settings WHERE key = ?`).get(`${PALETTES_PREFIX}${themeKey}`) as
+    | { value_json: string }
+    | undefined;
+  if (row === undefined) return [];
+  try {
+    // Re-validated on the way out: a settings row can be edited by hand, and a palette that would
+    // not survive the package door must not reach a `<style>`-equivalent prelude either.
+    return normalisePalettes(JSON.parse(row.value_json));
+  } catch {
+    return [];
+  }
+}
+
+/** Record what a package declared. Called on install and on import, so the screen can offer it. */
+export function storeThemePalettes(
+  db: Database.Database,
+  themeKey: string,
+  palettes: readonly ThemePalette[],
+  actorId: number | null,
+): void {
+  const safe = normalisePalettes(palettes);
+  if (safe.length === 0) {
+    db.prepare(`DELETE FROM cms_settings WHERE key = ?`).run(`${PALETTES_PREFIX}${themeKey}`);
+    return;
+  }
+  writeSetting(db, `${PALETTES_PREFIX}${themeKey}`, JSON.stringify(safe), 'json', actorId);
+}
+
+/** Which palette the site wears. `''` means the theme's own default colours. */
+export function chosenPaletteKey(db: Database.Database): string {
+  return readSettingString(db, PALETTE_SETTING);
+}
+
+/**
+ * Wear a palette. An unknown key is refused unless it is `''`, because "activate a palette this
+ * theme does not declare" is a typo that would silently render the default and look like the button
+ * did nothing.
+ */
+export function setPalette(db: Database.Database, themeKey: string, key: string, actorId: number | null): void {
+  if (key === '') {
+    writeSetting(db, PALETTE_SETTING, JSON.stringify(''), 'string', actorId);
+    return;
+  }
+  const palette = themePalettes(db, themeKey).find((candidate) => candidate.key === key);
+  if (palette === undefined) {
+    throw new AppError('SKW_E_PL_REJECTED', `theme ${themeKey} declares no palette ${JSON.stringify(key)}`, { key });
+  }
+  writeSetting(db, PALETTE_SETTING, JSON.stringify(key), 'string', actorId);
+}
+
+/**
+ * The prelude a request puts in front of the theme's sheet: one `html:root` rule, or `''`.
+ *
+ * It rides inside `/theme.css`, so the version token, the ETag and the year-long cache all follow
+ * the bytes without any extra machinery — change the palette and the URL changes.
+ */
+export function palettePrelude(db: Database.Database, themeKey: string): string {
+  const key = chosenPaletteKey(db);
+  if (key === '') return '';
+  const palette = themePalettes(db, themeKey).find((candidate) => candidate.key === key) ?? null;
+  return paletteCss(palette);
+}
+
+/**
+ * ## The brand colour: the tenant's, not the theme's
+ *
+ * A site's accent is identity. It must not change because somebody tried a different look, and it
+ * must not be re-picked for every look either. So it lives at tenant level — two settings rows — and
+ * `/theme.css` applies it **over** whatever the theme and its palette declared.
+ *
+ * The theme is still authoritative about everything else: its material, its type, its grounds. The
+ * split is deliberate — the accent is a fact about the company, the ground is a fact about the
+ * material, and only the theme knows which grounds flatter it.
+ *
+ * Because the accent is applied over the theme, it can collide with the theme's ground. That is a
+ * measurable problem, not a matter of taste, so `brandContrast()` resolves the ground the active
+ * palette and theme actually paint and returns the WCAG ratio for the screen to warn on.
+ */
+export const BRAND_ACCENT_SETTING = 'site.brand_accent';
+export const BRAND_INK_SETTING = 'site.brand_ink';
+
+export interface Brand {
+  /** The accent, as declared, or `''` for "the theme's own". */
+  accent: string;
+  /** The ink, as declared, or `''`. Only set when an operator deliberately overrides it. */
+  ink: string;
+}
+
+export function chosenBrand(db: Database.Database): Brand {
+  return { accent: readSettingString(db, BRAND_ACCENT_SETTING), ink: readSettingString(db, BRAND_INK_SETTING) };
+}
+
+/** Set (or clear, with `''`) the brand colour. Refuses a value that is not a colour. */
+export function setBrand(db: Database.Database, brand: Brand, actorId: number | null): Brand {
+  const clean: Brand = { accent: '', ink: '' };
+  for (const key of ['accent', 'ink'] as const) {
+    const raw = brand[key].trim();
+    if (raw === '') continue;
+    // Parsed here too, not just in the form: the value ends up in a served stylesheet.
+    if (parseColour(raw) === null) {
+      throw new AppError('SKW_E_PL_REJECTED', `${raw} is not a colour`, { key });
+    }
+    if (paletteValueProblem(raw) !== null) {
+      throw new AppError('SKW_E_PL_REJECTED', `${raw} is not a colour a stylesheet may carry`, { key });
+    }
+    clean[key] = raw;
+  }
+  writeSetting(db, BRAND_ACCENT_SETTING, JSON.stringify(clean.accent), 'string', actorId);
+  writeSetting(db, BRAND_INK_SETTING, JSON.stringify(clean.ink), 'string', actorId);
+  return clean;
+}
+
+/**
+ * The brand rule, served after the palette so it wins at equal specificity. `''` when nothing is set,
+ * which is the case where the theme keeps its own accent.
+ */
+export function brandPrelude(db: Database.Database): string {
+  const brand = chosenBrand(db);
+  const vars: string[] = [];
+  if (brand.accent !== '' && parseColour(brand.accent) !== null) {
+    vars.push(`--accent:${brand.accent}`, `--accent-ink:${brand.accent}`);
+  }
+  if (brand.ink !== '' && parseColour(brand.ink) !== null) vars.push(`--ink:${brand.ink}`);
+  return vars.length === 0 ? '' : `html:root{${vars.join(';')}}`;
+}
+
+export interface BrandContrast {
+  /** The ground the theme (or its palette) actually paints, for the screen to name. */
+  ground: string;
+  /** `null` when the ground is translucent and the ratio cannot be trusted. */
+  ratio: number | null;
+  /** True when the ratio is known and below the 3:1 floor for large text and UI edges. */
+  weak: boolean;
+}
+
+/**
+ * Resolve the ground and the ratio. The palette wins over the theme's own `--bg` because that is what
+ * the cascade does; `null` means "cannot judge", never "fine".
+ */
+export function brandContrast(db: Database.Database, themeCss: string, themeKey: string): BrandContrast | null {
+  const brand = chosenBrand(db);
+  if (brand.accent === '') return null;
+  const accent = parseColour(brand.accent);
+  if (accent === null) return null;
+
+  const palette = themePalettes(db, themeKey).find((candidate) => candidate.key === chosenPaletteKey(db));
+  const ground = palette?.vars['--bg'] ?? lastCustomProperty(themeCss, '--bg') ?? '';
+  const groundColour = parseColour(ground);
+  if (groundColour === null) return { ground: ground === '' ? 'unknown' : ground, ratio: null, weak: false };
+  const ratio = contrastRatio(accent, groundColour);
+  return { ground, ratio, weak: ratio !== null && ratio < 3 };
 }
 
 /** The pointer, as stored. `''` when nothing has ever been activated. */
@@ -512,6 +707,11 @@ export function activateTheme(db: Database.Database, key: string, actorId: numbe
        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, type = excluded.type,
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = excluded.updated_by`,
   ).run(THEME_KEY_SETTING, JSON.stringify(key), actorId);
+  // The chosen base colour is NOT cleared here. Clearing it meant that changing the look silently
+  // changed the site's colours, which is exactly what an operator does not expect: the brand is the
+  // tenant's, the material is the theme's. The choice therefore survives activation; if the incoming
+  // theme does not declare that palette, `palettePrelude` emits nothing (the theme's own colours) and
+  // the Themes screen says so by name rather than letting the colour change quietly.
   return { ...theme, active: true };
 }
 

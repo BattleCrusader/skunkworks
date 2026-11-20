@@ -33,8 +33,10 @@ import {
   ASSET_MAX_BYTES,
   THEME_MAX_BYTES,
   contentTypeFor,
+  normalisePalettes,
   rewriteAssetUrls,
   type ThemeAsset,
+  type ThemePalette,
 } from '../render/theme-bundle.ts';
 import { readZip } from '../render/zip.ts';
 
@@ -63,6 +65,11 @@ export interface ThemeManifest {
   created_at: string;
   css: { path: string; sha256: string; bytes: number };
   assets: { path: string; sha256: string; bytes: number; content_type: string }[];
+  /**
+   * The base colours this look can be worn in. Optional, and absent from the manifest entirely when
+   * a theme declares none, so an existing package round-trips byte-for-byte.
+   */
+  palettes?: ThemePalette[];
 }
 
 export interface ThemePackage {
@@ -163,6 +170,8 @@ export interface BuildInput {
   /** The stylesheet **as stored** (absolute `/_theme/…` URLs) or already relative; both accepted. */
   css: string;
   assets: readonly { path: string; bytes: Buffer; contentType?: string }[];
+  /** Base colours the theme can be worn in — validated here, so a package never ships a bad one. */
+  palettes?: readonly ThemePalette[];
   /** The clock. One run, one timestamp, so two exports compare equal. */
   now: string;
 }
@@ -221,6 +230,8 @@ export function buildThemePackage(input: BuildInput): ThemePackage {
 
   assertRefsResolve(cssBytes.toString('utf8'), seen);
 
+  const palettes = normalisePalettes(input.palettes ?? []);
+
   const manifest: ThemeManifest = {
     schema: THEME_PACKAGE_SCHEMA,
     key: input.key,
@@ -234,6 +245,7 @@ export function buildThemePackage(input: BuildInput): ThemePackage {
       bytes: asset.bytes.length,
       content_type: asset.contentType,
     })),
+    ...(palettes.length === 0 ? {} : { palettes }),
   };
 
   const files = [
@@ -270,7 +282,10 @@ function parseManifest(bytes: Buffer): ThemeManifest {
     refuse('SKW_E_EXP_THEME_REF', 'the manifest names no stylesheet');
   }
   if (!Array.isArray(manifest.assets)) refuse('SKW_E_EXP_THEME_SCHEMA', 'the manifest has no assets list');
-  return manifest as ThemeManifest;
+  // A package that declares palettes gets the same scrutiny as one that declares assets: a colour
+  // that cannot be served safely is refused here, not silently dropped at render time.
+  const palettes = normalisePalettes(manifest.palettes);
+  return { ...(manifest as ThemeManifest), ...(palettes.length === 0 ? {} : { palettes }) };
 }
 
 /** A package read from a directory's worth of members (a zip's entries, or files on disk). */

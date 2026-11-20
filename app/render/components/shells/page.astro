@@ -132,5 +132,6 @@ const footerClass = footerBar === null ? '' : footerBar.footerSticky ? 'site-foo
   </head>
   <body data-page-path={page.path}>{headerBar !== null ? <header class={headerClass}>{identity ? <a class="site-id" href="/">{headerBar.logoUrl !== null ? <img src={headerBar.logoUrl} alt="" /> : null}<span>{headerBar.title}</span></a> : null}{header !== null ? <nav aria-label="Main"><NavList items={header} className="site-menu" current={page.path} /></nav> : null}</header> : header !== null ? <header><nav aria-label="Main"><NavList items={header} className="site-menu" current={page.path} /></nav></header> : null}
     <main set:html={page.bodyHtml} />{footerBar !== null ? <footer class={footerClass}>{footer !== null ? <nav aria-label="Footer"><NavList items={footer} className="site-menu site-menu--footer" current={page.path} /></nav> : null}{footerBar.footerText !== '' ? <p class="site-footer__text">{footerBar.footerText}</p> : null}</footer> : footer !== null ? <footer><nav aria-label="Footer"><NavList items={footer} current={page.path} /></nav></footer> : null}
+    <script src="/_js/nav.js" data-mode="site" defer></script>
   </body>
 </html>

@@ -413,6 +413,48 @@ a.who:hover b{color:var(--blue-2);text-decoration:underline}
   .appbar{padding:10px 16px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ------------------------------------------------------------------ themes: base colour
+ *
+ * A palette is chosen by looking at it. Each card is a miniature of the site in that palette — the
+ * ground as the card's field, two ink bars for text, the accent as a chip — so the grid reads as a
+ * set of options rather than as a list of radio buttons. The colours arrive as custom properties
+ * from the screen (the admin policy allows style attributes).
+ */
+.note--warn{padding:10px 12px;border-radius:10px;border:1px solid var(--amber-line);background:var(--amber-soft);color:var(--amber-ink)}
+.brandrow{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;margin-top:12px}
+.brandrow label{display:flex;flex-direction:column;gap:6px;font-size:12.5px;font-weight:700;color:#3b4a63;white-space:nowrap}
+.brandrow input[type=color]{width:66px;height:38px;padding:3px;border:1px solid #dfe5ec;border-radius:9px;background:#fff}
+.brandrow input[type=text]{width:196px;padding:9px 11px;border:1px solid #dfe5ec;border-radius:9px;font:inherit;color:#1f2937}
+.brandrow button{align-self:flex-end;margin-bottom:0}
+/* the reset is a different action from the set, so it gets its own line rather than sharing a row
+ * with the field it resets */
+.brandreset{margin-top:10px}
+.palette-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(146px,1fr));gap:12px;
+  margin:16px 0 14px;padding:0;border:0}
+.palette-card{position:relative;display:block;padding:8px;border-radius:14px;border:1px solid #dfe5ec;
+  background:#fff;cursor:pointer;transition:border-color .15s ease,box-shadow .15s ease,transform .15s ease}
+.palette-card:hover{border-color:#c3ccd8;box-shadow:0 6px 18px -12px rgba(15,23,42,.5);transform:translateY(-1px)}
+.palette-card input{position:absolute;inset:0;margin:0;opacity:0;cursor:pointer}
+.palette-card__preview{position:relative;display:flex;flex-direction:column;gap:5px;height:96px;
+  padding:9px 10px 10px;border-radius:10px;background:var(--pb,#fff);border:1px solid rgba(15,23,42,.12);
+  overflow:hidden;transition:box-shadow .15s ease}
+/* a miniature of a page in that palette: its chrome, a headline, two lines of body, its button */
+.palette-card__chrome{display:block;height:6px;border-radius:3px;background:var(--pi,#111);opacity:.16}
+.palette-card__headline{display:block;height:9px;width:68%;border-radius:4px;background:var(--pi,#111);opacity:.88;margin-top:2px}
+.palette-card__bar{display:block;height:5px;border-radius:3px;background:var(--pi,#111);opacity:.38}
+.palette-card__bar--short{width:58%}
+.palette-card__cta{display:block;height:11px;width:36px;border-radius:6px;background:var(--pa,#2563eb);margin-top:auto}
+.palette-card__name{display:flex;align-items:center;gap:6px;margin-top:9px;font-size:13px;font-weight:600;color:#243044}
+.palette-card input:checked ~ .palette-card__name::after{content:'✓';margin-left:auto;color:#2b4d8f;font-weight:800}
+.palette-card input:checked ~ .palette-card__preview{box-shadow:0 0 0 2px #fff,0 0 0 4px #2b4d8f}
+.palette-card:has(input:checked){border-color:#2b4d8f;background:#f7f9fd}
+.palette-card:has(input:checked){border-color:#2b4d8f}
+.palette-card input:focus-visible ~ .palette-card__preview{outline:2px solid #2b4d8f;outline-offset:4px}
+.palette-card input:disabled ~ .palette-card__name{color:#64748b}
+.palette-apply{margin:14px 0 0}
+.visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+  clip:rect(0 0 0 0);white-space:nowrap;border:0}
 `;
 
 /** The icons the three screens use. Inline, `aria-hidden`, and never load-bearing. */
@@ -540,6 +582,7 @@ ${ADMIN_ROBOTS_META}
 <body>
 ${skip}${barOf(input)}
 ${main}
+<script src="/_js/nav.js" data-mode="admin" defer></script>
 </body>
 </html>`;
 }
