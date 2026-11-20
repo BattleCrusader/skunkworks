@@ -89,6 +89,7 @@ import {
   jobsListTitle,
   pageNumber,
 } from './render/public-jobs.ts';
+import { CORE_PUBLIC_ROUTES, coreSitemapPaths, jobsBoardEnabled } from './render/public-routes.ts';
 import { NULL_TRANSPORT, Outbox } from './mail/outbox.ts';
 import { smtpTransport } from './mail/transport.ts';
 import { seedSettings } from './download/code.ts';
@@ -589,14 +590,23 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   /**
    * Is this path a page a menu entry may name without a `cms_page` row?
    *
-   * Two sources answer: the core board at `/jobs` (`isPublicJobsPath` — a Fastify route, not a
-   * package page), and a path a loaded package declares (`/blog/<slug>` is a row in the package's
-   * table). The CMS render and the portal's header must ask the same question, so this is one
-   * function, used by both; a second answer would let a "Jobs" link render on a marketing page and
-   * take the portal's header away.
+   * Two sources answer: a core board (`isPublicJobsPath` — a Fastify route, not a package page),
+   * and a path a loaded package declares (`/blog/<slug>` is a row in the package's table). The CMS
+   * render and the portal's header must ask the same question, so this is one function, used by
+   * both; a second answer would let a "Jobs" link render on a marketing page and take the portal's
+   * header away.
+   *
+   * `/jobs` is not a page on every site: the board is a package a tenant installs, so a site
+   * without it serves a 404 there (`GET /jobs`) and must not carry a menu item pointing at one.
+   * The handle is passed in rather than opened here — both callers already hold the tenant's own
+   * read connection for the nav they are about to load.
    */
-  function sitePageExists(tenantKey: string, candidate: string): boolean {
-    if (isPublicJobsPath(candidate)) return true;
+  function sitePageExists(db: Database.Database | null, tenantKey: string, candidate: string): boolean {
+    if (isPublicJobsPath(candidate)) {
+      // No handle, no proof the tenant has a board: the menu item is dropped rather than pointed at
+      // a 404. Every render path holds a handle; the portal adapter opens one for the question.
+      return db === null ? false : jobsBoardEnabled(db, tenantKey, env.emailMode);
+    }
     for (const entry of plugins.registry.plugins(tenantKey)) {
       if (matchPluginPage([...entry.pages.values()], candidate) !== undefined) return true;
     }
@@ -642,8 +652,17 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     tenantOf: (req: FastifyRequest) => resolveRequest(req).tenant.key,
     // The header the portal draws is the site's header, and its menu may name `/jobs` (a core
     // route) or a package page. This is the same predicate the CMS render passes to `loadNav`,
-    // so both draw the same menu or neither.
-    pageExists: sitePageExists,
+    // so both draw the same menu or neither — including the board existing only on a tenant that
+    // installed it. The handle is opened here because `registerPortal` answers per tenant, not per
+    // page render, and a nav resolve is one question.
+    pageExists: (tenantKey: string, path: string) => {
+      const db = openRenderRead(sitePath(tenantKey), env.dbBusyTimeoutMs);
+      try {
+        return sitePageExists(db, tenantKey, path);
+      } finally {
+        db.close();
+      }
+    },
   });
 
   /**
@@ -694,8 +713,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     let sheet = '';
     const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
     try {
-      // The menu bar is dynamic only while the `menu` package is enabled for this tenant.
-      const nav = loadNav(db, { pageExists: isPublicJobsPath, enabled: menuPluginEnabled(db) });
+      // The menu bar is dynamic only while the `menu` package is enabled for this tenant, and the
+      // board counts as a page only while the `jobboard` package is — the same predicate `GET /jobs`
+      // and the sitemap answer with.
+      const nav = loadNav(db, {
+        pageExists: (candidate) => sitePageExists(db, ctx.tenant.key, candidate),
+        enabled: menuPluginEnabled(db),
+      });
       // S8s: the active theme is a row, not the `site.theme_css` string. `?theme=<key>` names an
       // uploaded theme that is *not* active, which is how the preview page shows a look before
       // anyone commits to it — the key is unguessable only in the sense that it is a slug the
@@ -1041,16 +1065,31 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
         if (pageRobots(page.seo_json) === 'noindex') continue;
         entries.push({ loc: `${origin}${page.path}`, lastmod: page.updated_at });
       }
-      // The board's list is a core route rather than a `cms_page` row, and a role page is only
-      // crawlable if the index that links it is in the file too.
-      entries.push({ loc: `${origin}${JOBS_PATH}` });
+      // The board's list and each published advert are core routes rather than `cms_page` rows, so
+      // they are enumerated from the one declaration of such routes (`app/render/public-routes.ts`)
+      // — the same read `GET /jobs` renders from. An advert is only crawlable if the index that
+      // links it is in the file too, so the index comes first and its details follow.
+      for (const path of coreSitemapPaths(db, ctx.tenant.key, env.emailMode)) {
+        entries.push({ loc: `${origin}${path}` });
+      }
       // A package's detail pages are rows, not `cms_page` rows, so they are enumerated through
       // the package's own declaration: a new package joins the sitemap by declaring a page.
+      //
+      // **Except inside a core route's URL space.** A core route owns its subtree: `/jobs` is drawn
+      // by the host, and `/jobs/<id>` is the address it declares canonical, while the job-board
+      // package also declares `/jobs/{slug}` for the same advert. Both answer 200, but a sitemap
+      // that lists both advertises a duplicate of every row, and advertises a URL whose own
+      // `<link rel="canonical">` points elsewhere — a contradiction inside one file. So the
+      // declaration that owns the subtree is the one that enumerates it.
+      const corePrefixes = CORE_PUBLIC_ROUTES.filter((route) => route.sitemap).map((route) => route.path);
       plugins.enter(ctx.tenant.key);
       try {
         await plugins.sync(ctx.tenant.key);
         for (const entry of plugins.registry.plugins(ctx.tenant.key)) {
           for (const declared of entry.pages.values()) {
+            if (corePrefixes.some((path) => declared.pattern === path || declared.pattern.startsWith(`${path}/`))) {
+              continue;
+            }
             // Only a page whose pattern can be satisfied by a single column is enumerable, and
             // every declared page is exactly that by construction (`/blog/{slug}`).
             const where = declared.filter === undefined ? '' : ` WHERE ${declared.filter.column} = ?`;
@@ -1522,7 +1561,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       // entry pointing at a page that does not exist is a dead link the CMS created itself. A
       // path a loaded package serves counts as a page: `/blog/<slug>` is a row in the package's
       // table, and a header link to it is not a dead link.
-      const pageExists = (candidate: string): boolean => sitePageExists(ctx.tenant.key, candidate);
+      const pageExists = (candidate: string): boolean => sitePageExists(db, ctx.tenant.key, candidate);
       // Dynamic only while the `menu` package is on: the rows live in `cms_nav`, but the bar is
       // the package's feature. Off means no menu, not a stale one.
       nav = loadNav(db, { pageExists, enabled: menuPluginEnabled(db) });
@@ -1683,9 +1722,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     if (page === null) throw pageMiss();
     const db = getSiteDb(ctx.tenant);
     const reader = advertReader(db, ctx.tenant.key, env.emailMode);
+    // No `jobboard` package (or one that is disabled) means this site has no job board, so `/jobs`
+    // is the site's ordinary 404 — not an empty board. The board is a feature a tenant installs;
+    // a marketing site that never bought one must not answer a page about hiring, and must not
+    // appear in its sitemap (`coreSitemapPaths` asks the same question through the same
+    // `jobsBoardEnabled`). An installed board with no adverts still gets a page: that one is "no
+    // roles open yet", which is true and useful.
     const listing = reader.listPublished({ limit: JOBS_PAGE_SIZE, offset: (page - 1) * JOBS_PAGE_SIZE });
-    const total = listing?.total ?? 0;
-    const rows = listing?.rows ?? [];
+    if (listing === null) throw pageMiss();
+    const total = listing.total;
+    const rows = listing.rows;
     const pages = Math.max(1, Math.ceil(total / JOBS_PAGE_SIZE));
     // A page past the end names no adverts. 404 rather than an empty page 9 999, so the URL space
     // the board answers is bounded by the rows it has.
@@ -1913,6 +1959,19 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     pool.close();
     tenants.close();
     await app.close();
+  }
+
+  // The sitemap names every core public route (`/jobs` and each advert), and a `<loc>` is an
+  // explicit invitation to crawl. Inviting a crawler to a URL this box does not answer is the one
+  // failure a sitemap test can miss and a customer finds, so the declaration and the router are
+  // checked against each other at boot: a declared route that was never registered — or was
+  // renamed — stops the process instead of publishing a crawlable 404.
+  for (const route of CORE_PUBLIC_ROUTES) {
+    if (!app.hasRoute({ method: 'GET', url: route.path })) {
+      throw new Error(
+        `core public route ${route.path} is declared in app/render/public-routes.ts but no GET route serves it`,
+      );
+    }
   }
 
   return { app, env, tenants, admin, sources, seals, plugins, watermark: plane.watermark, close };

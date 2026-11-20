@@ -13,8 +13,9 @@
  *      the Host's);
  *   4. pagination is bounded: 20 a page, page 2 carries the remainder, a page past the end is a 404
  *      and a nonsense `?page=` is page 1;
- *   5. an empty board is a page, not an error: it says so and links a company to advertiser sign-up —
- *      and a tenant with no job-board package installed gets the same page rather than a 500;
+ *   5. an installed board with no adverts is a page, not an error: it says so and links a company to
+ *      advertiser sign-up — and a tenant with **no job-board package** has no board at all, so
+ *      `/jobs` is its ordinary 404 and the sitemap does not name it;
  *   6. the detail page's `<title>` carries the role and the company, `<meta name="description">` and
  *      the canonical URL are there, and both pages are wrapped in **the site's own chrome**: the
  *      `site-header`/`site-footer` classes, the `Main` nav (including the `Jobs` item) and the
@@ -36,6 +37,7 @@ import { buildApp, type AppHandle } from '../app/main.ts';
 import { installPlugin } from '../app/plugins/install.ts';
 import { packageRootHash } from '../app/plugins/manifest.ts';
 import { REPO, makeFixture, type Fixture } from './helpers/fixture.ts';
+import { installMenuPackage } from './helpers/menu-package.ts';
 import { call, type Res } from './helpers/http.ts';
 
 const JOBBOARD = join(REPO, 'plugins', 'jobboard');
@@ -168,6 +170,12 @@ before(async () => {
     ],
   });
   for (const tenant of ['alpha', 'beta', 'empty']) installBoard(tenant);
+  // Chrome assertions need the `menu` package: the site bar is its feature, not `cms_nav`'s.
+  for (const tenant of ['alpha', 'beta', 'empty']) {
+    const site = new Database(fixture.sitePath(tenant));
+    installMenuPackage(site, fixture.dir);
+    site.close();
+  }
   seedSite('alpha', 'Alpha Works');
   seedSite('empty', 'Empty Works');
   handle = await buildApp({ env: loadEnv(fixture.env) });
@@ -383,15 +391,76 @@ test('PJ-11. an empty board is a page that says so and points companies at sign-
   assert.equal((await get('/jobs/1', EMPTY)).status, 404, 'there is nothing to open');
 });
 
-test('PJ-12. a tenant with no job-board package answers an empty board, not a 500', async () => {
+test('PJ-12. a tenant with no job-board package has no board: `/jobs` is the site 404, and the sitemap omits it', async () => {
+  // The board is a package a tenant installs. A site that never installed it has no jobs page, and
+  // an "no open roles yet" page would be the CMS inventing a feature the customer does not have —
+  // the exact way `/jobs` came to appear on a marketing site with no such functionality.
   const res = await get('/jobs', NOBOARD);
-  assert.equal(res.status, 200, 'no package is no adverts, which is an empty board');
-  assert.match(res.body, /No open roles yet\./);
+  assert.equal(res.status, 404, 'no package is no board, not an empty one');
+  assert.equal((res.json as { error?: { code?: string } }).error?.code, 'SKW_E_RT_PAGE_NOT_FOUND');
   assert.equal((await get('/jobs/1', NOBOARD)).status, 404);
+
+  const sitemap = await get('/sitemap.xml', NOBOARD);
+  assert.equal(sitemap.status, 200, sitemap.body);
+  assert.ok(
+    !locsOf(sitemap.body, NOBOARD).includes('/jobs'),
+    `a site with no board must not invite a crawler to one: ${sitemap.body}`,
+  );
 });
 
 test('PJ-13. the sitemap names the board', async () => {
   const res = await get('/sitemap.xml');
   assert.equal(res.status, 200, res.body);
   assert.match(res.body, new RegExp(`<loc>https://${ALPHA}/jobs</loc>`));
+});
+
+/** Every `<loc>` in a sitemap body, the tenant's origin stripped. */
+function locsOf(xml: string, host = ALPHA): string[] {
+  return [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => String(m[1]).replace(`https://${host}`, ''));
+}
+
+test('PJ-14. every published advert is in the sitemap, and no unpublished one is', async () => {
+  const res = await get('/sitemap.xml');
+  assert.equal(res.status, 200, res.body);
+  const locs = locsOf(res.body);
+
+  // The board's rows are not `cms_page` rows: they exist only because the host serves them, so
+  // they are in the file only if the route declared them. Both published adverts must be there.
+  for (const [label, id] of [['cto', ctoId], ['cfo', cfoId]] as [string, number][]) {
+    assert.ok(locs.includes(`/jobs/${String(id)}`), `${label} advert ${String(id)} must be listed: ${res.body}`);
+  }
+  // A draft and a closed advert are 404s on the site (PJ-3). A `<loc>` for one is an invitation to
+  // crawl a 404, which is exactly the drift this enumeration removes.
+  for (const [label, id] of [['draft', draftId], ['closed', closedId]] as [string, number][]) {
+    assert.ok(!locs.includes(`/jobs/${String(id)}`), `${label} advert ${String(id)} must not be listed`);
+  }
+  // One `<loc>` per published advert — the index exactly once, and **no slug duplicates**: the
+  // board declares `/jobs/<id>` canonical, and the package's `/jobs/{slug}` is the same advert at
+  // a second address, so listing both would advertise a duplicate of every row.
+  const boardLocs = locs.filter((path) => path === '/jobs' || path.startsWith('/jobs/'));
+  const published = new Database(fixture.sitePath('alpha'))
+    .prepare("SELECT COUNT(*) AS n FROM p_jobboard_job WHERE status = 'published'")
+    .get() as { n: number };
+  assert.equal(boardLocs.filter((path) => path === '/jobs').length, 1, 'the index is named once');
+  assert.deepEqual(
+    boardLocs.filter((path) => path.startsWith('/jobs/')).every((path) => /^\/jobs\/\d+$/.test(path)),
+    true,
+    `every advert URL is its canonical id address, got ${JSON.stringify(boardLocs)}`,
+  );
+  assert.equal(
+    boardLocs.length,
+    published.n + 1,
+    `index + one URL per published advert (${String(published.n)}), got ${JSON.stringify(boardLocs)}`,
+  );
+});
+
+test('PJ-15. every `<loc>` the sitemap publishes answers 200 — no crawlable 404s', async () => {
+  const res = await get('/sitemap.xml');
+  assert.equal(res.status, 200, res.body);
+  const locs = locsOf(res.body);
+  assert.ok(locs.length > 0, 'a sitemap with no URLs proves nothing');
+  for (const path of locs) {
+    const page = await get(path);
+    assert.equal(page.status, 200, `${path} is invited to a crawler but answers ${String(page.status)}`);
+  }
 });
