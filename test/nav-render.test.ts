@@ -26,6 +26,7 @@ import { after, before, test } from 'node:test';
 
 import { AppError } from '../app/errors.ts';
 import { loadNav, menuPluginEnabled } from '../app/render/nav.ts';
+import { chromeCss, type SiteChrome } from '../app/render/chrome.ts';
 import { loadEnv } from '../app/env.ts';
 import { buildApp, type AppHandle } from '../app/main.ts';
 import { makeFixture, SCHEMA, type Fixture } from './helpers/fixture.ts';
@@ -140,8 +141,15 @@ test('the served page carries the two-level menu in position order', async () =>
   // shell's, and the body fragment is inserted inside `<main>` — so they accept the class.
   // S8o: the menu's `<ul>` carries `site-menu`, the class the chrome's own stylesheet and every
   // site theme select. It used to be a bare `<ul>`, so those rules matched nothing.
-  assert.match(html, /<header class="site-header[^"]*"><nav aria-label="Main"><ul class="site-menu">/, 'the header menu is the shell\'s, not the body\'s');
-  assert.match(html, /<footer class="site-footer[^"]*"><nav aria-label="Footer"><ul class="site-menu site-menu--footer">/, 'the footer menu renders');
+  // MOBILE: the header menu is a `<details>` disclosure, so a phone gets a control it can tap
+  // instead of an 11px horizontal scroller. The summary must come *before* the nav — that order is
+  // what makes the native toggle work with no script at all.
+  assert.match(
+    html,
+    /<header class="site-header[^"]*"><details class="site-menu-disclosure" open><summary class="site-menu-toggle">.*?<\/summary><nav aria-label="Main"><ul class="site-menu">/,
+    'the header menu is a disclosure the shell writes, not the body\u2019s markup',
+  );
+  assert.match(html, /<footer class="site-footer[^"]*"><nav aria-label="Footer"><ul class="site-menu site-menu--footer">/, 'the footer menu renders, and is not a disclosure: it is always visible');
   const order = ['Company', 'Story', 'Team', 'Careers', 'Contact'].map((label) => {
     const at = html.indexOf(`>${label}</a>`);
     assert.ok(at > 0, `${label} is missing from the rendered menu`);
@@ -278,4 +286,96 @@ test('nav: the menu bar exists only while the menu package is enabled', () => {
   assert.equal(live.header.length, 1, 'enabled package renders the menu');
   assert.equal(live.header[0]?.label, 'Gated');
   own.close();
+});
+
+// ── M: the site menu on a phone ───────────────────────────────────────────────────────────────
+const chrome: SiteChrome = {
+  title: 'Acme',
+  logoKey: '',
+  description: '',
+  footerText: '',
+  themeCss: '',
+  headerSticky: true,
+  footerSticky: false,
+  title_: undefined,
+} as unknown as SiteChrome;
+
+const css = chromeCss(chrome);
+
+/** The bytes of the one `@media` block the collapse lives in, so an assertion cannot match a
+ *  rule that is outside it. */
+function phoneBlock(): string {
+  const start = css.indexOf('@media (max-width:46rem){');
+  assert.ok(start > 0, 'the chrome declares a phone breakpoint');
+  const end = css.indexOf('\n}', start);
+  assert.ok(end > start, 'the phone block is closed');
+  return css.slice(start, end);
+}
+
+test('M-1 — at desktop widths the wrapper is a flex item that carries the bar\u2019s alignment', () => {
+  assert.match(
+    css,
+    /\.site-menu-disclosure\{display:flex;align-items:center;margin-left:auto;min-width:0\}/,
+    'the wrapper is a real flex item, and `margin-left:auto` is what pushes the menu right',
+  );
+  // Not `display:contents`: measured against the live bar, a flex item reached through a contents
+  // box loses its `margin-left:auto` and the menu silently left-aligns. And not a closed
+  // disclosure either — a closed details hides its content in the UA stylesheet, which only
+  // ::details-content (Chromium 131+) can undo, so the wrapper ships open instead.
+  assert.doesNotMatch(css, /\.site-menu-disclosure\{display:contents\}/);
+  assert.match(css, /\.site-menu-toggle\{display:none\}/, 'and its control is not drawn');
+  // The wrapper's desktop rules must not be inside the media query, or the wrapper would be a
+  // block element in the header's flex row at every width.
+  assert.doesNotMatch(phoneBlock(), /\.site-menu-disclosure\{display:flex;align-items:center/);
+});
+
+test('M-2 — on a phone the control is a 44px target with a visible label, not a bare icon', () => {
+  const block = phoneBlock();
+  assert.match(block, /\.site-menu-toggle\{display:inline-flex!important/, 'the toggle is drawn');
+  assert.match(block, /min-height:44px;min-width:44px/, 'the target meets the 44px floor');
+  assert.match(block, /border:1px solid currentColor/, 'it has an edge a person can see on any ground');
+  assert.match(block, /\.site-menu-toggle:focus-visible\{outline:2px solid currentColor/, 'and a focus ring');
+});
+
+test('M-3 — the panel is closed until it is opened, and it is a sheet, not a re-flow of the page', () => {
+  const block = phoneBlock();
+  assert.match(
+    block,
+    /\.site-header \.site-menu-disclosure:not\(\[open\]\)>nav\{display:none!important\}/,
+    'a closed disclosure draws no menu — the UA default, stated here because a theme could set it',
+  );
+  assert.match(
+    block,
+    /\.site-header \.site-menu-disclosure>nav\{position:absolute!important/,
+    'the open panel is positioned, so opening it does not push the page down',
+  );
+  assert.match(block, /background:var\(--bg,var\(--paper,Canvas\)\)/, 'on the theme\u2019s ground, or the UA\u2019s');
+  assert.match(block, /z-index:30/, 'above the page content it covers');
+});
+
+test('M-4 — one link per row, full width, at a readable size', () => {
+  const block = phoneBlock();
+  assert.match(
+    block,
+    /\.site-header \.site-menu-disclosure>nav>\.site-menu\{display:flex!important;flex-direction:column!important;flex-wrap:nowrap!important/,
+    'the list stacks: no horizontal scroller, and no 350px box holding a 363px strip',
+  );
+  assert.match(block, /width:auto!important;gap:0!important/, 'each row owns the full panel width');
+  assert.match(
+    block,
+    /\.site-header \.site-menu-disclosure \.site-menu a\{display:block!important;width:100%!important;box-sizing:border-box;margin:0!important;padding:\.8rem \.75rem!important/,
+    'the link is the row, and a theme\u2019s indent on one link does not break the stack',
+  );
+  assert.match(block, /font-size:1rem!important/, '16px, not the 11.2px measured on the live theme');
+});
+
+test('M-5 — the wrapper is the only one: the footer menu stays a plain list at every width', () => {
+  // A footer is not a bar and does not need a control; wrapping it would add a second control a
+  // phone user has to learn, in a place they scroll past.
+  assert.equal(
+    (css.match(/\.site-menu-disclosure/g) ?? []).length > 0,
+    true,
+    'the header wrapper is styled',
+  );
+  assert.doesNotMatch(css, /site-footer .*site-menu-disclosure/, 'no disclosure rules reach the footer');
 });

@@ -61,6 +61,28 @@ test('N4 — what a swap must carry over: title, page path, per-page sheet, nonc
   assert.match(NAV_PILOT_JS, /popstate/, 'and back/forward swaps instead of reloading');
 });
 
+test('N7 — the pilot is what makes the site menu a disclosure on a phone, and only there', () => {
+  // The markup ships `<details open>`: a closed details hides its content in the UA stylesheet and
+  // only ::details-content can undo that, so at a wide viewport the open attribute is what draws
+  // the menu at all. This script closes it on a phone — and must never close it on a desktop,
+  // where closing it would hide the navigation instead of dismissing a sheet.
+  assert.ok(NAV_PILOT_JS.includes("matchMedia('(max-width:46rem)')"), 'one breakpoint, the same one the sheet uses');
+  assert.ok(NAV_PILOT_JS.includes('function phone() {'), 'and one function that answers it');
+  assert.match(
+    NAV_PILOT_JS,
+    /function closeMenus\(\) \{\s*if \(!phone\(\)\) return;/,
+    'closing is a phone gesture: at a desktop width the open state is the menu',
+  );
+  assert.match(NAV_PILOT_JS, /syncMenus\(\);/, 'the state is synced once at start, before first paint');
+  assert.match(NAV_PILOT_JS, /addEventListener\('resize', syncMenus\)/, 'and again on every resize');
+  assert.match(
+    NAV_PILOT_JS,
+    /removeAttribute\('open'\)[\s\S]*setAttribute\('open', ''\)/,
+    'down to a phone it closes, up to a desktop it opens',
+  );
+});
+
+
 test('N5 — both surfaces load it from the same origin, because the policy allows only that', () => {
   const page = readFileSync(join(root, 'app/render/components/shells/page.astro'), 'utf8');
   assert.match(page, /<script src="\/_js\/nav\.js" data-mode="site" defer><\/script>/);

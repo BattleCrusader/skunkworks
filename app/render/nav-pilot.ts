@@ -158,6 +158,65 @@ export const NAV_PILOT_JS = String.raw`(function () {
     }
   }
 
+  /**
+   * The site menu is a details disclosure that ships **open**, and the reason it ships open is the
+   * desktop bar: a closed details hides its content in the UA stylesheet, and the only CSS that
+   * undoes that is ::details-content (Chromium 131+, Safari 18.4+) — on an older engine the menu
+   * would simply be gone at every width. So the markup is the honest state for a wide viewport,
+   * and this script is what makes it a disclosure on a phone. Without this script a phone still
+   * gets the whole menu, wrapped, which is what it had before the disclosure existed.
+   *
+   * phone() is the single answer to "are we narrow", used by the sync, by closeMenus and by the
+   * resize listener, so the three can never disagree about whether the menu is meant to collapse.
+   */
+  var phoneQuery = null;
+  try {
+    phoneQuery = window.matchMedia('(max-width:46rem)');
+  } catch (e) {
+    phoneQuery = null;
+  }
+
+  function phone() {
+    return phoneQuery !== null && phoneQuery.matches;
+  }
+
+  function syncMenus() {
+    var list = document.querySelectorAll('details.site-menu-disclosure');
+    for (var i = 0; i < list.length; i += 1) {
+      if (phone()) list[i].removeAttribute('open');
+      else list[i].setAttribute('open', '');
+    }
+  }
+
+  /**
+   * Close the site menu. The menu is a details disclosure (no script needed to open it); these
+   * are the three moments a *scripted* page must close it, because the browser will not:
+   * a swap (the reader has arrived somewhere new), Escape (a keyboard user's way out), and a
+   * tap outside the panel (what a sheet does on a phone).
+   *
+   * Only on a phone: at a wide viewport the open state is what draws the menu at all, so closing
+   * it there would hide the navigation rather than dismiss a sheet.
+   */
+  function closeMenus() {
+    if (!phone()) return;
+    var open = document.querySelectorAll('details.site-menu-disclosure[open]');
+    for (var i = 0; i < open.length; i += 1) open[i].removeAttribute('open');
+  }
+
+  // The markup ships open; this is the line that makes a phone a disclosure. It runs as a
+  // deferred script, before the first paint of a document this size, so the panel is never seen
+  // open on a phone and then collapsing.
+  syncMenus();
+  // Two hooks, because one is not enough: a media-query listener is the precise signal and a
+  // resize listener is the one that always arrives. A phone rotated to landscape, or a desktop
+  // window narrowed, must not be left with a menu that stays closed at a width where the closed
+  // state hides it.
+  if (phoneQuery !== null) {
+    if (phoneQuery.addEventListener) phoneQuery.addEventListener('change', syncMenus);
+    else if (phoneQuery.addListener) phoneQuery.addListener(syncMenus);
+  }
+  window.addEventListener('resize', syncMenus);
+
   function swap(doc, url, opts) {
     var next = doc.querySelector('main');
     var current = document.querySelector('main');
@@ -178,6 +237,8 @@ export const NAV_PILOT_JS = String.raw`(function () {
     if (!current.hasAttribute('tabindex')) current.setAttribute('tabindex', '-1');
     if (opts.focus !== false) current.focus({ preventScroll: true });
     markCurrent(new URL(url, location.href).pathname);
+    // The reader followed a link from the menu; the panel they followed it from is done.
+    closeMenus();
     stats.swaps += 1;
     document.documentElement.classList.remove('skw-nav-busy');
   }
@@ -211,6 +272,8 @@ export const NAV_PILOT_JS = String.raw`(function () {
     // A form's submit button is sometimes an <a> inside a <form>; that is the browser's.
     if (link.closest('form')) return;
     ev.preventDefault();
+    // Tapping a link in the menu closes the sheet before the fetch settles, not after.
+    if (link.closest('.site-menu-disclosure')) closeMenus();
     go(link.href);
   });
 
@@ -225,6 +288,30 @@ export const NAV_PILOT_JS = String.raw`(function () {
     var link = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
     if (!link || refuse(link)) return;
     fetchPage(link.href).catch(function () {});
+  });
+
+  // Escape closes the menu and puts the caret back on the control that opened it, so a keyboard
+  // user is not left tabbing into a panel that is no longer on screen.
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Escape' && ev.key !== 'Esc') return;
+    if (!phone()) return;
+    var open = document.querySelector('details.site-menu-disclosure[open]');
+    if (!open) return;
+    closeMenus();
+    var toggle = open.querySelector('summary');
+    if (toggle) toggle.focus();
+  });
+
+  // A tap outside the panel closes it, which is what a sheet does everywhere else on a phone.
+  // pointerdown and not click: the tap that lands on a link must not both navigate and
+  // re-open the panel by landing on the summary underneath it.
+  document.addEventListener('pointerdown', function (ev) {
+    if (!phone()) return;
+    var open = document.querySelector('details.site-menu-disclosure[open]');
+    if (!open) return;
+    var target = ev.target;
+    if (target && target.closest && target.closest('details.site-menu-disclosure')) return;
+    closeMenus();
   });
 
   window.addEventListener('popstate', function (ev) {

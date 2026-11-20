@@ -292,7 +292,11 @@ export function chromeHtml(
       (identity
         ? `<a class="site-id" href="/">${logoUrl === null ? '' : `<img src="${esc(logoUrl)}" alt="">`}<span>${esc(chrome.title)}</span></a>`
         : '') +
-      (nav.header.length > 0 ? `<nav aria-label="Main">${menu(nav.header, 'site-menu', current)}</nav>` : '') +
+      (nav.header.length > 0
+        ? `<details class="site-menu-disclosure" open>` +
+          `<summary class="site-menu-toggle"><span class="site-menu-toggle__bars" aria-hidden="true"></span><span class="site-menu-toggle__text">Menu</span></summary>` +
+          `<nav aria-label="Main">${menu(nav.header, 'site-menu', current)}</nav></details>`
+        : '') +
       `</header>`
     : '';
   const footer = footerBar
@@ -320,6 +324,72 @@ export function chromeCss(chrome: SiteChrome): string {
     // (madetoship draws a border) would then show two lines, one under the other. Weight is a
     // default a theme can override without leaving a mark on the page.
     '.site-menu a[aria-current="page"]{font-weight:600}',
+    // ── The menu collapses on a phone ────────────────────────────────────────────────────────
+    //
+    // On a 390px phone the bar used to be a horizontal scroller: the links shrank to 11.7px and
+    // the last one was clipped off the right edge with nothing saying it was there. A theme can
+    // restyle the bar, but it must not be able to leave the menu unreachable, so the *mechanism*
+    // lives here and the *look* stays the theme's.
+    //
+    // The mechanism is `<details>` and not a script. A disclosure is keyboard-operable and
+    // announced as one by every screen reader without help, survives a CSP that forbids inline
+    // script, and still works when the pilot (`/_js/nav.js`) fails to load. Nothing here needs
+    // JavaScript, so nothing here breaks when JavaScript does not arrive.
+    //
+    // `display:contents` at desktop is what makes this free: the wrapper disappears from the box
+    // tree, so the `<nav>` lands directly in the header's flex row exactly as it always did, and
+    // every theme rule written against `.site-header nav` keeps matching. The rules inside the
+    // media query are `!important` on purpose — they are the four properties a theme declares
+    // `!important` itself (wrap, width, overflow, list direction), and losing that fight is what
+    // produces an 11px scrolling strip.
+    // `display:contents` does not survive the trip: a flex item's `margin-left:auto` (how the
+    // shipped themes push the menu to the right) resolves to zero when the item is reached through
+    // a contents box, so the bar would silently left-align. The wrapper is therefore a real flex
+    // item that carries the alignment itself — measured identical to the live bar on both tenants.
+    '.site-menu-disclosure{display:flex;align-items:center;margin-left:auto;min-width:0}',
+    '.site-menu-toggle{display:none}',
+    '@media (max-width:46rem){',
+    '.site-header{flex-wrap:nowrap!important;gap:.5rem}',
+    '.site-menu-disclosure{display:block!important;position:relative;margin-left:auto}',
+    '.site-menu-toggle{display:inline-flex!important;align-items:center;gap:.55rem;min-height:44px;min-width:44px;',
+    'padding:0 .85rem;font:inherit;font-size:.95rem;font-weight:600;line-height:1;color:inherit;background:transparent;',
+    'border:1px solid currentColor;border-radius:999px;cursor:pointer;list-style:none;-webkit-tap-highlight-color:transparent}',
+    '.site-menu-toggle::-webkit-details-marker{display:none}',
+    '.site-menu-toggle:focus-visible{outline:2px solid currentColor;outline-offset:2px}',
+    // Three bars, drawn from one element: two pseudo-elements and the element's own 2px rule.
+    '.site-menu-toggle__bars{display:inline-block;position:relative;width:18px;height:2px;background:currentColor}',
+    '.site-menu-toggle__bars::before,.site-menu-toggle__bars::after{content:"";position:absolute;left:0;width:18px;height:2px;background:currentColor}',
+    '.site-menu-toggle__bars::before{top:-6px}',
+    '.site-menu-toggle__bars::after{top:6px}',
+    // Open reads as a close: the middle bar goes, the other two cross.
+    '.site-menu-disclosure[open] .site-menu-toggle__bars{background:transparent}',
+    '.site-menu-disclosure[open] .site-menu-toggle__bars::before{top:0;transform:rotate(45deg)}',
+    '.site-menu-disclosure[open] .site-menu-toggle__bars::after{top:0;transform:rotate(-45deg)}',
+    // The panel is a sheet under the bar, not a re-flow of the page: a wrapped bar pushes the
+    // first heading down and moves the reader's place in the document.
+    //
+    // Every selector here is `.site-header …`: the shipped themes write `.site-header nav{width:
+    // 100%!important}` and, at equal specificity, a rule written later wins — so the panel would
+    // inherit the theme's full-bleed nav box and be as wide as the page. One extra compound
+    // selector is what makes the sheet the sheet.
+    '.site-header .site-menu-disclosure>nav{position:absolute!important;top:calc(100% + .5rem);right:0;left:auto;display:block!important;',
+    'margin:0!important;width:min(20rem,calc(100vw - 1.5rem))!important;max-height:calc(100vh - 6rem);overflow:auto!important;',
+    // `--bg`/`--paper` are the two names the shipped themes give their ground; `Canvas` is the
+    // UA's own default, and a theme that names neither still gets a panel that hides the page
+    // behind it rather than one that prints the page through itself.
+    'padding:.4rem;background:var(--bg,var(--paper,Canvas));color:var(--ink,currentColor);',
+    'border:1px solid rgba(0,0,0,.12);border-radius:.85rem;box-shadow:0 12px 32px rgba(0,0,0,.18);z-index:30}',
+    '.site-header .site-menu-disclosure:not([open])>nav{display:none!important}',
+    // One link per row, 44px tall, at a size a person can read without pinching. A theme's
+    // `a[href="/contact"]` accent still applies — only the margin that would indent it is dropped.
+    '.site-header .site-menu-disclosure>nav>.site-menu{display:flex!important;flex-direction:column!important;flex-wrap:nowrap!important;',
+    // `stretch`, because a theme that centres its bar (`align-items:center`) would otherwise
+    // shrink every row to the width of its own label and centre it in the sheet.
+    'align-items:stretch!important;width:auto!important;gap:0!important;margin:0!important;padding:0!important;list-style:none}',
+    '.site-header .site-menu-disclosure .site-menu li{width:100%!important}',
+    '.site-header .site-menu-disclosure .site-menu a{display:block!important;width:100%!important;box-sizing:border-box;margin:0!important;padding:.8rem .75rem!important;',
+    'font-size:1rem!important;line-height:1.35!important;text-align:start;border-radius:.5rem}',
+    '}',
     '.site-footer{padding:1rem;border-top:1px solid rgba(0,0,0,.12);background:Canvas}',
     '.site-footer--sticky{position:sticky;bottom:0;z-index:20}',
     // No `opacity` here. It was `.75`, and Lighthouse's only accessibility finding on the live
