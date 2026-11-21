@@ -158,7 +158,12 @@ export function planUpgrade(db: Database.Database, previous: Manifest, next: Man
     }
   }
 
-  for (const op of declared) steps.push({ sql: op, why: `declared in ${next.id} ${next.version} \`migrations\`` });
+  // The declared ops are **permissions, not statements.** They exist so the three guards above can
+  // be satisfied on the record by an author who means the change; the DDL itself comes from
+  // `tableStatements` (a new table, a new index) and `addColumn` (a new column), which every upgrade
+  // already runs. Pushing a declared op into `steps` made it `db.exec()`-able text: `ops:
+  // ["create_table"]` reached SQLite as the literal `create_table` and the install died on
+  // `near "create_table": syntax error`. A manifest string must never be a statement (§8.2).
   return steps;
 }
 

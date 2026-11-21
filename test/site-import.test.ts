@@ -398,7 +398,7 @@ test('I4 — control.db holds the tenant and one domain row per host, exactly on
   assert.equal(zip.tenant.mode, 'production');
   assert.equal(zip.tenant.status, 'active');
   assert.equal(zip.tenant.display_name, 'Fractional Works', 'the display name must come from the bundle');
-  assert.equal(zip.tenant.db_version, 11, 'db_version is the migrated file\'s, not the manifest claim');
+  assert.equal(zip.tenant.db_version, 12, 'db_version is the migrated file\'s, not the manifest claim');
   assert.deepEqual(
     zip.domains.map((d) => `${d.host}:${d.kind}:${d.is_primary}:${d.cert_state}`),
     ['copy.example.test:primary:1:none', 'www.copy.example.test:alias:0:none'],
@@ -409,7 +409,7 @@ test('I4 — control.db holds the tenant and one domain row per host, exactly on
   // `--wildcard example.net` adds `<host>.example.net` as an alias: one wildcard certificate for
   // *.example.net covers it, so the customer needs no per-name certificate.
   const tar = controlRows(dataTar, TAR_KEY);
-  assert.equal(tar.tenant.db_version, 11);
+  assert.equal(tar.tenant.db_version, 12);
   assert.deepEqual(
     tar.domains.map((d) => `${d.host}:${d.kind}`),
     ['tar.example.test:primary', 'tar.example.test.example.net:alias'],
@@ -563,7 +563,7 @@ test('I6c — --replace brings the existing tenant forward without a second prim
   const after = controlRows(dataZip, ZIP_KEY);
   assert.equal(after.domains.length, before.domains.length, '--replace duplicated a domain row');
   assert.equal(after.domains.filter((d) => d.is_primary === 1).length, 1, '--replace left two primaries');
-  assert.equal(after.tenant.db_version, 11);
+  assert.equal(after.tenant.db_version, 12);
 });
 
 // --- (vii) a tampered archive is refused before anything is written ---------------------

@@ -110,6 +110,8 @@ export interface ActivationResult {
   activationSeq: number;
   hooks: string[];
   endpoints: string[];
+  /** v12: the scheduled entry points this activation registered, for the operator and the log. */
+  jobs: string[];
 }
 
 function code(message: string): string {
@@ -126,8 +128,16 @@ export class PluginRuntime {
   private readonly notices: PluginNotice[] = [];
   /** In-flight requests per tenant, for the uninstall drain. */
   private readonly inFlight = new Map<string, number>();
-  /** Tenant keys whose rows say `failed`, so `enable` can refuse without an ack. */
-  private readonly failed = new Set<string>();
+  /**
+   * `tenant\0plugin` → **the root hash that failed**, not a bare flag. A bare flag is a permanent
+   * blacklist for the life of the process: `skwctl plugin install` writes the row from *another*
+   * process, so a package an operator has just repaired or upgraded stays dark — the row says
+   * `enabled = 1`, every request answers `SKW_E_PL_UNAVAILABLE … did not register it at
+   * activation`, and nothing but a restart clears it. Recording **what** failed lets `sync()`
+   * retry the moment the package's bytes change, which is exactly the operator's remedy, while
+   * still refusing to re-import the same broken bytes on every request.
+   */
+  private readonly failed = new Map<string, string>();
   /**
    * `tenant` → the cached read handle `sync()` uses, keyed on the **file's identity** (`dev:ino`)
    * rather than on the path. A handle to an inode that has been replaced answers with rows the
@@ -344,10 +354,16 @@ export class PluginRuntime {
         });
       }
       if (row.status === 'failed' && opts.ackFailed !== true) {
-        throw new AppError('SKW_E_PL_UNAVAILABLE', `plugin ${pluginId} is marked failed; an operator must acknowledge before it is retried`, {
-          plugin: pluginId,
-          status: 'failed',
-        });
+        // The ack is owed for **these bytes**. A row that still says `failed` after the operator
+        // installed a different root is describing a package that is no longer on disk, and
+        // refusing that enable is refusing the repair the operator just performed.
+        const failedRoot = this.failed.get(`${tenant}\u0000${pluginId}`);
+        if (failedRoot === undefined || failedRoot === row.root_hash) {
+          throw new AppError('SKW_E_PL_UNAVAILABLE', `plugin ${pluginId} is marked failed; an operator must acknowledge before it is retried`, {
+            plugin: pluginId,
+            status: 'failed',
+          });
+        }
       }
       if (this.registry.has(tenant, pluginId)) {
         const entry = this.registry.get(tenant, pluginId) as RegistryEntry;
@@ -358,6 +374,7 @@ export class PluginRuntime {
           activationSeq: entry.activationSeq,
           hooks: [...entry.hooks.keys()],
           endpoints: [...entry.endpoints.keys()],
+          jobs: [...entry.jobs.keys()],
         };
       }
 
@@ -456,6 +473,7 @@ export class PluginRuntime {
         pluginId,
         manifest.hooks,
         manifest.tables,
+        (manifest.jobs ?? []).map((job) => job.name),
       );
       if (!manifest.hooks.every((hook) => HOOK_NAMES.includes(hook))) {
         throw new AppError('SKW_E_PL_REJECTED', `${pluginId} declares a hook that is not one of the twelve`, { plugin: pluginId });
@@ -476,6 +494,8 @@ export class PluginRuntime {
         facade: ctx.facade,
         on: (hook: string, fn: unknown) => recorder.on(hook, fn),
         endpoint: (method: string, name: string, handler: unknown) => recorder.endpoint(method, name, handler),
+        // v12: the scheduled half. Declared in `plugin.json.jobs`; never routed.
+        job: (name: string, handler: unknown) => recorder.job(name, handler),
         screen: (screen: unknown) => recorder.screen(screen),
         block: (spec: unknown) => recorder.block(spec),
         page: (spec: unknown) => recorder.page(spec),
@@ -486,7 +506,15 @@ export class PluginRuntime {
       // 9. commit — after activation, never during it.
       recorder.closeActivation();
       ctx.close();
-      this.registry.commit(tenant, pluginId, manifest.version, activationSeq, recorder.registrations, (this.options.now ?? Date.now)());
+      this.registry.commit(
+        tenant,
+        pluginId,
+        manifest.version,
+        activationSeq,
+        recorder.registrations,
+        (this.options.now ?? Date.now)(),
+        row.root_hash,
+      );
       this.namespaces.set(`${tenant}\u0000${pluginId}`, namespace);
       this.hooks.reset(tenant, pluginId);
 
@@ -520,6 +548,7 @@ export class PluginRuntime {
         activationSeq,
         hooks: [...entryRegs.hooks.keys()],
         endpoints: [...entryRegs.endpoints.keys()],
+        jobs: [...entryRegs.jobs.keys()],
       };
     } catch (err) {
       // §13.3.6: mark it, disable it, notice it, and keep serving. The registry never received
@@ -540,6 +569,34 @@ export class PluginRuntime {
     }
   }
 
+  /**
+   * What a failed activation was looking at: the root the row names **and** the root the bytes on
+   * disk hash to. Both are needed, because a repair can move either one, and a retry that only
+   * watched one face would leave the other repair permanently marked failed:
+   *
+   *   - `row 1.3.0` + `disk 2.0.0` (an upgrade wrote new bytes under an old row) — fixing it means
+   *     rewriting the row, which changes the first face;
+   *   - `row 2.0.0` + `disk 2.0.0-edited` (a package was edited after install) — fixing it means
+   *     putting the signed bytes back, which changes the second face.
+   *
+   * Cheap by construction: only ever computed for a plugin that has already failed.
+   */
+  private fingerprintOf(db: Database.Database, pluginId: string): string {
+    return this.fingerprintOfRow(this.row(db, pluginId));
+  }
+
+  /** The same fingerprint from a row already in hand (`sync` has one and must not re-read it). */
+  private fingerprintOfRow(row: { plugin_id: string; root_hash: string } | undefined): string {
+    if (row === undefined) return '\u0000';
+    let diskRoot = '';
+    try {
+      diskRoot = packageRootHash(packageDir(this.pluginsRoot(), row.plugin_id)).root;
+    } catch {
+      /* not on disk: the empty string is a state a repair can move away from */
+    }
+    return `${row.root_hash}\u0000${diskRoot}`;
+  }
+
   /** `status='failed'`, `enabled=0`, an admin notice naming the code and the plugin. */
   private markFailed(db: Database.Database, pluginId: string, failureCode: string, message: string, tenant?: string): void {
     try {
@@ -548,7 +605,11 @@ export class PluginRuntime {
       /* the row is gone, which is also "not enabled" */
     }
     const key = `${tenant ?? ''}\u0000${pluginId}`;
-    this.failed.add(key);
+    // What failed, not just that something did: `sync()` retries when this fingerprint moves,
+    // which is what a reinstall or an upgrade from another process looks like. Two faces,
+    // because either one moving is the operator's repair — the row may be rewritten to new bytes
+    // (an upgrade) or the disk may be put back to the bytes the row names (a restore).
+    this.failed.set(key, this.fingerprintOf(db, pluginId));
     const notice: PluginNotice = {
       plugin: pluginId,
       tenant: tenant ?? '',
@@ -757,8 +818,25 @@ export class PluginRuntime {
     const seen = new Set<string>();
     for (const row of rows) {
       seen.add(row.plugin_id);
-      if (this.registry.has(tenant, row.plugin_id)) continue;
-      if (this.failed.has(`${tenant}\u0000${row.plugin_id}`)) continue;
+      if (this.registry.has(tenant, row.plugin_id)) {
+        // The row and the loaded module can disagree: `skwctl plugin install` writes the row from
+        // **another process**, and this one keeps serving the module it imported until something
+        // notices. `version` cannot be trusted for that (it is a claim the manifest makes); the
+        // root hash is the bytes. A mismatch is an upgrade: run the old module's `plugin.disabled`
+        // hooks, drop it, and load what the row now names.
+        const entry = this.registry.get(tenant, row.plugin_id) as RegistryEntry;
+        if (entry.rootHash === row.root_hash) continue;
+        await this.disable(tenant, row.plugin_id, { audit: false });
+      }
+      const key = `${tenant}\u0000${row.plugin_id}`;
+      const failedAt = this.failed.get(key);
+      if (failedAt !== undefined) {
+        // Same row and same bytes as the attempt that failed: do not import them again on every
+        // request. Anything else means the operator changed something — an upgrade rewrote the
+        // row, or a restore put the signed bytes back — and that is the acknowledgement.
+        if (failedAt === this.fingerprintOfRow(row)) continue;
+        this.failed.delete(key);
+      }
       try {
         await this.enable(tenant, row.plugin_id);
       } catch {
@@ -774,7 +852,14 @@ export class PluginRuntime {
   }
 
   /** A render's per-request facade. The context is closed by the caller on response end. */
-  makeContext(tenant: string, pluginId: string, mode: 'render' | 'endpoint' | 'admin', db: Database.Database, audit?: (action: string, detail: Record<string, unknown>) => void): PluginContext {
+  makeContext(
+    tenant: string,
+    pluginId: string,
+    mode: 'render' | 'endpoint' | 'admin',
+    db: Database.Database,
+    audit?: (action: string, detail: Record<string, unknown>) => void,
+    timezone?: string,
+  ): PluginContext {
     return makePluginContext({
       db,
       tenant,
@@ -784,6 +869,7 @@ export class PluginRuntime {
       log: this.options.log,
       audit,
       now: this.options.now,
+      ...(timezone === undefined ? {} : { timezone }),
     });
   }
 
@@ -795,6 +881,16 @@ export class PluginRuntime {
   /** The endpoint handler for one (tenant, plugin, method, name), or undefined. */
   endpoint(tenant: string, pluginId: string, method: string, name: string) {
     return this.registry.endpoint(tenant, pluginId, name, method);
+  }
+
+  /**
+   * v12: the scheduled handler for one (tenant, plugin, job), or undefined. The tick asks this and
+   * nothing else — it never imports the package, never reads its settings, and never decides
+   * whether the job is due. That decision is the package's, because the schedule is one of its
+   * settings and its copy is its own.
+   */
+  job(tenant: string, pluginId: string, name: string) {
+    return this.registry.job(tenant, pluginId, name);
   }
 
   /**

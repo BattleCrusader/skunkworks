@@ -185,6 +185,24 @@ function settingValue(spec: SettingSpec, value: unknown): string {
       // Write-only: a secret can be set and can never be read back (§8.3).
       if (typeof value !== 'string') refuse('SKW_E_PL_SETTING_INVALID', `${spec.key} is a string`);
       return JSON.stringify(value);
+    // The three the screen asks with a control. The gate is the same rule the control enforces, so
+    // a hand-written POST or a `skwctl` call cannot store a value the screen would never offer.
+    case 'time':
+      if (typeof value !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+        refuse('SKW_E_PL_SETTING_INVALID', `${spec.key} is a time of day, HH:MM`);
+      }
+      return JSON.stringify(value);
+    case 'select': {
+      if (typeof value !== 'string' || !(spec.options ?? []).includes(value)) {
+        refuse('SKW_E_PL_SETTING_INVALID', `${spec.key} is one of: ${(spec.options ?? []).join(', ')}`);
+      }
+      return JSON.stringify(value);
+    }
+    case 'email':
+      if (typeof value !== 'string' || (value !== '' && !EMAIL.test(value))) {
+        refuse('SKW_E_PL_SETTING_INVALID', `${spec.key} is an email address`);
+      }
+      return JSON.stringify(value);
   }
 }
 

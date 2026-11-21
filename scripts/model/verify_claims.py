@@ -348,6 +348,10 @@ AMENDMENTS10 = os.path.join(ROOT, "schema/r10-amendments.sql")
 # the single word), `cms_application` gains the advertiser's outcome group. The chain has to apply it
 # or check 20 compares a v10 file against a v11 DDL and reports the difference as drift.
 AMENDMENTS11 = os.path.join(ROOT, "schema/r11-amendments.sql")
+# v12 rebuilds `cms_plugin_setting` to widen the setting vocabulary (a CHECK cannot be widened in
+# place). The chain has to apply it too, or check 20 compares a v11 file's table text against a v12
+# DDL and calls the difference drift.
+AMENDMENTS12 = os.path.join(ROOT, "schema/r12-amendments.sql")
 CONTROL_R2 = os.path.join(ROOT, "schema/control-r2.sql")
 CONTROL_R3 = os.path.join(ROOT, "schema/control-r3.sql")
 CONTROL_R4 = os.path.join(ROOT, "schema/control-r4.sql")
@@ -932,7 +936,7 @@ def compare_planes(chain, fresh, label):
 
 
 def migration_chain_converges():
-    """C-6..C-23 + E-3/E-6/E-14 + E-31: v1 -> r2 -> ... -> r11 lands on exactly the schema site.sql
+    """C-6..C-23 + E-3/E-6/E-14 + E-31: v1 -> r2 -> ... -> r12 lands on exactly the schema site.sql
     generates, on both planes, compared by table text (CHECKs) and trigger body, not by name; a v2
     file with an access code refuses to migrate, and the refusal names its reason."""
     sys.path.insert(0, os.path.join(ROOT, "scripts/model"))
@@ -940,7 +944,7 @@ def migration_chain_converges():
 
     chain, _ = fresh("conv_chain.db")
     for sc in (V1_SITE, AMENDMENTS, AMENDMENTS3, AMENDMENTS4, AMENDMENTS5, AMENDMENTS6, AMENDMENTS7,
-               AMENDMENTS8, AMENDMENTS9, AMENDMENTS10, AMENDMENTS11):
+               AMENDMENTS8, AMENDMENTS9, AMENDMENTS10, AMENDMENTS11, AMENDMENTS12):
         apply_chain(chain, sc)
     fresh_db, _ = fresh("conv_fresh.db")
     apply_chain(fresh_db, SITE_SQL)
@@ -1474,7 +1478,7 @@ CHECKS = [
     ("18 an unanchored audit chain proves nothing", audit_chain_needs_an_anchor),
     ("19 delete-guard cost, indexed vs not", asset_guard_cost),
     # ---- R3 (register v3) ----
-    ("20 migration chain v1->v11 converges on site.sql", migration_chain_converges),
+    ("20 migration chain v1->v12 converges on site.sql", migration_chain_converges),
     ("21 selector seek + argon2 verifier (C-6)", selector_lookup_and_argon2),
     ("22 redemption on the v3 tables (C-7)", redemption_on_real_schema),
     ("23 export projection is a union over the live DB (C-5)", projection_union_over_live_db),

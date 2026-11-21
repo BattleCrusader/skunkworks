@@ -29,6 +29,11 @@ x-app-environment: &app-environment
   SKW_REPOINT_MAX_ROWS: ${SKW_REPOINT_MAX_ROWS:-5000}
   SKW_BOX_RPS: ${SKW_BOX_RPS:-192}
   SKW_EMAIL_MODE: ${SKW_EMAIL_MODE:-off}
+  # Required by `env.ts` only when the mode is `smtp`, and never forwarded here before v12 — so a
+  # compose deployment could set the mode and no transport, and the app refused to boot with
+  # `SKW_SMTP_URL is required when SKW_EMAIL_MODE=smtp`. Empty by default: `off` needs neither.
+  SKW_SMTP_URL: ${SKW_SMTP_URL:-}
+  SKW_MAIL_FROM: ${SKW_MAIL_FROM:-}
   # §9.1a (E-17): the edge reads it to emit allow/deny, the app reads it for TOTP
   # and the idle window. It must reach both, or they disagree about the control.
   SKW_ADMIN_ALLOWLIST: ${SKW_ADMIN_ALLOWLIST:-}

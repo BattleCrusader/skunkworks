@@ -99,6 +99,7 @@ import {
   type ColumnInfo,
   type Actor,
   type TableInfo,
+  type WriteResult,
 } from './crud.ts';
 import { openAdminWrite, openRenderRead } from '../db/classes.ts';
 import { parseRange, readAnalytics } from './analytics.ts';
@@ -127,6 +128,8 @@ import { listSources } from '../sources/registry.ts';
 import { publishSource, saveSourceDraft, type SourceInput } from '../sources/publish.ts';
 import type { TenantMap } from '../tenancy/cache.ts';
 import { normaliseHost } from '../tenancy/normalise-host.ts';
+import type { IndexNow } from '../indexnow/indexnow.ts';
+import { listedPagePath, pageRowListed } from '../render/sitemap.ts';
 import {
   TENANT_HEADER,
   anySkunkworksHeader,
@@ -145,7 +148,8 @@ import { buildThemePackage } from '../themes/package.ts';
 import { hexOr, lastCustomProperty } from '../render/colour.ts';
 import { activatePackage, adoptTenantThemes, installPackage, listLibrary as listThemeLibrary } from '../themes/library.ts';
 import { LIBRARY_FILE, libraryDir, listLibrary, readLibraryArchive } from '../plugins/library.ts';
-import type { FieldSpec } from '../plugins/manifest.ts';
+import { hostOp } from '../plugins/ops.ts';
+import type { FieldSpec, SettingSpec } from '../plugins/manifest.ts';
 import { groupOf, newSecret, otpauthUri } from './totp.ts';
 import { accountScreen } from './ui/account.ts';
 import { siteScreen, type SiteNavRow } from './ui/site.ts';
@@ -256,6 +260,11 @@ export interface AdminOptions {
    * and E28-2 refuses a new runtime path site for exactly that reason.
    */
   schemaDir: string;
+  /**
+   * IndexNow (`app/indexnow/indexnow.ts`). Present in the app; absent for a caller that builds the
+   * surface without a network (nothing then pings, and nothing about a publish changes).
+   */
+  indexNow?: IndexNow;
 }
 
 interface Headers {
@@ -418,6 +427,65 @@ function loginFailureMessage(reason: LoginFailureReason): string {
 
 /** Good enough to refuse a typo, and the only thing this screen has to get right. */
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+/** `digest_schedule` → `Digest schedule`: what a person reads when a package declared no label. */
+function humaniseKey(key: string): string {
+  const words = key.replace(/[._-]+/g, ' ').trim();
+  return words === '' ? key : words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * The zones an operator is likely to want, in one short list rather than the tz database. Not a
+ * closed vocabulary — `Intl` decides whether a stored value is a real zone, and the screen adds the
+ * visitor's own zone from the browser — but a list this short is a choice, and four hundred options
+ * is a search problem.
+ */
+const SITE_TIMEZONES = [
+  'UTC',
+  'Australia/Sydney',
+  'Australia/Melbourne',
+  'Australia/Brisbane',
+  'Australia/Adelaide',
+  'Australia/Perth',
+  'Australia/Darwin',
+  'Australia/Hobart',
+  'Pacific/Auckland',
+  'Asia/Tokyo',
+  'Asia/Singapore',
+  'Asia/Hong_Kong',
+  'Asia/Kolkata',
+  'Asia/Dubai',
+  'Europe/London',
+  'Europe/Dublin',
+  'Europe/Paris',
+  'Europe/Berlin',
+  'Europe/Madrid',
+  'Europe/Rome',
+  'Europe/Amsterdam',
+  'Europe/Stockholm',
+  'Europe/Warsaw',
+  'Africa/Johannesburg',
+  'Africa/Nairobi',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Phoenix',
+  'America/Los_Angeles',
+  'America/Toronto',
+  'America/Vancouver',
+  'America/Sao_Paulo',
+];
+
+/** `Intl` is the authority on what a zone is; a string that throws here is not one. */
+function isSiteTimezone(value: string): boolean {
+  if (value === '' || value.length > 64) return false;
+  try {
+    new Intl.DateTimeFormat('en-AU', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** The only escaping in this file: every interpolation into HTML goes through it. */
 function esc(value: string): string {
@@ -590,6 +658,12 @@ export class AdminSurface {
    */
   #plugins: PluginRuntime | null = null;
 
+  /**
+   * IndexNow: the announcement half of a publish. `null` when this surface was built without one,
+   * in which case every signal below is simply not sent — a publish is never conditional on it.
+   */
+  readonly #indexNow: IndexNow | null;
+
   constructor(opts: AdminOptions) {
     this.#env = opts.env;
     this.#controlPath = opts.controlPath;
@@ -602,6 +676,7 @@ export class AdminSurface {
     // `schema/` sits beside `app/` in the repo and beside `dist/` in the image; main.ts
     // resolves it through `findProjectRoot` and passes it, so this class never guesses.
     this.#schemaDir = opts.schemaDir;
+    this.#indexNow = opts.indexNow ?? null;
     this.#idleMs = idleMsFor(this.#allowlist);
     this.sessions = new SessionStore(opts.controlPath, opts.env.sessionKey, opts.env.ipHashKey, opts.env.dbBusyTimeoutMs);
     this.auth = new Auth({
@@ -1231,7 +1306,7 @@ ${items}
     if (action === 'plugins/enable' && req.method === 'POST') {
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
-      await this.#pluginEnable(req, reply, tenant);
+      await this.#pluginEnable(req, reply, tenant, session);
       return;
     }
     // S8e: the other half of the plugin switch. `enable` existed; `disable` did not, so a
@@ -1260,6 +1335,12 @@ ${items}
       this.#assertOrigin(req);
       this.#assertCsrf(req, session);
       await this.#pluginUninstall(req, reply, tenant, session);
+      return;
+    }
+    if (action === 'plugins/settings' && req.method === 'POST') {
+      this.#assertOrigin(req);
+      this.#assertCsrf(req, session);
+      this.#pluginSettings(req, reply, tenant, session);
       return;
     }
     if (action === 'session' && req.method === 'GET') {
@@ -3395,18 +3476,254 @@ ${mailHtml}
     this.#seeOther(reply, `/admin/t/${tenant.key}/plugins?result=${encodeURIComponent(`disabled ${plugin}`)}`);
   }
 
+  /**
+   * `POST /admin/t/<key>/plugins/settings` — the operator's answers to a package's **declared**
+   * settings (v12).
+   *
+   * Three rules, and each of them is the difference between a settings form and a database client:
+   *
+   *   - **Only declared keys are written.** The loop walks `manifest.settings` and reads the form
+   *     by those names, so an extra field in the POST body is not a setting, it is a field nobody
+   *     asked for. `hostOp('settings.set')` refuses an undeclared key a second time.
+   *   - **A blank secret means "keep".** A write-only setting cannot be rendered back, so the form
+   *     cannot tell "unchanged" from "erase" — and erasing a key by submitting a form the operator
+   *     did not edit is the one failure that would silently break a package.
+   *   - **The values never reach the audit row.** The row names the keys that changed and nothing
+   *     else: an audit log that carries an SMTP password is a second copy of the secret.
+   *
+   * A refused value (a JSON field that does not parse, an integer that is not one) comes back to the
+   * screen with the code, because the operator can only fix what the screen tells them about.
+   */
+  /**
+   * The site's clock, from `cms_settings`. One row per tenant, not a package setting: every
+   * scheduled thing on this site reads the same time, and a per-package copy of the zone is a
+   * second truth that drifts.
+   *
+   * Returns `''` when nothing is stored or the stored value is not a zone `Intl` accepts — an
+   * unusable answer is not an answer, and the screen says so instead of pretending.
+   */
+  #siteTimezone(db: Database.Database): string {
+    try {
+      const row = db.prepare(`SELECT value_json FROM cms_settings WHERE key = 'timezone'`).get() as
+        | { value_json: string }
+        | undefined;
+      if (row === undefined) return '';
+      const parsed: unknown = JSON.parse(row.value_json);
+      return typeof parsed === 'string' && isSiteTimezone(parsed) ? parsed : '';
+    } catch {
+      return '';
+    }
+  }
+
+  #pluginSettings(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): void {
+    const fields = fieldsOf(req.body);
+    const plugin = (fields.plugin ?? '').trim();
+    if (!/^[a-z][a-z0-9]{1,19}$/.test(plugin)) {
+      throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'a plugin id is required');
+    }
+    const siteFile = join(this.#env.dataDir, 'tenants', tenant.key, 'site.db');
+    const db = openAdminWrite(siteFile, this.#env.dbBusyTimeoutMs);
+    try {
+      const row = db.prepare('SELECT manifest_json FROM cms_plugin_installed WHERE plugin_id = ?').get(plugin) as
+        | { manifest_json: string }
+        | undefined;
+      if (row === undefined) {
+        this.#pluginsScreen(reply, tenant, session, undefined, `Not saved: ${plugin} is not installed for ${tenant.key}.`);
+        return;
+      }
+      // The manifest this tenant installed, not the file on disk: a package may have been replaced
+      // on the box since, and writing a key the running version does not declare would be a setting
+      // nothing reads.
+      const manifest = JSON.parse(row.manifest_json) as { settings?: SettingSpec[] };
+      const specs = Array.isArray(manifest.settings) ? manifest.settings : [];
+      const changed: string[] = [];
+      // Every answer is checked before any is written. A form that saved the first two fields and
+      // refused the third is a form that changed two things while telling the operator "not saved".
+      const answers: { spec: SettingSpec; value: unknown }[] = [];
+      for (const spec of specs) {
+        const raw = fields[`s_${spec.key}`];
+        let value: unknown;
+        if (spec.type === 'bool') {
+          // An unticked checkbox is absent from the body, and that is "off", not "not submitted".
+          value = raw === '1';
+        } else {
+          if (raw === undefined) continue;
+          if (spec.type === 'secret' && raw === '') continue;
+          const text = raw.trim();
+          // A blank answer to a required question is not an answer. Anything else blank is a real
+          // answer — "nobody is told", "don't send" — and is stored as such.
+          if (text === '' && spec.required === true) {
+            this.#pluginsScreen(reply, tenant, session, undefined, `Not saved: ${spec.label ?? spec.key} needs an answer.`);
+            return;
+          }
+          if (spec.type === 'int') {
+            const parsed = Number(raw);
+            if (!Number.isInteger(parsed)) {
+              this.#pluginsScreen(reply, tenant, session, undefined, `Not saved: ${spec.label ?? spec.key} must be a whole number.`);
+              return;
+            }
+            value = parsed;
+          } else if (spec.type === 'json') {
+            try {
+              value = raw === '' ? null : (JSON.parse(raw) as unknown);
+            } catch {
+              this.#pluginsScreen(reply, tenant, session, undefined, `Not saved: ${spec.label ?? spec.key} is not valid JSON.`);
+              return;
+            }
+          } else if (spec.type === 'time') {
+            // The refusal names the shape as a person writes it, and the control that produced it is
+            // a clock: this branch is the gate for a hand-crafted POST, not the operator's problem.
+            if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(text)) {
+              this.#pluginsScreen(reply, tenant, session, undefined, `Not saved: ${spec.label ?? spec.key} must be a time of day, like 09:00.`);
+              return;
+            }
+            value = text;
+          } else if (spec.type === 'select') {
+            const options = spec.options ?? [];
+            if (!options.includes(text)) {
+              this.#pluginsScreen(
+                reply,
+                tenant,
+                session,
+                undefined,
+                `Not saved: ${spec.label ?? spec.key} must be one of: ${options.join(', ')}.`,
+              );
+              return;
+            }
+            value = text;
+          } else if (spec.type === 'email') {
+            if (text === '') {
+              value = '';
+            } else if (text.length > (spec.max ?? 254) || !EMAIL_SHAPE.test(text)) {
+              this.#pluginsScreen(reply, tenant, session, undefined, `Not saved: ${spec.label ?? spec.key} is not an email address.`);
+              return;
+            } else {
+              value = text;
+            }
+          } else {
+            value = raw;
+          }
+        }
+        answers.push({ spec, value });
+      }
+      // The site's clock travels with the same button: a time without the zone it is read in is a
+      // time in a zone the operator never chose. Decided here and written below, with the settings,
+      // because a half-saved form is worse than a refused one.
+      const zoneAnswer = (fields.timezone ?? '').trim();
+      let zoneToWrite = '';
+      if (zoneAnswer !== '') {
+        if (!isSiteTimezone(zoneAnswer)) {
+          this.#pluginsScreen(reply, tenant, session, undefined, `Not saved: ${zoneAnswer} is not a time zone this server knows.`);
+          return;
+        }
+        if (zoneAnswer !== this.#siteTimezone(db)) zoneToWrite = zoneAnswer;
+      }
+      // Nothing has been written yet: every answer was checked first, and the write is one
+      // transaction, so a refusal anywhere leaves the form exactly as the operator found it. The
+      // host op is still the writer — the same gate a package's own `settings.set` call passes
+      // through, so the screen cannot store a value the running code would refuse.
+      try {
+        db.transaction(() => {
+          for (const answer of answers) {
+            hostOp(
+              { db, tenant: tenant.key, plugin, manifest: manifest as never, emailMode: this.#env.emailMode },
+              'settings.set',
+              { key: answer.spec.key, value: answer.value },
+            );
+          }
+          if (zoneToWrite !== '') {
+            db.prepare(
+              `INSERT INTO cms_settings (key, value_json, type, updated_by) VALUES ('timezone', ?, 'string', ?)
+                 ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, type = excluded.type,
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_by = excluded.updated_by`,
+            ).run(JSON.stringify(zoneToWrite), session.userId);
+          }
+        })();
+      } catch (err) {
+        this.#pluginsScreen(reply, tenant, session, undefined, `Not saved: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      for (const answer of answers) changed.push(answer.spec.key);
+      if (zoneToWrite !== '') changed.push('timezone');
+      const actor = this.#actorOf(session);
+      this.#audit({
+        tenantId: tenant.id,
+        userId: session.userId,
+        label: actor?.email ?? 'unknown',
+        action: 'admin.plugin.settings',
+        targetKind: 'cms_plugin_settings',
+        targetId: plugin,
+        // Keys, never values: an audit row that carries a secret is a second copy of it.
+        after: { keys: changed },
+        ip: req.socket.remoteAddress ?? '',
+      });
+      this.#seeOther(
+        reply,
+        `/admin/t/${encodeURIComponent(tenant.key)}/plugins?result=${encodeURIComponent(
+          changed.length === 0 ? `nothing to save for ${plugin}` : `saved ${changed.join(', ')} for ${plugin}`,
+        )}`,
+      );
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Write the one value the host can know and a package cannot: **the operator's own address**.
+   *
+   * Called right after a successful install, for every declared setting whose `defaultFrom` is
+   * `operator-email`, and only when nothing is stored — a re-install or an upgrade must not
+   * overwrite an address the operator typed. An empty email on the session is not an answer, so it
+   * writes nothing and the form's prefill carries the question instead.
+   */
+  #seedOperatorDefaults(db: Database.Database, tenantKey: string, plugin: string, manifest: unknown, email: string): string[] {
+    if (email.trim() === '') return [];
+    const specs = Array.isArray((manifest as { settings?: SettingSpec[] }).settings)
+      ? ((manifest as { settings?: SettingSpec[] }).settings as SettingSpec[])
+      : [];
+    const seeded: string[] = [];
+    for (const spec of specs) {
+      if (spec.defaultFrom !== 'operator-email' || (spec.type !== 'string' && spec.type !== 'email')) continue;
+      const existing = db
+        .prepare('SELECT 1 AS one FROM cms_plugin_setting WHERE plugin_id = ? AND key = ?')
+        .get(plugin, spec.key) as { one: number } | undefined;
+      if (existing !== undefined) continue;
+      try {
+        hostOp(
+          { db, tenant: tenantKey, plugin, manifest: manifest as never, emailMode: this.#env.emailMode },
+          'settings.set',
+          { key: spec.key, value: email.trim() },
+        );
+        seeded.push(spec.key);
+      } catch {
+        // A package that declares a default it cannot have is a package whose form still works:
+        // the Plugins screen prefills the same value and the operator can save it there.
+      }
+    }
+    return seeded;
+  }
+
   #pluginsScreen(reply: FastifyReply, tenant: Tenant, session: SessionRecord, flash?: string, error?: string): void {
     const runtime = this.#plugins;
     const db = this.#siteDb(tenant.key);
-    let installed: { plugin_id: string; version: string; enabled: number; activation_seq: number }[] = [];
+    let installed: { plugin_id: string; version: string; enabled: number; activation_seq: number; manifest_json: string }[] = [];
+    let settingRows: { plugin_id: string; key: string; value_json: string; secret: number }[] = [];
     try {
       const table = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_plugin_installed'`).get();
       if (table !== undefined) {
         const columns = (db.pragma('table_info(cms_plugin_installed)') as { name: string }[]).map((c) => c.name);
         const seq = columns.includes('activation_seq') ? 'activation_seq' : '0 AS activation_seq';
         installed = db
-          .prepare(`SELECT plugin_id, version, enabled, ${seq} FROM cms_plugin_installed ORDER BY plugin_id`)
+          .prepare(`SELECT plugin_id, version, enabled, ${seq}, manifest_json FROM cms_plugin_installed ORDER BY plugin_id`)
           .all() as typeof installed;
+      }
+      // v12: the answers an operator has already given, for the settings form's prefill. Absent
+      // table means no plugin has ever been installed here, which is the same as no answers.
+      const settingsTable = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cms_plugin_setting'`).get();
+      if (settingsTable !== undefined) {
+        settingRows = db
+          .prepare('SELECT plugin_id, key, value_json, secret FROM cms_plugin_setting ORDER BY plugin_id, key')
+          .all() as typeof settingRows;
       }
     } finally {
       db.close();
@@ -3478,6 +3795,190 @@ ${mailHtml}
               return `<tr data-plugin="${esc(row.plugin_id)}"><td>${esc(row.plugin_id)}</td><td>${esc(row.version)}</td><td>${esc(state)}</td><td>${row.activation_seq}</td><td>${open === '' ? '' : `${open} `}${action}${off}${uninstall}</td></tr>`;
             })
             .join('\n');
+
+    // v12: the answers a package cannot ask for itself. One form per installed package, drawn from
+    // `manifest.settings`: the host never guesses a setting's meaning or a label from its key name,
+    // and it never shows a `secret` back (write-only, as `settings.get` returns null for one).
+    //
+    // A setting declared `defaultFrom: "operator-email"` is prefilled with **this** operator's
+    // address when no value is stored — the one fact the host knows and a package's scheduled job
+    // cannot: a job runs with no session, so it can never ask who is watching. `installPlugin()`
+    // seeds it at install time; the prefill here covers a package installed before this screen
+    // existed, and the note says plainly that it is not saved until the button is pressed.
+    const operatorEmail = this.auth.userById(session.userId)?.email ?? '';
+    const storedByPlugin = new Map<string, Map<string, { value: unknown; secret: boolean }>>();
+    for (const row of settingRows) {
+      const per = storedByPlugin.get(row.plugin_id) ?? new Map<string, { value: unknown; secret: boolean }>();
+      let value: unknown = null;
+      if (row.secret !== 1) {
+        try {
+          value = JSON.parse(row.value_json) as unknown;
+        } catch {
+          value = '';
+        }
+      }
+      per.set(row.key, { value, secret: row.secret === 1 });
+      storedByPlugin.set(row.plugin_id, per);
+    }
+
+    const settingsSection =
+      installed.length === 0
+        ? '<p>Nothing is installed, so no package has settings.</p>'
+        : installed
+            .map((row) => {
+              let specs: SettingSpec[] = [];
+              try {
+                specs = (JSON.parse(row.manifest_json) as { settings?: SettingSpec[] }).settings ?? [];
+              } catch {
+                specs = [];
+              }
+              if (specs.length === 0) return '';
+              const stored = storedByPlugin.get(row.plugin_id) ?? new Map<string, { value: unknown; secret: boolean }>();
+              // The control comes from the declaration's `type`, never from the key's name or a
+              // length: a `time` is a clock, a `select` is a choice, an `email` is an address. The
+              // operator is never asked to learn a format, and `max` is a storage bound — it is an
+              // attribute on the input, not the sentence under it.
+              const siteZone = this.#siteTimezone(db);
+              const asksForTime = specs.some((spec) => spec.type === 'time');
+              // One control per declaration, and declarations that share a `group` are **one
+              // sentence**: "Send me the enquiry digest [Every day] at [09:00]". The old fieldset
+              // emitted a stream of `<p>` siblings and let the legacy two-column form grid lay them
+              // out, which put two unrelated questions side by side and let a select run six times
+              // wider than the input above it. The layout lives in the stylesheet now
+              // (`form.plugin-settings`) and the markup says what belongs together.
+              const controlFor = (spec: SettingSpec, opts: { labelled: boolean }): string => {
+                const name = `s_${spec.key}`;
+                const id = `s_${esc(row.plugin_id)}_${esc(spec.key)}`;
+                const kept = stored.get(spec.key);
+                const isSet = kept !== undefined;
+                const raw = kept?.value;
+                const text = typeof raw === 'string' ? raw : typeof raw === 'number' ? String(raw) : '';
+                const defaulted = !isSet && spec.defaultFrom === 'operator-email' && operatorEmail !== '';
+                const value = defaulted ? operatorEmail : text;
+                const label = esc(spec.label ?? humaniseKey(spec.key));
+                const required = spec.required === true ? ' required' : '';
+                const max = spec.max === undefined ? '' : ` maxlength="${String(spec.max)}"`;
+                // In a group the label is the word that joins the controls, so it stays inline
+                // beside its own control rather than heading the row.
+                const lead = opts.labelled ? '' : `<label class="ps-word" for="${id}">${label}</label> `;
+                if (spec.type === 'bool') {
+                  return `<label class="ps-word" for="${id}"><input type="checkbox" id="${id}" name="${name}" value="1"${raw === true ? ' checked' : ''}> ${label}</label>`;
+                }
+                if (spec.type === 'json') {
+                  const json = typeof raw === 'string' ? raw : raw === null || raw === undefined ? '' : JSON.stringify(raw, null, 2);
+                  return `${lead}<textarea id="${id}" name="${name}" rows="4">${esc(json)}</textarea>`;
+                }
+                if (spec.type === 'int') {
+                  return `${lead}<input type="number" id="${id}" name="${name}" value="${esc(text)}" step="1"${required}>`;
+                }
+                if (spec.type === 'secret') {
+                  return `${lead}<input type="password" id="${id}" name="${name}" autocomplete="new-password" placeholder="${isSet ? 'set — leave blank to keep' : 'not set'}">`;
+                }
+                if (spec.type === 'select') {
+                  // Each option is a complete answer, so there is no blank row: a package that
+                  // wants "off" declares "off", because two ways to say nothing is one way too many.
+                  const options = (spec.options ?? [])
+                    .map((option) => `<option value="${esc(option)}"${option === text ? ' selected' : ''}>${esc(option)}</option>`)
+                    .join('');
+                  const blank = spec.required === true ? '' : `<option value=""${isSet ? '' : ' selected'}>Not set</option>`;
+                  return `${lead}<select id="${id}" name="${name}"${required}>${blank}${options}</select>`;
+                }
+                if (spec.type === 'time') {
+                  // `step="60"` because a digest is not scheduled to the second. The value is
+                  // `HH:MM` in the site's zone, which the row beneath the field states in words.
+                  const current = /^([01]\d|2[0-3]):[0-5]\d$/.test(text) ? text : '';
+                  return `${lead}<input type="time" id="${id}" name="${name}" value="${esc(current)}" step="60"${required}>`;
+                }
+                if (spec.type === 'email') {
+                  return `${lead}<input type="email" id="${id}" name="${name}" value="${esc(value)}" autocomplete="email"${max}${required}>`;
+                }
+                return `${lead}<input type="text" id="${id}" name="${name}" value="${esc(value)}"${max}${required}>`;
+              };
+
+              const noteFor = (spec: SettingSpec): string => {
+                const kept = stored.get(spec.key);
+                const defaulted = kept === undefined && spec.defaultFrom === 'operator-email' && operatorEmail !== '';
+                if (spec.defaultFrom === 'operator-email') {
+                  return defaulted
+                    ? `Prefilled with your address (${esc(operatorEmail)}). Not saved until you press Save.`
+                    : 'Defaults to the operator’s own address.';
+                }
+                if (spec.type === 'secret') return 'Write-only: a saved secret is never shown again.';
+                return spec.help ?? '';
+              };
+
+              // Grouped by `group` (declaration order inside a group), one row per group.
+              const fields: { heading: SettingSpec; members: SettingSpec[] }[] = [];
+              for (const spec of specs) {
+                const previous = fields.at(-1);
+                const lastMember = previous?.members.at(-1);
+                if (spec.group !== undefined && previous !== undefined && lastMember?.group === spec.group) {
+                  previous.members.push(spec);
+                } else {
+                  fields.push({ heading: spec, members: [spec] });
+                }
+              }
+              const inputs = fields
+                .map((field) => {
+                  const headingId = `s_${esc(row.plugin_id)}_${esc(field.heading.key)}`;
+                  const controls = field.members
+                    .map((member, index) => controlFor(member, { labelled: index === 0 }))
+                    .join('');
+                  const note = field.members.map(noteFor).find((line) => line !== '') ?? '';
+                  const help = note === '' ? '' : `<span class="ps-help">${esc(note)}</span>`;
+                  const only = field.members.length === 1 ? field.members[0] : undefined;
+                  if (only !== undefined && only.type === 'bool') {
+                    return `<div class="ps-field ps-field--check">${controlFor(only, { labelled: false })}${help}</div>`;
+                  }
+                  if (field.members.length > 1) {
+                    return `<div class="ps-field"><label for="${headingId}">${esc(field.heading.label ?? humaniseKey(field.heading.key))}</label><div class="ps-inline">${controls}</div>${help}</div>`;
+                  }
+                  return `<div class="ps-field"><label for="${headingId}">${esc(field.heading.label ?? humaniseKey(field.heading.key))}</label>${controls}${help}</div>`;
+                })
+                .join('\n');
+              // A time is meaningless without the zone it is read in, so the zone is asked for in
+              // the same breath and saved with the same button. It is the tenant's fact, stored in
+              // `cms_settings`, not a package setting: every scheduled thing on this site reads the
+              // same clock, and one screen cannot change it out from under another.
+              const timezoneField = asksForTime
+                ? `<div class="ps-field"><label for="tz">Times are in</label>
+<select id="tz" name="timezone" data-stored="${esc(siteZone)}">
+${SITE_TIMEZONES.map((zone) => `<option value="${esc(zone)}"${zone === siteZone ? ' selected' : ''}>${esc(zone)}</option>`).join('\n')}
+</select>
+<span class="ps-help" id="tz-note">${siteZone === '' ? 'Pick the zone this site keeps time in.' : `This site keeps time in ${esc(siteZone)}.`}</span></div>
+<script>
+// The browser already knows the answer, so it offers it rather than making the operator look it
+// up: appended as an option (a stored choice still wins) and selected only when nothing is stored.
+(() => {
+  const sel = document.getElementById('tz');
+  if (!sel) return;
+  let zone = '';
+  try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch { zone = ''; }
+  if (zone === '') return;
+  if (!Array.from(sel.options).some((option) => option.value === zone)) {
+    sel.append(new Option(zone + ' — this browser', zone));
+  }
+  if (sel.dataset.stored === '') {
+    sel.value = zone;
+    const note = document.getElementById('tz-note');
+    if (note) note.textContent = 'Times are in ' + zone + ', from this browser — not saved until you press Save.';
+  }
+})();
+</script>`
+                : '';
+              return `<fieldset data-settings-for="${esc(row.plugin_id)}"${row.enabled === 1 ? '' : ' class="muted"'}>
+<legend>${esc(row.plugin_id)}@${esc(row.version)}${row.enabled === 1 ? '' : ' (disabled)'}</legend>
+<form class="plugin-settings" method="post" action="/admin/t/${esc(tenant.key)}/plugins/settings">
+  <input type="hidden" name="csrf" value="${esc(csrf)}">
+  <input type="hidden" name="plugin" value="${esc(row.plugin_id)}">
+${inputs}
+${timezoneField}
+  <button class="btn" type="submit">Save settings</button>
+</form>
+</fieldset>`;
+            })
+            .filter((block) => block !== '')
+            .join('\n') || '<p>No installed package declares a setting.</p>';
 
     // The library is the box, not the tenant: every archive in `data/plugin-library/` is listed
     // for every tenant, and the only per-tenant fact about it is whether THIS tenant installed it.
@@ -3596,6 +4097,10 @@ ${libraryRows}
 ${installedRows}
 </tbody>
 </table>
+<h2>Package settings</h2>
+<p>What each installed package needs from you. Values are this tenant's alone, and a package reads
+them through the host — never from this page.</p>
+${settingsSection}
 <h2>Plugin screens</h2>
 ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pluginHrefs}</ul>`}
 <p><a href="/admin/t/${esc(tenant.key)}/">Back</a></p>`,
@@ -3771,11 +4276,33 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
         targetId: result.plugin,
         ip: req.socket.remoteAddress ?? '',
       });
+      // v12: the one answer the host can give on the operator's behalf. The package's operator-facing
+      // address starts as the address of the person who installed it — a scheduled job has no
+      // session, so it can never ask, and a digest that is configured by default is a digest that
+      // works on the first slot instead of waiting for somebody to notice a form.
+      let seeded: string[] = [];
+      try {
+        const settingsDb = openAdminWrite(siteDb, this.#env.dbBusyTimeoutMs);
+        try {
+          const row = settingsDb.prepare('SELECT manifest_json FROM cms_plugin_installed WHERE plugin_id = ?').get(result.plugin) as
+            | { manifest_json: string }
+            | undefined;
+          if (row !== undefined) {
+            seeded = this.#seedOperatorDefaults(settingsDb, tenant.key, result.plugin, JSON.parse(row.manifest_json), actor?.email ?? '');
+          }
+        } finally {
+          settingsDb.close();
+        }
+      } catch {
+        // The install is the news. A default that could not be seeded is a prefilled form.
+      }
+      const seededNote =
+        seeded.length === 0 ? '' : ` ${seeded.join(', ')} starts as your address (${actor?.email ?? 'you'}) — change it under Package settings.`;
       const unsigned = result.signature_state === 'unsigned' ? ' — UNSIGNED: no publisher signature was verified' : ` — signed by ${result.publisher}`;
       this.#seeOther(
         reply,
         `/admin/t/${encodeURIComponent(tenant.key)}/plugins?result=${encodeURIComponent(
-          `installed ${result.plugin}@${result.version} for ${tenant.key} only (root ${result.root_hash.slice(0, 12)}…, self-attested test report)${unsigned}. Its tables are in this tenant's database; press Enable to run it.`,
+          `installed ${result.plugin}@${result.version} for ${tenant.key} only (root ${result.root_hash.slice(0, 12)}…, self-attested test report)${unsigned}. Its tables are in this tenant's database; press Enable to run it.${seededNote}`,
         )}`,
       );
     } catch (err) {
@@ -3788,7 +4315,7 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
   }
 
   /** `POST /admin/t/<key>/plugins/enable` — the operator's ack, then a normal activation. */
-  async #pluginEnable(req: FastifyRequest, reply: FastifyReply, tenant: Tenant): Promise<void> {
+  async #pluginEnable(req: FastifyRequest, reply: FastifyReply, tenant: Tenant, session: SessionRecord): Promise<void> {
     const runtime = this.#plugins;
     if (runtime === null) throw new AppError('SKW_E_PLT_TENANT_UNAVAILABLE', 'the plugin runtime is not attached to this process');
     const id = fieldsOf(req.body).plugin;
@@ -3800,7 +4327,30 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
       // `ackFailed`: the operator has read the notice and asked for the retry, which is the
       // one thing §13.3.6 says is required before a `failed` row may be retried.
       const result = await runtime.enable(tenant.key, id, { ackFailed: true });
-      flash = `${id} enabled (activation ${result.activationSeq}, hooks: ${result.hooks.join(', ') || 'none'}).`;
+      // v12: enabling is the second moment a declared `defaultFrom: "operator-email"` setting is
+      // seeded — a package installed from `skwctl` (which has no session) reaches its first run
+      // here, and an operator who has just switched it on is exactly the person to be told about it.
+      let seeded: string[] = [];
+      try {
+        const db = openAdminWrite(join(this.#env.dataDir, 'tenants', tenant.key, 'site.db'), this.#env.dbBusyTimeoutMs);
+        try {
+          const row = db.prepare('SELECT manifest_json FROM cms_plugin_installed WHERE plugin_id = ?').get(id) as
+            | { manifest_json: string }
+            | undefined;
+          const email = this.auth.userById(session.userId)?.email ?? '';
+          if (row !== undefined) seeded = this.#seedOperatorDefaults(db, tenant.key, id, JSON.parse(row.manifest_json), email);
+        } finally {
+          db.close();
+        }
+      } catch {
+        // The enable is the news; the form still prefills whatever could not be seeded.
+      }
+      const seededNote = seeded.length === 0 ? '' : ` ${seeded.join(', ')} starts as your address — change it under Package settings.`;
+      // `jobs` appears only when the package has one: a jobless package's sentence is the sentence it
+      // always had, and "jobs: none" is noise in a flash an operator reads once.
+      const summary = [`activation ${result.activationSeq}`, `hooks: ${result.hooks.join(', ') || 'none'}`];
+      if (result.jobs.length > 0) summary.push(`jobs: ${result.jobs.join(', ')}`);
+      flash = `${id} enabled (${summary.join(', ')}).${seededNote}`;
     } catch (err) {
       flash = `${id} was not enabled: ${err instanceof Error ? err.message : String(err)}`;
     }
@@ -4135,16 +4685,21 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
 
     const db = this.#siteWrite(tenant.key);
     try {
-      const row = db.prepare('SELECT seo_json FROM cms_page WHERE id = ?').get(id) as
-        | { seo_json: string | null }
+      const row = db.prepare('SELECT path, seo_json FROM cms_page WHERE id = ?').get(id) as
+        | { path: string; seo_json: string | null }
         | undefined;
       if (row === undefined) throw new AppError('SKW_E_RT_PAGE_NOT_FOUND', 'no such page');
+      // Both sides of the change, before the write: hiding a listed page is a removal signal, and
+      // showing a hidden page is an addition — either way the crawler hears about it, and a page
+      // whose visibility did not change (or a draft, which is listed on neither side) is silent.
+      const wasListed = listedPagePath(db, row.path);
       const next = withPageRobots(row.seo_json, robots);
       if (!next.ok) {
         this.#seeOther(reply, `${home}?robots=0`);
         return;
       }
       db.prepare('UPDATE cms_page SET seo_json = ? WHERE id = ?').run(next.json, id);
+      this.#indexNowPage(req, row.path, wasListed, listedPagePath(db, row.path));
       const user = this.auth.userById(session.userId);
       this.#audit({
         tenantId: tenant.id,
@@ -4531,6 +5086,11 @@ ${pluginHrefs === '' ? '<p>No declarative screen is registered.</p>' : `<ul>${pl
         actorId: actor.userId,
         ...(publishAt === undefined ? {} : { publishAt }),
       });
+      // Announce the page **iff** the sitemap would now list it. A scheduled publish is live in the
+      // database but not yet public, and a page the operator hid is public but not listed; both are
+      // "nothing for a crawler yet", so neither is submitted. This runs after `publishPage`'s
+      // transaction, on the row the site will serve, and it neither awaits nor throws.
+      if (listedPagePath(db, result.path)) this.#indexNowChanged(req, [result.path]);
       // `no-store` is already set for every admin response, but this one answers with the state a
       // browser will now show; a cached copy would say "draft" on a page that is live.
       reply.header('cache-control', 'no-store');
@@ -5319,7 +5879,8 @@ ${items}
       const id = parts[0] as string;
       if (req.method === 'POST') {
         const input = this.#applyFieldRules(screen, fieldsOf(req.body), 'update');
-        this.#write(tenant, (db) => updateRow(db, screen.table, id, input, this.#actor(session)));
+        const result = this.#write(tenant, (db) => updateRow(db, screen.table, id, input, this.#actor(session)));
+        this.#indexNowRowChange(req, screen.table, result);
         reply.code(303).header('location', `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}/${encodeURIComponent(id)}`).send('');
         return;
       }
@@ -5332,7 +5893,8 @@ ${items}
     // it must answer the same action.
     if (parts.length === 2 && parts[1] === 'delete') {
       this.#requireMethod(req, 'POST');
-      this.#write(tenant, (db) => deleteRow(db, screen.table, parts[0] as string, this.#actor(session)));
+      const result = this.#write(tenant, (db) => deleteRow(db, screen.table, parts[0] as string, this.#actor(session)));
+      this.#indexNowRowChange(req, screen.table, result);
       reply.code(303).header('location', `/admin/t/${tenant.key}/${screen.path.replace(/^\/+/, '')}`).send('');
       return;
     }
@@ -5412,7 +5974,11 @@ ${items}
       }
       if (req.method === 'POST') {
         this.#writeGuard(req, session);
-        this.#write(tenant, (db) => updateRow(db, table, second, fieldsOf(req.body), this.#actor(session)));
+        const result = this.#write(tenant, (db) => updateRow(db, table, second, fieldsOf(req.body), this.#actor(session)));
+        // The table screen can set `status` on a `cms_page` row, which is how a page is unpublished
+        // without the editor. One comparison covers it: the row's sitemap membership before and
+        // after, so an edit that leaves the page listed (a title, a date) sends nothing.
+        this.#indexNowRowChange(req, table, result);
         reply.code(303).header('location', `${base}/${encodeURIComponent(second)}`).send('');
         return;
       }
@@ -5422,12 +5988,65 @@ ${items}
     if (parts.length === 3 && third === 'delete') {
       this.#requireMethod(req, 'POST');
       this.#writeGuard(req, session);
-      this.#write(tenant, (db) => deleteRow(db, table, second as string, this.#actor(session)));
+      const result = this.#write(tenant, (db) => deleteRow(db, table, second as string, this.#actor(session)));
+      // A deleted page is a URL a crawler must be told to drop, so the removal is submitted even
+      // though — precisely because — the sitemap no longer lists it.
+      this.#indexNowRowChange(req, table, result);
       reply.code(303).header('location', base).send('');
       return;
     }
 
     throw new AppError('SKW_E_PLT_REQUEST_INVALID', 'no such admin action');
+  }
+
+  /**
+   * ── IndexNow: one door for "the sitemap changed" ─────────────────────────────────────────────
+   *
+   * A publish, an unpublish and a delete all change the set `GET /sitemap.xml` lists, and an
+   * engine learns about a change in one of two ways: it crawls (hours to days) or it is told (a
+   * POST to `api.indexnow.org`). This is the telling.
+   *
+   * Four rules, and every call site below obeys all four by going through these two methods:
+   *
+   *  1. **Fire-and-forget.** `IndexNow.submit()` returns `void`. Nothing here awaits a network
+   *     call, so a slow or dead engine cannot delay a publish, and nothing here can throw into a
+   *     handler that has already decided what the answer is.
+   *  2. **Only what the sitemap lists** — or listed a moment ago. The predicate is
+   *     `pageRowListed()`/`listedPagePath()` (`app/render/sitemap.ts`), which is the sitemap's own
+   *     `PAGE_VISIBLE` + `noindex` rule. A draft, a page scheduled for next week and a page the
+   *     operator hid are therefore never announced as new.
+   *  3. **A removal is announced too.** A page that stopped being listed is exactly what a crawler
+   *     needs to hear, so the comparison is `wasListed !== isListed` rather than `isListed`.
+   *  4. **The tenant's own host only.** The absolute URL comes from the request's `Host`, which is
+   *     the address a visitor used. A request routed by the edge's tenant header (`/demo/<key>`)
+   *     is speaking to the demos host, so its derived URL is not the tenant's and nothing is sent.
+   */
+  #indexNowChanged(req: FastifyRequest, paths: readonly string[]): void {
+    const indexNow = this.#indexNow;
+    if (indexNow === null || paths.length === 0) return;
+    const routed = req.headers[TENANT_HEADER];
+    const viaHeader = Array.isArray(routed) ? routed.some((value) => value !== '') : routed !== undefined && routed !== '';
+    if (viaHeader) return;
+    const host = normaliseHost(req.headers.host ?? null);
+    if (host === null) return;
+    const origin = `https://${host}`;
+    indexNow.submit(origin, paths.map((path) => `${origin}${path}`));
+  }
+
+  /** One page, on both sides of a write: silence when its sitemap membership did not change. */
+  #indexNowPage(req: FastifyRequest, path: string, wasListed: boolean, isListed: boolean): void {
+    if (wasListed === isListed) return;
+    this.#indexNowChanged(req, [path]);
+  }
+
+  /** The CRUD writer's shape, for the table screens that can edit or delete a `cms_page` row. */
+  #indexNowRowChange(req: FastifyRequest, table: string, result: WriteResult): void {
+    if (table !== 'cms_page') return;
+    const before = listedCmsPage(result.before);
+    const after = listedCmsPage(result.after);
+    const path = after?.path ?? before?.path;
+    if (path === undefined) return;
+    this.#indexNowPage(req, path, before?.listed === true, after?.listed === true);
   }
 
   /** Origin then CSRF — the order every other non-GET in this file uses. */
@@ -5897,6 +6516,22 @@ for (const form of document.querySelectorAll('form[data-csrf-token]')) {
 }
 
 // --- E-19's token material ------------------------------------------------
+
+/**
+ * A `cms_page` row as the CRUD writer hands it back, reduced to the three columns the sitemap's
+ * visibility predicate reads, plus its path. `null` for a row that is not a page (a delete's
+ * `after`, a table that has no `path`) — which is what makes the delete signal "was listed, now
+ * gone" rather than a crash on a missing column.
+ */
+function listedCmsPage(row: Record<string, unknown> | null): { path: string; listed: boolean } | null {
+  if (row === null) return null;
+  const path = typeof row.path === 'string' ? row.path : null;
+  if (path === null) return null;
+  const status = typeof row.status === 'string' ? row.status : '';
+  const publishedAt = typeof row.published_at === 'string' ? row.published_at : null;
+  const seoJson = typeof row.seo_json === 'string' ? row.seo_json : null;
+  return { path, listed: pageRowListed({ status, published_at: publishedAt, seo_json: seoJson }) };
+}
 
 export function newToken(): string {
   return randomBytes(32).toString('base64url');

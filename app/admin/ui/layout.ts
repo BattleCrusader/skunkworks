@@ -455,6 +455,37 @@ a.who:hover b{color:var(--blue-2);text-decoration:underline}
 .palette-apply{margin:14px 0 0}
 .visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
   clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* A package's settings: a stack of questions, each with its own answer and its own sentence.
+ *
+ * This block is anchored to .legacy, and deliberately uses **block flow** rather than a grid. The
+ * data screens' form rules (.legacy form, .legacy form input, .legacy form select) are a two-column
+ * label/field grid at (0,1,1)-and-up, and a settings form inheriting it produced exactly the mess it
+ * sounds like: two unrelated questions side by side, a select three times the width of the input
+ * above it, and help text wrapping under the wrong control. A vertical stack has one correct layout,
+ * so it is expressed with the one primitive that cannot be re-templated from underneath: normal flow.
+ */
+.legacy form.plugin-settings{display:block;max-width:640px;margin:14px 0 6px}
+.legacy .plugin-settings .ps-field{display:block;margin:0 0 18px}
+.legacy .plugin-settings .ps-field>label{display:block;margin:0 0 6px;font:600 13px/1.3 var(--sans);color:var(--ink-2)}
+.legacy .plugin-settings .ps-inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 6px}
+.legacy .plugin-settings .ps-inline label.ps-word{margin:0;font:400 13px/1.4 var(--sans);color:var(--ink-2)}
+/* A control is as wide as its answer needs and no wider: a clock 150px, a choice 230px, an address
+ * 340px. The legacy form input rule sets width:100%, which is what made the first attempt ragged. */
+.legacy .plugin-settings input,.legacy .plugin-settings select,.legacy .plugin-settings textarea{
+  width:auto;min-height:38px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:7px 10px;
+  font:13px/1.45 var(--sans);background:#fff;color:var(--ink)}
+.legacy .plugin-settings input[type="email"],.legacy .plugin-settings input[type="text"]{width:340px;max-width:100%}
+.legacy .plugin-settings input[type="time"]{width:150px}
+.legacy .plugin-settings input[type="number"]{width:120px}
+.legacy .plugin-settings input[type="password"]{width:340px;max-width:100%}
+.legacy .plugin-settings select{min-width:230px;max-width:100%}
+.legacy .plugin-settings textarea{width:100%;max-width:520px}
+.legacy .plugin-settings .ps-help{display:block;margin:0;font:12.5px/1.45 var(--sans);color:var(--muted);max-width:62ch}
+.legacy .plugin-settings .ps-field--check>label{display:flex;align-items:center;gap:8px;margin:0;font-weight:600}
+.legacy .plugin-settings button{display:inline-block;margin:2px 0 0}
+.legacy fieldset[data-settings-for]{border:1px solid var(--line);border-radius:var(--r);padding:2px 18px 18px;margin:16px 0 0}
+.legacy fieldset[data-settings-for] legend{padding:0 8px;font:600 12.5px/1.4 var(--mono);color:var(--ink-2)}
 `;
 
 /** The icons the three screens use. Inline, `aria-hidden`, and never load-bearing. */

@@ -20,10 +20,15 @@
  *   L8  disable **removes** the hooks — dispatch after disable runs nothing at all.
  *   L9  disable→enable produces a **new module instance**: the module-level counter reads 1
  *       again, which is the cache-buster's exclusive witness.
+ *   L10 an endpoint runs in-process against the per-request facade; a disabled package is a 503.
+ *   L11 a failed activation is scoped to the bytes that failed: identical bytes are not re-imported,
+ *       and a repair to either the row or the disk reactivates **in the same process**.
+ *   L12 the other repair: a row rewritten to bytes already on disk.
+ *   L13 an upgrade written by another process re-activates here on the next sync.
  */
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -349,4 +354,177 @@ test('L10 — an endpoint runs in-process against the per-request facade, and a 
   } finally {
     db2.close();
   }
+});
+
+/**
+ * L11 — a failed activation is a **scoped** refusal, not a permanent one.
+ *
+ * The observed production sequence (dev box, tenant `arnavia`): the package on disk was upgraded
+ * from another process while the tenant's row still named the old root, the next request's `sync()`
+ * failed with `SKW_E_PL_SIGNATURE`, and the runtime remembered that failure as a bare flag. The row
+ * was then repaired by the operator — `skwctl plugin install --enable` — and the tenant stayed dark
+ * for as long as the process lived: `enabled = 1` in the database, and every request answering
+ * `SKW_E_PL_UNAVAILABLE … did not register it at activation` until a restart. A blacklist that
+ * outlives its cause is a bug, not a safety feature.
+ *
+ * What this witnesses: the same broken bytes are never imported twice on purpose, and a repair to
+ * **either** face of the failure — the row the operator rewrote, or the bytes they put back —
+ * reactivates on the next request with no new process.
+ */
+test('L11 — a repaired package reactivates without a restart; the same broken bytes do not', async () => {
+  const src = join(dir, 'src-notes-repair');
+  cpSync(NOTES, src, { recursive: true });
+  try {
+    uninstallPlugin({ siteDb, pluginsRoot: join(dir, 'plugins'), pluginId: 'notes' });
+  } catch {
+    /* first run in this file already uninstalled it */
+  }
+  install(src, 'notes');
+
+  const runtime = fresh();
+  await runtime.enable(TENANT, 'notes');
+  assert.equal(runtime.registry.has(TENANT, 'notes'), true, 'the clean package activates');
+
+  // Edit the installed bytes: the row still names the clean root, so the next activation refuses.
+  const installed = join(dir, 'plugins', 'notes', 'index.mjs');
+  writeFileSync(installed, `${readFileSync(installed, 'utf8')}\n// edited after install\n`);
+  await runtime.disable(TENANT, 'notes');
+
+  // Another process turns the row on (`skwctl plugin install --enable`), and the sync that follows
+  // is the attempt that fails: row says clean root, disk holds edited bytes.
+  const enableRow = (): void => {
+    const db = openAdminWrite(siteDb, 5000);
+    try {
+      db.prepare(`UPDATE cms_plugin_installed SET enabled = 1 WHERE plugin_id = 'notes'`).run();
+    } finally {
+      db.close();
+    }
+  };
+  enableRow();
+  await runtime.sync(TENANT);
+  assert.equal(runtime.registry.has(TENANT, 'notes'), false, 'edited bytes do not activate');
+  assert.equal(rowOf('notes').enabled, 0, 'the failure disabled the row, as §13.3.6 says');
+
+  // The row turned on again without repairing the bytes: still refused, and not re-imported.
+  enableRow();
+  await runtime.sync(TENANT);
+  await runtime.sync(TENANT);
+  assert.equal(runtime.registry.has(TENANT, 'notes'), false, 'identical bytes are not imported again');
+
+  // The repair that matters: the signed bytes are back on disk. Same process, no restart.
+  cpSync(join(src, 'index.mjs'), installed);
+  enableRow();
+  await runtime.sync(TENANT);
+  assert.equal(runtime.registry.has(TENANT, 'notes'), true, 'restored bytes activate on the next sync');
+
+  await runtime.disable(TENANT, 'notes');
+  runtime.closeSyncHandles?.();
+});
+
+/**
+ * L12 — the other repair: the row is rewritten to new bytes (an upgrade) while the disk already
+ * holds them. This is the dev sequence exactly, and it is the face a fingerprint on the disk alone
+ * would miss.
+ */
+test('L12 — a row rewritten to the bytes already on disk reactivates without a restart', async () => {
+  const src = join(dir, 'src-notes-upgrade');
+  cpSync(NOTES, src, { recursive: true });
+  try {
+    uninstallPlugin({ siteDb, pluginsRoot: join(dir, 'plugins'), pluginId: 'notes' });
+  } catch {
+    /* already gone */
+  }
+  install(src, 'notes');
+
+  const runtime = fresh();
+  await runtime.enable(TENANT, 'notes');
+  assert.equal(runtime.registry.has(TENANT, 'notes'), true);
+
+  // New bytes land on disk (the upgrade) while the row still names the old root.
+  const version = JSON.parse(readFileSync(join(dir, 'plugins', 'notes', 'plugin.json'), 'utf8')) as { version: string };
+  const editedMain = join(dir, 'plugins', 'notes', 'index.mjs');
+  const before = readFileSync(editedMain, 'utf8');
+  writeFileSync(editedMain, `${before}\n// 2.0.0\n`);
+  const newRoot = packageRootHash(join(dir, 'plugins', 'notes')).root;
+  await runtime.disable(TENANT, 'notes');
+  await runtime.sync(TENANT);
+  assert.equal(runtime.registry.has(TENANT, 'notes'), false, 'the mismatch refuses, and marks the failure');
+
+  // The operator finishes the upgrade in another process: the row now names the new root.
+  const db = openAdminWrite(siteDb, 5000);
+  try {
+    db.prepare(`UPDATE cms_plugin_installed SET enabled = 1, root_hash = ?, version = ? WHERE plugin_id = 'notes'`).run(
+      newRoot,
+      version.version,
+    );
+  } finally {
+    db.close();
+  }
+  await runtime.sync(TENANT);
+  assert.equal(runtime.registry.has(TENANT, 'notes'), true, 'the row repair alone reactivates it');
+
+  await runtime.disable(TENANT, 'notes');
+  runtime.closeSyncHandles?.();
+});
+
+/**
+ * L13 — an upgrade written by **another process** reaches the running one on the next request.
+ *
+ * `skwctl plugin install` writes the row and the package directory from a second process, and the
+ * server keeps serving the module it already imported — `sync()` saw `registry.has()` and returned.
+ * The CLI's own words are "live from the site's next request", so the claim was false for an
+ * upgrade; the loaded entry now carries the **root hash** it loaded, and a row naming different
+ * bytes is re-activated in place. `version` could not witness this: it is a claim the manifest
+ * makes, and the old module would keep making it.
+ */
+test('L13 — a package upgraded by another process re-activates on the next sync', async () => {
+  const src = join(dir, 'src-notes-upgraded');
+  cpSync(NOTES, src, { recursive: true });
+  try {
+    uninstallPlugin({ siteDb, pluginsRoot: join(dir, 'plugins'), pluginId: 'notes' });
+  } catch {
+    /* already gone */
+  }
+  install(src, 'notes');
+
+  const runtime = fresh();
+  await runtime.enable(TENANT, 'notes');
+  const first = runtime.registry.get(TENANT, 'notes');
+  assert.ok(first !== undefined);
+  assert.equal(first.rootHash.length, 64, 'the entry records the root it loaded');
+
+  // A second process replaces the package and rewrites the row (what `plugin install` does), with
+  // the running process none the wiser: nothing here calls `enable`.
+  const installed = join(dir, 'plugins', 'notes');
+  const main = join(installed, 'index.mjs');
+  writeFileSync(main, `${readFileSync(main, 'utf8')}\n// 1.1.0: an upgrade from another process\n`);
+  // An upgrade moves forward only, so the version moves with the bytes: a same-version reinstall is
+  // refused as a downgrade, and that refusal is not what this test is about.
+  const manifestPath = join(installed, 'plugin.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { version: string };
+  manifest.version = '1.1.0';
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const reportPath = join(dir, 'notes-1.1.0-report.json');
+  writeFileSync(
+    reportPath,
+    `${JSON.stringify({ plugin: 'notes', version: '1.1.0', root_hash: packageRootHash(installed).root, runner_image_digest: DIGEST, ran_at: new Date().toISOString() }, null, 2)}\n`,
+  );
+  installPlugin({
+    siteDb,
+    pluginsRoot: join(dir, 'plugins'),
+    sourceDir: installed,
+    allowUnsigned: true,
+    testReportPath: reportPath,
+    runnerImageDigest: DIGEST,
+  });
+
+  await runtime.sync(TENANT);
+  const second = runtime.registry.get(TENANT, 'notes');
+  assert.ok(second !== undefined, 'the upgraded package is loaded');
+  assert.notEqual(second.rootHash, first.rootHash, 'the served module is the new bytes');
+  assert.equal(second.rootHash, packageRootHash(installed).root);
+  assert.ok(second.activationSeq > first.activationSeq, 'a new module instance, not the cached one');
+
+  await runtime.disable(TENANT, 'notes');
+  runtime.closeSyncHandles?.();
 });

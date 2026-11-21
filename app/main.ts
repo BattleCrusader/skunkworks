@@ -36,7 +36,6 @@ import {
   targetVersion,
 } from './db/migrate.ts';
 import { loadPage, normalisePagePath, pageMiss, type PageRecord } from './render/page.ts';
-import { PAGE_VISIBLE, visibleBefore } from './render/visibility.ts';
 import { SEARCH_PATH, searchBody, searchDescription, searchPages, searchTitle } from './render/search.ts';
 import { renderStoredBody } from './render/body.ts';
 import { resolveSourceBlocks } from './render/blocks.ts';
@@ -46,7 +45,7 @@ import { loadPluginPage, matchPluginPage, pluginPageBody, resolveFormMarkers } f
 import { loadNav, menuPluginEnabled, type NavTree } from './render/nav.ts';
 import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings, type SiteChrome } from './render/chrome.ts';
 import { ADMIN_ROBOTS_VALUE, isAdminPath, PAGE_ROBOTS_VALUE, ROBOTS_HEADER } from './render/robots.ts';
-import { originFromHost, pageRobots, pageSeoHead, parsePageSeo } from './render/seo.ts';
+import { originFromHost, pageSeoHead, parsePageSeo } from './render/seo.ts';
 import { matchesEtag, sheetEtag, sheetVersion, siteSheet } from './render/theme.ts';
 import { NAV_PILOT_JS } from './render/nav-pilot.ts';
 import {
@@ -89,8 +88,11 @@ import {
   jobsListTitle,
   pageNumber,
 } from './render/public-jobs.ts';
-import { CORE_PUBLIC_ROUTES, coreSitemapPaths, jobsBoardEnabled } from './render/public-routes.ts';
+import { CORE_PUBLIC_ROUTES, jobsBoardEnabled } from './render/public-routes.ts';
+import { collectSitemapEntries } from './render/sitemap.ts';
+import { IndexNow } from './indexnow/indexnow.ts';
 import { NULL_TRANSPORT, Outbox } from './mail/outbox.ts';
+import { PluginJobRunner } from './plugins/jobs.ts';
 import { smtpTransport } from './mail/transport.ts';
 import { seedSettings } from './download/code.ts';
 import { DownloadPlane, RETRY_ATTEMPTS } from './download/plane.ts';
@@ -144,6 +146,11 @@ export interface AppHandle {
    * waiting for the tick. Nothing outside the download plane writes to it.
    */
   watermark: WatermarkStore;
+  /**
+   * IndexNow (per-host key + fire-and-forget submissions). Exposed so a gate can wait for the
+   * POST a publish started (`whenIdle()`) without that wait existing in the request path.
+   */
+  indexNow: IndexNow;
   close(): Promise<void>;
 }
 
@@ -182,6 +189,12 @@ export interface BuildAppOptions {
    * and the only honest witness to "reached the app" is the app's own log.
    */
   accessLogPath?: string;
+  /**
+   * Where the IndexNow submitter writes its one outcome line. Default: stdout, like every other
+   * process-level report. Present so a gate can assert that a failing engine was *logged* rather
+   * than swallowing a publish — without a gate having to intercept the process's own stdout.
+   */
+  indexNowLog?: (line: string) => void;
 }
 
 /**
@@ -280,7 +293,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   // per-surface one (4 × 19 MiB ≈ 76 MiB against the 1 GB container).
   const contentRoot = opts.contentRoot ?? DEFAULT_CONTENT_ROOT;
   const argon = new Semaphore(env.argon2MaxConcurrent);
-  const admin = new AdminSurface({ env, controlPath, tenants, semaphore: argon, contentRoot, schemaDir });
+  // IndexNow: one submitter for the process. It owns the secret (never printed), the
+  // `SKW_INDEXNOW=off` switch and the in-flight set a gate waits on; the admin surface is
+  // handed it so a publish can announce without knowing the endpoint.
+  const indexNow = new IndexNow({
+    secret: env.indexNowSecret,
+    enabled: env.indexNowEnabled,
+    ...(opts.indexNowLog === undefined ? {} : { log: opts.indexNowLog }),
+  });
+  const admin = new AdminSurface({ env, controlPath, tenants, semaphore: argon, contentRoot, schemaDir, indexNow });
 
   // --- S2e: one seal per tenant per UTC day (§9.6) -------------------------
   // The timer is unref'd, so it never keeps the process alive; `close()` stops it.
@@ -1083,66 +1104,27 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       .send(robotsTxt(origin));
   });
 
+  /**
+   * The sitemap — and the one enumeration IndexNow submits from.
+   *
+   * The loop that used to live here is `collectSitemapEntries()` (`app/render/sitemap.ts`) because
+   * a submission must announce exactly what this file lists and nothing else. Keeping one copy is
+   * what makes "the submitter's URL set equals the sitemap's URL set" a fact rather than a promise.
+   */
   app.get('/sitemap.xml', async (req: FastifyRequest, reply: FastifyReply) => {
     const ctx = resolveRequest(req);
     const host = normaliseHost(req.headers.host ?? null) ?? ctx.tenant.key;
     const origin = `https://${host}`;
-    const entries: SitemapEntry[] = [];
     const db = openRenderRead(sitePath(ctx.tenant.key), env.dbBusyTimeoutMs);
+    let entries: SitemapEntry[];
     try {
-      const pages = db
-        .prepare(`SELECT path, updated_at, seo_json FROM cms_page WHERE ${PAGE_VISIBLE} ORDER BY path`)
-        .all(visibleBefore()) as { path: string; updated_at: string; seo_json: string | null }[];
-      for (const page of pages) {
-        // A page the operator hid from search is offered to nobody. It is still served — see
-        // `renderPage`, where the row is rendered exactly as before with a `noindex` head — but
-        // `<loc>` is an explicit invitation to crawl it, and the sitemap is the one place where
-        // asking not to be indexed and asking to be crawled would be a contradiction in the file.
-        if (pageRobots(page.seo_json) === 'noindex') continue;
-        entries.push({ loc: `${origin}${page.path}`, lastmod: page.updated_at });
-      }
-      // The board's list and each published advert are core routes rather than `cms_page` rows, so
-      // they are enumerated from the one declaration of such routes (`app/render/public-routes.ts`)
-      // — the same read `GET /jobs` renders from. An advert is only crawlable if the index that
-      // links it is in the file too, so the index comes first and its details follow.
-      for (const path of coreSitemapPaths(db, ctx.tenant.key, env.emailMode)) {
-        entries.push({ loc: `${origin}${path}` });
-      }
-      // A package's detail pages are rows, not `cms_page` rows, so they are enumerated through
-      // the package's own declaration: a new package joins the sitemap by declaring a page.
-      //
-      // **Except inside a core route's URL space.** A core route owns its subtree: `/jobs` is drawn
-      // by the host, and `/jobs/<id>` is the address it declares canonical, while the job-board
-      // package also declares `/jobs/{slug}` for the same advert. Both answer 200, but a sitemap
-      // that lists both advertises a duplicate of every row, and advertises a URL whose own
-      // `<link rel="canonical">` points elsewhere — a contradiction inside one file. So the
-      // declaration that owns the subtree is the one that enumerates it.
-      const corePrefixes = CORE_PUBLIC_ROUTES.filter((route) => route.sitemap).map((route) => route.path);
-      plugins.enter(ctx.tenant.key);
-      try {
-        await plugins.sync(ctx.tenant.key);
-        for (const entry of plugins.registry.plugins(ctx.tenant.key)) {
-          for (const declared of entry.pages.values()) {
-            if (corePrefixes.some((path) => declared.pattern === path || declared.pattern.startsWith(`${path}/`))) {
-              continue;
-            }
-            // Only a page whose pattern can be satisfied by a single column is enumerable, and
-            // every declared page is exactly that by construction (`/blog/{slug}`).
-            const where = declared.filter === undefined ? '' : ` WHERE ${declared.filter.column} = ?`;
-            const rows = db
-              .prepare(
-                `SELECT ${declared.slugColumn} AS slug FROM ${declared.table}${where} ORDER BY ${declared.slugColumn} LIMIT 500`,
-              )
-              .all(...(declared.filter === undefined ? [] : [declared.filter.equals])) as { slug: string }[];
-            for (const row of rows) {
-              const path = declared.pattern.replace(/\{[a-z][a-z0-9_]*\}/, encodeURIComponent(row.slug));
-              entries.push({ loc: `${origin}${path}` });
-            }
-          }
-        }
-      } finally {
-        plugins.leave(ctx.tenant.key);
-      }
+      entries = await collectSitemapEntries({
+        db,
+        tenantKey: ctx.tenant.key,
+        origin,
+        emailMode: env.emailMode,
+        plugins,
+      });
     } finally {
       db.close();
     }
@@ -1150,6 +1132,27 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
       .type('application/xml; charset=utf-8')
       .header('cache-control', 'public, max-age=600')
       .send(sitemapXml(entries));
+  });
+
+  /**
+   * `GET /<key>.txt` — the IndexNow key file, for this host's key and no other.
+   *
+   * The route is `/:key.txt`, which find-my-way matches only on a **single** segment ending in
+   * `.txt`; every static route (`/robots.txt`, `/sitemap.xml`, a page path) wins over a parametric
+   * one, so this cannot shadow a real surface. Anything else shaped like a key — a wrong key, a
+   * key derived for a different host, `/some/deeper.txt` — is the tenant's ordinary 404.
+   *
+   * Cached for a day: the key is a function of the secret and the host and changes only when one
+   * of those does, and a crawler should not have to fetch it on every submission. It answers even
+   * with `SKW_INDEXNOW=off`: a key that 404s tells an engine the site does not control its host.
+   */
+  app.get('/:key.txt', async (req: FastifyRequest, reply: FastifyReply) => {
+    const ctx = resolveRequest(req);
+    const host = normaliseHost(req.headers.host ?? null) ?? ctx.tenant.key;
+    const wanted = indexNow.keyFor(host);
+    const got = String((req.params as { key?: string }).key ?? '');
+    if (got !== wanted) throw pageMiss();
+    reply.type('text/plain; charset=utf-8').header('cache-control', 'public, max-age=86400').send(wanted);
   });
 
   /**
@@ -1984,9 +1987,23 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   }, 30_000);
   mailTimer.unref();
 
+  // --- v12: the plugin job tick --------------------------------------------------------------
+  // The clock a package cannot own (app/plugins/jobs.ts). It ticks every minute and asks each
+  // enabled package to decide whether its own scheduled work is due — the schedule, the cursor and
+  // the copy are the package's settings, so this loop never learns what a "digest" is. It does not
+  // run at boot: the first tick is a minute in, so a restart does not fan package work across every
+  // tenant at once.
+  const pluginJobs = new PluginJobRunner({
+    runtime: plugins,
+    tenants: () => tenants.all().map((tenant) => tenant.key),
+    open: (tenant) => openAdminWrite(sitePath(tenant), env.dbBusyTimeoutMs),
+    log: (line) => process.stdout.write(`${line}\n`),
+  }).start();
+
   async function close(): Promise<void> {
     clearInterval(sweepTimer);
     clearInterval(mailTimer);
+    pluginJobs.stop();
     seals.stop();
     // No `plugins.close()`: there is no socket to end and no child to reap. The registry and
     // its closures die with the process, which is the whole shape of D36. The one handle the
@@ -2010,7 +2027,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
     }
   }
 
-  return { app, env, tenants, admin, sources, seals, plugins, watermark: plane.watermark, close };
+  return { app, env, tenants, admin, sources, seals, plugins, watermark: plane.watermark, indexNow, close };
 }
 
 function pathnameOf(url: string): string {

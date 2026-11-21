@@ -132,12 +132,21 @@ export interface PluginContextDeps {
   audit?: ((action: string, detail: Record<string, unknown>) => void) | undefined;
   /** `Date.now`, injectable so a gate can pin it. */
   now?: (() => number) | undefined;
+  /**
+   * The tenant's time zone (`cms_settings.timezone`), when the caller knows it. Only the job runner
+   * resolves it, because a job is the one caller with a schedule: a schedule is a wall-clock time in
+   * a zone, and a package cannot look the site's clock up for itself. `''` means "not known here",
+   * which a package must treat as "no zone" rather than as UTC.
+   */
+  timezone?: string | undefined;
 }
 
 export interface PluginContext {
   readonly tenant: string;
   readonly plugin: string;
   readonly mode: ContextMode;
+  /** The site's time zone, or `''` when the host has none for this call (see `timezone` in deps). */
+  readonly timezone: string;
   readonly facade: PluginFacade;
   /** The hook-call base: `{tenant}` plus whatever the dispatch adds. Never a facade. */
   hookCall(extra: Record<string, unknown>): HookCall;
@@ -209,6 +218,7 @@ function noTenantArgument(args: Record<string, unknown> | undefined, method: str
 
 export function makePluginContext(deps: PluginContextDeps): PluginContext {
   const now = deps.now ?? Date.now;
+  const timezone = deps.timezone ?? '';
   let closed = false;
 
   /**
@@ -351,6 +361,7 @@ export function makePluginContext(deps: PluginContextDeps): PluginContext {
     tenant: deps.tenant,
     plugin: deps.plugin,
     mode: deps.mode,
+    timezone,
     facade: frozen,
     hookCall(extra: Record<string, unknown>): HookCall {
       return { ...extra, tenant: deps.tenant };

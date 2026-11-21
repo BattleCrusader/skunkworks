@@ -94,9 +94,13 @@ test('E-17.6 a non-empty malformed value is a refusal naming the offending token
 
 // --- the value lives in the environment, and only there -------------------
 
-test('E-17: SKW_ADMIN_ALLOWLIST is the twenty-third name and loadEnv carries it', () => {
-  assert.equal(SKW_NAMES.length, 23, 'E-17: twenty-two names become twenty-three, by addition only');
+test('E-17: SKW_ADMIN_ALLOWLIST is loadEnv-carried, and the IndexNow names are in the table', () => {
+  // E-17's twenty-three, plus the two IndexNow names (the key secret and the switch) — by addition
+  // only, which is the property this row asserts.
+  assert.equal(SKW_NAMES.length, 25, 'E-17: twenty-three names, plus SKW_INDEXNOW and SKW_INDEXNOW_SECRET');
   assert.ok((SKW_NAMES as readonly string[]).includes('SKW_ADMIN_ALLOWLIST'));
+  assert.ok((SKW_NAMES as readonly string[]).includes('SKW_INDEXNOW'));
+  assert.ok((SKW_NAMES as readonly string[]).includes('SKW_INDEXNOW_SECRET'));
   const env = loadEnv({ ...CLEAN, SKW_ADMIN_ALLOWLIST: '203.0.113.0/24, 2001:db8::/32' });
   assert.deepEqual(env.adminAllowlist, ['203.0.113.0/24', '2001:db8::/32']);
   assert.deepEqual(loadEnv({ ...CLEAN }).adminAllowlist, [], 'unset is empty, not an error');

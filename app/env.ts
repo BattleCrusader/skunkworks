@@ -45,6 +45,13 @@ export interface Env {
   boxRps: number;
   emailMode: 'off' | 'smtp';
   /**
+   * IndexNow: the secret the per-tenant public key is derived from (`sha256(secret + ':' + host)`),
+   * and whether a publish may POST to `api.indexnow.org`. See `app/indexnow/indexnow.ts`. The
+   * secret is never logged; the key it produces is public by design.
+   */
+  indexNowSecret: string;
+  indexNowEnabled: boolean;
+  /**
    * §9.1a (E-17): comma-separated CIDRs allowed to reach the admin host. Empty in
    * every exported bundle; the edge enforces it, the app reads it for §9.1's two
    * consequences (TOTP mandatory, idle 15 min) and for nothing else.
@@ -53,14 +60,14 @@ export interface Env {
   port: number;
 }
 
-/** §4.3 (E-17): twenty-three names, and this table is the complete list. */
+/** §4.3 (E-17): twenty-three names; plus the two IndexNow names — the complete list. */
 export const SKW_NAMES = [
   'SKW_DATA_DIR', 'SKW_DB_POOL_MAX', 'SKW_DB_BUSY_TIMEOUT_MS', 'SKW_EDGE_TOKEN',
   'SKW_EDGE_TRUSTED_CIDRS', 'SKW_SESSION_KEY', 'SKW_DOWNLOAD_TOKEN_KEY', 'SKW_IP_HASH_KEY',
   'SKW_ADMIN_ORIGIN', 'SKW_ARGON2_MAX_CONCURRENT', 'SKW_DDL_MAX_STATEMENTS', 'SKW_RENDER_MODE',
   'SKW_EXPORT_NOW', 'SKW_SCHEMA_EDIT', 'SKW_FLEET_MODE', 'SKW_BUILD_ID', 'SKW_SMTP_URL',
   'SKW_SNAPSHOT_MAX_COMBOS', 'SKW_SNAPSHOT_MAX_BYTES', 'SKW_REPOINT_MAX_ROWS', 'SKW_BOX_RPS',
-  'SKW_EMAIL_MODE', 'SKW_ADMIN_ALLOWLIST',
+  'SKW_EMAIL_MODE', 'SKW_ADMIN_ALLOWLIST', 'SKW_INDEXNOW', 'SKW_INDEXNOW_SECRET',
 ] as const;
 
 /** §2.3 step 1: refuse to start without these six. */
@@ -160,6 +167,13 @@ export function loadEnv(
     repointMaxRows: int(source, 'SKW_REPOINT_MAX_ROWS', 5000),
     boxRps: int(source, 'SKW_BOX_RPS', 192),
     emailMode: parseEnum(source, 'SKW_EMAIL_MODE', 'off', ['off', 'smtp'] as const),
+    // IndexNow (`app/indexnow/indexnow.ts`): the key is derived, so the only input is a secret and
+    // the host. `SKW_SESSION_KEY` is the fallback so a box that has not been given a second secret
+    // still derives a stable key — but a dedicated one is preferred, because rotating sessions
+    // would otherwise silently move every tenant's `<key>.txt` to a new address.
+    indexNowSecret: str(source, 'SKW_INDEXNOW_SECRET', str(source, 'SKW_SESSION_KEY', '')),
+    // Default ON: a site that publishes and never announces is a site waiting for a crawl.
+    indexNowEnabled: parseEnum(source, 'SKW_INDEXNOW', 'on', ['on', 'off'] as const) === 'on',
     // E-17: the one parser. A non-empty value that does not parse refuses the boot
     // with the parser's own message, so the edge and the app say the same thing.
     adminAllowlist: allowlistOrRefuse(source),

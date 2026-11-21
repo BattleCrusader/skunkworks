@@ -1589,11 +1589,13 @@ test('S13 — the migration turns an existing single arrangement into a one-elem
   assert.equal(report.ok, true, report.error);
   assert.equal(report.action, 'migrated');
   assert.equal(report.from, 10);
-  assert.equal(report.to, 11);
+  // The chain's target: a v10 file is brought all the way to the shipped schema, which is v12 (the
+  // setting vocabulary), not merely to the step this test is about.
+  assert.equal(report.to, 12);
 
   const after = new Database(path, { readonly: true });
   try {
-    assert.equal(Number(after.pragma('user_version', { simple: true })), 11);
+    assert.equal(Number(after.pragma('user_version', { simple: true })), 12);
     assert.equal(
       (after.prepare('PRAGMA table_info(cms_profile)').all() as { name: string }[]).some((c) => c.name === 'work_mode'),
       false,

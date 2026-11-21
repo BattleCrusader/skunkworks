@@ -179,9 +179,86 @@ export interface TableSpec {
 
 export interface SettingSpec {
   key: string;
-  type: 'string' | 'int' | 'bool' | 'json' | 'secret';
+  /**
+   * The **control**, not just the storage type. A setting's declaration is the contract for how the
+   * question is asked, so an operator never meets a format: `time` renders a clock, `select`
+   * renders a choice, `email` renders an address field with the browser's own keyboard and
+   * autofill. `string` is the fallback for free text and is the only one where a length is worth
+   * mentioning — and even then it is a bound on what is stored, never the instruction printed
+   * under the field.
+   */
+  type: 'string' | 'int' | 'bool' | 'json' | 'secret' | 'time' | 'select' | 'email';
+  /** The length bound on a stored `string`/`email`. Never rendered as help text. */
   max?: number;
+  /**
+   * `select` only: the values, each one a complete choice a person can pick ("Every day at",
+   * "Off — don't send a digest"). The operator sees these; the package receives exactly one of
+   * them. A select with no options is a refused manifest, not a dropdown of nothing.
+   */
+  options?: string[];
+  /** What a person reads instead of `digest_schedule`. Falls back to the key, de-slugified. */
+  label?: string;
+  /** One sentence of explanation, in the operator's terms. Declared by the package that knows. */
+  help?: string;
+  /**
+   * `true` means a blank answer is refused. Absent means blank is a real answer — "nobody is
+   * told", "don't send", "use the default".
+   */
+  required?: boolean;
+  /**
+   * Settings sharing a `group` are one **sentence** on the screen, not two questions: "Send me the
+   * enquiry digest [Every day] at [09:00]". Declared, never inferred — a host that paired settings
+   * by matching key suffixes (`*_cadence` + `*_at`) would one day pair a billing cycle with a
+   * deployment time and call it a layout.
+   */
+  group?: string;
+  /**
+   * v12: what the host fills in when the operator has not answered yet.
+   *
+   * `operator-email` means "the address of the admin who is looking at this screen" — the one fact
+   * the host knows and the package cannot: a package's job has no session, so it can never ask who
+   * the operator is. Declared here rather than guessed from the key name (`*_email`), because a
+   * platform that infers meaning from a string is a platform that will one day fill a billing
+   * address with a login address.
+   *
+   * It is a **default, not a value**: it is seeded at install for the operator who installed it and
+   * offered as the prefill on the Plugins screen while the setting is unset. Whatever the operator
+   * saves afterwards wins, and an empty string is a real answer ("nobody is told").
+   */
+  defaultFrom?: 'operator-email';
 }
+
+/** The origins a setting may be defaulted from. One, for now, and named. */
+export const SETTING_DEFAULTS = ['operator-email'] as const;
+export type SettingDefault = (typeof SETTING_DEFAULTS)[number];
+
+/**
+ * A **scheduled job** a package asks the host to invoke (v12).
+ *
+ * Why this exists and why it is not a thirteenth hook: a package cannot own a timer. Its context
+ * is per-request, frozen and `close()`d at response end (`SKW_E_PL_CONTEXT_ENDED`), and §13.3.4's
+ * hook list excludes `cron`/`worker` because in-process they would be theatre. A digest, a
+ * reminder, a nightly sweep — the things an operator asks a package for that are *not* answers to
+ * a request — therefore need the one thing only the host has: a clock.
+ *
+ * So the split is: **the host guarantees the tick, the package decides everything else.** A job
+ * declaration here says only that the package has an entry point worth calling on a schedule; it
+ * deliberately carries no interval, no hour and no timezone, because those are the operator's
+ * answers per tenant and belong in the package's own `settings` — which is also where the copy and
+ * the cursor live. The host ticks; the handler reads its settings, decides whether it is due, and
+ * returns. A tick that is not due costs one settings read and writes nothing.
+ *
+ * Declaring a job is disclosure, as `hooks` is: `ctx.job()` refuses a name the manifest did not
+ * declare, and `parseManifest` refuses a manifest that declares one that is not a name.
+ */
+export interface JobSpec {
+  /** `[a-z][a-z0-9-]{0,31}` — the name `ctx.job()` registers and the host invokes. */
+  name: string;
+}
+
+/** The most jobs one package may declare. A package with more is a package doing too much. */
+export const JOBS_MAX = 8;
+
 
 /**
  * D25's *declared public endpoints*, frozen at the shape the product serves (S4e).
@@ -248,6 +325,8 @@ export interface Manifest {
   main: string;
   /** §13.3.1 (D36): the hooks this package may register. Registration of anything else is refused. */
   hooks: HookName[];
+  /** v12: the scheduled entry points the host ticks. See `JobSpec` for the contract. */
+  jobs?: JobSpec[];
   description?: string;
   /**
    * §8.1's `publisher` block, *if the package makes one*. It is a claim, not a grant: the
@@ -451,8 +530,60 @@ export function parseManifest(raw: unknown): Manifest {
     const key = typeof s.key === 'string' ? s.key : '';
     if (!/^[a-z][a-z0-9._-]{0,60}$/.test(key)) bad(id, `setting ${JSON.stringify(key)} is not a key`);
     const type = String(s.type ?? '');
-    if (!['string', 'int', 'bool', 'json', 'secret'].includes(type)) bad(id, `setting ${key}: type ${JSON.stringify(s.type)} is not valid`);
-    settings.push({ key, type: type as SettingSpec['type'], ...(typeof s.max === 'number' ? { max: s.max } : {}) });
+    if (!['string', 'int', 'bool', 'json', 'secret', 'time', 'select', 'email'].includes(type)) {
+      bad(id, `setting ${key}: type ${JSON.stringify(s.type)} is not valid`);
+    }
+    // A default a package may not name is a setting the host would silently ignore; refuse it here.
+    if (s.defaultFrom !== undefined && !(SETTING_DEFAULTS as readonly string[]).includes(String(s.defaultFrom))) {
+      bad(id, `setting ${key}: defaultFrom ${JSON.stringify(s.defaultFrom)} is not one of ${SETTING_DEFAULTS.join(', ')}`);
+    }
+    if (s.defaultFrom !== undefined && type !== 'string' && type !== 'email') {
+      bad(id, `setting ${key}: defaultFrom belongs to a text setting`);
+    }
+    const label = s.label === undefined ? undefined : String(s.label);
+    if (label !== undefined && (label.trim() === '' || label.length > 64)) {
+      bad(id, `setting ${key}: label must be 1–64 characters`);
+    }
+    const help = s.help === undefined ? undefined : String(s.help);
+    if (help !== undefined && (help.trim() === '' || help.length > 200)) {
+      bad(id, `setting ${key}: help must be 1–200 characters`);
+    }
+    // `options` is the whole of a select: a dropdown with nothing in it, or with two choices that
+    // read the same, is a question that cannot be answered.
+    let options: string[] | undefined;
+    if (s.options !== undefined) {
+      if (type !== 'select') bad(id, `setting ${key}: options belongs to a select setting`);
+      if (!Array.isArray(s.options)) bad(id, `setting ${key}: options must be an array of strings`);
+      options = s.options.map((option) => (typeof option === 'string' ? option : ''));
+      if (options.length < 2 || options.length > 24) bad(id, `setting ${key}: a select needs 2–24 options`);
+      if (options.some((option) => option.trim() === '' || option.length > 48)) {
+        bad(id, `setting ${key}: an option must be 1–48 characters`);
+      }
+      if (new Set(options).size !== options.length) bad(id, `setting ${key}: an option is offered twice`);
+      if (s.max !== undefined) bad(id, `setting ${key}: max belongs to a string setting`);
+    }
+    if (type === 'select' && options === undefined) bad(id, `setting ${key}: a select must declare its options`);
+    if (type === 'time' && (s.max !== undefined || s.options !== undefined)) {
+      bad(id, `setting ${key}: a time is asked as a time, not as a string or a choice`);
+    }
+    if ((type === 'string' || type === 'email') && s.max !== undefined && (!Number.isInteger(s.max) || (s.max as number) < 1 || (s.max as number) > 4096)) {
+      bad(id, `setting ${key}: max must be a whole number of characters, 1–4096`);
+    }
+    const group = s.group === undefined ? undefined : String(s.group);
+    if (group !== undefined && !/^[a-z][a-z0-9-]{0,31}$/.test(group)) {
+      bad(id, `setting ${key}: group must be a short name like "digest"`);
+    }
+    settings.push({
+      key,
+      type: type as SettingSpec['type'],
+      ...(typeof s.max === 'number' ? { max: s.max } : {}),
+      ...(options === undefined ? {} : { options }),
+      ...(label === undefined ? {} : { label }),
+      ...(help === undefined ? {} : { help }),
+      ...(s.required === true ? { required: true } : {}),
+      ...(group === undefined ? {} : { group }),
+      ...(s.defaultFrom !== undefined ? { defaultFrom: String(s.defaultFrom) as 'operator-email' } : {}),
+    });
   }
 
   const manifest: Manifest = { id, version: r.version, entry: entryRaw, main: '', hooks: [], capabilities, tables, settings, files: [] };
@@ -477,6 +608,32 @@ export function parseManifest(raw: unknown): Manifest {
     }
     if (new Set(hooks).size !== hooks.length) bad(id, 'a hook is declared twice');
     manifest.hooks = hooks;
+  }
+  // v12: the scheduled entry points. Validated before an install writes anything, for the reason
+  // the endpoint list is: a malformed declaration must be a refused package, not a job the host
+  // calls by a name the package never registers (which would be a silent no-op in production).
+  if (r.jobs !== undefined) {
+    if (!Array.isArray(r.jobs)) bad(id, 'jobs must be an array of {name}');
+    if (r.jobs.length > JOBS_MAX) bad(id, `jobs declares ${r.jobs.length} entries; the cap is ${JOBS_MAX}`);
+    const jobs: JobSpec[] = [];
+    for (const entry of r.jobs) {
+      if (typeof entry !== 'object' || entry === null) bad(id, 'a job entry is not an object');
+      const j = entry as Record<string, unknown>;
+      // Strict, like every other declaration here: a package that writes `{"name":"digest","every":"24h"}`
+      // believes it owns the clock, and the host would silently ignore the half it does not read.
+      // Refusing the extra key is how that package learns the split instead of shipping a schedule
+      // that never runs.
+      for (const key of Object.keys(j)) {
+        if (key !== 'name') {
+          bad(id, `job ${JSON.stringify(j.name)} carries ${JSON.stringify(key)}; a job declares its name only — when it runs is a setting`);
+        }
+      }
+      const name = typeof j.name === 'string' ? j.name : '';
+      if (!ENDPOINT_NAME.test(name)) bad(id, `job ${JSON.stringify(name)} is not ${ENDPOINT_NAME}`);
+      jobs.push({ name });
+    }
+    if (new Set(jobs.map((j) => j.name)).size !== jobs.length) bad(id, 'a job is declared twice');
+    manifest.jobs = jobs;
   }
   if (typeof r.description === 'string') manifest.description = r.description;
   // §8.1's publisher block. Optional — a package that makes no claim is unsigned — but a

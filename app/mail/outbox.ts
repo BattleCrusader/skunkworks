@@ -19,7 +19,7 @@
 import type Database from 'better-sqlite3';
 
 import { AppError } from '../errors.ts';
-import { isTemplate, renderMail } from './templates.ts';
+import { renderMail } from './templates.ts';
 
 /** Give up after five attempts: 1, 5, 25, 125, 625 seconds of backoff — about 13 minutes of trying. */
 export const MAX_ATTEMPTS = 5;
@@ -133,9 +133,14 @@ export class Outbox {
       }
 
       let vars: Record<string, unknown>;
+      let rendered: { readonly subject: string; readonly text: string };
       try {
         vars = JSON.parse(row.vars_json) as Record<string, unknown>;
-        if (!isTemplate(row.template)) throw new Error(`unknown template ${row.template}`);
+        // `renderMail` is the gate, not the core registry: a core template is rendered by name, and
+        // a plugin's own template carries its words in `vars.subject`/`vars.text` (see
+        // `mail.send`). A row that carries neither throws here — the same dead-letter answer as
+        // an unknown core name, because a row this build cannot render will never render.
+        rendered = renderMail(row.template, vars);
       } catch (err) {
         // A row this build cannot render will never render. Failing it now is honest; leaving it
         // queued forever is a lie about how much mail is pending.
@@ -146,7 +151,6 @@ export class Outbox {
         continue;
       }
 
-      const rendered = renderMail(row.template, vars);
       try {
         const result = await this.#transport.send({
           id: row.id,

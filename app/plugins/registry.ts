@@ -184,9 +184,25 @@ export interface DeclarativeForm {
   thanks: string;
 }
 
+/**
+ * A scheduled job as the package registered it (v12). The handler takes no request: the host
+ * supplies a per-invocation facade and a context, so every capability crossing still goes through
+ * the one check in `context.ts`, and `close()` still means the next call refuses.
+ */
+export interface RegisteredJob {
+  name: string;
+  handler: (args: {
+    job: string;
+    /** The per-invocation facade (§13.3.5). Every capability crossing starts here. */
+    facade: import('./context.ts').PluginFacade;
+    ctx: import('./context.ts').PluginContext;
+  }) => unknown | Promise<unknown>;
+}
+
 export interface RegistrationSet {
   hooks: Map<string, HookFn[]>;
   endpoints: Map<string, RegisteredEndpoint>;
+  jobs: Map<string, RegisteredJob>;
   screens: Map<string, DeclarativeScreen>;
   blocks: Map<string, DeclarativeBlock>;
   pages: Map<string, DeclarativePage>;
@@ -196,6 +212,13 @@ export interface RegistrationSet {
 export interface RegistryEntry extends RegistrationSet {
   pluginId: string;
   version: string;
+  /**
+   * The package root this activation actually loaded. `version` is a claim the manifest makes; the
+   * root hash is what was on disk. `sync()` compares it against the row on every request, which is
+   * how an upgrade performed by another process (`skwctl plugin install`) stops serving the old
+   * module without a restart.
+   */
+  rootHash: string;
   /** Monotonic per (tenant, plugin); the cache-buster is derived from it (§13.3.2). */
   activationSeq: number;
   /** Set on the entry so a failure counter and a prune cannot disagree about which load it named. */
@@ -209,6 +232,7 @@ export function emptyRegistrations(): RegistrationSet {
   return {
     hooks: new Map(),
     endpoints: new Map(),
+    jobs: new Map(),
     screens: new Map(),
     blocks: new Map(),
     pages: new Map(),
@@ -273,13 +297,21 @@ export class PluginRegistry {
   }
 
   /** Install (or replace) one entry. Called only by `runtime.ts`, only after activation returned. */
-  commit(tenant: string, pluginId: string, version: string, activationSeq: number, registrations: RegistrationSet, nowMs: number): RegistryEntry {
+  commit(
+    tenant: string,
+    pluginId: string,
+    version: string,
+    activationSeq: number,
+    registrations: RegistrationSet,
+    nowMs: number,
+    rootHash = '',
+  ): RegistryEntry {
     let perTenant = this.tenants.get(tenant);
     if (perTenant === undefined) {
       perTenant = new Map();
       this.tenants.set(tenant, perTenant);
     }
-    const entry: RegistryEntry = { pluginId, version, activationSeq, loadedAtMs: nowMs, ...registrations };
+    const entry: RegistryEntry = { pluginId, version, rootHash, activationSeq, loadedAtMs: nowMs, ...registrations };
     perTenant.set(pluginId, entry);
     SEQUENCES.set(`${tenant}\u0000${pluginId}`, activationSeq);
     return entry;
@@ -338,14 +370,21 @@ export class PluginRegistry {
     return this.get(tenant, pluginId)?.endpoints.get(`${method} ${name}`);
   }
 
+  /** v12: the scheduled handler for one (tenant, plugin, job), or undefined — the only question
+   * the host's tick asks. Nothing here decides *when* a job runs. */
+  job(tenant: string, pluginId: string, name: string): RegisteredJob | undefined {
+    return this.get(tenant, pluginId)?.jobs.get(name);
+  }
+
   /** For a gate and the admin list: what one tenant has registered, without the closures. */
-  describe(tenant: string): { plugin: string; version: string; activation_seq: number; hooks: string[]; endpoints: string[] }[] {
+  describe(tenant: string): { plugin: string; version: string; activation_seq: number; hooks: string[]; endpoints: string[]; jobs: string[] }[] {
     return this.plugins(tenant).map((entry) => ({
       plugin: entry.pluginId,
       version: entry.version,
       activation_seq: entry.activationSeq,
       hooks: [...entry.hooks.keys()].sort(),
       endpoints: [...entry.endpoints.keys()].sort(),
+      jobs: [...entry.jobs.keys()].sort(),
     }));
   }
 }
@@ -365,11 +404,13 @@ export class ActivationRecorder {
   private open = true;
   private readonly declared: Set<string>;
   private readonly declaredTables: Map<string, TableSpec>;
+  private readonly declaredJobs: Set<string>;
   private readonly pluginId: string;
 
-  constructor(pluginId: string, declared: readonly string[], declaredTables: readonly TableSpec[]) {
+  constructor(pluginId: string, declared: readonly string[], declaredTables: readonly TableSpec[], declaredJobs: readonly string[] = []) {
     this.pluginId = pluginId;
     this.declared = new Set(declared);
+    this.declaredJobs = new Set(declaredJobs);
     // S8g: the table spec, not just its name — a screen needs the fields the package declared
     // for that table, and the manifest is where they live.
     this.declaredTables = new Map(declaredTables.map((table) => [table.name, table]));
@@ -417,6 +458,25 @@ export class ActivationRecorder {
       name,
       handler: handler as RegisteredEndpoint['handler'],
     });
+  }
+
+  /**
+   * v12: register a **scheduled** entry point. Declared in `plugin.json.jobs`, closed at
+   * activation like every other registration, and — unlike `endpoint()` — it is not reachable over
+   * HTTP at all: `runEndpoint()` only invokes names in the manifest's `endpoints[]`, so a job name
+   * is host-only by construction. A package that wants a public URL declares an endpoint.
+   */
+  job(name: string, handler: unknown): void {
+    if (!this.open) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} registered job ${name} after activation closed`);
+    }
+    if (!this.declaredJobs.has(name)) {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} did not declare job ${JSON.stringify(name)} in plugin.json.jobs`);
+    }
+    if (typeof handler !== 'function') {
+      throw new Error(`SKW_E_PL_REJECTED: ${this.pluginId} registered job ${name} with no handler`);
+    }
+    this.registrations.jobs.set(name, { name, handler: handler as RegisteredJob['handler'] });
   }
 
   screen(screen: unknown): void {

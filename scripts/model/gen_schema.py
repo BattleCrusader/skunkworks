@@ -57,7 +57,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # role has one arrangement. And `cms_application` grows an `outcome_*` group: the advertiser's
 # decision, recorded beside the applicant's lifecycle `status` rather than replacing it, because
 # "they withdrew" and "we are not proceeding" are two different facts about one row.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 # E-20 (02-errata §8): the control plane moves to v4 — `audit_seal` is a day segment, not a
 # cumulative snapshot — and `schema/control-r4.sql` is the v3 -> v4 delta.
 CONTROL_VERSION = 4
@@ -541,7 +541,7 @@ SITE = {
  ("plugin_id","TEXT","NOT NULL REFERENCES cms_plugin_installed(plugin_id) ON DELETE CASCADE"),
  ("key","TEXT","NOT NULL CHECK(key GLOB '[a-z][a-z0-9._-]*')"),
  ("value_json","TEXT","NOT NULL"),
- ("type","TEXT","NOT NULL CHECK(type IN ('string','int','bool','json','secret'))"),
+ ("type","TEXT","NOT NULL CHECK(type IN ('string','int','bool','json','secret','time','select','email'))"),
  ("secret","INTEGER","NOT NULL DEFAULT 0 CHECK(secret IN (0,1))"),
  ("updated_at","TEXT","NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"),
  ("updated_by","INTEGER",None),

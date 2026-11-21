@@ -156,6 +156,11 @@ export function makeFixture(opts: FixtureOptions = {}): Fixture {
       SKW_ARGON2_MAX_CONCURRENT: '4',
       SKW_BOX_RPS: '192',
       UV_THREADPOOL_SIZE: '8',
+      // **No test may POST to api.indexnow.org.** The app's publish/delete paths submit to
+      // IndexNow by default, and a gate that exercises those paths would otherwise make a real
+      // outbound request. The default here is therefore off; a gate that tests submission turns
+      // it back on *and* stubs `globalThis.fetch` (`test/indexnow.test.ts` does both).
+      SKW_INDEXNOW: 'off',
     },
     cleanup(): void {
       rmSync(dir, { recursive: true, force: true });

@@ -108,7 +108,9 @@ export function renderMail(template: string, vars: Vars): RenderedMail {
       const subject = str(vars, 'subject');
       const text = str(vars, 'text');
       if (subject === '' || text === '') {
-        throw new Error(`template ${JSON.stringify(template)} is not a core template and carries no vars.subject/vars.text`);
+        throw new Error(
+          `unknown template ${JSON.stringify(template)}: not a core template, and its vars carry no subject/text`,
+        );
       }
       return { subject: subject.slice(0, 200), text: text.slice(0, 20_000) };
     }

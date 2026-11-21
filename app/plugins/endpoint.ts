@@ -87,10 +87,17 @@ export async function runEndpoint(runtime: PluginRuntime, req: EndpointRequest):
     // its code did not claim the route, which is a 503 for the same reason a failed activation
     // is — the endpoint exists and cannot be answered. Never a 404, which would say the tenant
     // does not have the package.
+    //
+    // "Activated and skipped this route" and "never activated in this process" are different
+    // problems with different fixes, and reporting both as the first one sends an operator to
+    // look at the package's code when the package was simply never loaded here.
+    const active = runtime.registry.has(req.tenant, req.plugin);
     throw new AppError(
       'SKW_E_PL_UNAVAILABLE',
-      `${req.plugin} declares ${req.method} ${req.endpoint} but did not register it at activation`,
-      { plugin: req.plugin, endpoint: req.endpoint },
+      active
+        ? `${req.plugin} declares ${req.method} ${req.endpoint} but did not register it at activation`
+        : `${req.plugin} is installed but not active in this process (activation failed, or it was enabled by another process and this one has not synced yet), so the ${req.method} ${req.endpoint} it declares cannot be answered`,
+      { plugin: req.plugin, endpoint: req.endpoint, active },
     );
   }
   const q = req.url.indexOf('?');

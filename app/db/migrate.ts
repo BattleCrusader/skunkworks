@@ -151,6 +151,10 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
   // application's status. ADD COLUMN, one backfill, DROP COLUMN on the profile; four ADD COLUMNs on
   // the application. Still no rebuild, so no row id and no index moves.
   const r11 = join(schemaDir, 'r11-amendments.sql');
+  // v12: a setting's declaration can ask a question with a control — a time, a choice, an address.
+  // The vocabulary lived in a CHECK, so widening it is a table rebuild: seven columns copied
+  // verbatim, no row id or index moves, and nothing references this table.
+  const r12 = join(schemaDir, 'r12-amendments.sql');
   const target = targetVersion(ddl);
   const rel = join('tenants', siteKey, 'site.db');
   const base = { key: siteKey, path: rel };
@@ -246,6 +250,13 @@ export function migrateTenant(dbPath: string, siteKey: string, schemaDir: string
       // beside the status rather than a transition of it. The profile's single word becomes a
       // one-element array — no answer is lost and none is invented.
       applyDdl(db, r11);
+      at = userVersion(db);
+    }
+    if (at === 11) {
+      // v12: `cms_plugin_setting.type` gains time/select/email. A table rebuild, because the
+      // vocabulary was a CHECK; every row is copied, and `secret` keeps the pairing its own CHECK
+      // depends on.
+      applyDdl(db, r12);
       at = userVersion(db);
     }
     if (at !== target) {
