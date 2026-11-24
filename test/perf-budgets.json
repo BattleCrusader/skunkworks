@@ -2658,6 +2658,25 @@
       ]
     },
     {
+      "file": "test/mail-sender.test.ts",
+      "worstIdleMs": 200,
+      "measuredOn": "2026-11-24",
+      "load1m": 5.53,
+      "box": "Francoiss-Mac-mini.local darwin 24.6.0 arm64, 8 cpus, 16 GiB, node v22.23.1, docker 29.9.2/2cpu/1014304768B",
+      "sha256": "984cfb24e037db52af3f92329046b0a919b92eaebd8cce84edc3250d9bba5d83",
+      "runs": [
+        {
+          "ms": 200,
+          "at": "2026-11-24T06:49:03.471Z",
+          "load1mBefore": 5.53,
+          "load1mAfter": 5.73,
+          "idle": true,
+          "exitCode": 0,
+          "tests": 6
+        }
+      ]
+    },
+    {
       "file": "test/nginx-config.test.ts",
       "worstIdleMs": 200,
       "measuredOn": "2026-10-21",
@@ -2839,5 +2858,5 @@
       ]
     }
   ],
-  "updatedAt": "2026-11-21T05:42:13.754Z"
+  "updatedAt": "2026-11-24T06:49:03.817Z"
 }

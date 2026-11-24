@@ -94,6 +94,8 @@ import { IndexNow } from './indexnow/indexnow.ts';
 import { NULL_TRANSPORT, Outbox } from './mail/outbox.ts';
 import { PluginJobRunner } from './plugins/jobs.ts';
 import { smtpTransport } from './mail/transport.ts';
+import type { MailTransport } from './mail/outbox.ts';
+import { resolveMailFrom } from './mail/sender.ts';
 import { seedSettings } from './download/code.ts';
 import { DownloadPlane, RETRY_ATTEMPTS } from './download/plane.ts';
 import { PluginRuntime } from './plugins/runtime.ts';
@@ -1959,17 +1961,29 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
   // and an operator can read them, which is the honest state of an install that cannot send. With
   // `smtp`, every tenant's queue is drained here — one tenant's mail server being down must not
   // stop another tenant's mail, so each is caught on its own.
-  const mailTransport =
-    env.emailMode === 'smtp' && env.smtpUrl !== undefined && env.smtpFrom !== ''
-      ? smtpTransport({ url: env.smtpUrl, from: env.smtpFrom })
-      : NULL_TRANSPORT;
+  // One transport per sender, cached: the pool is the point, and a box with three sites must not
+  // open three pools for three addresses that never change between drains. The sender itself is the
+  // tenant's (`site.mail_from`), because an envelope sender has to name a domain the mail server
+  // sends for — one global `SKW_MAIL_FROM` on a multi-tenant box sends one customer's enquiries
+  // under another customer's domain, which is both wrong and, once DMARC is on, undeliverable.
+  const mailTransports = new Map<string, MailTransport>();
+  const transportFor = (from: string): MailTransport => {
+    const cached = mailTransports.get(from);
+    if (cached !== undefined) return cached;
+    const made =
+      env.emailMode === 'smtp' && env.smtpUrl !== undefined && from !== ''
+        ? smtpTransport({ url: env.smtpUrl, from })
+        : NULL_TRANSPORT;
+    mailTransports.set(from, made);
+    return made;
+  };
   const drainOnce = async (): Promise<void> => {
     if (env.emailMode !== 'smtp') return;
     for (const tenant of tenants.all()) {
       let db: Database.Database | null = null;
       try {
         db = openAdminWrite(sitePath(tenant.key), env.dbBusyTimeoutMs);
-        const report = await new Outbox(db, mailTransport).drain();
+        const report = await new Outbox(db, transportFor(resolveMailFrom(db, env.smtpFrom))).drain();
         if (report.claimed > 0) {
           process.stdout.write(
             `mail drain: ${tenant.key} sent=${report.sent} failed=${report.failed} suppressed=${report.suppressed} retry=${report.skipped}\n`,
