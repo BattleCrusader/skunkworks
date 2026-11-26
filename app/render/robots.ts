@@ -31,6 +31,28 @@ export const PAGE_ROBOTS_VALUE = 'noindex';
 export const ADMIN_ROBOTS_META = '<meta name="robots" content="noindex, nofollow">';
 
 /**
+ * The job board's account surface — `/portal/**` — is an auth surface, and an
+ * auth surface is not content.
+ *
+ * Measured, not assumed: `https://fractionalworks.com.au/portal/register?role=advertiser`
+ * answered 200 with `<title>Create an account</title>`, `cache-control: no-store`
+ * and **no** `X-Robots-Tag`, no `<meta name="robots">` and no canonical. Google
+ * crawled both role variants on 22–23 Nov 2026 and filed them under "Duplicate
+ * without user-selected canonical" — one step away from being the page a
+ * stranger finds when they search the brand. The owner's rule is that no page
+ * behind auth may ever be indexed, so the prefix joins `/admin` and `/fleet`.
+ *
+ * `/portal.css` is deliberately NOT a portal path: it is a stylesheet, and a
+ * header on a stylesheet is noise. It is not indexable either (a CSS file is
+ * never a search result), but the gate must not 404 it.
+ */
+export function isPortalPath(url: string): boolean {
+  const q = url.indexOf('?');
+  const pathname = q === -1 ? url : url.slice(0, q);
+  return pathname === '/portal' || pathname.startsWith('/portal/');
+}
+
+/**
  * Is this URL under `/admin` or `/fleet`?
  *
  * The query string is stripped first, so `/admin/login?next=/` and `/admin/login` are the same

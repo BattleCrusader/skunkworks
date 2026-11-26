@@ -197,11 +197,12 @@ test('PV-4. an indexable page is byte-unchanged, and storing "index" is a no-op'
   assert.match(head(withSeo.body), /<meta name="description" content="Two days a week.">/);
 });
 
-test('PV-5. robots.txt names the two admin prefixes', async () => {
+test('PV-5. robots.txt names the admin prefixes, the portal and the search pages', async () => {
   const res = await get('/robots.txt');
   assert.equal(res.status, 200);
   assert.match(res.body, /^Disallow: \/admin$/m);
   assert.match(res.body, /^Disallow: \/fleet$/m);
+  assert.match(res.body, /^Disallow: \/portal$/m, 'the job board account surface is an auth surface');
   assert.match(res.body, /^Disallow: \/search$/m, 'the results pages stay disallowed');
   assert.match(res.body, new RegExp(`^Sitemap: https://${HOST.replace(/\./g, '\\.')}/sitemap\\.xml$`, 'm'));
 });
@@ -247,6 +248,25 @@ test('PV-6. every admin answer carries X-Robots-Tag, including one that does not
   // …and a public page is untouched by it.
   const page = await get('/pricing');
   assert.equal(header(page, 'x-robots-tag'), undefined);
+});
+
+test('PV-6b. the job board portal carries the admin claim, route or no route', async () => {
+  // Measured in Search Console 2026-11-27: fractionalworks.com.au's
+  // /portal/register?role=advertiser and ?role=applicant both answered 200 with
+  // NO robots signal — no header, no meta, no canonical — so Google crawled
+  // both and filed them under "Duplicate without user-selected canonical". A
+  // signup form is an auth surface; the owner's rule is that it is never
+  // indexable. This is the same onRequest hook the admin prefixes use, so it
+  // holds for an unknown portal path too — that is what proves it is central
+  // and not a property of a route.
+  for (const url of ['/portal', '/portal/register?role=advertiser', '/portal/a-route-that-was-never-written']) {
+    const res = await get(url);
+    assert.equal(header(res, 'x-robots-tag'), 'noindex, nofollow', `${url} is an auth surface`);
+  }
+
+  // `/portal.css` is a stylesheet, not a page: no robots claim on it.
+  const css = await get('/portal.css');
+  assert.equal(header(css, 'x-robots-tag'), undefined);
 });
 
 test('PV-7. the admin shell carries the meta tag as well as the header', async () => {

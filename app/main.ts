@@ -44,7 +44,7 @@ import sharp from 'sharp';
 import { loadPluginPage, matchPluginPage, pluginPageBody, resolveFormMarkers } from './render/plugin-pages.ts';
 import { loadNav, menuPluginEnabled, type NavTree } from './render/nav.ts';
 import { hasChrome, loadChrome, logoUrl as chromeLogoUrl, seedChromeSettings, type SiteChrome } from './render/chrome.ts';
-import { ADMIN_ROBOTS_VALUE, isAdminPath, PAGE_ROBOTS_VALUE, ROBOTS_HEADER } from './render/robots.ts';
+import { ADMIN_ROBOTS_VALUE, isAdminPath, isPortalPath, PAGE_ROBOTS_VALUE, ROBOTS_HEADER } from './render/robots.ts';
 import { originFromHost, pageSeoHead, parsePageSeo } from './render/seo.ts';
 import { matchesEtag, sheetEtag, sheetVersion, siteSheet } from './render/theme.ts';
 import { NAV_PILOT_JS } from './render/nav-pilot.ts';
@@ -400,6 +400,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<AppHandle> {
    */
   app.addHook('onRequest', (req, reply, done) => {
     if (isAdminPath(req.url)) reply.header(ROBOTS_HEADER, ADMIN_ROBOTS_VALUE);
+    // The job board's account surface is the same claim for the same reason: a
+    // signup form is not a page to be found in a search result. See
+    // `isPortalPath` for the measured Search Console report that put it here.
+    if (isPortalPath(req.url)) reply.header(ROBOTS_HEADER, ADMIN_ROBOTS_VALUE);
     done();
   });
 

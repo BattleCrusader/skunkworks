@@ -108,11 +108,15 @@ export function sitemapXml(entries: readonly SitemapEntry[]): string {
 export function robotsTxt(origin: string): string {
   // `/search` is disallowed as well as `noindex`: the results page is a derivative of the site's
   // own pages, and a crawler that walks `?q=` with a dictionary turns one page into a thousand.
+  // `/portal` is the job board's account surface — a signup form, a login form, an applicant's
+  // own applications. Every one of those answers carries `X-Robots-Tag: noindex, nofollow`
+  // (`isPortalPath`), and this line is the outer layer that stops a crawl before it starts.
   return [
     'User-agent: *',
     'Allow: /',
     'Disallow: /admin',
     'Disallow: /fleet',
+    'Disallow: /portal',
     'Disallow: /search',
     '',
     `Sitemap: ${origin}/sitemap.xml`,
